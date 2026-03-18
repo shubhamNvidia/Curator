@@ -228,9 +228,8 @@ class SpeakerSeparationStage(ProcessingStage[AudioBatch, AudioBatch]):
         
         for item in task.data:
             waveform = item.get('waveform')
-            sample_rate = item.get('sample_rate', 48000)
-            
-            # Load from file if waveform not provided (standalone usage). Canonical format only; never set item['audio'].
+            sample_rate = item.get('sample_rate')
+
             if waveform is None:
                 audio_filepath = item.get('audio_filepath')
                 if audio_filepath and os.path.exists(audio_filepath):
@@ -243,6 +242,22 @@ class SpeakerSeparationStage(ProcessingStage[AudioBatch, AudioBatch]):
                         continue
                 else:
                     logger.warning("No waveform or valid audio_filepath found")
+                    continue
+            elif sample_rate is None:
+                audio_filepath = item.get('audio_filepath')
+                if audio_filepath and os.path.exists(audio_filepath):
+                    try:
+                        info = sf.info(audio_filepath)
+                        sample_rate = info.samplerate
+                        item['sample_rate'] = sample_rate
+                    except Exception as e:
+                        logger.error(f"Waveform present but sample_rate missing and "
+                                     f"could not read it from '{audio_filepath}': {e}")
+                        continue
+                else:
+                    logger.error("Waveform present but 'sample_rate' key is missing "
+                                 "and no audio_filepath available to resolve it. "
+                                 "Please set 'sample_rate' in the item dict.")
                     continue
             
             try:

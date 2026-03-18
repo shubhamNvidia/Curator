@@ -162,8 +162,8 @@ class NISQAFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
     def _process_single_item(self, item: Dict[str, Any], task_id: str) -> Optional[Dict[str, Any]]:
         """Process a single audio item and return it with NISQA scores if it passes thresholds. Uses waveform + sample_rate only (no item['audio'])."""
         waveform = item.get('waveform')
-        sample_rate = item.get('sample_rate', 48000)
-        
+        sample_rate = item.get('sample_rate')
+
         if waveform is None:
             audio_filepath = item.get('audio_filepath')
             if audio_filepath and os.path.exists(audio_filepath):
@@ -184,6 +184,22 @@ class NISQAFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
                     return None
             else:
                 logger.warning(f"[{task_id}] No waveform or valid audio_filepath found")
+                return None
+        elif sample_rate is None:
+            audio_filepath = item.get('audio_filepath')
+            if audio_filepath and os.path.exists(audio_filepath):
+                try:
+                    info = sf.info(audio_filepath)
+                    sample_rate = info.samplerate
+                    item['sample_rate'] = sample_rate
+                except Exception as e:
+                    logger.error(f"[{task_id}] Waveform present but sample_rate missing and "
+                                 f"could not read it from '{audio_filepath}': {e}")
+                    return None
+            else:
+                logger.error(f"[{task_id}] Waveform present but 'sample_rate' key is missing "
+                             "and no audio_filepath available to resolve it. "
+                             "Please set 'sample_rate' in the item dict.")
                 return None
         
         temp_path = None
