@@ -29,14 +29,12 @@ class UTMOSConfig:
 
     Attributes:
         mos_threshold: Minimum MOS score to pass (None to disable)
-        sample_rate: Target sample rate for UTMOS inference (default 16000)
 
     Example:
         config = UTMOSConfig(mos_threshold=3.5)
     """
 
     mos_threshold: Optional[float] = 3.5
-    sample_rate: int = 16000
 
     @classmethod
     def from_dict(cls, d: Optional[dict] = None) -> "UTMOSConfig":
@@ -48,7 +46,6 @@ class UTMOSConfig:
     def to_dict(self) -> dict:
         return {
             'mos_threshold': self.mos_threshold,
-            'sample_rate': self.sample_rate,
         }
 
     def get(self, key: str, default: Any = None) -> Any:

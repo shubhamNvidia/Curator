@@ -129,7 +129,6 @@ class UTMOSFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
 
         if self.config is not None:
             self.mos_threshold = self.config.mos_threshold
-            self.sample_rate = self.config.sample_rate
 
     def inputs(self) -> Tuple[List[str], List[str]]:
         return ["data"], []
@@ -138,8 +137,6 @@ class UTMOSFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
         return [], ["utmos_mos"]
 
     def setup(self, worker_metadata=None) -> None:
-        from nemo_curator.utils.gpu_utils import ensure_cudnn_loaded
-        ensure_cudnn_loaded()
         self._ensure_model()
 
     def teardown(self) -> None:
