@@ -20,7 +20,7 @@ audio processing steps into single, easy-to-use stages.
 
 Available Pipelines:
     - Audio_data_filter: Audio Data Filter pipeline with VAD,
-      quality filtering (NISQA, SIGMOS, Band), speaker separation,
+      quality filtering (UTMOS, SIGMOS, Band), speaker separation,
       and timestamp tracking.
 
 Example:
@@ -31,10 +31,10 @@ Example:
     
     # Create config
     config = AudioDataFilterConfig(
-        enable_nisqa=True,
+        enable_utmos=True,
         enable_sigmos=True,
         enable_speaker_separation=True,
-        nisqa_mos_threshold=4.5,
+        utmos_mos_threshold=3.5,
     )
     
     # Create stage

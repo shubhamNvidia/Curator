@@ -30,7 +30,7 @@ class AudioDataFilterConfig:
     Configuration for the complete Audio Data Filter pipeline.
 
     Example:
-        config = AudioDataFilterConfig(enable_nisqa=True)
+        config = AudioDataFilterConfig(enable_utmos=True)
     """
 
     # General
@@ -50,13 +50,9 @@ class AudioDataFilterConfig:
     enable_band_filter: bool = True
     band_value: Literal["full_band", "narrow_band"] = "full_band"
 
-    # NISQA Filter
-    enable_nisqa: bool = True
-    nisqa_mos_threshold: Optional[float] = 4.5
-    nisqa_noi_threshold: Optional[float] = 4.3
-    nisqa_col_threshold: Optional[float] = None
-    nisqa_dis_threshold: Optional[float] = None
-    nisqa_loud_threshold: Optional[float] = None
+    # UTMOS Filter
+    enable_utmos: bool = True
+    utmos_mos_threshold: Optional[float] = 3.5
 
     # SIGMOS Filter
     enable_sigmos: bool = True
@@ -67,11 +63,6 @@ class AudioDataFilterConfig:
     sigmos_disc_threshold: Optional[float] = None
     sigmos_loud_threshold: Optional[float] = None
     sigmos_reverb_threshold: Optional[float] = None
-
-    # UTMOS Filter
-    enable_utmos: bool = True
-    utmos_mos_threshold: Optional[float] = 3.5
-    utmos_sample_rate: int = 16000
 
     # Speaker Separation
     enable_speaker_separation: bool = True
@@ -88,10 +79,8 @@ class AudioDataFilterConfig:
         filters = []
         if self.enable_band_filter:
             filters.append("band")
-        if self.enable_nisqa:
-            filters.append("nisqa")
-        if self.enable_sigmos:
-            filters.append("sigmos")
         if self.enable_utmos:
             filters.append("utmos")
+        if self.enable_sigmos:
+            filters.append("sigmos")
         return filters

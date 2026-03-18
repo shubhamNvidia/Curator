@@ -20,13 +20,12 @@ Pipeline (when all filters + speaker separation enabled):
     1. MonoConversion (1:1)
     2. VAD batch mode (1:1, items=N segments)
     3. BandFilter (1:1, filter items)
-    4. NISQA (1:1, filter items)
+    4. UTMOS (1:1, filter items)
     5. SIGMOS (1:1, filter items)
-    6. UTMOS (1:1, filter items)
-    7. SegmentConcatenation (1:1, M items -> 1 item + timestamp mappings)
-    8. SpeakerSeparation (1:N fan-out)
-    9-13. Per-speaker: VAD + Band + NISQA + SIGMOS + UTMOS
-    14. TimestampMapper (1:1, resolve to original file positions)
+    6. SegmentConcatenation (1:1, M items -> 1 item + timestamp mappings)
+    7. SpeakerSeparation (1:N fan-out)
+    8-11. Per-speaker: VAD + Band + UTMOS + SIGMOS
+    12. TimestampMapper (1:1, resolve to original file positions)
 
 Usage:
     pipeline.add_stage(AudioDataFilterStage(config=config))
@@ -43,7 +42,6 @@ from nemo_curator.stages.resources import Resources
 from nemo_curator.stages.audio import (
     MonoConversionStage,
     VADSegmentationStage,
-    NISQAFilterStage,
     SIGMOSFilterStage,
     UTMOSFilterStage,
     BandFilterStage,
@@ -53,7 +51,6 @@ from nemo_curator.stages.audio import (
 )
 from nemo_curator.stages.audio.configs import (
     VADConfig,
-    NISQAConfig,
     SIGMOSConfig,
     UTMOSConfig,
     BandFilterConfig,
@@ -105,21 +102,17 @@ class AudioDataFilterStage(CompositeStage):
                                  max_duration_sec=cfg.vad_max_duration_sec),
                 mode="batch", name="VAD").with_(resources=gpu_res))
 
-        # 3. Band filter (CPU-only, sklearn classifier, benefits from multi-CPU for parallel feature extraction)
+        # 3. Band filter (CPU-only, sklearn classifier)
         if cfg.enable_band_filter:
             stages.append(BandFilterStage(
                 config=BandFilterConfig(band_value=cfg.band_value),
                 name="BandFilter").with_(resources=band_res))
 
-        # 4. NISQA
-        if cfg.enable_nisqa:
-            stages.append(NISQAFilterStage(
-                config=NISQAConfig(mos_threshold=cfg.nisqa_mos_threshold,
-                                   noi_threshold=cfg.nisqa_noi_threshold,
-                                   col_threshold=cfg.nisqa_col_threshold,
-                                   dis_threshold=cfg.nisqa_dis_threshold,
-                                   loud_threshold=cfg.nisqa_loud_threshold),
-                name="NISQA").with_(resources=gpu_res))
+        # 4. UTMOS
+        if cfg.enable_utmos:
+            stages.append(UTMOSFilterStage(
+                config=UTMOSConfig(mos_threshold=cfg.utmos_mos_threshold),
+                name="UTMOS").with_(resources=gpu_res))
 
         # 5. SIGMOS
         if cfg.enable_sigmos:
@@ -133,26 +126,19 @@ class AudioDataFilterStage(CompositeStage):
                                     reverb_threshold=cfg.sigmos_reverb_threshold),
                 name="SIGMOS").with_(resources=gpu_res))
 
-        # 6. UTMOS
-        if cfg.enable_utmos:
-            stages.append(UTMOSFilterStage(
-                config=UTMOSConfig(mos_threshold=cfg.utmos_mos_threshold,
-                                   sample_rate=cfg.utmos_sample_rate),
-                name="UTMOS").with_(resources=gpu_res))
-
         if cfg.enable_speaker_separation:
-            # 7. Concatenation (CPU)
+            # 6. Concatenation (CPU)
             stages.append(SegmentConcatenationStage(
                 silence_duration_sec=cfg.silence_duration_ms / 1000.0,
                 name="SegmentConcat"))
 
-            # 8. Speaker separation (GPU, fan-out)
+            # 7. Speaker separation (GPU, fan-out)
             stages.append(SpeakerSeparationStage(
                 config=SpeakerSeparationConfig(
                     exclude_overlaps=cfg.speaker_exclude_overlaps),
                 name="SpeakerSeparation").with_(resources=gpu_res))
 
-            # 9-13. Per-speaker stages
+            # 8-11. Per-speaker stages
             if cfg.enable_vad:
                 stages.append(VADSegmentationStage(
                     config=VADConfig(min_duration_sec=cfg.vad_min_duration_sec,
@@ -164,14 +150,10 @@ class AudioDataFilterStage(CompositeStage):
                     config=BandFilterConfig(band_value=cfg.band_value),
                     name="BandFilter_Speaker").with_(resources=band_res))
 
-            if cfg.enable_nisqa:
-                stages.append(NISQAFilterStage(
-                    config=NISQAConfig(mos_threshold=cfg.nisqa_mos_threshold,
-                                       noi_threshold=cfg.nisqa_noi_threshold,
-                                       col_threshold=cfg.nisqa_col_threshold,
-                                       dis_threshold=cfg.nisqa_dis_threshold,
-                                       loud_threshold=cfg.nisqa_loud_threshold),
-                    name="NISQA_Speaker").with_(resources=gpu_res))
+            if cfg.enable_utmos:
+                stages.append(UTMOSFilterStage(
+                    config=UTMOSConfig(mos_threshold=cfg.utmos_mos_threshold),
+                    name="UTMOS_Speaker").with_(resources=gpu_res))
 
             if cfg.enable_sigmos:
                 stages.append(SIGMOSFilterStage(
@@ -184,13 +166,7 @@ class AudioDataFilterStage(CompositeStage):
                                         reverb_threshold=cfg.sigmos_reverb_threshold),
                     name="SIGMOS_Speaker").with_(resources=gpu_res))
 
-            if cfg.enable_utmos:
-                stages.append(UTMOSFilterStage(
-                    config=UTMOSConfig(mos_threshold=cfg.utmos_mos_threshold,
-                                       sample_rate=cfg.utmos_sample_rate),
-                    name="UTMOS_Speaker").with_(resources=gpu_res))
-
-        # 14. Timestamp mapper (CPU)
+        # 12. Timestamp mapper (CPU)
         stages.append(TimestampMapperStage(name="TimestampMapper"))
 
         logger.info(f"AudioDataFilterStage decomposed into {len(stages)} stages "
