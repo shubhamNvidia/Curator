@@ -206,7 +206,9 @@ class NISQAFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
         try:
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
                 temp_path = temp_file.name
-            w = waveform.squeeze().cpu().numpy() if waveform.dim() > 1 else waveform.cpu().numpy()
+            if waveform.dim() > 1 and waveform.shape[0] > 1:
+                waveform = waveform.mean(dim=0, keepdim=True)
+            w = waveform.squeeze(0).cpu().numpy() if waveform.dim() > 1 else waveform.cpu().numpy()
             sf.write(temp_path, w, sample_rate)
             
             model_path = self._resolve_model_path()
