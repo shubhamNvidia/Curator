@@ -39,13 +39,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torchaudio
-import soundfile as sf
 from loguru import logger
 
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.stages.resources import Resources
 from nemo_curator.tasks import AudioBatch
 
+from ..common import load_audio_file
 from ..configs import UTMOSConfig
 
 _UTMOS_REPO = "tarepan/SpeechMOS:v1.2.0"
@@ -76,15 +76,7 @@ def _load_waveform_tensor(item: Dict[str, Any], task_id: str) -> Optional[Tuple[
     path = item.get("audio_filepath")
     if path and os.path.isfile(path):
         try:
-            data, sr = sf.read(path, dtype="float32")
-            waveform = torch.from_numpy(data)
-            if waveform.dim() == 1:
-                waveform = waveform.unsqueeze(0)
-            else:
-                waveform = waveform.T
-            if waveform.shape[0] > 1:
-                waveform = waveform.mean(dim=0, keepdim=True)
-            return waveform, int(sr)
+            return load_audio_file(path, mono=True)
         except Exception as e:
             logger.error(f"[{task_id}] Failed to load audio file: {e}")
             return None

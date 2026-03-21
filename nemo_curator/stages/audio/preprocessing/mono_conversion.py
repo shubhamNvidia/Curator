@@ -31,13 +31,13 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 import torch
-import soundfile as sf
 from loguru import logger
 
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.stages.resources import Resources
 from nemo_curator.tasks import AudioBatch
 
+from ..common import load_audio_file
 from ..configs import MonoConversionConfig
 
 
@@ -113,18 +113,7 @@ class MonoConversionStage(ProcessingStage[AudioBatch, AudioBatch]):
                 continue
             
             try:
-                # Load audio using soundfile (more reliable than torchaudio backends)
-                audio_data, sample_rate = sf.read(audio_filepath, dtype='float32')
-                
-                # Convert to torch tensor and reshape to (channels, samples)
-                waveform = torch.from_numpy(audio_data)
-                if waveform.dim() == 1:
-                    # Mono audio: reshape to (1, samples)
-                    waveform = waveform.unsqueeze(0)
-                else:
-                    # Multi-channel: transpose from (samples, channels) to (channels, samples)
-                    waveform = waveform.T
-                
+                waveform, sample_rate = load_audio_file(audio_filepath, mono=False)
                 num_channels = waveform.shape[0]
                 
                 if self.strict_sample_rate and sample_rate != self.output_sample_rate:

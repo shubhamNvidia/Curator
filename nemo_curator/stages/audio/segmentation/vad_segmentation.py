@@ -43,7 +43,6 @@ from typing import Any, List, Dict, Tuple, Optional
 
 import torch
 import torchaudio
-import soundfile as sf
 from loguru import logger
 from silero_vad import load_silero_vad, get_speech_timestamps
 
@@ -56,28 +55,11 @@ SILERO_SUPPORTED_RATES = {8000, 16000, 32000, 48000, 64000, 96000}
 SILERO_TARGET_RATE = 16000
 
 from nemo_curator.backends.experimental.utils import RayStageSpecKeys
+from nemo_curator.stages.audio.common import load_audio_file, ensure_waveform_2d
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.stages.resources import Resources
 from nemo_curator.tasks import AudioBatch
 from nemo_curator.stages.audio.configs.vad import VADConfig
-
-
-def _load_audio_file(audio_path: str) -> Tuple[torch.Tensor, int]:
-    """
-    Load audio file and return waveform tensor and sample rate.
-    
-    Supports standalone usage of stages without requiring MonoConversionStage.
-    """
-    data, sample_rate = sf.read(audio_path, dtype='float32')
-    waveform = torch.from_numpy(data)
-    if waveform.dim() == 1:
-        waveform = waveform.unsqueeze(0)
-    else:
-        waveform = waveform.T
-    # Convert to mono if stereo
-    if waveform.shape[0] > 1:
-        waveform = waveform.mean(dim=0, keepdim=True)
-    return waveform, sample_rate
 
 
 @dataclass
@@ -277,7 +259,7 @@ class VADSegmentationStage(ProcessingStage[AudioBatch, AudioBatch]):
                 audio_filepath = item.get('audio_filepath')
                 if audio_filepath and os.path.exists(audio_filepath):
                     try:
-                        waveform, sample_rate = _load_audio_file(audio_filepath)
+                        waveform, sample_rate = load_audio_file(audio_filepath)
                         item['waveform'] = waveform
                         item['sample_rate'] = sample_rate
                     except Exception as e:
@@ -287,10 +269,7 @@ class VADSegmentationStage(ProcessingStage[AudioBatch, AudioBatch]):
                     logger.error("Missing waveform/sample_rate and no valid audio_filepath provided")
                     continue
 
-            if not torch.is_tensor(waveform):
-                waveform = torch.as_tensor(waveform, dtype=torch.float32)
-            if waveform.dim() == 1:
-                waveform = waveform.unsqueeze(0)
+            waveform = ensure_waveform_2d(waveform)
 
             try:
                 segments = self._get_vad_segments(waveform, sample_rate)
