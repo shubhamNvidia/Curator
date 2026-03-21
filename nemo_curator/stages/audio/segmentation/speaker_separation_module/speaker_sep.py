@@ -325,10 +325,6 @@ class SpeakerSeparator:
             wav = waveform.squeeze(0) if waveform.dim() > 1 else waveform
             sf.write(temp_path, wav.cpu().numpy(), sample_rate)
             return self.diar_model.diarize(audio=temp_path, batch_size=1)
-        except (RuntimeError, ValueError) as e:
-            logger.warning(f"Error during diarization: {e}. Falling back to single speaker mode")
-            duration_sec = waveform.shape[1] / sample_rate
-            return [f"0.0 {duration_sec:.3f} speaker_0"]
         finally:
             if temp_path and os.path.exists(temp_path):
                 os.unlink(temp_path)
@@ -446,14 +442,8 @@ class SpeakerSeparator:
             
             return processed_segments
             
-        except (RuntimeError, ValueError) as e:
-            logger.warning(f"Error during audio processing: {e}. Falling back to single speaker mode")
-            if isinstance(audio_path_or_waveform, str):
-                waveform, sample_rate = load_audio(audio_path_or_waveform)
-                duration_sec = waveform.shape[1] / sample_rate
-            else:
-                duration_sec = audio_path_or_waveform.shape[1] / sample_rate
-            return {"speaker_0": [(0.0, duration_sec)]}
+        except (RuntimeError, ValueError):
+            raise
     
     def get_speaker_audio_data(self, audio_path_or_waveform, sample_rate=None, gap_threshold=None, exclude_overlaps=None, min_duration=None, buffer_time=None):
         """

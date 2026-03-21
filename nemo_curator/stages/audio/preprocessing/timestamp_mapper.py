@@ -72,6 +72,11 @@ class TimestampMapperStage(ProcessingStage[AudioBatch, AudioBatch]):
     ``start_ms`` / ``end_ms`` to ``original_start_ms`` /
     ``original_end_ms`` in the source file.
 
+    If a segment in concatenated space overlaps more than one
+    concat mapping it is rejected entirely to avoid producing
+    ambiguous fragments that don't map cleanly to a single
+    position in the original file.
+
     Strips ``waveform`` from output items so the final output is
     metadata-only (timestamps, quality scores, speaker info).
     """
@@ -81,6 +86,14 @@ class TimestampMapperStage(ProcessingStage[AudioBatch, AudioBatch]):
     batch_size: int = 1
     resources: Resources = field(default_factory=lambda: Resources(cpus=1.0))
 
+    # Keys removed from final output items during passthrough copy.
+    # - waveform, audio: raw audio data (large tensors, not needed in metadata output)
+    # - audio_filepath: replaced by original_file with resolved timestamps
+    # - start_ms, end_ms: positions in concatenated/speaker waveform space,
+    #       replaced by original_start_ms / original_end_ms in original file space
+    # - segment_num: internal index from VAD, not meaningful in final output
+    # - original_file: re-added explicitly from the mapped result, stripped here
+    #       to avoid stale values from earlier stages overwriting the mapped value
     _STRIP_KEYS = frozenset({
         'waveform', 'audio', 'audio_filepath',
         'start_ms', 'end_ms', 'segment_num',
@@ -101,6 +114,7 @@ class TimestampMapperStage(ProcessingStage[AudioBatch, AudioBatch]):
         mappings = (task._metadata or {}).get('segment_mappings')
 
         results: List[Dict[str, Any]] = []
+        rejected = 0
 
         for item in task.data:
             if mappings:
@@ -114,13 +128,27 @@ class TimestampMapperStage(ProcessingStage[AudioBatch, AudioBatch]):
                     continue
                 original_ranges = _translate_to_original(mappings, concat_start, concat_end)
 
-                for orig in original_ranges:
-                    result = self._build_output_item(item, orig)
+                if len(original_ranges) > 1:
+                    rejected += 1
+                    logger.debug(
+                        f"[TimestampMapper] Rejecting segment "
+                        f"[{concat_start}-{concat_end}ms] that spans "
+                        f"{len(original_ranges)} concat mappings"
+                    )
+                    continue
+
+                if len(original_ranges) == 1:
+                    result = self._build_output_item(item, original_ranges[0])
                     results.append(result)
             else:
                 result = self._build_output_item_no_mapping(item)
                 results.append(result)
 
+        if rejected:
+            logger.info(
+                f"[TimestampMapper] {task.task_id}: rejected {rejected} "
+                f"cross-boundary segment(s)"
+            )
         logger.info(f"[TimestampMapper] {task.task_id}: {len(results)} output segments")
 
         return AudioBatch(

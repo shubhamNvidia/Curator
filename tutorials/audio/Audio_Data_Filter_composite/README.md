@@ -8,11 +8,11 @@ A CompositeStage pipeline for audio curation that extracts clean single-speaker 
 
 | Feature | Description |
 |---------|-------------|
-| **Decomposed Pipeline** | 14 independent stages (when fully enabled) scheduled by the executor |
+| **Decomposed Pipeline** | 12 independent stages (when fully enabled) scheduled by the executor |
 | **Cross-file Parallelism** | Different files can be in different stages simultaneously |
 | **Timestamp Mapping** | All segments maintain original file positions via segment mappings |
 | **Multi-Format Support** | WAV, MP3, FLAC, OGG, M4A, AAC, WMA, OPUS, WebM |
-| **Quality Filters** | NISQA, SIGMOS, UTMOS, Band (bandwidth classification) |
+| **Quality Filters** | SIGMOS, UTMOS, Band (bandwidth classification) |
 | **Speaker Separation** | NeMo-based speaker diarization |
 
 
@@ -31,7 +31,6 @@ python run.py \
 python pipeline.py \
     --raw_data_dir /path/to/audio/files \
     --enable-vad \
-    --enable-nisqa \
     --enable-sigmos \
     --enable-utmos \
     --enable-band-filter \
@@ -47,14 +46,12 @@ AudioDataFilterStage (CompositeStage) decomposes into:
   MonoConversion (1:1)
     -> VAD batch mode (1:1, 1 item -> N segment items)
     -> BandFilter (1:1, filter items)
-    -> NISQA (1:1, filter items)
     -> SIGMOS (1:1, filter items)
     -> UTMOS (1:1, filter items)
     -> SegmentConcatenation (1:1, M items -> 1 item + timestamp mappings)
     -> SpeakerSeparation (1:N fan-out, 1 task per speaker)
     -> VAD per speaker (1:1)
     -> BandFilter per speaker (1:1)
-    -> NISQA per speaker (1:1)
     -> SIGMOS per speaker (1:1)
     -> UTMOS per speaker (1:1)
     -> TimestampMapper (1:1, resolve to original file positions)
@@ -86,8 +83,6 @@ No `item['audio']` (PyDub) in the inter-stage contract.
     "duration_sec": 3.7,
     "speaker_id": "speaker_0",
     "num_speakers": 2,
-    "nisqa_mos": 4.7,
-    "nisqa_noi": 4.5,
     "sigmos_noise": 4.2,
     "sigmos_ovrl": 3.8,
     "utmos_mos": 3.9,
@@ -125,9 +120,6 @@ No `item['audio']` (PyDub) in the inter-stage contract.
 | `--vad-threshold` | `0.5` | VAD threshold (0-1) |
 | `--enable-band-filter` | `false` | Enable bandwidth filter |
 | `--band-value` | `full_band` | Band type to pass |
-| `--enable-nisqa` | `false` | Enable NISQA filter |
-| `--nisqa-mos-threshold` | `4.5` | Min NISQA MOS (1-5) |
-| `--nisqa-noi-threshold` | `4.3` | Min NISQA noisiness (1-5) |
 | `--enable-sigmos` | `false` | Enable SIGMOS filter |
 | `--sigmos-noise-threshold` | `4.0` | Min SIGMOS noise (1-5) |
 | `--sigmos-ovrl-threshold` | `3.5` | Min SIGMOS overall (1-5) |
@@ -147,8 +139,6 @@ from nemo_curator.tasks import AudioBatch
 
 config = AudioDataFilterConfig(
     enable_vad=True,
-    enable_nisqa=True,
-    nisqa_mos_threshold=4.5,
     enable_utmos=True,
     utmos_mos_threshold=3.5,
     enable_speaker_separation=True,

@@ -22,13 +22,12 @@ Decomposed pipeline (when all filters + speaker separation enabled):
     1. MonoConversion (1:1)
     2. VAD batch mode (1:1, 1 item -> N segment items)
     3. BandFilter (1:1, filter items)
-    4. NISQA (1:1, filter items)
-    5. SIGMOS (1:1, filter items)
-    6. UTMOS (1:1, filter items)
-    7. SegmentConcatenation (1:1, M items -> 1 item + timestamp mappings)
-    8. SpeakerSeparation (1:N fan-out, 1 task per speaker)
-    9-13. Per-speaker: VAD + Band + NISQA + SIGMOS + UTMOS
-    14. TimestampMapper (1:1, resolve to original file positions)
+    4. SIGMOS (1:1, filter items)
+    5. UTMOS (1:1, filter items)
+    6. SegmentConcatenation (1:1, M items -> 1 item + timestamp mappings)
+    7. SpeakerSeparation (1:N fan-out, 1 task per speaker)
+    8-11. Per-speaker: VAD + Band + SIGMOS + UTMOS
+    12. TimestampMapper (1:1, resolve to original file positions)
 
 Timestamp Mapping:
     SegmentConcatenationStage stores segment-to-original mappings in
@@ -36,7 +35,7 @@ Timestamp Mapping:
     resolves each segment's position back to the original file.
 
 Example:
-    python pipeline.py --raw_data_dir ./audio_data --output_dir ./output --enable-nisqa
+    python pipeline.py --raw_data_dir ./audio_data --output_dir ./output --enable-sigmos
 """
 
 import argparse
@@ -80,15 +79,9 @@ def create_pipeline(args: argparse.Namespace) -> Pipeline:
         enable_vad=args.enable_vad,
         vad_min_duration_sec=args.vad_min_duration,
         vad_max_duration_sec=args.vad_max_duration,
-        vad_threshold=args.vad_threshold,
         
-        # Quality Filters
         enable_band_filter=args.enable_band_filter,
         band_value=args.band_value,
-        
-        enable_nisqa=args.enable_nisqa,
-        nisqa_mos_threshold=args.nisqa_mos_threshold,
-        nisqa_noi_threshold=args.nisqa_noi_threshold,
         
         enable_sigmos=args.enable_sigmos,
         sigmos_noise_threshold=args.sigmos_noise_threshold,
@@ -99,7 +92,6 @@ def create_pipeline(args: argparse.Namespace) -> Pipeline:
         
         enable_speaker_separation=args.enable_speaker_separation,
         speaker_exclude_overlaps=args.speaker_exclude_overlaps,
-        speaker_min_duration=args.speaker_min_duration,
     )
     
     audio_filter_stage = AudioDataFilterStage(
@@ -185,12 +177,12 @@ Timestamp Mapping:
   - original_end_ms: End position in original file (milliseconds)
 
 Examples:
-  # Basic usage with NISQA filter
-  python pipeline.py --raw_data_dir ./audio --output_dir ./output --enable-nisqa
+  # Basic usage with SIGMOS filter
+  python pipeline.py --raw_data_dir ./audio --output_dir ./output --enable-sigmos
   
   # Full pipeline with all filters and speaker separation
   python pipeline.py --raw_data_dir ./audio --output_dir ./output \\
-      --enable-vad --enable-nisqa --enable-sigmos --enable-utmos --enable-speaker-separation
+      --enable-vad --enable-sigmos --enable-utmos --enable-band-filter --enable-speaker-separation
         """
     )
     
@@ -229,16 +221,10 @@ Examples:
     parser.add_argument("--enable-vad", action="store_true", help="Enable VAD segmentation")
     parser.add_argument("--vad-min-duration", type=float, default=2.0, help="Min VAD segment (sec)")
     parser.add_argument("--vad-max-duration", type=float, default=60.0, help="Max VAD segment (sec)")
-    parser.add_argument("--vad-threshold", type=float, default=0.5, help="VAD threshold (0-1)")
     
     # Band filter settings
     parser.add_argument("--enable-band-filter", action="store_true", help="Enable band filter")
     parser.add_argument("--band-value", choices=["full_band", "narrow_band"], default="full_band")
-    
-    # NISQA settings
-    parser.add_argument("--enable-nisqa", action="store_true", help="Enable NISQA filter")
-    parser.add_argument("--nisqa-mos-threshold", type=float, default=4.5, help="Min NISQA MOS")
-    parser.add_argument("--nisqa-noi-threshold", type=float, default=4.3, help="Min NISQA noisiness")
     
     # SIGMOS settings
     parser.add_argument("--enable-sigmos", action="store_true", help="Enable SIGMOS filter")
@@ -247,12 +233,11 @@ Examples:
     
     # UTMOS settings
     parser.add_argument("--enable-utmos", action="store_true", help="Enable UTMOS filter")
-    parser.add_argument("--utmos-mos-threshold", type=float, default=3.5, help="Min UTMOS MOS")
+    parser.add_argument("--utmos-mos-threshold", type=float, default=3.4, help="Min UTMOS MOS")
     
     # Speaker separation settings
     parser.add_argument("--enable-speaker-separation", action="store_true", help="Enable speaker sep")
     parser.add_argument("--speaker-exclude-overlaps", action="store_true", default=True)
-    parser.add_argument("--speaker-min-duration", type=float, default=0.8, help="Min speaker segment")
     
     args = parser.parse_args()
     
@@ -284,8 +269,6 @@ Examples:
         enabled.append("VAD")
     if args.enable_band_filter:
         enabled.append("Band")
-    if args.enable_nisqa:
-        enabled.append("NISQA")
     if args.enable_sigmos:
         enabled.append("SIGMOS")
     if args.enable_utmos:

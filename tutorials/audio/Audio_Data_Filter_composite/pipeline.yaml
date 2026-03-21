@@ -24,10 +24,6 @@ vad_max_duration_sec: 60.0
 enable_band_filter: false
 band_value: full_band
 
-enable_nisqa: true
-nisqa_mos_threshold: 0.0
-nisqa_noi_threshold: 0.0
-
 enable_sigmos: true
 sigmos_noise_threshold: 0.0
 sigmos_ovrl_threshold: 0.0
@@ -53,9 +49,6 @@ processors:
       vad_max_duration_sec: ${vad_max_duration_sec}
       enable_band_filter: ${enable_band_filter}
       band_value: ${band_value}
-      enable_nisqa: ${enable_nisqa}
-      nisqa_mos_threshold: ${nisqa_mos_threshold}
-      nisqa_noi_threshold: ${nisqa_noi_threshold}
       enable_sigmos: ${enable_sigmos}
       sigmos_noise_threshold: ${sigmos_noise_threshold}
       sigmos_ovrl_threshold: ${sigmos_ovrl_threshold}
