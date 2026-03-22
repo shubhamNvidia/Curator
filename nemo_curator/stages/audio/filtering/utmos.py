@@ -27,10 +27,7 @@ Example:
     from nemo_curator.stages.resources import Resources
 
     pipeline = Pipeline(name="quality_pipeline")
-    pipeline.add_stage(
-        UTMOSFilterStage(mos_threshold=3.5)
-        .with_(resources=Resources(gpus=0.3))
-    )
+    pipeline.add_stage(UTMOSFilterStage(mos_threshold=3.5))
 """
 
 import os
@@ -107,8 +104,8 @@ class UTMOSFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
         sample_rate: Target sample rate for UTMOS inference (default 16000)
 
     Note:
-        GPU assignment is handled by the executor via _resources.
-        Use .with_(resources=Resources(gpus=X)) to configure GPU allocation.
+        Default resources: gpus=0.5.
+        Use .with_(resources=Resources(gpus=X)) to override GPU allocation.
     """
 
     config: Optional[UTMOSConfig] = None
@@ -117,7 +114,7 @@ class UTMOSFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
 
     name: str = "UTMOSFilter"
     batch_size: int = 1
-    resources: Resources = field(default_factory=lambda: Resources(gpus=0.3))
+    resources: Resources = field(default_factory=lambda: Resources(cpus=1.0, gpus=0.5))
 
     def __post_init__(self):
         super().__init__()
@@ -137,6 +134,7 @@ class UTMOSFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
 
     def teardown(self) -> None:
         self._model = None
+        self._resamplers.clear()
         torch.cuda.empty_cache()
 
     def _ensure_model(self):
@@ -185,11 +183,13 @@ class UTMOSFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
             return None
 
         try:
-            if sr != self.sample_rate:
-                waveform = torchaudio.transforms.Resample(sr, self.sample_rate)(waveform)
-
             device = next(self._model.parameters()).device
             waveform = waveform.to(device)
+
+            if sr != self.sample_rate:
+                if sr not in self._resamplers:
+                    self._resamplers[sr] = torchaudio.transforms.Resample(sr, self.sample_rate).to(device)
+                waveform = self._resamplers[sr](waveform)
 
             with torch.no_grad():
                 score = self._model(waveform, sr=self.sample_rate)

@@ -29,10 +29,7 @@ Example:
     from nemo_curator.stages.resources import Resources
 
     pipeline = Pipeline(name="quality_pipeline")
-    pipeline.add_stage(
-        SIGMOSFilterStage(noise_threshold=4.0, ovrl_threshold=3.5)
-        .with_(resources=Resources(gpus=0.3))
-    )
+    pipeline.add_stage(SIGMOSFilterStage(noise_threshold=4.0, ovrl_threshold=3.5))
 """
 
 import os
@@ -121,8 +118,8 @@ class SIGMOSFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
         reverb_threshold: Minimum reverb score (None to disable)
 
     Note:
-        GPU assignment is handled by the executor via _resources.
-        Use .with_(resources=Resources(gpus=X)) to configure GPU allocation.
+        Default resources: gpus=0.5.
+        Use .with_(resources=Resources(gpus=X)) to override GPU allocation.
     """
 
     config: Optional[SIGMOSConfig] = None
@@ -137,7 +134,7 @@ class SIGMOSFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
 
     name: str = "SIGMOSFilter"
     batch_size: int = 1
-    resources: Resources = field(default_factory=lambda: Resources(gpus=0.3))
+    resources: Resources = field(default_factory=lambda: Resources(cpus=1.0, gpus=0.5))
 
     def __post_init__(self):
         super().__init__()

@@ -58,8 +58,8 @@ class BandFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
         band_value: Which band type to pass ("full_band" or "narrow_band")
 
     Note:
-        GPU is used automatically when resources specify gpus > 0.
-        Use .with_(resources=Resources(gpus=X)) to configure GPU allocation.
+        Default resources: cpus=4.0 (CPU-heavy sklearn classifier).
+        Use .with_(resources=Resources(...)) to override allocation.
 
     Example:
         # Using config - pass only full-band audio
@@ -76,7 +76,7 @@ class BandFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
 
     name: str = "BandFilter"
     batch_size: int = 1
-    resources: Resources = field(default_factory=lambda: Resources(cpus=1.0))
+    resources: Resources = field(default_factory=lambda: Resources(cpus=4.0))
 
     _VALID_BAND_VALUES = {"full_band", "narrow_band"}
 

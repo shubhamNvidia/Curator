@@ -145,10 +145,7 @@ config = AudioDataFilterConfig(
 )
 
 pipeline = Pipeline(name="audio_curation")
-pipeline.add_stage(AudioDataFilterStage(
-    config=config,
-    gpu_resources=Resources(gpus=1.0),
-))
+pipeline.add_stage(AudioDataFilterStage(config=config))
 pipeline.add_stage(AudioToDocumentStage().with_(batch_size=1))
 pipeline.add_stage(JsonlWriter(path="/path/to/output"))
 

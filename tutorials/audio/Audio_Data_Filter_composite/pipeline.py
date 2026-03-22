@@ -56,7 +56,7 @@ from nemo_curator.stages.audio.advance_pipelines.Audio_data_filter.config import
     DEFAULT_OUTPUT_FORMAT,
 )
 from nemo_curator.stages.audio.io.convert import AudioToDocumentStage
-from nemo_curator.stages.resources import Resources
+
 from nemo_curator.stages.text.io.writer import JsonlWriter
 from nemo_curator.tasks import AudioBatch
 
@@ -67,7 +67,7 @@ def create_pipeline(args: argparse.Namespace) -> Pipeline:
     
     AudioDataFilterStage is a CompositeStage -- the pipeline framework
     automatically decomposes it into independent stages at build time.
-    Each stage gets its own resource allocation via gpu_resources.
+    Each stage owns its own default resource allocation.
     """
     pipeline = Pipeline(
         name="audio_data_filter_pipeline",
@@ -94,10 +94,7 @@ def create_pipeline(args: argparse.Namespace) -> Pipeline:
         speaker_exclude_overlaps=args.speaker_exclude_overlaps,
     )
     
-    audio_filter_stage = AudioDataFilterStage(
-        config=config,
-        gpu_resources=Resources(cpus=args.cpus, gpus=args.gpus),
-    )
+    audio_filter_stage = AudioDataFilterStage(config=config)
 
     pipeline.add_stage(audio_filter_stage)
 

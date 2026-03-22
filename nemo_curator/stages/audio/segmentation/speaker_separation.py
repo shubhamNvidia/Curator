@@ -24,10 +24,7 @@ Example:
     from nemo_curator.stages.resources import Resources
     
     pipeline = Pipeline(name="speaker_pipeline")
-    pipeline.add_stage(
-        SpeakerSeparationStage(exclude_overlaps=True, min_duration=0.8)
-        .with_(resources=Resources(gpus=1.0))
-    )
+    pipeline.add_stage(SpeakerSeparationStage(exclude_overlaps=True, min_duration=0.8))
 """
 
 from dataclasses import dataclass, field
@@ -75,8 +72,8 @@ class SpeakerSeparationStage(ProcessingStage[AudioBatch, AudioBatch]):
         buffer_time: Buffer time around speaker segments
     
     Note:
-        GPU assignment is handled by the executor via _resources.
-        Use .with_(resources=Resources(gpus=X)) to configure GPU allocation.
+        Default resources: gpus=1.0.
+        Use .with_(resources=Resources(gpus=X)) to override GPU allocation.
     
     Example:
         # Using config
@@ -96,7 +93,7 @@ class SpeakerSeparationStage(ProcessingStage[AudioBatch, AudioBatch]):
     
     name: str = "SpeakerSeparation"
     batch_size: int = 1
-    resources: Resources = field(default_factory=lambda: Resources(gpus=1.0))
+    resources: Resources = field(default_factory=lambda: Resources(cpus=1.0, gpus=1.0))
     
     def __post_init__(self):
         """Initialize after dataclass fields are set."""
