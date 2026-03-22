@@ -73,6 +73,10 @@ def _load_waveform_tensor(item: Dict[str, Any], task_id: str) -> Optional[Tuple[
             waveform = waveform.mean(dim=0, keepdim=True)
         return waveform, int(sample_rate)
 
+    if waveform is not None and sample_rate is None:
+        logger.warning(f"[{task_id}] Waveform present but 'sample_rate' missing, "
+                       "falling back to audio_filepath if available")
+
     path = item.get("audio_filepath")
     if path and os.path.isfile(path):
         try:
@@ -150,10 +154,15 @@ class UTMOSFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
             )
         except Exception:
             logger.warning("UTMOS download failed, loading from cache...")
-            predictor = torch.hub.load(
-                _UTMOS_REPO, _UTMOS_ENTRYPOINT,
-                trust_repo=True, source="local", skip_validation=True,
-            )
+            try:
+                predictor = torch.hub.load(
+                    _UTMOS_REPO, _UTMOS_ENTRYPOINT,
+                    trust_repo=True, source="local", skip_validation=True,
+                )
+            except Exception as e:
+                logger.error(f"UTMOS model unavailable (download and cache both failed): {e}")
+                self._model = None
+                return
 
         predictor = predictor.to(device)
         predictor.eval()

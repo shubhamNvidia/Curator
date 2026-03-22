@@ -38,6 +38,7 @@ from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.stages.resources import Resources
 from nemo_curator.tasks import AudioBatch
 
+from ..common import ensure_waveform_2d
 from ..configs import SegmentConcatenationConfig
 
 
@@ -95,7 +96,7 @@ class SegmentConcatenationStage(ProcessingStage[AudioBatch, AudioBatch]):
         return ["data"], []
 
     def outputs(self) -> Tuple[List[str], List[str]]:
-        return [], ["waveform", "sample_rate", "num_segments", "total_duration_sec"]
+        return [], ["waveform", "sample_rate", "num_segments", "total_duration_sec", "original_file"]
 
     def process(self, task: AudioBatch) -> Optional[AudioBatch]:
         """
@@ -109,30 +110,49 @@ class SegmentConcatenationStage(ProcessingStage[AudioBatch, AudioBatch]):
         if not items:
             return AudioBatch(
                 data=[], task_id=task.task_id, dataset_name=task.dataset_name,
-                _metadata=task._metadata, _stage_perf=list(task._stage_perf),
+                _metadata=dict(task._metadata) if task._metadata else {},
+                _stage_perf=list(task._stage_perf),
             )
 
         parts: List[torch.Tensor] = []
         mappings: List[Dict[str, Any]] = []
         current_pos_ms = 0
-        sample_rate = 48000
+        sample_rate: Optional[int] = None
+        num_channels: Optional[int] = None
         silence_duration_ms = int(self.silence_duration_sec * 1000)
 
         for idx, item in enumerate(items):
             waveform = item.get('waveform')
-            sr = item.get('sample_rate', 48000)
+            sr = item.get('sample_rate')
             if waveform is None:
+                continue
+            if sr is None:
+                logger.error(f"[SegmentConcat] Skipping segment {idx}: 'sample_rate' key is missing. "
+                             "Please set 'sample_rate' in the item dict.")
                 continue
             if sr <= 0:
                 logger.warning(f"[SegmentConcat] Skipping segment {idx}: invalid sample_rate={sr}")
                 continue
-            if not torch.is_tensor(waveform):
-                waveform = torch.as_tensor(waveform, dtype=torch.float32)
+            waveform = ensure_waveform_2d(waveform)
+            if parts and sr != sample_rate:
+                logger.warning(
+                    f"[SegmentConcat] Sample rate mismatch at segment {idx}: "
+                    f"expected {sample_rate}Hz, got {sr}Hz. Output audio may be corrupted."
+                )
             sample_rate = sr
             silence_samples = int(silence_duration_ms * sample_rate / 1000)
 
-            w = waveform.squeeze() if waveform.dim() > 1 else waveform
-            num_samples = w.shape[-1] if w.dim() > 0 else 0
+            cur_channels = waveform.shape[0]
+            if num_channels is None:
+                num_channels = cur_channels
+            elif cur_channels != num_channels:
+                logger.warning(
+                    f"[SegmentConcat] Channel count mismatch at segment {idx}: "
+                    f"expected {num_channels}, got {cur_channels}. Skipping segment."
+                )
+                continue
+
+            num_samples = waveform.shape[-1]
             segment_duration_ms = int(1000 * num_samples / sample_rate)
 
             orig_start = item.get('start_ms', 0)
@@ -150,16 +170,17 @@ class SegmentConcatenationStage(ProcessingStage[AudioBatch, AudioBatch]):
             )
             mappings.append(mapping.to_dict())
 
-            parts.append(w.unsqueeze(0) if w.dim() == 1 else w)
+            parts.append(waveform)
             current_pos_ms += segment_duration_ms
 
-            parts.append(torch.zeros(1, silence_samples, dtype=w.dtype, device=w.device))
+            parts.append(torch.zeros(num_channels, silence_samples, dtype=waveform.dtype, device=waveform.device))
             current_pos_ms += silence_duration_ms
 
         if not parts:
             return AudioBatch(
                 data=[], task_id=task.task_id, dataset_name=task.dataset_name,
-                _metadata=task._metadata, _stage_perf=list(task._stage_perf),
+                _metadata=dict(task._metadata) if task._metadata else {},
+                _stage_perf=list(task._stage_perf),
             )
 
         # Remove trailing silence

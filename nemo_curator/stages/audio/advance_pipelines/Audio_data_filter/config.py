@@ -68,6 +68,11 @@ class AudioDataFilterConfig:
     enable_speaker_separation: bool = True
     speaker_exclude_overlaps: bool = True
 
+    # TimestampMapper output control
+    # When set, only these keys (plus the standard timestamp fields) are
+    # included in the final output.  When None, all non-internal keys pass through.
+    passthrough_keys: Optional[List[str]] = None
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 

@@ -24,7 +24,7 @@ Stages:
       quality filtering, speaker separation, and timestamp tracking.
 
 Example:
-    from advance_pipelines import (
+    from nemo_curator.stages.audio.advance_pipelines import (
         AudioDataFilterStage,
         AudioDataFilterConfig,
     )

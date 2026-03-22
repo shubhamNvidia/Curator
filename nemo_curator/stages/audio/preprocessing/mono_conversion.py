@@ -130,13 +130,16 @@ class MonoConversionStage(ProcessingStage[AudioBatch, AudioBatch]):
                 else:
                     mono_waveform = waveform
                 
-                item['waveform'] = mono_waveform
-                item['sample_rate'] = sr
-                item['is_mono'] = True
-                item['duration'] = mono_waveform.shape[1] / sr
-                item['num_samples'] = mono_waveform.shape[1]
+                result_item = {
+                    **item,
+                    'waveform': mono_waveform,
+                    'sample_rate': sr,
+                    'is_mono': True,
+                    'duration': mono_waveform.shape[1] / sr,
+                    'num_samples': mono_waveform.shape[1],
+                }
                 
-                results.append(item)
+                results.append(result_item)
                 
             except Exception as e:
                 logger.error(f"Error processing {audio_filepath}: {e}")

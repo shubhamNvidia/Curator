@@ -167,7 +167,10 @@ class AudioDataFilterStage(CompositeStage):
                     name="SIGMOS_Speaker").with_(resources=gpu_res))
 
         # 12. Timestamp mapper (CPU)
-        stages.append(TimestampMapperStage(name="TimestampMapper"))
+        stages.append(TimestampMapperStage(
+            passthrough_keys=cfg.passthrough_keys,
+            name="TimestampMapper",
+        ))
 
         logger.info(f"AudioDataFilterStage decomposed into {len(stages)} stages "
                     f"(filters: {cfg.get_enabled_filters()}, "

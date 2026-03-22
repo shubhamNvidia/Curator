@@ -5,18 +5,27 @@
 """
 Segment Extraction Script
 
-Reads a manifest.jsonl file and extracts audio segments from original files.
+Reads manifest jsonl file(s) and extracts audio segments from original files.
 Each segment is saved with naming convention: {original_filename}_speaker_{x}_segment_{y}.{format}
+
+Input can be:
+  - A single manifest.jsonl file
+  - A directory containing multiple .jsonl files (from pipeline executor output)
+
+When given a directory, all .jsonl files are combined into a single
+manifest.jsonl in the output directory with escaped paths (\\/) cleaned up.
 
 Supports multiple input formats: wav, mp3, flac, ogg, m4a, aac, wma, opus, webm
 Supports configurable output format.
 
 Usage:
     python extract_segments.py --manifest manifest.jsonl --output-dir extracted_segments/
-    python extract_segments.py --manifest manifest.jsonl --output-dir out/ --output-format flac
+    python extract_segments.py --manifest /path/to/result_dir/ --output-dir out/
+    python extract_segments.py --manifest /path/to/result_dir/ --output-dir out/ --output-format flac
 """
 
 import argparse
+import glob
 import json
 import os
 from collections import defaultdict
@@ -25,12 +34,11 @@ from pathlib import Path
 from loguru import logger
 from pydub import AudioSegment
 
-# Default output format
 DEFAULT_OUTPUT_FORMAT = "wav"
 
 
 def load_manifest(manifest_path: str) -> list:
-    """Load manifest.jsonl file and return list of segment entries."""
+    """Load a single manifest.jsonl file and return list of segment entries."""
     segments = []
     with open(manifest_path, 'r') as f:
         for line_num, line in enumerate(f, 1):
@@ -41,28 +49,71 @@ def load_manifest(manifest_path: str) -> list:
                 segment = json.loads(line)
                 segments.append(segment)
             except json.JSONDecodeError as e:
-                logger.warning(f"Failed to parse line {line_num}: {e}")
+                logger.warning(f"Failed to parse line {line_num} in {manifest_path}: {e}")
     return segments
 
 
-def extract_segments(manifest_path: str, output_dir: str, output_format: str = DEFAULT_OUTPUT_FORMAT):
+def load_manifests(input_path: str, output_dir: str) -> list:
+    """
+    Load segments from a single jsonl file or a directory of jsonl files.
+
+    When input_path is a directory, all .jsonl files are combined and a
+    merged manifest.jsonl is saved in output_dir with escaped paths fixed.
+    """
+    if os.path.isfile(input_path):
+        return load_manifest(input_path)
+
+    if not os.path.isdir(input_path):
+        logger.error(f"Input path not found: {input_path}")
+        return []
+
+    jsonl_files = sorted(glob.glob(os.path.join(input_path, "*.jsonl")))
+    if not jsonl_files:
+        logger.error(f"No .jsonl files found in {input_path}")
+        return []
+
+    logger.info(f"Found {len(jsonl_files)} jsonl files in {input_path}")
+
+    all_segments = []
+    skipped_files = 0
+    for jf in jsonl_files:
+        segs = load_manifest(jf)
+        if not segs:
+            skipped_files += 1
+            continue
+        all_segments.extend(segs)
+
+    if skipped_files:
+        logger.info(f"Skipped {skipped_files} empty jsonl file(s)")
+    logger.info(f"Combined {len(all_segments)} segments from {len(jsonl_files) - skipped_files} file(s)")
+
+    if all_segments:
+        os.makedirs(output_dir, exist_ok=True)
+        combined_path = os.path.join(output_dir, "manifest.jsonl")
+        with open(combined_path, "w") as f:
+            for seg in all_segments:
+                f.write(json.dumps(seg) + "\n")
+        logger.info(f"Saved combined manifest to {combined_path}")
+
+    return all_segments
+
+
+def extract_segments(input_path: str, output_dir: str, output_format: str = DEFAULT_OUTPUT_FORMAT):
     """
     Extract segments from original audio files based on manifest.
     
     Args:
-        manifest_path: Path to manifest.jsonl
+        input_path: Path to manifest.jsonl file or directory of .jsonl files
         output_dir: Directory to save extracted segments
         output_format: Output audio format (wav, mp3, flac, ogg, m4a). Default: wav
     
     Note: Non-wav output formats require ffmpeg to be installed on the system.
     """
-    # Create output directory
     os.makedirs(output_dir, exist_ok=True)
     
-    # Load manifest
-    logger.info(f"Loading manifest: {manifest_path}")
-    segments = load_manifest(manifest_path)
-    logger.info(f"Found {len(segments)} segments in manifest")
+    logger.info(f"Loading manifest: {input_path}")
+    segments = load_manifests(input_path, output_dir)
+    logger.info(f"Found {len(segments)} segments total")
     
     if not segments:
         logger.error("No segments found in manifest")
@@ -146,7 +197,7 @@ def extract_segments(manifest_path: str, output_dir: str, output_format: str = D
     
     # Save extraction summary
     summary = {
-        'manifest_path': manifest_path,
+        'manifest_path': input_path,
         'output_dir': output_dir,
         'total_segments': total_extracted,
         'total_duration_sec': round(total_duration_sec, 2),
@@ -178,7 +229,7 @@ def main():
     parser.add_argument(
         "--manifest", "-m",
         required=True,
-        help="Path to manifest.jsonl file"
+        help="Path to manifest.jsonl file or directory containing .jsonl files"
     )
     parser.add_argument(
         "--output-dir", "-o",
@@ -205,15 +256,13 @@ def main():
         logger.remove()
         logger.add(lambda msg: print(msg, end=""), level="DEBUG")
     
-    # Validate manifest exists
     if not os.path.exists(args.manifest):
-        logger.error(f"Manifest file not found: {args.manifest}")
+        logger.error(f"Manifest path not found: {args.manifest}")
         return 1
     
-    # Extract segments
     logger.info(f"Output format: {args.output_format}")
     extract_segments(
-        manifest_path=args.manifest,
+        input_path=args.manifest,
         output_dir=args.output_dir,
         output_format=args.output_format
     )

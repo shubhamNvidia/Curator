@@ -46,9 +46,6 @@ import torchaudio
 from loguru import logger
 from silero_vad import load_silero_vad, get_speech_timestamps
 
-# Suppress Silero VAD sample rate warning (48kHz -> 16kHz is expected)
-warnings.filterwarnings('ignore', message='Sampling rate is a multiply of 16000')
-
 # Silero VAD only supports 8kHz, 16kHz, and multiples of 16kHz (32k, 48k, etc.)
 # Sample rates like 22050 Hz need to be resampled to 16kHz
 SILERO_SUPPORTED_RATES = {8000, 16000, 32000, 48000, 64000, 96000}
@@ -168,14 +165,17 @@ class VADSegmentationStage(ProcessingStage[AudioBatch, AudioBatch]):
         if self._vad_model is not None:
             del self._vad_model
             self._vad_model = None
-            torch.cuda.empty_cache()
+            if self._device is not None and self._device.type == "cuda":
+                torch.cuda.empty_cache()
     
     def _initialize_model(self):
         """Initialize the VAD model."""
         if self._vad_model is not None:
             return
         try:
-            model = load_silero_vad()
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', message='Sampling rate is a multiply of 16000')
+                model = load_silero_vad()
             
             use_gpu = self._resources.gpus > 0 and torch.cuda.is_available()
             
@@ -251,6 +251,13 @@ class VADSegmentationStage(ProcessingStage[AudioBatch, AudioBatch]):
 
         all_segment_items: List[Dict[str, Any]] = []
 
+        if not task.data:
+            if self.mode == "batch":
+                return AudioBatch(data=[], task_id=task.task_id, dataset_name=task.dataset_name,
+                                  _metadata=dict(task._metadata) if task._metadata else {},
+                                  _stage_perf=list(task._stage_perf))
+            return []
+
         for item in task.data:
             waveform = item.get(self.waveform_key)
             sample_rate = item.get(self.sample_rate_key)
@@ -260,8 +267,8 @@ class VADSegmentationStage(ProcessingStage[AudioBatch, AudioBatch]):
                 if audio_filepath and os.path.exists(audio_filepath):
                     try:
                         waveform, sample_rate = load_audio_file(audio_filepath)
-                        item['waveform'] = waveform
-                        item['sample_rate'] = sample_rate
+                        item[self.waveform_key] = waveform
+                        item[self.sample_rate_key] = sample_rate
                     except Exception as e:
                         logger.error(f"Failed to load audio file {audio_filepath}: {e}")
                         continue
@@ -328,7 +335,7 @@ class VADSegmentationStage(ProcessingStage[AudioBatch, AudioBatch]):
         # Sample rates like 22050 Hz need to be resampled to 16kHz
         vad_sample_rate = sample_rate
         vad_waveform = waveform
-        if sample_rate not in SILERO_SUPPORTED_RATES and sample_rate % 16000 != 0:
+        if sample_rate not in SILERO_SUPPORTED_RATES:
             logger.debug(f"Resampling audio from {sample_rate}Hz to {SILERO_TARGET_RATE}Hz for VAD")
             # Move to CPU for resampling if needed
             device = waveform.device

@@ -21,20 +21,42 @@ enable_vad: true
 vad_min_duration_sec: 2.0
 vad_max_duration_sec: 60.0
 
-enable_band_filter: false
+enable_band_filter: true
 band_value: full_band
 
 enable_sigmos: true
-sigmos_noise_threshold: 0.0
-sigmos_ovrl_threshold: 0.0
+sigmos_noise_threshold: 4.0
+sigmos_ovrl_threshold: 3.5
 
 enable_utmos: true
-utmos_mos_threshold: 0.0
+utmos_mos_threshold: 3.4
 
 enable_speaker_separation: false
 speaker_exclude_overlaps: true
 
+# TimestampMapper always produces these fields:
+#   original_file, original_start_ms, original_end_ms, duration_ms, duration_sec
+#
+# passthrough_keys controls which additional metadata appears in the output.
+# When null, all non-internal keys pass through (sample_rate, is_mono, num_segments, etc.)
+# When set to a list, only the specified keys are included.
+#
+# Available keys by stage:
+#   BandFilter:  band_prediction
+#   UTMOS:       utmos_mos
+#   SIGMOS:      sigmos_noise, sigmos_ovrl, sigmos_sig, sigmos_col, sigmos_disc, sigmos_loud, sigmos_reverb
+#   SpeakerSep:  speaker_id, num_speakers (only when enable_speaker_separation=true)
+
+passthrough_keys:
+  - band_prediction
+  - utmos_mos
+  - sigmos_noise
+  - sigmos_ovrl
+  - speaker_id
+  - num_speakers
+
 processors:
+
   - _target_: nemo_curator.stages.audio.AudioDataFilterStage
     gpu_resources:
       _target_: nemo_curator.stages.resources.Resources
@@ -56,9 +78,9 @@ processors:
       utmos_mos_threshold: ${utmos_mos_threshold}
       enable_speaker_separation: ${enable_speaker_separation}
       speaker_exclude_overlaps: ${speaker_exclude_overlaps}
+      passthrough_keys: ${passthrough_keys}
 
   - _target_: nemo_curator.stages.audio.io.convert.AudioToDocumentStage
-    batch_size: 1
 
   - _target_: nemo_curator.stages.text.io.writer.JsonlWriter
     path: ${output_dir}

@@ -31,7 +31,7 @@ Example:
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import torch
 from loguru import logger
@@ -72,20 +72,24 @@ class BandFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
 
     config: Optional[BandFilterConfig] = None
     model_path: str = "model/band_classifier_model_band_7000_samples.joblib"
-    band_value: str = "full_band"
+    band_value: Literal["full_band", "narrow_band"] = "full_band"
 
     name: str = "BandFilter"
     batch_size: int = 1
     resources: Resources = field(default_factory=lambda: Resources(cpus=1.0))
+
+    _VALID_BAND_VALUES = {"full_band", "narrow_band"}
 
     def __post_init__(self):
         """Initialize after dataclass fields are set."""
         super().__init__()
         self._predictor = None
 
-        # Apply user-facing config fields only; model_path is internal.
         if self.config is not None:
             self.band_value = self.config.band_value
+
+        if self.band_value not in self._VALID_BAND_VALUES:
+            raise ValueError(f"band_value must be one of {self._VALID_BAND_VALUES!r}, got {self.band_value!r}")
 
     def inputs(self) -> Tuple[List[str], List[str]]:
         return ["data"], []
@@ -103,7 +107,8 @@ class BandFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
         if self._predictor is not None:
             del self._predictor
             self._predictor = None
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     def _initialize_predictor(self):
         """Initialize the band predictor."""
@@ -117,8 +122,8 @@ class BandFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
                     feature_cache_size=100,
                 )
                 logger.info("Band predictor loaded successfully")
-            except ImportError as e:
-                logger.error(f"Failed to import Band module: {e}")
+            except Exception as e:
+                logger.error(f"Failed to initialize Band predictor: {e}")
                 raise
 
     def process(self, task: AudioBatch) -> Optional[AudioBatch]:

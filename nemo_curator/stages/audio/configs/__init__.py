@@ -22,11 +22,13 @@ from .band import BandFilterConfig
 from .speaker import SpeakerSeparationConfig
 from .mono_conversion import MonoConversionConfig
 from .concatenation import SegmentConcatenationConfig
+from .timestamp_mapper import TimestampMapperConfig
 
 __all__ = [
     # Preprocessing configs
     "MonoConversionConfig",
     "SegmentConcatenationConfig",
+    "TimestampMapperConfig",
     # Segmentation configs
     "VADConfig",
     "SpeakerSeparationConfig",
