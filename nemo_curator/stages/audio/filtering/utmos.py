@@ -119,6 +119,7 @@ class UTMOSFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
     def __post_init__(self):
         super().__init__()
         self._model = None
+        self._resamplers = {}
 
         if self.config is not None:
             self.mos_threshold = self.config.mos_threshold
