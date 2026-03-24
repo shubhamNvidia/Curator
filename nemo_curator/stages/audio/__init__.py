@@ -1,4 +1,4 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,11 +15,12 @@
 """
 NeMo Curator Audio Processing Stages.
 
-This module provides stages for audio curation pipelines including:
-
 Preprocessing:
     - MonoConversionStage: Convert multi-channel audio to mono
     - SegmentConcatenationStage: Concatenate audio segments
+
+Postprocessing:
+    - TimestampMapperStage: Map timestamps back to original files
 
 Segmentation:
     - VADSegmentationStage: Voice Activity Detection segmentation
@@ -33,79 +34,54 @@ Filtering:
 
 Advanced Pipelines:
     - AudioDataFilterStage: Complete audio curation pipeline (VAD + Quality + Speaker Sep)
-    - AudioDataFilterConfig: Configuration for AudioDataFilterStage
 
 Common:
     - GetAudioDurationStage: Extract audio duration
     - PreserveByValueStage: Filter by field value
 
-Example:
+Example::
+
     from nemo_curator.pipeline import Pipeline
     from nemo_curator.stages.audio import (
         MonoConversionStage,
         VADSegmentationStage,
         NISQAFilterStage,
     )
-    
+
     pipeline = Pipeline(name="audio_curation")
     pipeline.add_stage(MonoConversionStage(output_sample_rate=48000))
     pipeline.add_stage(VADSegmentationStage(min_duration_sec=2.0))
     pipeline.add_stage(NISQAFilterStage(mos_threshold=4.5))
-    
+
     # Or use the unified AudioDataFilterStage:
-    from nemo_curator.stages.audio import AudioDataFilterStage, AudioDataFilterConfig
-    
-    config = AudioDataFilterConfig(enable_nisqa=True, enable_speaker_separation=True)
-    stage = AudioDataFilterStage(config=config)
+    from nemo_curator.stages.audio import AudioDataFilterStage
+
+    pipeline.add_stage(AudioDataFilterStage())
 """
 
-# Preprocessing stages
-from nemo_curator.stages.audio.preprocessing import (
-    MonoConversionStage,
-    SegmentConcatenationStage,
+from nemo_curator.stages.audio.advance_pipelines import (
+    AudioDataFilterStage,
 )
-
-# Postprocessing stages
-from nemo_curator.stages.audio.postprocessing import (
-    TimestampMapperStage,
-)
-
-# Segmentation stages
-from nemo_curator.stages.audio.segmentation import (
-    VADSegmentationStage,
-    SpeakerSeparationStage,
-)
-
-# Filtering stages
-from nemo_curator.stages.audio.filtering import (
-    NISQAFilterStage,
-    SIGMOSFilterStage,
-    UTMOSFilterStage,
-    BandFilterStage,
-)
-
-# Common stages
 from nemo_curator.stages.audio.common import (
     GetAudioDurationStage,
     PreserveByValueStage,
 )
-
-# Advanced Pipelines (Composite stages)
-from nemo_curator.stages.audio.advance_pipelines import (
-    AudioDataFilterStage,
-    AudioDataFilterConfig,
+from nemo_curator.stages.audio.filtering import (
+    BandFilterStage,
+    NISQAFilterStage,
+    SIGMOSFilterStage,
+    UTMOSFilterStage,
 )
-
-# Configurations
-from nemo_curator.stages.audio.configs import (
-    VADConfig,
-    NISQAConfig,
-    SIGMOSConfig,
-    UTMOSConfig,
-    BandFilterConfig,
-    SpeakerSeparationConfig,
-    MonoConversionConfig,
-    SegmentConcatenationConfig,
+from nemo_curator.stages.audio.postprocessing import (
+    TimestampMapperStage,
+)
+from nemo_curator.stages.audio.preprocessing import (
+    MonoConversionStage,
+    SegmentConcatenationStage,
+)
+from nemo_curator.stages.audio.segmentation import (
+    SpeakerSeparationStage,
+    VADSegmentationStage,
 )
 
 __all__ = [
@@ -118,24 +94,13 @@ __all__ = [
     "VADSegmentationStage",
     "SpeakerSeparationStage",
     # Filtering
+    "BandFilterStage",
     "NISQAFilterStage",
     "SIGMOSFilterStage",
     "UTMOSFilterStage",
-    "BandFilterStage",
     # Advanced Pipelines
     "AudioDataFilterStage",
-    "AudioDataFilterConfig",
     # Common
     "GetAudioDurationStage",
     "PreserveByValueStage",
-    # Configs
-    "VADConfig",
-    "NISQAConfig",
-    "SIGMOSConfig",
-    "UTMOSConfig",
-    "BandFilterConfig",
-    "SpeakerSeparationConfig",
-    "MonoConversionConfig",
-    "SegmentConcatenationConfig",
 ]
-

@@ -33,7 +33,7 @@ Example:
 import os
 import tempfile
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import soundfile as sf
 import torch
@@ -42,8 +42,6 @@ from loguru import logger
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.stages.resources import Resources
 from nemo_curator.tasks import AudioBatch
-
-from ..configs import NISQAConfig
 
 
 @dataclass
@@ -62,7 +60,6 @@ class NISQAFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
     - LOUD: Loudness appropriateness
     
     Args:
-        config: NISQAConfig object (overrides other params if provided)
         model_path: Path to NISQA model weights
         mos_threshold: Minimum MOS score (None to disable)
         noi_threshold: Minimum noisiness score (None to disable)
@@ -75,21 +72,15 @@ class NISQAFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
         Use .with_(resources=Resources(gpus=X)) to configure GPU allocation.
     
     Example:
-        # Using config
-        config = NISQAConfig(mos_threshold=4.5)
-        stage = NISQAFilterStage(config=config)
-        
-        # Using parameters
         stage = NISQAFilterStage(mos_threshold=4.0, noi_threshold=4.0)
     """
     
-    config: Optional[NISQAConfig] = None
     model_path: str = "model/nisqa.tar"
-    mos_threshold: Optional[float] = 4.5
-    noi_threshold: Optional[float] = 4.3
-    col_threshold: Optional[float] = None
-    dis_threshold: Optional[float] = None
-    loud_threshold: Optional[float] = None
+    mos_threshold: float | None = 4.5
+    noi_threshold: float | None = 4.3
+    col_threshold: float | None = None
+    dis_threshold: float | None = None
+    loud_threshold: float | None = None
     
     name: str = "NISQAFilter"
     batch_size: int = 1
@@ -99,20 +90,11 @@ class NISQAFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
         """Initialize after dataclass fields are set."""
         super().__init__()
         self._predict_function = None
-        
-        # Apply config if provided
-        if self.config is not None:
-            self.model_path = self.config.model_path
-            self.mos_threshold = self.config.mos_threshold
-            self.noi_threshold = self.config.noi_threshold
-            self.col_threshold = self.config.col_threshold
-            self.dis_threshold = self.config.dis_threshold
-            self.loud_threshold = self.config.loud_threshold
     
-    def inputs(self) -> Tuple[List[str], List[str]]:
+    def inputs(self) -> tuple[list[str], list[str]]:
         return ["data"], []
 
-    def outputs(self) -> Tuple[List[str], List[str]]:
+    def outputs(self) -> tuple[list[str], list[str]]:
         """Define outputs produced by this stage."""
         return [], ["nisqa_mos", "nisqa_noi", "nisqa_col", "nisqa_dis", "nisqa_loud"]
     
@@ -159,7 +141,7 @@ class NISQAFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
         # Return the module path as default
         return os.path.join(module_dir, self.model_path)
     
-    def _process_single_item(self, item: Dict[str, Any], task_id: str) -> Optional[Dict[str, Any]]:
+    def _process_single_item(self, item: dict[str, Any], task_id: str) -> dict[str, Any] | None:
         """Process a single audio item and return it with NISQA scores if it passes thresholds. Uses waveform + sample_rate only (no item['audio'])."""
         waveform = item.get('waveform')
         sample_rate = item.get('sample_rate')
@@ -284,7 +266,7 @@ class NISQAFilterStage(ProcessingStage[AudioBatch, AudioBatch]):
             if temp_path and os.path.exists(temp_path):
                 os.unlink(temp_path)
 
-    def process(self, task: AudioBatch) -> Optional[AudioBatch]:
+    def process(self, task: AudioBatch) -> AudioBatch | None:
         """
         Filter audio based on NISQA quality scores.
         

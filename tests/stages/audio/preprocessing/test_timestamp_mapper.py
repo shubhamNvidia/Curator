@@ -16,7 +16,6 @@
 
 import torch
 
-from nemo_curator.stages.audio.configs import TimestampMapperConfig
 from nemo_curator.stages.audio.postprocessing.timestamp_mapper import (
     TimestampMapperStage,
     _translate_to_original,
@@ -330,9 +329,8 @@ class TestPassthroughKeys:
         assert "original_file" in seg
         assert "duration_ms" in seg
 
-    def test_passthrough_keys_via_config(self):
-        config = TimestampMapperConfig(passthrough_keys=["band_prediction"])
-        stage = TimestampMapperStage(config=config)
+    def test_passthrough_keys_explicit(self):
+        stage = TimestampMapperStage(passthrough_keys=["band_prediction"])
         items = [{
             "start_ms": 0,
             "end_ms": 3000,
@@ -380,39 +378,6 @@ class TestPassthroughKeys:
         seg = result.data[0]
         assert seg["utmos_mos"] == 3.9
         assert "band_prediction" not in seg
-
-
-# ---------------------------------------------------------------------------
-# Tests for TimestampMapperConfig
-# ---------------------------------------------------------------------------
-
-class TestTimestampMapperConfig:
-
-    def test_default_config(self):
-        config = TimestampMapperConfig()
-        assert config.passthrough_keys is None
-
-    def test_config_with_keys(self):
-        config = TimestampMapperConfig(passthrough_keys=["a", "b"])
-        assert config.passthrough_keys == ["a", "b"]
-
-    def test_from_dict(self):
-        config = TimestampMapperConfig.from_dict({"passthrough_keys": ["x"]})
-        assert config.passthrough_keys == ["x"]
-
-    def test_from_dict_ignores_unknown_keys(self):
-        config = TimestampMapperConfig.from_dict(
-            {"passthrough_keys": ["x"], "unknown_field": 42}
-        )
-        assert config.passthrough_keys == ["x"]
-
-    def test_from_dict_none(self):
-        config = TimestampMapperConfig.from_dict(None)
-        assert config.passthrough_keys is None
-
-    def test_to_dict(self):
-        config = TimestampMapperConfig(passthrough_keys=["a"])
-        assert config.to_dict() == {"passthrough_keys": ["a"]}
 
 
 # ---------------------------------------------------------------------------
