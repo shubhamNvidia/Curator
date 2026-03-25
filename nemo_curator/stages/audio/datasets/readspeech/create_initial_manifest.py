@@ -26,18 +26,11 @@ from nemo_curator.tasks import AudioBatch, _EmptyTask
 # Sample rate constant (DNS Challenge read_speech is 48kHz)
 SAMPLE_RATE_48KHZ = 48000
 
-# DNS Challenge 5 Azure URLs
-DNS_CHALLENGE_BASE_URL = "https://dnschallengepublic.blob.core.windows.net/dns5archive/V5_training_dataset"
-
-# Available parts for download (these are SPLIT archives - must be concatenated before extraction)
-DNS_READSPEECH_PARTS = [
-    "Track1_Headset/read_speech.tgz.partaa",
-    "Track1_Headset/read_speech.tgz.partab",
-    "Track1_Headset/read_speech.tgz.partac",
-    "Track1_Headset/read_speech.tgz.partad",
-    "Track1_Headset/read_speech.tgz.partae",
-    "Track1_Headset/read_speech.tgz.partaf",
-]
+# DNS Challenge 5 - Read Speech archive URL (4.88 GB download, 14,279 WAV files at 48kHz, 19.3 hours)
+DNS_READSPEECH_URL = (
+    "https://dnschallengepublic.blob.core.windows.net/dns5archive/"
+    "V5_training_dataset/Track1_Headset/read_speech.tgz.partaa"
+)
 
 
 @dataclass
@@ -48,36 +41,21 @@ class CreateInitialManifestReadSpeechStage(ProcessingStage[_EmptyTask, AudioBatc
     Dataset: Microsoft DNS Challenge 5 - Read Speech (Track 1 Headset)
     Source: https://github.com/microsoft/DNS-Challenge
 
-    **Auto-Download Support**: This stage can automatically download and extract the
-    DNS Challenge Read Speech dataset when `auto_download=True`.
-
-    **IMPORTANT**: The DNS Challenge archives are SPLIT files (partaa, partab, etc.).
-    These parts must be concatenated together before extraction - they cannot be
-    extracted independently. Only `partaa` (part 1) can be extracted alone as it
-    contains the beginning of the archive.
-
-    **Directory Structure After Download**:
-    ```
-    raw_data_dir/
-    └── read_speech/
-        ├── book_00000_chp_0001_reader_xxxxx_*.wav
-        └── ... (all extracted WAV files)
-    ```
+    Downloads a single archive (4.88 GB) containing 14,279 WAV files at 48kHz (19.3 hours).
+    When ``auto_download=True``, the archive is downloaded and extracted automatically.
 
     Args:
         raw_data_dir (str): Directory where data will be downloaded/extracted to.
         max_samples (int): Maximum number of samples to include. Default is 5000.
-            Set to -1 for all available samples.
+            Set to -1 to process all 14,279 files.
         auto_download (bool): If True, automatically download and extract dataset.
             If False, expects data to already exist. Default is True.
-        download_parts (int): Number of parts to download (1-6). Default is 1.
-            Note: Parts 2-6 require part 1 as they are split archive continuations.
 
     Returns:
         AudioBatch objects with:
             {
                 "audio_filepath": <absolute path to WAV file>,
-                "text": "",  # No transcription available for DNS data
+                "text": "",
                 "sample_rate": 48000,
                 "book_id": <extracted book ID>,
                 "reader_id": <extracted reader ID>,
@@ -87,7 +65,6 @@ class CreateInitialManifestReadSpeechStage(ProcessingStage[_EmptyTask, AudioBatc
     raw_data_dir: str
     max_samples: int = 5000
     auto_download: bool = True
-    download_parts: int = 1  # 1-6 parts
     filepath_key: str = "audio_filepath"
     text_key: str = "text"
     name: str = "CreateInitialManifestReadSpeech"
@@ -95,23 +72,13 @@ class CreateInitialManifestReadSpeechStage(ProcessingStage[_EmptyTask, AudioBatc
 
     def download_and_extract(self) -> str:
         """
-        Download and extract DNS Challenge Read Speech dataset.
-        
-        Split archives (partaa, partab, etc.) are concatenated before extraction.
-        All WAV files are extracted to a single read_speech/ directory.
+        Download and extract DNS Challenge Read Speech dataset (~4.88 GB).
 
         Returns:
             Path to the extracted read_speech directory containing WAV files
         """
-        if self.download_parts < 1 or self.download_parts > 6:
-            msg = f"download_parts must be between 1 and 6, got {self.download_parts}"
-            raise ValueError(msg)
-
-        # Create output directory
         os.makedirs(self.raw_data_dir, exist_ok=True)
-        
-        # Check if already extracted
-        extract_dir = os.path.join(self.raw_data_dir, "read_speech")
+
         existing_dir = self._find_extracted_wavs(self.raw_data_dir)
         if existing_dir:
             wav_count = self._count_wavs_recursive(existing_dir)
@@ -120,116 +87,39 @@ class CreateInitialManifestReadSpeechStage(ProcessingStage[_EmptyTask, AudioBatc
 
         logger.info("=" * 60)
         logger.info("DNS Challenge 5 - Read Speech Download")
+        logger.info(f"Downloading to: {self.raw_data_dir}")
         logger.info("=" * 60)
-        logger.info(f"Downloading {self.download_parts} part(s) to: {self.raw_data_dir}")
-        
-        if self.download_parts == 1:
-            logger.info("Single part download - will extract directly")
+
+        filename = "read_speech.tgz.partaa"
+        filepath = os.path.join(self.raw_data_dir, filename)
+
+        if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+            logger.info(f"Archive already downloaded: {os.path.getsize(filepath) / (1024**3):.2f} GB")
         else:
-            logger.info(f"Multi-part download - will concatenate {self.download_parts} parts before extraction")
-            logger.info("NOTE: Split archives must be combined - parts 2+ cannot be extracted alone")
-        
-        logger.info("=" * 60)
-
-        # Download all parts
-        downloaded_files = []
-        for part_num in range(1, self.download_parts + 1):
-            part_index = part_num - 1
-            part_name = DNS_READSPEECH_PARTS[part_index]
-            url = f"{DNS_CHALLENGE_BASE_URL}/{part_name}"
-            filename = os.path.basename(part_name)
-            filepath = os.path.join(self.raw_data_dir, filename)
-
-            logger.info(f"\nDownloading part {part_num}/{self.download_parts}: {filename}")
-
-            # Check if file already downloaded
             if os.path.exists(filepath):
-                file_size = os.path.getsize(filepath)
-                if file_size > 0:
-                    logger.info(f"  Already exists: {file_size / (1024**3):.2f} GB")
-                    downloaded_files.append(filepath)
-                    continue
-                else:
-                    logger.warning(f"  Removing empty file")
-                    os.remove(filepath)
-
-            # Download
-            filepath = download_file(url, self.raw_data_dir, verbose=True)
-            
-            # Verify
+                os.remove(filepath)
+            filepath = download_file(DNS_READSPEECH_URL, self.raw_data_dir, verbose=True)
             file_size = os.path.getsize(filepath)
             if file_size == 0:
-                logger.error(f"Downloaded file is empty: {filepath}")
                 os.remove(filepath)
-                raise RuntimeError(f"Download failed - empty file: {filename}")
+                raise RuntimeError("Download failed - empty file")
+            logger.info(f"Downloaded: {file_size / (1024**3):.2f} GB")
 
-            logger.info(f"  ✓ Downloaded: {file_size / (1024**3):.2f} GB")
-            downloaded_files.append(filepath)
+        logger.info("Extracting archive...")
+        self._extract_archive(filepath, self.raw_data_dir)
 
-        logger.info("\n" + "=" * 60)
-        logger.info("All parts downloaded. Preparing extraction...")
-        logger.info("=" * 60)
-
-        # Prepare archive for extraction
-        if self.download_parts == 1:
-            # Single part - extract directly with --ignore-zeros for partial archive
-            archive_to_extract = downloaded_files[0]
-            logger.info(f"Extracting single part: {os.path.basename(archive_to_extract)}")
-        else:
-            # Multiple parts - concatenate first
-            combined_archive = os.path.join(self.raw_data_dir, "read_speech_combined.tgz")
-            
-            if os.path.exists(combined_archive):
-                logger.info(f"Combined archive already exists: {combined_archive}")
-            else:
-                logger.info(f"Concatenating {len(downloaded_files)} parts...")
-                
-                # Sort files to ensure correct order (partaa, partab, partac, ...)
-                downloaded_files.sort()
-                
-                with open(combined_archive, 'wb') as outfile:
-                    for i, part_file in enumerate(downloaded_files):
-                        logger.info(f"  Adding part {i+1}: {os.path.basename(part_file)}")
-                        with open(part_file, 'rb') as infile:
-                            # Read and write in chunks to handle large files
-                            while True:
-                                chunk = infile.read(64 * 1024 * 1024)  # 64MB chunks
-                                if not chunk:
-                                    break
-                                outfile.write(chunk)
-                
-                combined_size = os.path.getsize(combined_archive)
-                logger.info(f"  ✓ Combined archive: {combined_size / (1024**3):.2f} GB")
-            
-            archive_to_extract = combined_archive
-
-        # Extract
-        logger.info(f"\nExtracting archive...")
-        self._extract_archive(archive_to_extract, self.raw_data_dir)
-
-        # Find extracted files
         extracted_dir = self._find_extracted_wavs(self.raw_data_dir)
         if not extracted_dir:
             raise RuntimeError("Extraction failed - no WAV files found")
 
         wav_count = self._count_wavs_recursive(extracted_dir)
-        logger.info(f"\n✓ Extraction complete: {wav_count} WAV files in {extracted_dir}")
+        logger.info(f"Extraction complete: {wav_count} WAV files in {extracted_dir}")
 
-        # Clean up downloaded archives
-        logger.info("\nCleaning up archives...")
-        for part_file in downloaded_files:
-            if os.path.exists(part_file):
-                os.remove(part_file)
-                logger.info(f"  Removed: {os.path.basename(part_file)}")
-        
-        if self.download_parts > 1:
-            combined_archive = os.path.join(self.raw_data_dir, "read_speech_combined.tgz")
-            if os.path.exists(combined_archive):
-                os.remove(combined_archive)
-                logger.info(f"  Removed: read_speech_combined.tgz")
+        os.remove(filepath)
+        logger.info(f"Removed archive: {filename}")
 
         logger.info("=" * 60)
-        logger.info(f"✓ Dataset ready: {wav_count} WAV files")
+        logger.info(f"Dataset ready: {wav_count} WAV files")
         logger.info(f"  Location: {extracted_dir}")
         logger.info("=" * 60)
 
@@ -513,10 +403,8 @@ class CreateInitialManifestReadSpeechStage(ProcessingStage[_EmptyTask, AudioBatc
         Main processing method.
 
         Processing Steps:
-        1. Downloads all requested parts
-        2. Concatenates parts if multiple (split archive format)
-        3. Extracts the archive to read_speech/ directory
-        4. Collects all WAV files and creates AudioBatch tasks
+        1. Downloads and extracts the read_speech archive (~4.88 GB)
+        2. Collects all WAV files and creates AudioBatch tasks
 
         Returns:
             List of AudioBatch tasks

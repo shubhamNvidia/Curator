@@ -207,9 +207,9 @@ class VADSegmentationStage(ProcessingStage[AudioBatch, AudioBatch]):
             end_sample = int(segment['end'] * sample_rate)
 
             if waveform.dim() == 1:
-                segment_waveform = waveform[start_sample:end_sample].unsqueeze(0)
+                segment_waveform = waveform[start_sample:end_sample].unsqueeze(0).clone()
             else:
-                segment_waveform = waveform[:, start_sample:end_sample]
+                segment_waveform = waveform[:, start_sample:end_sample].clone()
 
             segment_data: dict[str, Any] = {
                 k: v for k, v in item.items()

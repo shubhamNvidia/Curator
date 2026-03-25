@@ -162,6 +162,8 @@ class AudioDataFilterStage(CompositeStage):
                 min_duration_sec=vad.get("min_duration_sec", 2.0),
                 max_duration_sec=vad.get("max_duration_sec", 60.0),
                 threshold=vad.get("threshold", 0.5),
+                min_interval_ms=vad.get("min_interval_ms", 500),
+                speech_pad_ms=vad.get("speech_pad_ms", 300),
                 name=f"VAD{suffix}",
             ))
 

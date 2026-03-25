@@ -47,10 +47,7 @@ import sys
 from loguru import logger
 
 from nemo_curator.pipeline import Pipeline
-from nemo_curator.stages.audio import (
-    AudioDataFilterStage,
-    AudioDataFilterConfig,
-)
+from nemo_curator.stages.audio import AudioDataFilterStage
 from nemo_curator.stages.audio.advance_pipelines.Audio_data_filter.config import (
     SUPPORTED_AUDIO_FORMATS,
     DEFAULT_OUTPUT_FORMAT,
@@ -74,27 +71,40 @@ def create_pipeline(args: argparse.Namespace) -> Pipeline:
         description="Audio curation pipeline with consistent timestamp mapping"
     )
     
-    config = AudioDataFilterConfig(
-        sample_rate=args.sample_rate,
-        enable_vad=args.enable_vad,
-        vad_min_duration_sec=args.vad_min_duration,
-        vad_max_duration_sec=args.vad_max_duration,
-        
-        enable_band_filter=args.enable_band_filter,
-        band_value=args.band_value,
-        
-        enable_sigmos=args.enable_sigmos,
-        sigmos_noise_threshold=args.sigmos_noise_threshold,
-        sigmos_ovrl_threshold=args.sigmos_ovrl_threshold,
-        
-        enable_utmos=args.enable_utmos,
-        utmos_mos_threshold=args.utmos_mos_threshold,
-        
-        enable_speaker_separation=args.enable_speaker_separation,
-        speaker_exclude_overlaps=args.speaker_exclude_overlaps,
-    )
-    
-    audio_filter_stage = AudioDataFilterStage(config=config)
+    audio_filter_stage = AudioDataFilterStage(config={
+        "mono_conversion": {
+            "output_sample_rate": args.sample_rate,
+        },
+        "vad": {
+            "enable": args.enable_vad,
+            "min_duration_sec": args.vad_min_duration,
+            "max_duration_sec": args.vad_max_duration,
+        },
+        "band_filter": {
+            "enable": args.enable_band_filter,
+            "band_value": args.band_value,
+        },
+        "sigmos": {
+            "enable": args.enable_sigmos,
+            "noise_threshold": args.sigmos_noise_threshold,
+            "ovrl_threshold": args.sigmos_ovrl_threshold,
+        },
+        "utmos": {
+            "enable": args.enable_utmos,
+            "mos_threshold": args.utmos_mos_threshold,
+        },
+        "speaker_separation": {
+            "enable": args.enable_speaker_separation,
+            "exclude_overlaps": args.speaker_exclude_overlaps,
+        },
+        "timestamp_mapper": {
+            "passthrough_keys": [
+                "band_prediction", "utmos_mos",
+                "sigmos_noise", "sigmos_ovrl",
+                "speaker_id", "num_speakers",
+            ],
+        },
+    })
 
     pipeline.add_stage(audio_filter_stage)
 
@@ -187,11 +197,6 @@ Examples:
     parser.add_argument("--raw_data_dir", required=True, help="Input directory with audio files")
     parser.add_argument("--output_dir", default=None, help="Output directory for results")
     
-    # Resource settings
-    parser.add_argument("--gpus", type=float, default=1.0, help="GPU allocation per worker")
-    parser.add_argument("--cpus", type=float, default=1.0, help="CPU allocation per worker")
-    parser.add_argument("--batch_size", type=int, default=1, help="Batch size")
-    
     # General settings
     parser.add_argument("--sample_rate", type=int, default=48000, help="Sample rate")
     parser.add_argument("--recursive", action="store_true", help="Search recursively")
@@ -259,7 +264,6 @@ Examples:
     logger.info("=" * 70)
     logger.info(f"Input:  {args.raw_data_dir}")
     logger.info(f"Output: {args.output_dir}")
-    logger.info(f"GPUs:   {args.gpus}")
     
     enabled = []
     if args.enable_vad:
@@ -319,4 +323,3 @@ Examples:
 
 if __name__ == "__main__":
     main()
-

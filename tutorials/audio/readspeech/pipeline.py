@@ -22,16 +22,15 @@ Dataset: Microsoft DNS Challenge 5 - Read Speech (Track 1 Headset)
 Source: https://github.com/microsoft/DNS-Challenge
 
 The pipeline:
-1. Creates initial manifest from read_speech WAV files (~14,000+ files at 48kHz)
+1. Creates initial manifest from read_speech WAV files (14,279 files at 48kHz)
 2. Applies AudioDataFilterStage (VAD, quality filters, speaker separation)
 3. Outputs filtered manifest with quality scores and timestamps
 
 Example:
-    python pipeline.py --raw_data_dir /path/to/read_speech --enable-nisqa --enable-vad
+    python pipeline.py --raw_data_dir /path/to/read_speech --enable-utmos --enable-vad
 """
 
 import argparse
-import json
 import os
 import shutil
 import sys
@@ -40,9 +39,10 @@ from loguru import logger
 
 from nemo_curator.backends.xenna import XennaExecutor
 from nemo_curator.pipeline import Pipeline
-from nemo_curator.stages.audio import AudioDataFilterConfig, AudioDataFilterStage
+from nemo_curator.stages.audio import AudioDataFilterStage
 from nemo_curator.stages.audio.datasets.readspeech import CreateInitialManifestReadSpeechStage
-from nemo_curator.stages.resources import Resources
+from nemo_curator.stages.audio.io.convert import AudioToDocumentStage
+from nemo_curator.stages.text.io.writer import JsonlWriter
 
 
 def create_readspeech_pipeline(args: argparse.Namespace) -> Pipeline:
@@ -52,6 +52,8 @@ def create_readspeech_pipeline(args: argparse.Namespace) -> Pipeline:
     The pipeline combines:
     1. CreateInitialManifestReadSpeechStage - Scans directory and creates initial manifest
     2. AudioDataFilterStage - Applies quality filters with timestamp tracking
+    3. AudioToDocumentStage - Converts AudioBatch to DocumentBatch
+    4. JsonlWriter - Writes filtered manifest to disk
     """
     pipeline = Pipeline(
         name="readspeech_audio_filter",
@@ -63,88 +65,56 @@ def create_readspeech_pipeline(args: argparse.Namespace) -> Pipeline:
             raw_data_dir=args.raw_data_dir,
             max_samples=args.max_samples,
             auto_download=args.auto_download,
-            download_parts=args.download_parts,
-        ).with_(batch_size=args.batch_size)
+            batch_size=args.batch_size,
+        )
     )
 
-    # Stage 2: AudioDataFilterStage for quality filtering
-    config = AudioDataFilterConfig(
-        sample_rate=args.sample_rate,
+    pipeline.add_stage(AudioDataFilterStage(config={
+        "mono_conversion": {
+            "output_sample_rate": args.sample_rate,
+        },
+        "vad": {
+            "enable": args.enable_vad,
+            "min_duration_sec": args.vad_min_duration,
+            "max_duration_sec": args.vad_max_duration,
+            "threshold": args.vad_threshold,
+            "min_interval_ms": args.vad_min_interval_ms,
+            "speech_pad_ms": args.vad_speech_pad_ms,
+        },
+        "band_filter": {
+            "enable": args.enable_band_filter,
+            "band_value": args.band_value,
+        },
+        "utmos": {
+            "enable": args.enable_utmos,
+            "mos_threshold": args.utmos_mos_threshold,
+        },
+        "sigmos": {
+            "enable": args.enable_sigmos,
+            "noise_threshold": args.sigmos_noise_threshold,
+            "ovrl_threshold": args.sigmos_ovrl_threshold,
+        },
+        "speaker_separation": {
+            "enable": args.enable_speaker_separation,
+            "exclude_overlaps": args.speaker_exclude_overlaps,
+            "min_duration": args.speaker_min_duration,
+        },
+        "timestamp_mapper": {
+            "passthrough_keys": [
+                "band_prediction", "utmos_mos",
+                "sigmos_noise", "sigmos_ovrl",
+                "speaker_id", "num_speakers",
+            ],
+        },
+    }))
 
-        # VAD
-        enable_vad=args.enable_vad,
-        vad_min_duration_sec=args.vad_min_duration,
-        vad_max_duration_sec=args.vad_max_duration,
-        vad_threshold=args.vad_threshold,
-        enable_band_filter=args.enable_band_filter,
-        band_value=args.band_value,
-
-        enable_nisqa=args.enable_nisqa,
-        nisqa_mos_threshold=args.nisqa_mos_threshold,
-        nisqa_noi_threshold=args.nisqa_noi_threshold,
-
-        enable_sigmos=args.enable_sigmos,
-        sigmos_noise_threshold=args.sigmos_noise_threshold,
-        sigmos_ovrl_threshold=args.sigmos_ovrl_threshold,
-        enable_speaker_separation=args.enable_speaker_separation,
-        speaker_exclude_overlaps=args.speaker_exclude_overlaps,
-        speaker_min_duration=args.speaker_min_duration,
-    )
-
-    audio_filter_stage = AudioDataFilterStage(config=config).with_(
-        batch_size=args.batch_size,
-        resources=Resources(cpus=args.cpus, gpus=args.gpus),
-    )
-
-    pipeline.add_stage(audio_filter_stage)
+    pipeline.add_stage(AudioToDocumentStage())
+    pipeline.add_stage(JsonlWriter(
+        path=args.output_dir,
+        write_kwargs={"force_ascii": False},
+    ))
 
     return pipeline
-
-
-def save_results(results: list, output_dir: str, clean_intermediate: bool = True) -> str:
-    """
-    Save pipeline results to a single manifest.jsonl file.
-    
-    Args:
-        results: List of result dictionaries
-        output_dir: Output directory
-        clean_intermediate: If True, remove intermediate UUID-based JSONL files
-        
-    Returns:
-        Path to the manifest.jsonl file
-    """
-    os.makedirs(output_dir, exist_ok=True)
-    manifest_path = os.path.join(output_dir, "manifest.jsonl")
-
-    with open(manifest_path, "w") as f:
-        for entry in results:
-            clean_entry = {}
-            for key, value in entry.items():
-                if hasattr(value, "item"):
-                    clean_entry[key] = value.item()
-                elif isinstance(value, (int, float, str, bool, type(None))):
-                    clean_entry[key] = value
-                else:
-                    clean_entry[key] = str(value)
-            f.write(json.dumps(clean_entry, ensure_ascii=False) + "\n")
-
-    logger.info(f"Saved {len(results)} results to {manifest_path}")
-    
-    # Clean up intermediate UUID-based JSONL files
-    if clean_intermediate:
-        intermediate_count = 0
-        for filename in os.listdir(output_dir):
-            if filename.endswith(".jsonl") and filename != "manifest.jsonl":
-                filepath = os.path.join(output_dir, filename)
-                try:
-                    os.remove(filepath)
-                    intermediate_count += 1
-                except OSError:
-                    pass
-        if intermediate_count > 0:
-            logger.info(f"Cleaned up {intermediate_count} intermediate JSONL files")
-    
-    return manifest_path
 
 
 def main():
@@ -156,19 +126,19 @@ Dataset:
   DNS Challenge Read Speech (Track 1 Headset)
   https://github.com/microsoft/DNS-Challenge
 
-  Contains ~14,000+ clean read speech WAV files at 48kHz.
+  Contains 14,279 clean read speech WAV files at 48kHz (19.3 hours, 4.88 GB download).
 
 Examples:
-  # Basic usage with NISQA filter (5000 samples)
-  python pipeline.py --raw_data_dir /path/to/read_speech --enable-nisqa
+  # Basic usage with UTMOS filter (5000 samples)
+  python pipeline.py --raw_data_dir /path/to/read_speech --enable-utmos
 
   # Full pipeline with all filters
   python pipeline.py --raw_data_dir /path/to/read_speech \\
-      --enable-vad --enable-nisqa --enable-sigmos
+      --enable-vad --enable-utmos --enable-sigmos
 
   # Process all samples
   python pipeline.py --raw_data_dir /path/to/read_speech \\
-      --max-samples -1 --enable-nisqa
+      --max-samples -1 --enable-utmos
         """
     )
 
@@ -181,18 +151,14 @@ Examples:
     # Dataset selection
     parser.add_argument("--max-samples", type=int, default=5000,
                         help="Maximum samples to process (default: 5000, -1 for all)")
-    
+
     # Download settings
     parser.add_argument("--auto-download", action="store_true", default=True,
-                        help="Automatically download dataset (default: True)")
+                        help="Automatically download dataset (~4.88 GB) (default: True)")
     parser.add_argument("--no-auto-download", dest="auto_download", action="store_false",
                         help="Disable automatic download (expects data already exists)")
-    parser.add_argument("--download-parts", type=int, default=1, choices=range(1, 7),
-                        help="Number of parts to download (1-6). 1=~30GB partial, 6=~182GB full (default: 1)")
 
     # Resource settings
-    parser.add_argument("--gpus", type=float, default=1.0, help="GPU allocation per worker")
-    parser.add_argument("--cpus", type=float, default=1.0, help="CPU allocation per worker")
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size")
 
     # General settings
@@ -205,15 +171,16 @@ Examples:
     parser.add_argument("--vad-min-duration", type=float, default=2.0, help="Min VAD segment (sec)")
     parser.add_argument("--vad-max-duration", type=float, default=60.0, help="Max VAD segment (sec)")
     parser.add_argument("--vad-threshold", type=float, default=0.5, help="VAD threshold (0-1)")
+    parser.add_argument("--vad-min-interval-ms", type=int, default=500, help="Min silence to split (ms)")
+    parser.add_argument("--vad-speech-pad-ms", type=int, default=300, help="Padding before/after speech (ms)")
 
     # Band filter settings
     parser.add_argument("--enable-band-filter", action="store_true", help="Enable band filter")
     parser.add_argument("--band-value", choices=["full_band", "narrow_band"], default="full_band")
 
-    # NISQA settings
-    parser.add_argument("--enable-nisqa", action="store_true", help="Enable NISQA filter")
-    parser.add_argument("--nisqa-mos-threshold", type=float, default=4.5, help="Min NISQA MOS")
-    parser.add_argument("--nisqa-noi-threshold", type=float, default=4.3, help="Min NISQA noisiness")
+    # UTMOS settings
+    parser.add_argument("--enable-utmos", action="store_true", help="Enable UTMOS filter")
+    parser.add_argument("--utmos-mos-threshold", type=float, default=3.4, help="Min UTMOS MOS (1-5)")
 
     # SIGMOS settings
     parser.add_argument("--enable-sigmos", action="store_true", help="Enable SIGMOS filter")
@@ -247,15 +214,14 @@ Examples:
     logger.info(f"Raw Data Dir: {args.raw_data_dir}")
     logger.info(f"Output Dir:   {args.output_dir}")
     logger.info(f"Max Samples:  {args.max_samples}")
-    logger.info(f"GPUs: {args.gpus}")
 
     enabled = []
     if args.enable_vad:
         enabled.append("VAD")
     if args.enable_band_filter:
         enabled.append("Band")
-    if args.enable_nisqa:
-        enabled.append("NISQA")
+    if args.enable_utmos:
+        enabled.append("UTMOS")
     if args.enable_sigmos:
         enabled.append("SIGMOS")
     if args.enable_speaker_separation:
@@ -267,34 +233,13 @@ Examples:
     pipeline = create_readspeech_pipeline(args)
     logger.info(pipeline.describe())
 
-    # Execute with XennaExecutor
     logger.info("Starting pipeline execution...")
 
     try:
-        executor = XennaExecutor()
-        results = pipeline.run(executor)
+        executor = XennaExecutor(config={"execution_mode": "batch"})
+        pipeline.run(executor)
 
-        all_results = []
-        for result in results:
-            if result is not None:
-                if isinstance(result.data, list):
-                    all_results.extend(result.data)
-                else:
-                    all_results.append(result.data)
-
-        logger.info(f"Pipeline completed with {len(all_results)} output segments")
-
-        if all_results:
-            save_results(all_results, args.output_dir)
-
-            sample = all_results[0]
-            logger.info("Sample output:")
-            logger.info(f"  audio_filepath: {sample.get('audio_filepath', 'N/A')}")
-            logger.info(f"  sample_rate: {sample.get('sample_rate', 'N/A')}")
-            logger.info(f"  original_start_ms: {sample.get('original_start_ms', 'N/A')}")
-            logger.info(f"  original_end_ms: {sample.get('original_end_ms', 'N/A')}")
-        else:
-            logger.warning("No segments passed filters")
+        logger.info(f"Results written to {args.output_dir}/*.jsonl")
 
     except Exception as e:
         logger.exception(f"Pipeline failed: {e}")
@@ -305,4 +250,3 @@ Examples:
 
 if __name__ == "__main__":
     main()
-

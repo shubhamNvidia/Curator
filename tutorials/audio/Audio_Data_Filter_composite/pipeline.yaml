@@ -11,8 +11,9 @@ hydra:
 raw_data_dir: ???
 output_dir: ${raw_data_dir}/result
 
-cpus: 1.0
-gpus: 1.0
+# 'batch' runs stages sequentially (works with any GPU/CPU count)
+# 'streaming' runs stages concurrently (requires enough resources for all stages simultaneously)
+execution_mode: batch
 
 sample_rate: 48000
 output_format: wav
@@ -31,7 +32,7 @@ sigmos_ovrl_threshold: 3.5
 enable_utmos: true
 utmos_mos_threshold: 3.4
 
-enable_speaker_separation: false
+enable_speaker_separation: true
 speaker_exclude_overlaps: true
 
 # TimestampMapper always produces these fields:
@@ -59,22 +60,27 @@ processors:
 
   - _target_: nemo_curator.stages.audio.AudioDataFilterStage
     config:
-      _target_: nemo_curator.stages.audio.AudioDataFilterConfig
-      sample_rate: ${sample_rate}
-      output_format: ${output_format}
-      enable_vad: ${enable_vad}
-      vad_min_duration_sec: ${vad_min_duration_sec}
-      vad_max_duration_sec: ${vad_max_duration_sec}
-      enable_band_filter: ${enable_band_filter}
-      band_value: ${band_value}
-      enable_sigmos: ${enable_sigmos}
-      sigmos_noise_threshold: ${sigmos_noise_threshold}
-      sigmos_ovrl_threshold: ${sigmos_ovrl_threshold}
-      enable_utmos: ${enable_utmos}
-      utmos_mos_threshold: ${utmos_mos_threshold}
-      enable_speaker_separation: ${enable_speaker_separation}
-      speaker_exclude_overlaps: ${speaker_exclude_overlaps}
-      passthrough_keys: ${passthrough_keys}
+      mono_conversion:
+        output_sample_rate: ${sample_rate}
+      vad:
+        enable: ${enable_vad}
+        min_duration_sec: ${vad_min_duration_sec}
+        max_duration_sec: ${vad_max_duration_sec}
+      band_filter:
+        enable: ${enable_band_filter}
+        band_value: ${band_value}
+      sigmos:
+        enable: ${enable_sigmos}
+        noise_threshold: ${sigmos_noise_threshold}
+        ovrl_threshold: ${sigmos_ovrl_threshold}
+      utmos:
+        enable: ${enable_utmos}
+        mos_threshold: ${utmos_mos_threshold}
+      speaker_separation:
+        enable: ${enable_speaker_separation}
+        exclude_overlaps: ${speaker_exclude_overlaps}
+      timestamp_mapper:
+        passthrough_keys: ${passthrough_keys}
 
   - _target_: nemo_curator.stages.audio.io.convert.AudioToDocumentStage
 

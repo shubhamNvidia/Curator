@@ -2,22 +2,29 @@
 
 Process the DNS Challenge Read Speech dataset using NeMo Curator's audio pipeline with **automatic download support**.
 
-By default, the pipeline downloads a **partial dataset** (~30GB, ~2,500 samples) which is sufficient for tutorials and testing. Optionally configure it to download the full dataset (~182GB, ~14,000 samples).
+The pipeline downloads the dataset (4.88 GB compressed, 14,279 WAV files at 48kHz, 19.3 hours total audio) and applies quality filtering.
 
 ## Quick Start
 
 ```bash
-# Auto-download partial dataset and process
+# Auto-download dataset and process (default: 5000 samples)
 python pipeline.py \
     --raw_data_dir ./dns_data \
-    --enable-nisqa \
+    --enable-utmos \
+    --enable-vad
+
+# Process all 14,279 files
+python pipeline.py \
+    --raw_data_dir ./dns_data \
+    --max-samples -1 \
+    --enable-utmos \
     --enable-vad
 
 # Use pre-downloaded data
 python pipeline.py \
     --raw_data_dir /path/to/existing/read_speech \
     --no-auto-download \
-    --enable-nisqa
+    --enable-utmos
 ```
 
 ## Dataset Overview
@@ -26,31 +33,33 @@ python pipeline.py \
 - **Source**: [Microsoft DNS Challenge](https://github.com/microsoft/DNS-Challenge)
 - **Format**: WAV files (mono or stereo), 48,000 Hz
 - **License**: [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
-
-| Version | Size | Samples | Configuration |
-|---------|------|---------|---------------|
-| **Partial (Default)** | ~30GB | ~2,500 | `download_parts: 1` |
-| **Complete** | ~182GB | ~14,000 | `download_parts: 6` |
+- **Download size**: 4.88 GB (compressed)
+- **Extracted size**: 6.3 GB
+- **Files**: 14,279 WAV files
+- **Total duration**: 19.3 hours (~69,578 seconds)
+- **Avg duration per file**: 4.9 seconds
+- **Unique readers**: 318
+- **Unique books**: 262
 
 ### Dataset Structure
 
 ```
 raw_data_dir/
-└── read_speech/
+└── mnt/dnsv5/clean/read_speech/
     ├── book_00000_chp_0009_reader_06709_0_seg_1_seg1.wav
     ├── book_00000_chp_0009_reader_06709_0_seg_2_seg1.wav
-    └── ... (~2,500 files for partial, ~14,000+ for full)
+    └── ... (14,279 WAV files)
 ```
 
 ## Pipeline Architecture
 
 ```
 CreateInitialManifestReadSpeechStage
-  Scans read_speech directory, parses filenames, creates AudioBatch
+  Downloads and scans read_speech directory, parses filenames, creates AudioBatch
       |
       v
 AudioDataFilterStage
-  Mono conversion -> VAD -> Band Filter -> NISQA -> SIGMOS
+  Mono conversion -> VAD -> Band Filter -> UTMOS -> SIGMOS
   -> Speaker Separation -> Timestamp Tracking
       |
       v
@@ -63,41 +72,38 @@ AudioToDocumentStage -> JsonlWriter
 ### Option 1: Python Script (pipeline.py)
 
 ```bash
-# Partial dataset with all filters
+# With all filters
 python pipeline.py \
     --raw_data_dir ./dns_data \
     --enable-vad \
-    --enable-nisqa \
+    --enable-utmos \
     --enable-sigmos \
     --enable-band-filter \
-    --enable-speaker-separation \
-    --gpus 1.0 \
-    --cpus 4.0
+    --enable-speaker-separation
 
-# Full dataset
+# Process all 14,279 files
 python pipeline.py \
     --raw_data_dir ./dns_data \
-    --download-parts 6 \
     --max-samples -1 \
-    --enable-nisqa \
+    --enable-utmos \
     --enable-sigmos
 ```
 
 ### Option 2: YAML Config (run.py)
 
 ```bash
+# Default (all 14,279 files as configured in pipeline.yaml)
 python run.py \
     --config-path . \
     --config-name pipeline.yaml \
     raw_data_dir=./dns_data
 
-# Override settings
+# Limit to 5000 samples
 python run.py \
     --config-path . \
     --config-name pipeline.yaml \
     raw_data_dir=./dns_data \
-    download_parts=6 \
-    max_samples=-1
+    max_samples=5000
 ```
 
 ## Command Line Options
@@ -112,19 +118,16 @@ python run.py \
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--auto-download` | `true` | Auto-download dataset |
+| `--auto-download` | `true` | Auto-download dataset (~4.88 GB) |
 | `--no-auto-download` | | Disable auto-download |
-| `--download-parts` | `1` | Parts to download (1-6). 1=~30GB, 6=~182GB |
 
 ### Processing
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--output_dir` | `{raw_data_dir}/result` | Output directory |
-| `--max-samples` | `5000` | Max samples (-1 for all) |
+| `--max-samples` | `5000` | Max samples (-1 for all 14,279 files) |
 | `--batch_size` | `1` | Batch size |
-| `--gpus` | `1.0` | GPU allocation |
-| `--cpus` | `1.0` | CPU cores |
 | `--sample_rate` | `48000` | Audio sample rate |
 | `--clean` | `false` | Clean output dir |
 | `--verbose` | `false` | DEBUG logging |
@@ -137,19 +140,22 @@ python run.py \
 | `--vad-min-duration` | `2.0` | Min segment (sec) |
 | `--vad-max-duration` | `60.0` | Max segment (sec) |
 | `--vad-threshold` | `0.5` | VAD threshold (0-1) |
-| `--enable-nisqa` | `false` | Enable NISQA filter |
-| `--nisqa-mos-threshold` | `4.5` | Min NISQA MOS (1-5) |
-| `--nisqa-noi-threshold` | `4.3` | Min NISQA noisiness (1-5) |
+| `--vad-min-interval-ms` | `500` | Min silence to split segments (ms) |
+| `--vad-speech-pad-ms` | `300` | Padding before/after speech (ms) |
+| `--enable-utmos` | `false` | Enable UTMOS filter |
+| `--utmos-mos-threshold` | `3.4` | Min UTMOS MOS (1-5) |
 | `--enable-sigmos` | `false` | Enable SIGMOS filter |
 | `--sigmos-noise-threshold` | `4.0` | Min SIGMOS noise (1-5) |
 | `--sigmos-ovrl-threshold` | `3.5` | Min SIGMOS overall (1-5) |
 | `--enable-band-filter` | `false` | Enable band filter |
 | `--band-value` | `full_band` | Band type to pass |
 | `--enable-speaker-separation` | `false` | Enable speaker diarization |
+| `--speaker-exclude-overlaps` | `true` | Exclude overlapping speech |
+| `--speaker-min-duration` | `0.8` | Min speaker segment (sec) |
 
 ## Output Format
 
-Results saved to `{output_dir}/manifest.jsonl`:
+Results saved to `{output_dir}/*.jsonl`:
 
 ```json
 {
@@ -162,22 +168,71 @@ Results saved to `{output_dir}/manifest.jsonl`:
   "duration_ms": 3700,
   "duration_sec": 3.7,
   "speaker_id": "speaker_0",
-  "nisqa_mos": 4.7,
+  "utmos_mos": 3.9,
   "sigmos_noise": 4.2,
   "band_prediction": "full_band"
 }
 ```
 
+## Extracting Audio Segments
+
+After the pipeline produces a `manifest.jsonl`, use `extract_segments.py` to extract the actual audio segments from the original files based on the timestamps in the manifest.
+
+### Basic Usage
+
+```bash
+# Extract segments from a single manifest file
+python extract_segments.py \
+    --manifest ./dns_data/result/manifest.jsonl \
+    --output-dir ./extracted_segments
+
+# Extract from a directory of jsonl files (auto-combines them)
+python extract_segments.py \
+    --manifest ./dns_data/result/ \
+    --output-dir ./extracted_segments
+
+# Output as FLAC instead of WAV
+python extract_segments.py \
+    --manifest ./dns_data/result/manifest.jsonl \
+    --output-dir ./extracted_segments \
+    --output-format flac
+```
+
+### Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--manifest, -m` | required | Path to manifest.jsonl or directory of .jsonl files |
+| `--output-dir, -o` | required | Directory for extracted audio segments |
+| `--output-format, -f` | `wav` | Output format: wav, mp3, flac, ogg, m4a |
+| `--verbose, -v` | `false` | Enable verbose (DEBUG) logging |
+
+### Output
+
+Extracted files are named based on the original filename with speaker and segment info:
+
+```
+extracted_segments/
+├── book_00025_chp_0019_reader_04069_speaker_0_segment_000.wav
+├── book_00025_chp_0019_reader_04069_speaker_0_segment_001.wav
+├── book_00025_chp_0019_reader_04069_speaker_1_segment_000.wav
+├── manifest.jsonl              # Combined manifest (when input is a directory)
+└── extraction_summary.json     # Statistics summary
+```
+
+Without speaker separation, files are named `{original_name}_segment_{num}.wav`.
+
+The script also generates an `extraction_summary.json` with statistics including total segments extracted, total duration, and per-speaker segment counts.
+
+> **Note**: Non-wav output formats (mp3, flac, ogg, m4a) require `ffmpeg` to be installed.
+
 ## Prerequisites
 
 ```bash
 pip install nemo-curator[audio_cuda12]
-
-# Or install packages individually
-pip install soundfile librosa pydub loguru hydra-core wget
 ```
 
-**Storage**: ~35GB for partial, ~200GB for full dataset.
+**Storage**: ~11 GB (4.88 GB download + 6.3 GB extracted WAV files; archive is deleted after extraction).
 
 ## Troubleshooting
 
@@ -185,7 +240,7 @@ pip install soundfile librosa pydub loguru hydra-core wget
 |-------|----------|
 | No audio files found | Check `--auto-download` is enabled or verify path to existing data |
 | `AF_UNIX path length` error | `export RAY_TMPDIR=/tmp` |
-| CUDA out of memory | Reduce `--gpus`, disable some filters, or use `--max-samples` |
+| CUDA out of memory | Disable some filters or use `--max-samples` |
 | Download interrupted | Re-run pipeline; it skips already-downloaded files |
 
 ## Citation

@@ -149,8 +149,9 @@ def main(cfg: DictConfig) -> None:
     logger.info(pipeline.describe())
     logger.info("\n" + "=" * 50 + "\n")
     
-    executor = XennaExecutor()
-    logger.info(f"Starting pipeline execution with {len(initial_tasks)} audio files...")
+    execution_mode = cfg.get("execution_mode", "batch")
+    executor = XennaExecutor(config={"execution_mode": execution_mode})
+    logger.info(f"Starting pipeline execution with {len(initial_tasks)} audio files (mode: {execution_mode})...")
     pipeline.run(executor, initial_tasks=initial_tasks)
 
     output_dir = cfg.get("output_dir", os.path.join(raw_data_dir, "result"))

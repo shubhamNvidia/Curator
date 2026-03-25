@@ -34,8 +34,7 @@ python pipeline.py \
     --enable-sigmos \
     --enable-utmos \
     --enable-band-filter \
-    --enable-speaker-separation \
-    --gpus 1.0
+    --enable-speaker-separation
 ```
 
 ## Architecture
@@ -103,8 +102,6 @@ No `item['audio']` (PyDub) in the inter-stage contract.
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--output_dir` | `{raw_data_dir}/result` | Output directory |
-| `--gpus` | `1.0` | GPU allocation per stage |
-| `--cpus` | `1.0` | CPU cores per stage |
 | `--sample_rate` | `48000` | Expected sample rate |
 | `--recursive` | `false` | Search recursively |
 | `--clean` | `false` | Clean output dir |
@@ -117,35 +114,31 @@ No `item['audio']` (PyDub) in the inter-stage contract.
 | `--enable-vad` | `false` | Enable VAD segmentation |
 | `--vad-min-duration` | `2.0` | Min segment duration (sec) |
 | `--vad-max-duration` | `60.0` | Max segment duration (sec) |
-| `--vad-threshold` | `0.5` | VAD threshold (0-1) |
 | `--enable-band-filter` | `false` | Enable bandwidth filter |
 | `--band-value` | `full_band` | Band type to pass |
+| `--enable-utmos` | `false` | Enable UTMOS filter |
+| `--utmos-mos-threshold` | `3.4` | Min UTMOS MOS (1-5) |
 | `--enable-sigmos` | `false` | Enable SIGMOS filter |
 | `--sigmos-noise-threshold` | `4.0` | Min SIGMOS noise (1-5) |
 | `--sigmos-ovrl-threshold` | `3.5` | Min SIGMOS overall (1-5) |
 | `--enable-speaker-separation` | `false` | Enable speaker separation |
 | `--speaker-exclude-overlaps` | `true` | Exclude overlapping speech |
-| `--speaker-min-duration` | `0.8` | Min speaker segment (sec) |
 
 ## Usage from Code
 
 ```python
 from nemo_curator.pipeline import Pipeline
-from nemo_curator.stages.audio import AudioDataFilterStage, AudioDataFilterConfig
+from nemo_curator.stages.audio import AudioDataFilterStage
 from nemo_curator.stages.audio.io.convert import AudioToDocumentStage
-from nemo_curator.stages.resources import Resources
 from nemo_curator.stages.text.io.writer import JsonlWriter
 from nemo_curator.tasks import AudioBatch
 
-config = AudioDataFilterConfig(
-    enable_vad=True,
-    enable_utmos=True,
-    utmos_mos_threshold=3.5,
-    enable_speaker_separation=True,
-)
-
 pipeline = Pipeline(name="audio_curation")
-pipeline.add_stage(AudioDataFilterStage(config=config))
+pipeline.add_stage(AudioDataFilterStage(config={
+    "vad": {"enable": True},
+    "utmos": {"enable": True, "mos_threshold": 3.5},
+    "speaker_separation": {"enable": True},
+}))
 pipeline.add_stage(AudioToDocumentStage().with_(batch_size=1))
 pipeline.add_stage(JsonlWriter(path="/path/to/output"))
 
@@ -176,7 +169,7 @@ Output files follow the naming pattern: `{filename}_speaker_{X}_segment_{YYY}.wa
 | File | Description |
 |------|-------------|
 | `audio_data_filter.py` | `AudioDataFilterStage` CompositeStage (decomposes into pipeline stages) |
-| `config.py` | `AudioDataFilterConfig` dataclass |
+| `config.py` | YAML config loader functions |
 | `pipeline.py` | Standalone Python script with CLI arguments |
 | `run.py` | Hydra-based runner that loads YAML config |
 | `pipeline.yaml` | YAML configuration for `run.py` |

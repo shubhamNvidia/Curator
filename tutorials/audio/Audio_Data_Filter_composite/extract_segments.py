@@ -6,7 +6,9 @@
 Segment Extraction Script
 
 Reads manifest jsonl file(s) and extracts audio segments from original files.
-Each segment is saved with naming convention: {original_filename}_speaker_{x}_segment_{y}.{format}
+Each segment is saved with naming convention:
+  With speaker separation:    {original_filename}_speaker_{x}_segment_{y}.{format}
+  Without speaker separation: {original_filename}_segment_{y}.{format}
 
 Input can be:
   - A single manifest.jsonl file
@@ -154,27 +156,32 @@ def extract_segments(input_path: str, output_dir: str, output_format: str = DEFA
             logger.error(f"  Failed to load audio: {e}")
             continue
         
-        # Sort segments by start time for consistent ordering
-        file_segments.sort(key=lambda x: (x.get('speaker_id', ''), x.get('original_start_ms', 0)))
+        # Sort segments by speaker (if present) then start time
+        has_speakers = any('speaker_id' in seg for seg in file_segments)
+        if has_speakers:
+            file_segments.sort(key=lambda x: (x.get('speaker_id', ''), x.get('original_start_ms', 0)))
+        else:
+            file_segments.sort(key=lambda x: x.get('original_start_ms', 0))
         
-        # Track segment numbers per speaker for this file
-        speaker_segment_counts = defaultdict(int)
+        # Track segment numbers (per speaker if speakers exist, otherwise global)
+        segment_counts = defaultdict(int)
         
         # Extract each segment
         for seg in file_segments:
             start_ms = seg.get('original_start_ms', 0)
             end_ms = seg.get('original_end_ms', 0)
-            speaker_id = seg.get('speaker_id', 'unknown')
+            speaker_id = seg.get('speaker_id')
             duration_sec = seg.get('duration_sec', (end_ms - start_ms) / 1000)
             
-            # Get segment number for this speaker
-            segment_num = speaker_segment_counts[speaker_id]
-            speaker_segment_counts[speaker_id] += 1
+            count_key = speaker_id if speaker_id else '__all__'
+            segment_num = segment_counts[count_key]
+            segment_counts[count_key] += 1
             
-            # Create output filename
-            # Format: originalfilename_speaker_0_segment_000.{format}
-            speaker_num = speaker_id.replace('speaker_', '') if 'speaker_' in speaker_id else speaker_id
-            output_filename = f"{original_name}_speaker_{speaker_num}_segment_{segment_num:03d}.{output_format}"
+            if speaker_id:
+                speaker_num = speaker_id.replace('speaker_', '') if 'speaker_' in speaker_id else speaker_id
+                output_filename = f"{original_name}_speaker_{speaker_num}_segment_{segment_num:03d}.{output_format}"
+            else:
+                output_filename = f"{original_name}_segment_{segment_num:03d}.{output_format}"
             output_path = os.path.join(output_dir, output_filename)
             
             # Extract segment
@@ -186,14 +193,15 @@ def extract_segments(input_path: str, output_dir: str, output_format: str = DEFA
                 
                 total_extracted += 1
                 total_duration_sec += duration_sec
-                speaker_counts[speaker_id] += 1
+                if speaker_id:
+                    speaker_counts[speaker_id] += 1
                 
                 logger.debug(f"  Extracted: {output_filename} ({duration_sec:.2f}s)")
                 
             except Exception as e:
                 logger.error(f"  Failed to extract segment {segment_num}: {e}")
         
-        logger.info(f"  Extracted {sum(speaker_segment_counts.values())} segments from this file")
+        logger.info(f"  Extracted {sum(segment_counts.values())} segments from this file")
     
     # Save extraction summary
     summary = {
@@ -216,9 +224,10 @@ def extract_segments(input_path: str, output_dir: str, output_format: str = DEFA
     logger.info(f"Total segments extracted: {total_extracted}")
     logger.info(f"Total duration: {total_duration_sec:.2f}s ({total_duration_sec/60:.1f} min)")
     logger.info(f"Output directory: {output_dir}")
-    logger.info(f"\nSegments by speaker:")
-    for speaker, count in sorted(speaker_counts.items()):
-        logger.info(f"  {speaker}: {count} segments")
+    if speaker_counts:
+        logger.info(f"\nSegments by speaker:")
+        for speaker, count in sorted(speaker_counts.items()):
+            logger.info(f"  {speaker}: {count} segments")
     logger.info(f"\nSummary saved to: {summary_path}")
 
 
