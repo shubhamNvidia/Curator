@@ -28,7 +28,12 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import math
 import os
+
+import torch
+from loguru import logger as loguru_logger
+from transformers import AutoConfig
 
 logger = logging.getLogger(__name__)
 
@@ -66,17 +71,10 @@ def ensure_cudnn_loaded() -> bool:
         logger.warning("nvidia.cudnn package found but lib directory missing: %s", cudnn_lib_dir)
         return False
 
-    # Update LD_LIBRARY_PATH so that any *subsequent* dlopen() calls by
-    # onnxruntime (or other native libraries) can resolve cuDNN symbols.
     ld_path = os.environ.get("LD_LIBRARY_PATH", "")
     if cudnn_lib_dir not in ld_path:
         os.environ["LD_LIBRARY_PATH"] = cudnn_lib_dir + (":" + ld_path if ld_path else "")
 
-    # Eagerly load cuDNN shared libraries into the process address space.
-    # Setting LD_LIBRARY_PATH alone is not enough once the process has started
-    # because the dynamic linker caches its search paths at startup.
-    # ONNX Runtime's CUDA provider uses dlopen() for sub-libraries like
-    # libcudnn_adv.so.9, so we must pre-load all of them.
     import glob
 
     cudnn_libs = sorted(glob.glob(os.path.join(cudnn_lib_dir, "libcudnn*.so*")))
@@ -84,8 +82,6 @@ def ensure_cudnn_loaded() -> bool:
         logger.warning("No libcudnn*.so* files found in %s", cudnn_lib_dir)
         return False
 
-    # Load the main library first (other libs depend on it), then the rest.
-    # The main library matches "libcudnn.so.<version>" (no underscore after "libcudnn").
     cudnn_libs.sort(key=lambda p: (not os.path.basename(p).startswith("libcudnn.so."), p))
 
     for lib_path in cudnn_libs:
@@ -98,3 +94,54 @@ def ensure_cudnn_loaded() -> bool:
     _cudnn_loaded = True
 
     return True
+
+
+def get_gpu_count() -> int:
+    """
+    Get number of available CUDA GPUs as a power of 2.
+
+    Many models require tensor parallelism to use power-of-2 GPU counts.
+    This returns the largest power of 2 <= available GPU count.
+
+    Returns:
+        Power of 2 GPU count, minimum 1.
+
+    Raises:
+        RuntimeError: If no CUDA GPUs are detected.
+    """
+    count = torch.cuda.device_count()
+    if count == 0:
+        msg = "No CUDA GPUs detected. At least one GPU is required for vLLM inference."
+        raise RuntimeError(msg)
+    tp_size = 2 ** int(math.log2(count)) if count >= 2 else 1  # noqa: PLR2004
+    loguru_logger.info(
+        f"Detected {count} GPU(s), using tensor_parallel_size={tp_size}"
+    )
+    return tp_size
+
+
+def get_max_model_len_from_config(model: str, cache_dir: str | None = None) -> int | None:
+    """
+    Try to get max model length from HuggingFace AutoConfig.
+
+    Args:
+        model: Model identifier (e.g., "microsoft/phi-4")
+        cache_dir: Optional cache directory for model config.
+
+    Returns:
+        Max model length if found, None otherwise.
+    """
+    try:
+        config = AutoConfig.from_pretrained(model, trust_remote_code=True, cache_dir=cache_dir)
+    except (OSError, ValueError, ImportError) as e:
+        loguru_logger.warning(f"Could not auto-detect max_model_len for {model}: {e}")
+        return None
+    max_len = (
+        getattr(config, "max_position_embeddings", None)
+        or getattr(config, "n_positions", None)
+        or getattr(config, "max_sequence_length", None)
+    )
+    if max_len is not None:
+        loguru_logger.info(f"Auto-detected max_model_len={max_len} for {model}")
+
+    return max_len

@@ -15,6 +15,9 @@
 """
 NeMo Curator Audio Processing Stages.
 
+This module provides stages for processing and curating audio data,
+including ASR inference, quality assessment, and ALM data preparation.
+
 Preprocessing:
     - MonoConversionStage: Convert multi-channel audio to mono
     - SegmentConcatenationStage: Concatenate audio segments
@@ -32,11 +35,16 @@ Filtering:
     - UTMOSFilterStage: UTMOS MOS prediction filtering
     - BandFilterStage: Bandwidth classification filtering
 
+ALM:
+    - ALMDataBuilderStage: Build ALM data
+    - ALMDataOverlapStage: ALM data overlap processing
+
 Advanced Pipelines:
     - AudioDataFilterStage: Complete audio curation pipeline (VAD + Quality + Speaker Sep)
 
 Common:
     - GetAudioDurationStage: Extract audio duration
+    - LegacySpeechStage: Legacy speech processing
     - PreserveByValueStage: Filter by field value
 
 Example::
@@ -62,8 +70,10 @@ Example::
 from nemo_curator.stages.audio.advance_pipelines import (
     AudioDataFilterStage,
 )
+from nemo_curator.stages.audio.alm import ALMDataBuilderStage, ALMDataOverlapStage
 from nemo_curator.stages.audio.common import (
     GetAudioDurationStage,
+    LegacySpeechStage,
     PreserveByValueStage,
 )
 from nemo_curator.stages.audio.filtering import (
@@ -98,9 +108,13 @@ __all__ = [
     "NISQAFilterStage",
     "SIGMOSFilterStage",
     "UTMOSFilterStage",
+    # ALM
+    "ALMDataBuilderStage",
+    "ALMDataOverlapStage",
     # Advanced Pipelines
     "AudioDataFilterStage",
     # Common
     "GetAudioDurationStage",
+    "LegacySpeechStage",
     "PreserveByValueStage",
 ]
