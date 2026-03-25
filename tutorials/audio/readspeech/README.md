@@ -45,7 +45,7 @@ python pipeline.py \
 
 ```
 raw_data_dir/
-└── mnt/dnsv5/clean/read_speech/
+└── read_speech/          # auto-extracted from archive
     ├── book_00000_chp_0009_reader_06709_0_seg_1_seg1.wav
     ├── book_00000_chp_0009_reader_06709_0_seg_2_seg1.wav
     └── ... (14,279 WAV files)
@@ -151,6 +151,7 @@ python run.py \
 | `--band-value` | `full_band` | Band type to pass |
 | `--enable-speaker-separation` | `false` | Enable speaker diarization |
 | `--speaker-exclude-overlaps` | `true` | Exclude overlapping speech |
+| `--no-speaker-exclude-overlaps` | | Allow overlapping speaker segments |
 | `--speaker-min-duration` | `0.8` | Min speaker segment (sec) |
 
 ## Output Format
@@ -204,7 +205,7 @@ python extract_segments.py \
 |--------|---------|-------------|
 | `--manifest, -m` | required | Path to manifest.jsonl or directory of .jsonl files |
 | `--output-dir, -o` | required | Directory for extracted audio segments |
-| `--output-format, -f` | `wav` | Output format: wav, mp3, flac, ogg, m4a |
+| `--output-format, -f` | `wav` | Output format: wav, flac, ogg (no extra deps), mp3, m4a (need pydub + ffmpeg) |
 | `--verbose, -v` | `false` | Enable verbose (DEBUG) logging |
 
 ### Output
@@ -224,13 +225,9 @@ Without speaker separation, files are named `{original_name}_segment_{num}.wav`.
 
 The script also generates an `extraction_summary.json` with statistics including total segments extracted, total duration, and per-speaker segment counts.
 
-> **Note**: Non-wav output formats (mp3, flac, ogg, m4a) require `ffmpeg` to be installed.
+> **Note**: wav/flac/ogg output works out of the box via `soundfile`. For mp3/m4a output,
+> install `pip install pydub` and `sudo apt install ffmpeg` (or `conda install ffmpeg`).
 
-## Prerequisites
-
-```bash
-pip install nemo-curator[audio_cuda12]
-```
 
 **Storage**: ~11 GB (4.88 GB download + 6.3 GB extracted WAV files; archive is deleted after extraction).
 

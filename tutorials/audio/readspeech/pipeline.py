@@ -189,7 +189,10 @@ Examples:
 
     # Speaker separation settings
     parser.add_argument("--enable-speaker-separation", action="store_true", help="Enable speaker sep")
-    parser.add_argument("--speaker-exclude-overlaps", action="store_true", default=True)
+    parser.add_argument("--speaker-exclude-overlaps", action="store_true", default=True,
+                        help="Exclude overlapping speech (default: True)")
+    parser.add_argument("--no-speaker-exclude-overlaps", dest="speaker_exclude_overlaps", action="store_false",
+                        help="Allow overlapping speaker segments")
     parser.add_argument("--speaker-min-duration", type=float, default=0.8, help="Min speaker segment")
 
     args = parser.parse_args()

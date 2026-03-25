@@ -34,17 +34,17 @@ output_dir: ${raw_data_dir}/result
 execution_mode: batch
 
 max_samples: -1 # set to -1 to process all 14,279 files
-auto_download: false
+auto_download: true
 
 sample_rate: 48000
 batch_size: 1
 
 enable_vad: true
-vad_min_duration_sec: 1.0
+vad_min_duration_sec: 2.0
 vad_max_duration_sec: 60.0
 vad_threshold: 0.5
-vad_min_interval_ms: 1000
-vad_speech_pad_ms: 500
+vad_min_interval_ms: 500
+vad_speech_pad_ms: 300
 
 enable_band_filter: true
 band_value: full_band
