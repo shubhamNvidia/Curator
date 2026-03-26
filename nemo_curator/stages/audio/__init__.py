@@ -22,10 +22,10 @@ audio quality filtering (bandwidth, SIGMOS, UTMOS),
 VAD segmentation, and speaker diarization/separation.
 """
 
+from nemo_curator.stages.audio.advance_pipelines import AudioDataFilterStage
 from nemo_curator.stages.audio.alm import ALMDataBuilderStage, ALMDataOverlapStage
 from nemo_curator.stages.audio.common import (
     GetAudioDurationStage,
-    LegacySpeechStage,
     PreserveByValueStage,
 )
 from nemo_curator.stages.audio.filtering import (
@@ -48,9 +48,9 @@ from nemo_curator.stages.audio.segmentation import (
 __all__ = [
     "ALMDataBuilderStage",
     "ALMDataOverlapStage",
+    "AudioDataFilterStage",
     "BandFilterStage",
     "GetAudioDurationStage",
-    "LegacySpeechStage",
     "MonoConversionStage",
     "PreserveByValueStage",
     "SegmentConcatenationStage",
