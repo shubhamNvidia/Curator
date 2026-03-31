@@ -51,7 +51,7 @@ SAMPLE_MAPPINGS = [
 ]
 
 
-def _make_task(item, mappings=None, task_id="test"):
+def _make_task(item: dict, mappings: list | None = None, task_id: str = "test") -> AudioTask:
     metadata = {}
     if mappings is not None:
         metadata["segment_mappings"] = mappings
