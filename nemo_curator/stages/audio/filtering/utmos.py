@@ -134,7 +134,7 @@ class UTMOSFilterStage(ProcessingStage[AudioTask, AudioTask]):
         except Exception:  # noqa: BLE001
             logger.warning("UTMOS repo pre-download in setup_on_node failed.")
 
-    def setup(self, _worker_metadata: WorkerMetadata | None = None) -> None:
+    def setup(self, _: WorkerMetadata | None = None) -> None:
         self._ensure_model()
 
     def teardown(self) -> None:
