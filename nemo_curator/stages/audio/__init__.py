@@ -20,6 +20,7 @@ including ASR inference, quality assessment, ALM data preparation,
 bandwidth classification filtering, audio quality filtering (SIGMOS, UTMOS), speaker diarization/separation, VAD segmentation, and audio preprocessing (mono conversion, segment concatenation, timestamp mapping).
 """
 
+from nemo_curator.stages.audio.advance_pipelines import AudioDataFilterStage
 from nemo_curator.stages.audio.alm import ALMDataBuilderStage, ALMDataOverlapStage
 from nemo_curator.stages.audio.common import (
     GetAudioDurationStage,
@@ -43,6 +44,7 @@ from nemo_curator.stages.audio.segmentation import (
 )
 
 __all__ = [
+    "AudioDataFilterStage",
     "ALMDataBuilderStage",
     "ALMDataOverlapStage",
     "BandFilterStage",

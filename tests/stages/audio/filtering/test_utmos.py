@@ -39,7 +39,6 @@ def _mock_model(score: float) -> MagicMock:
 
 
 class TestUTMOSFilterStage:
-
     @patch("nemo_curator.stages.audio.filtering.utmos.UTMOSFilterStage._ensure_model")
     def test_process_passes_above_threshold(self, mock_ensure: MagicMock) -> None:
         stage = UTMOSFilterStage(mos_threshold=3.0)
@@ -111,7 +110,7 @@ class TestUTMOSFilterStage:
         stage = UTMOSFilterStage(mos_threshold=3.0)
         call_count = {"n": 0}
 
-        def model_side_effect(_waveform: torch.Tensor, _sr: int = 16000) -> torch.Tensor:
+        def model_side_effect(_waveform: torch.Tensor, sr: int = 16000) -> torch.Tensor:  # noqa: ARG001
             call_count["n"] += 1
             return torch.tensor([4.0 if call_count["n"] % 2 == 1 else 2.0])
 
@@ -120,10 +119,7 @@ class TestUTMOSFilterStage:
         stage._model = model
 
         sr = 16000
-        segments = [
-            {"waveform": torch.randn(1, sr), "sample_rate": sr, "segment_num": i}
-            for i in range(4)
-        ]
+        segments = [{"waveform": torch.randn(1, sr), "sample_rate": sr, "segment_num": i} for i in range(4)]
         task = AudioTask(
             data={"segments": segments, "original_file": "test.wav"},
             task_id="test",
@@ -144,10 +140,7 @@ class TestUTMOSFilterStage:
         stage._model = _mock_model(2.0)
 
         sr = 16000
-        segments = [
-            {"waveform": torch.randn(1, sr), "sample_rate": sr, "segment_num": i}
-            for i in range(3)
-        ]
+        segments = [{"waveform": torch.randn(1, sr), "sample_rate": sr, "segment_num": i} for i in range(3)]
         task = AudioTask(
             data={"segments": segments},
             task_id="test",
