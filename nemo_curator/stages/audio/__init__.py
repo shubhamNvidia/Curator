@@ -17,7 +17,7 @@ Audio curation stages for NeMo Curator.
 
 This module provides stages for processing and curating audio data,
 including ASR inference, quality assessment, ALM data preparation,
-bandwidth classification filtering, audio quality filtering (SIGMOS), and audio preprocessing (mono conversion, segment concatenation, timestamp mapping).
+bandwidth classification filtering, audio quality filtering (SIGMOS), speaker diarization/separation, and audio preprocessing (mono conversion, segment concatenation, timestamp mapping).
 """
 
 from nemo_curator.stages.audio.alm import ALMDataBuilderStage, ALMDataOverlapStage
@@ -36,6 +36,9 @@ from nemo_curator.stages.audio.preprocessing import (
     MonoConversionStage,
     SegmentConcatenationStage,
 )
+from nemo_curator.stages.audio.segmentation import (
+    SpeakerSeparationStage,
+)
 
 __all__ = [
     "ALMDataBuilderStage",
@@ -46,5 +49,6 @@ __all__ = [
     "PreserveByValueStage",
     "SegmentConcatenationStage",
     "SIGMOSFilterStage",
+    "SpeakerSeparationStage",
     "TimestampMapperStage",
 ]
