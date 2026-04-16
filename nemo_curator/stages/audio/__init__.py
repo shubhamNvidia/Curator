@@ -45,6 +45,13 @@ from nemo_curator.stages.audio.segmentation import (
     SpeakerSeparationStage,
     VADSegmentationStage,
 )
+from nemo_curator.stages.audio.text_filtering import (
+    FastTextLIDStage,
+    FinalizeFieldsStage,
+    InitializeFieldsStage,
+    RegexSubstitutionStage,
+    WhisperHallucinationStage,
+)
 
 __all__ = [
     "ALMDataBuilderStage",
@@ -60,4 +67,9 @@ __all__ = [
     "TimestampMapperStage",
     "UTMOSFilterStage",
     "VADSegmentationStage",
+    "FastTextLIDStage",
+    "FinalizeFieldsStage",
+    "InitializeFieldsStage",
+    "RegexSubstitutionStage",
+    "WhisperHallucinationStage",
 ]

@@ -1,0 +1,68 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import pytest
+
+from nemo_curator.stages.audio.text_filtering.initialize_fields import InitializeFieldsStage
+from nemo_curator.tasks import AudioTask
+
+
+def test_happy_path() -> None:
+    stage = InitializeFieldsStage()
+    task = AudioTask(data={"pred_text": "hello world"})
+    result = stage.process(task)
+    assert result.data["cleaned_text"] == "hello world"
+    assert result.data["skip_me"] == 0
+
+
+def test_original_pred_text_preserved() -> None:
+    stage = InitializeFieldsStage()
+    task = AudioTask(data={"pred_text": "original"})
+    result = stage.process(task)
+    assert result.data["pred_text"] == "original"
+    assert result.data["cleaned_text"] == "original"
+
+
+def test_overwrites_existing_cleaned_text() -> None:
+    stage = InitializeFieldsStage()
+    task = AudioTask(data={"pred_text": "new", "cleaned_text": "old"})
+    result = stage.process(task)
+    assert result.data["cleaned_text"] == "new"
+
+
+def test_custom_keys() -> None:
+    stage = InitializeFieldsStage(pred_text_key="asr_out", cleaned_text_key="norm_text", skip_me_key="drop")
+    task = AudioTask(data={"asr_out": "test text"})
+    result = stage.process(task)
+    assert result.data["norm_text"] == "test text"
+    assert result.data["drop"] == 0
+
+
+def test_missing_pred_text_fails_validation() -> None:
+    stage = InitializeFieldsStage()
+    task = AudioTask(data={"text": "has text but not pred_text"})
+    assert stage.validate_input(task) is False
+
+
+def test_validate_input_passes_with_pred_text() -> None:
+    stage = InitializeFieldsStage()
+    task = AudioTask(data={"pred_text": "something"})
+    assert stage.validate_input(task) is True
+
+
+def test_process_batch_raises_on_missing_pred_text() -> None:
+    stage = InitializeFieldsStage()
+    task = AudioTask(data={"text": "no pred_text here"})
+    with pytest.raises(ValueError, match="failed validation"):
+        stage.process_batch([task])
