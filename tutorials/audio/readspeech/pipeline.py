@@ -203,9 +203,9 @@ Examples:
     parser.add_argument(
         "--execution-mode",
         type=str,
-        choices=["batch", "streaming"],
-        default="batch",
-        help="Xenna execution mode: 'batch' (sequential stages) or 'streaming' (concurrent stages)",
+        choices=["streaming", "batch"],
+        default="streaming",
+        help="Xenna execution mode: 'streaming' (concurrent stages, default) or 'batch' (sequential stages)",
     )
     parser.add_argument("--verbose", action="store_true", help="Verbose logging")
     parser.add_argument("--enable-vad", action="store_true", help="Enable VAD segmentation")

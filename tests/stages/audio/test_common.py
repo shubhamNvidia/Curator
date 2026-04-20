@@ -128,9 +128,15 @@ def test_get_audio_duration_error_sets_minus_one(tmp_path: Path) -> None:
         assert result.data["duration"] == -1.0
 
 
-def test_ensure_waveform_2d_and_mono() -> None:
+def test_ensure_waveform_2d_from_tensor() -> None:
     assert ensure_waveform_2d(torch.randn(16000)).shape == (1, 16000)
+
+
+def test_ensure_waveform_2d_from_numpy() -> None:
     assert ensure_waveform_2d(np.random.default_rng(0).standard_normal(16000).astype(np.float32)).dim() == 2
+
+
+def test_ensure_mono() -> None:
     assert ensure_mono(torch.randn(2, 16000)).shape == (1, 16000)
 
 

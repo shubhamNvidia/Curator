@@ -83,12 +83,14 @@ def main(cfg: DictConfig) -> None:
     os.makedirs(output_dir, exist_ok=True)
 
     backend = cfg.get("backend", "xenna")
-    execution_mode = cfg.get("execution_mode", "batch")
     executor_kwargs = {}
     if backend == "xenna":
+        execution_mode = cfg.get("execution_mode", "streaming")
         executor_kwargs["config"] = {"execution_mode": execution_mode}
+        logger.info(f"Starting pipeline execution (backend: {backend}, mode: {execution_mode})...")
+    else:
+        logger.info(f"Starting pipeline execution (backend: {backend})...")
     executor = _create_executor(backend, **executor_kwargs)
-    logger.info(f"Starting pipeline execution (backend: {backend}, mode: {execution_mode})...")
     pipeline.run(executor)
 
     logger.info("\n" + "=" * 60)
