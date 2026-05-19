@@ -1,0 +1,36 @@
+schema_version: '1.0'
+name: AudioDataFilterStage
+target: nemo_curator.stages.audio.advanced_pipelines.audio_data_filter.audio_data_filter.AudioDataFilterStage
+version: 1.0.0
+public_api: true
+description: |
+  Pre-blessed CompositeStage: MonoConversion -> [optional VAD fanout] ->
+  Band/UTMOS/SIGMOS filters -> [optional SegmentConcat] -> [optional
+  SpeakerSep + per-speaker filters] -> TimestampMapper. The most common
+  "give me clean single-speaker clips" preset. Configurable via YAML
+  config_path or config dict.
+summary: Blessed clean-single-speaker preset composite.
+category: composite
+capabilities: [vad, quality_filter_mos, quality_filter_band, speaker_separation, speaker_diarization, segment_concat]
+also_handles: [duration_filter, silence_removal, normalize_mono, normalize_sample_rate, timestamp_remap]
+inputs:
+  top_level: []
+  data: [audio_filepath]
+outputs:
+  top_level: []
+  data: [original_file, original_start_ms, original_end_ms, duration]
+produces_cardinality: '1:N'
+params:
+  - {name: config_path, type: path, default: null}
+  - {name: config, type: dict, default: null}
+resources: {cpus: 1.0, gpus: 1.0, gpu_memory_gb: 0.0}
+batch_size: 1
+supports_process_batch: false
+preferred_executor: any
+license: Apache-2.0
+commercial_safe: true
+cost_hint: very_expensive
+quality_hint: high
+tags: [preset, composite, clean_speech, gpu]
+source_file: nemo_curator/stages/audio/advanced_pipelines/audio_data_filter/audio_data_filter.py
+smoke_test_status: unknown

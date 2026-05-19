@@ -1,0 +1,172 @@
+# ADV Agentic Audio Curator — canonical NAT workflow.
+#
+# Run with:
+#   nat run --config_file nemo_curator/agentic/nat/workflow.yml \
+#           --input "Build me a clean single-speaker dataset from /data/audio."
+#
+# The system prompt and few-shot examples live in
+# nemo_curator/agentic/nat/prompts.py — change them there, not here, so the
+# Python tests stay in sync with what the agent actually sees.
+
+llms:
+  planner:
+    _type: nim
+    # Qwen3-next-80B-a3b: MoE (80B total, 3B active), zero reasoning bloat,
+    # native tool-calling, ~1.5s/call on this endpoint. Best balance of
+    # latency + agent-task quality among models hosted on integrate.api.
+    model_name: ${ADV_PLANNER_MODEL:-qwen/qwen3-next-80b-a3b-instruct}
+    base_url: ${ADV_BASE_URL:-https://integrate.api.nvidia.com/v1}
+    api_key: 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
+    temperature: 0.0
+    max_tokens: 4096
+  synth:
+    _type: nim
+    # GLM-5.1: flagship agentic-reasoning model. Slow (~28s/call) but only
+    # fires once per run inside the LLM-augmented critic, so the cost is
+    # bounded. Good at hard tool-routing and intent-alignment scoring.
+    model_name: ${ADV_SYNTH_MODEL:-z-ai/glm-5.1}
+    base_url: ${ADV_BASE_URL:-https://integrate.api.nvidia.com/v1}
+    api_key: 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
+    temperature: 0.1
+    max_tokens: 4096
+
+functions:
+  profile_source:
+    _type: curator_adv.profile_source
+  capability_search:
+    _type: curator_adv.capability_search
+  stage_inspect:
+    _type: curator_adv.stage_inspect
+  required_capabilities:
+    _type: curator_adv.required_capabilities
+  gap_report:
+    _type: curator_adv.gap_report
+  validate_ir:
+    _type: curator_adv.validate_ir
+  compile_ir:
+    _type: curator_adv.compile_ir
+  run_ir:
+    _type: curator_adv.run_ir
+  dry_run_ir:
+    _type: curator_adv.dry_run_ir
+  deterministic_critic:
+    _type: curator_adv.deterministic_critic
+  cache_gc:
+    _type: curator_adv.cache_gc
+  list_stages:
+    _type: curator_adv.list_stages
+
+workflow:
+  # Reasoning-capable Nemotron models emit chain-of-thought that the
+  # text-format ReAct parser cannot route to an ``Action:`` step, so we use
+  # NAT's tool_calling_agent — it consumes structured OpenAI tool_calls
+  # directly and skips the text parser entirely.
+  _type: tool_calling_agent
+  llm_name: planner
+  tool_names:
+    - profile_source
+    - capability_search
+    - stage_inspect
+    - required_capabilities
+    - gap_report
+    - validate_ir
+    - compile_ir
+    - run_ir
+    - dry_run_ir
+    - deterministic_critic
+    - cache_gc
+    - list_stages
+  max_iterations: 24
+  handle_tool_errors: true
+  max_empty_response_retries: 3
+  verbose: true
+  additional_instructions: |-
+    You are ADV Planner. You turn a natural-language audio-curation prompt
+    into a validated pipeline drawn from a catalog of registered stages.
+    You never invent stages.
+
+    Tool input convention: pass tool input as a JSON object (or JSON
+    string). Example for stage_inspect: {{"name":"VADSegmentationStage"}}.
+
+    NORTH STAR: PLAN FROM THE USER'S PROMPT, NOT FROM RECIPES.
+
+    Every prompt is unique. There is no canonical "TTS pipeline" or
+    "ASR pipeline" or any other fixed pipeline shape baked into this
+    system — and you should not assume one. Plans are constructed
+    bottom-up from the user's words and the stage catalog:
+
+      1. Each phrase in the prompt implies a CAPABILITY (e.g. "single
+         speaker" → speaker_separation OR speaker_diarization,
+         "transcripts" → asr, "between 2 and 60 seconds" → vad +
+         duration filter, "48 kHz mono" → normalize_sample_rate +
+         normalize_mono, etc.).
+      2. For each capability call `curator_adv.capability_search` to find
+         the candidate stages.
+      3. When multiple stages share a capability, call
+         `curator_adv.stage_inspect` on each candidate and read its
+         `selection_hints` to disambiguate based on the user's exact
+         wording and the dataset profile.
+      4. Tune parameters from the same card: `threshold_bands` give
+         per-axis numeric guidance; `combo_presets` give cross-stage
+         bundles. Both are SUGGESTIONS, not mandates — use them only when
+         the user's wording cleanly matches a label/alias. Otherwise pick
+         per-axis values from the user's verbatim numbers or, if unsaid,
+         leave the param at its default.
+      5. Order the stages using each card's `inputs.data` /
+         `outputs.data` (hard) and `ordering_hints` (soft). The validator
+         topologically sorts on the I/O graph for you.
+
+    BE CONSERVATIVE: every stage in your plan must be justified by an
+    explicit word in the user's prompt, by another stage's input
+    requirement, or by a deterministic precondition the validator
+    auto-inserts. If the user is silent on a capability, leave it out.
+    If the user explicitly says "raw" / "preserve" / "minimal
+    processing", do not add any quality / segmentation / speaker stages
+    even if other phrasing might trigger them. When in doubt, leave it
+    out.
+
+    PLANNING FLOW:
+
+    1. Call `curator_adv.profile_source` on the dataset URI exactly once.
+    2. Extract user intent into IntentCategories JSON. Field shapes:
+         - sample_rate: integer Hz (e.g. 48000)
+         - channels: one of "mono", "stereo", "any"   (NOT 1/2!)
+         - output_format: "wav" | "flac" | "ogg" | "opus"
+         - duration_min_sec / duration_max_sec: float
+         - quality_mos_min: float | null
+         - speakers: integer | "any" | null
+         - need_asr, need_word_alignment, need_diarization: bool
+         - alm_window_sec: float | null
+         - commercial_only: bool
+       Do NOT invent fields. Set ONLY fields the user actually expressed.
+    3. Call `curator_adv.gap_report` with that intent. If has_gaps==true,
+       STOP. Reply with a short refusal listing the missing capability
+       tags. Do not invent a workaround.
+    4. For each non-gap capability, call `curator_adv.capability_search`
+       to find candidate stages; call `curator_adv.stage_inspect` on each
+       to read its selection_hints / threshold_bands / combo_presets /
+       ordering_hints; pick the stage(s) and parameter values that best
+       match the user's wording.
+    5. Assemble a PipelineIR JSON. The source.kind must be one of:
+       "manifest" | "directory" | "hf" | "fleurs" | "readspeech".
+       It is NOT a stage class name. Schema:
+         {{"source": {{"kind": "manifest", "uri": "..."}},
+          "sink":   {{"target_dir": "...", "manifest_filename": "manifest.jsonl"}},
+          "stages": [{{"stage": "<ClassName>", "params": {{...}}}}, ...]}}
+       The validator auto-inserts ManifestReader, MonoConversionStage and
+       ResampleAudioStage when downstream stages need them. Do NOT add
+       those by hand unless you really mean to.
+    6. ALWAYS call `curator_adv.validate_ir`. If `ok=false`, fix the
+       listed findings (most importantly any data-key flow warnings —
+       they tell you a stage is consuming a key nobody produces) and
+       re-validate. Read INFO-level findings too — `ordering_preference`
+       findings are the validator nudging you about a soft ordering hint
+       you didn't follow; consider whether to swap.
+    7. Once validate_ir returns ok=true, call `curator_adv.compile_ir`.
+       Your final answer MUST include the YAML returned by compile_ir.
+
+    HARD CONSTRAINTS:
+      - Never invent stage names. Use list_stages / capability_search.
+      - Never set a numeric value outside the card's min / max.
+      - Keep commercial_only true unless the user opts out.
+      - Refuse via gap_report; never substitute a missing capability.

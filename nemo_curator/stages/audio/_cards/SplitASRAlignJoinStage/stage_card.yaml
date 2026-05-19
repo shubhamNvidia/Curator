@@ -1,0 +1,75 @@
+schema_version: '1.0'
+name: SplitASRAlignJoinStage
+target: nemo_curator.stages.audio.tagging.split.SplitASRAlignJoinStage
+version: 1.0.0
+public_api: true
+description: |
+  CompositeStage that wraps SplitLongAudio + NeMo ASR + JoinSplitAudioMetadata
+  into a single named building block for long-audio transcription with
+  alignment.
+summary: One-call split-ASR-align-join for long files.
+category: composite
+capabilities: [asr_align, long_audio_split, long_audio_join]
+also_handles: []
+inputs:
+  top_level: []
+  data: [audio_filepath]
+outputs:
+  top_level: []
+  data: [audio_filepath, text, words, segments]
+produces_cardinality: '1:1'
+params:
+  - {name: suggested_max_len, type: float, default: 3600.0}
+  - {name: min_len, type: float, default: 1.0}
+  - {name: model_name, type: str, default: 'nvidia/parakeet-tdt_ctc-1.1b'}
+  - {name: is_fastconformer, type: bool, default: true}
+  - {name: decoder_type, type: enum, default: rnnt, choices: [rnnt, ctc]}
+  - {name: max_len, type: float, default: 40.0}
+  - {name: transcribe_batch_size, type: int, default: 32}
+  - {name: model_path, type: path, default: null, description: "Optional local NeMo .nemo path overriding model_name."}
+  - {name: split_batch_size, type: int, default: 5000}
+  - {name: num_workers, type: int, default: 10}
+  - {name: infer_segment_only, type: bool, default: false}
+  - {name: compute_timestamps, type: bool, default: true}
+  - {name: timestamp_type, type: enum, default: word, choices: [word, char]}
+  - {name: text_key, type: str, default: text}
+  - {name: words_key, type: str, default: words}
+  - {name: disable_word_confidence, type: bool, default: false}
+  - {name: segments_key, type: str, default: segments}
+resources: {cpus: 1.0, gpus: 1.0, gpu_memory_gb: 0.0}
+batch_size: 100
+supports_process_batch: true
+preferred_executor: any
+models:
+  - {name: parakeet-tdt_ctc-1.1b, provider: huggingface, repo_id: 'nvidia/parakeet-tdt_ctc-1.1b', license: CC-BY-4.0}
+license: Apache-2.0
+commercial_safe: true
+cost_hint: very_expensive
+quality_hint: high
+tags: [asr, alignment, long_audio, composite, gpu]
+selection_hints:
+  prefer_when:
+    - "input contains LONG-form audio (lectures, podcasts, conversations, meetings — durations measured in minutes or hours)"
+    - "the dataset profile shows clips longer than ~40 s and the user wants transcripts"
+    - "you want one tool that handles split → ASR → align → rejoin without manual orchestration"
+  avoid_when:
+    - "clips are already short (< ~40 s) — NeMoASRAlignerStage is simpler and avoids the split/join overhead"
+    - "user does not need transcripts (this stage's whole purpose is ASR + alignment)"
+  notes:
+    - "Composite stage: internally expands to SplitLongAudio → NeMo ASR/Align → Join with the same parameter surface as NeMoASRAlignerStage."
+    - "suggested_max_len caps how long each internal chunk gets; lower it on small-VRAM nodes."
+    - "Output carries the JOINED transcript on the original (un-split) task, with word timestamps re-mapped to original-file positions."
+  ordering_hints:
+    prefer_after:
+      - normalize_sample_rate
+      - normalize_mono
+    prefer_before:
+      - wer
+      - timestamp_remap
+      - segment_extract
+    rationale: |
+      Same shape as NeMoASRAlignerStage: needs normalized audio in,
+      produces text + words downstream consumers (WER filter, manifest
+      writer, segment extraction) read.
+source_file: nemo_curator/stages/audio/tagging/split.py
+smoke_test_status: unknown

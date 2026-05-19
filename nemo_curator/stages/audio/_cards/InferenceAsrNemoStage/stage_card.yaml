@@ -1,0 +1,54 @@
+schema_version: '1.0'
+name: InferenceAsrNemoStage
+target: nemo_curator.stages.audio.inference.asr.asr_nemo.InferenceAsrNemoStage
+version: 1.0.0
+public_api: true
+description: |
+  Light-weight NeMo ASR transcription wrapper. Loads a model_name checkpoint
+  (no alignment) and writes the prediction string to pred_text_key. Cheaper
+  than NeMoASRAlignerStage when timestamps aren't needed.
+summary: NeMo ASR transcription only (no alignment).
+category: inference
+capabilities: [asr]
+also_handles: []
+inputs:
+  top_level: []
+  data: [audio_filepath]
+outputs:
+  top_level: []
+  data: [audio_filepath, pred_text]
+produces_cardinality: '1:1'
+requires_on_disk_path: true
+params:
+  - {name: model_name, type: str, required: true, description: "NeMo ASR checkpoint name (e.g. nvidia/parakeet-ctc-1.1b)."}
+  - {name: filepath_key, type: str, default: audio_filepath}
+  - {name: pred_text_key, type: str, default: pred_text}
+  - {name: cache_dir, type: path, default: null, description: "HF cache directory override."}
+  - {name: asr_model, type: str, default: null, affects_behavior: false, description: "Internal handle for the loaded ASR model; not user-set in YAML."}
+resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}
+batch_size: 16
+supports_process_batch: true
+preferred_executor: any
+models:
+  - {name: parakeet-tdt_ctc-1.1b, provider: huggingface, repo_id: 'nvidia/parakeet-tdt_ctc-1.1b', license: CC-BY-4.0}
+license: Apache-2.0
+commercial_safe: true
+cost_hint: expensive
+quality_hint: high
+tags: [asr, nemo, parakeet, gpu]
+selection_hints:
+  prefer_when:
+    - "user wants transcripts (intent.need_asr=true)"
+    - "downstream alignment / WER filtering is requested"
+  notes:
+    - "Writes pred_text per clip; also rewrites audio_filepath if model needs a resampled copy."
+    - "For LONG files use SplitASRAlignJoinStage which wraps this with split/rejoin logic."
+  ordering_hints:
+    prefer_before:
+      - asr_align     # alignment needs pred_text
+      - wer
+    rationale: |
+      Alignment and WER both consume pred_text, which only this stage
+      produces. Always position upstream of asr_align / WER stages.
+source_file: nemo_curator/stages/audio/inference/asr/asr_nemo.py
+smoke_test_status: unknown

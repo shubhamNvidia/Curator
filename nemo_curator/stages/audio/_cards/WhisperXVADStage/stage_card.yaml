@@ -1,0 +1,41 @@
+schema_version: '1.0'
+name: WhisperXVADStage
+target: nemo_curator.stages.audio.inference.vad.whisperx_vad.WhisperXVADStage
+version: 1.0.0
+public_api: true
+description: |
+  WhisperX/pyannote VAD wrapper. Operates on resampled_audio_filepath (16 kHz mono)
+  and writes a list of speech segments under segments_key.
+summary: WhisperX VAD on 16 kHz resampled audio.
+category: inference
+capabilities: [vad]
+also_handles: []
+inputs:
+  top_level: []
+  data: [resampled_audio_filepath]
+outputs:
+  top_level: []
+  data: [vad_segments]
+produces_cardinality: '1:1'
+requires_sample_rate: 16000
+requires_on_disk_path: true
+params:
+  - {name: min_length, type: float, default: 0.5, min: 0.0, max: 3600.0}
+  - {name: max_length, type: float, default: 40.0, min: 0.1, max: 3600.0}
+  - {name: vad_onset, type: float, default: 0.5, min: 0.0, max: 1.0}
+  - {name: vad_offset, type: float, default: 0.363, min: 0.0, max: 1.0}
+  - {name: segments_key, type: str, default: vad_segments}
+  - {name: audio_filepath_key, type: str, default: resampled_audio_filepath}
+resources: {cpus: 1.0, gpus: 1.0, gpu_memory_gb: 0.0}
+batch_size: 1
+supports_process_batch: false
+preferred_executor: any
+models:
+  - {name: pyannote-vad, provider: huggingface, license: MIT}
+license: Apache-2.0
+commercial_safe: true
+cost_hint: medium
+quality_hint: high
+tags: [vad, whisperx, pyannote, gpu]
+source_file: nemo_curator/stages/audio/inference/vad/whisperx_vad.py
+smoke_test_status: unknown

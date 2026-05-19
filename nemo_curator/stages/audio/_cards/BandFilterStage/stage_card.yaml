@@ -1,0 +1,62 @@
+schema_version: '1.0'
+name: BandFilterStage
+target: nemo_curator.stages.audio.filtering.band.BandFilterStage
+version: 1.0.0
+public_api: true
+description: |
+  Classify each clip as 'full_band' or 'narrow_band' using the
+  nvidia/nemocurator-speech-bandwidth-filter joblib model and drop clips that
+  don't match band_value.
+summary: Keep only clips matching the chosen bandwidth class.
+category: filter
+capabilities: [quality_filter_band]
+also_handles: []
+inputs:
+  top_level: []
+  data: [audio_filepath, waveform, sample_rate]
+outputs:
+  top_level: []
+  data: [band_prediction]
+produces_cardinality: '1:0|1'
+requires_in_memory_waveform: true
+params:
+  - {name: model_path, type: str, default: null, description: "Optional local .joblib path."}
+  - {name: cache_dir, type: path, default: null}
+  - {name: band_value, type: enum, default: full_band, choices: [full_band, narrow_band]}
+resources: {cpus: 4.0, gpus: 0.0, gpu_memory_gb: 0.0}
+batch_size: 1
+supports_process_batch: false
+preferred_executor: any
+models:
+  - {name: nemocurator-speech-bandwidth-filter, provider: huggingface, repo_id: 'nvidia/nemocurator-speech-bandwidth-filter', license: Apache-2.0}
+license: Apache-2.0
+commercial_safe: true
+cost_hint: cheap
+quality_hint: medium
+tags: [bandwidth, filter, classifier, cpu]
+selection_hints:
+  prefer_when:
+    - "user mentions full-bandwidth / broadcast / studio / clean / high quality"
+    - "production TTS / ALM curation where telephone-band audio must be excluded"
+    - "you want a cheap, CPU-only sanity gate to drop down-sampled / re-encoded clips"
+  avoid_when:
+    - "user explicitly wants telephone / narrow-band speech kept (e.g. call-center data)"
+    - "user says 'any bandwidth' / does not care about bandwidth"
+  notes:
+    - "Binary classifier — NOT a numeric threshold. The only knob is band_value: 'full_band' or 'narrow_band'."
+    - "Treated as 'narrow_band' (≤ ~8 kHz effective bandwidth, telephone-quality) vs 'full_band' (≥ ~16 kHz effective)."
+    - "Combines naturally with UTMOSFilterStage + SIGMOSFilterStage — different signal (codec / bandwidth) so it catches cases MOS won't."
+    - "For multi-word quality prompts ('clean', 'broadcast', 'studio'), consult UTMOSFilterStage.selection_hints.combo_presets — the project-blessed band_value settings live there."
+  # threshold_bands intentionally empty: this stage has no float thresholds.
+  # The agent should set band_value explicitly via combo_presets or
+  # verbatim user phrasing ("full_band" / "narrow_band").
+  ordering_hints:
+    prefer_before:
+      - quality_filter_mos   # cheap CPU gate before expensive MOS GPUs
+    rationale: |
+      BandFilter is a CPU classifier (cost_hint: cheap). Running it before
+      UTMOSFilterStage / SIGMOSFilterStage drops narrow-band clips early
+      and saves the MOS models from processing audio that will be filtered
+      out anyway.
+source_file: nemo_curator/stages/audio/filtering/band.py
+smoke_test_status: unknown

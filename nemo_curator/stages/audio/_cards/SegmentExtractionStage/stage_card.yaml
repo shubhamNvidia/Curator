@@ -1,0 +1,34 @@
+schema_version: '1.0'
+name: SegmentExtractionStage
+target: nemo_curator.stages.audio.io.extract_segments.SegmentExtractionStage
+version: 1.0.0
+public_api: true
+description: |
+  Slice the original audio file based on offset/duration in each task's
+  manifest entry and write the slice as a standalone segment file (wav/flac/ogg)
+  to output_dir. Operates batched; one source file is opened once per batch.
+summary: Write per-segment audio files from manifest entries.
+category: io
+capabilities: [segment_extract]
+also_handles: []
+inputs:
+  top_level: []
+  data: [original_file, original_start_ms, original_end_ms]
+outputs:
+  top_level: []
+  data: [audio_filepath, extracted_path]
+produces_cardinality: '1:1'
+produces_on_disk_files: true
+params:
+  - {name: output_dir, type: path, required: true}
+  - {name: output_format, type: enum, default: wav, choices: [wav, flac, ogg]}
+resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}
+batch_size: 64
+supports_process_batch: true
+preferred_executor: any
+license: Apache-2.0
+commercial_safe: true
+cost_hint: cheap
+tags: [io, extract, segment, wav]
+source_file: nemo_curator/stages/audio/io/extract_segments.py
+smoke_test_status: unknown

@@ -1,0 +1,34 @@
+schema_version: '1.0'
+name: MergeAlignmentDiarizationStage
+target: nemo_curator.stages.audio.tagging.merge_alignment_diarization.MergeAlignmentDiarizationStage
+version: 1.0.0
+public_api: true
+description: |
+  Take word-level alignment (from NeMoASRAlignerStage) and diarization segments
+  (from PyAnnoteDiarizationStage / InferenceSortformerStage) and merge them
+  into a single rich-transcript representation where each word is attributed
+  to a speaker.
+summary: Join word alignment with diarization to produce per-speaker word streams.
+category: tagging
+capabilities: [diarization_align_merge]
+also_handles: []
+inputs:
+  top_level: []
+  data: [words, segments]
+outputs:
+  top_level: []
+  data: [text, words, segments]
+produces_cardinality: '1:1'
+params:
+  - {name: text_key, type: str, default: text}
+  - {name: words_key, type: str, default: words}
+resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}
+batch_size: 1
+supports_process_batch: false
+preferred_executor: any
+license: Apache-2.0
+commercial_safe: true
+cost_hint: cheap
+tags: [merge, diarization, alignment]
+source_file: nemo_curator/stages/audio/tagging/merge_alignment_diarization.py
+smoke_test_status: unknown

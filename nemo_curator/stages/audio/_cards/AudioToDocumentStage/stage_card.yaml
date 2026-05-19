@@ -1,0 +1,54 @@
+schema_version: '1.0'
+name: AudioToDocumentStage
+target: nemo_curator.stages.audio.io.convert.AudioToDocumentStage
+version: 1.0.0
+public_api: true
+description: |
+  Aggregate a batch of AudioTask entries into a single DocumentBatch (Pandas-backed).
+  Strips non-serializable keys (raw tensors, waveforms) defensively before serializing.
+  The only existing many-to-one stage in the catalog.
+summary: Collapse a batch of AudioTasks into one DocumentBatch.
+category: io
+capabilities: [audio_to_document]
+also_handles: []
+modality_in: audio
+modality_out: text
+inputs:
+  top_level: []
+  data: []
+outputs:
+  top_level: []
+  data: []
+produces_cardinality: 'N:1'
+params: []
+resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}
+batch_size: 64
+supports_process_batch: true
+preferred_executor: any
+license: Apache-2.0
+commercial_safe: true
+cost_hint: cheap
+tags: [bridge, audio_to_text]
+selection_hints:
+  prefer_when:
+    - "user wants a TEXT artifact (Pandas/Parquet/JSON document) of the curated audio, not audio files"
+    - "downstream is a text-only pipeline (RAG, dataset cards, transcript review, search indexing)"
+    - "you've run ASR upstream and want the transcript corpus as the deliverable"
+  avoid_when:
+    - "user wants per-clip audio files written (use SegmentExtractionStage + ManifestWriterStage instead)"
+    - "the pipeline still has audio-only work to do after this stage — this is a one-way bridge to text"
+  notes:
+    - "CARDINALITY IS N:1 — collapses many tasks into a single DocumentBatch. Per the cardinality rules in the validator, this stage MUST be the last non-sink stage."
+    - "Strips non-serializable keys (waveform, raw tensors) before producing the document."
+    - "Often paired with a downstream text-side pipeline (NeMo Curator's text modules), not audio."
+  ordering_hints:
+    prefer_after:
+      - asr
+      - asr_align
+    rationale: |
+      The bridge from audio to text. Run after any audio work that
+      produces text-bearing fields (transcripts, alignment); then either
+      this stage feeds straight into a text pipeline, or its document is
+      written to disk.
+source_file: nemo_curator/stages/audio/io/convert.py
+smoke_test_status: unknown

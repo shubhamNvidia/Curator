@@ -1,0 +1,47 @@
+schema_version: '1.0'
+name: CreateInitialManifestFleursStage
+target: nemo_curator.stages.audio.datasets.fleurs.create_initial_manifest.CreateInitialManifestFleursStage
+version: 1.0.0
+public_api: true
+description: |
+  Dataset reader for the google/fleurs multilingual corpus. Configurable by
+  lang + split; emits one AudioTask per fleurs example.
+summary: FLEURS dataset source — multilingual auto-download.
+category: source
+capabilities: [dataset_create]
+also_handles: []
+inputs:
+  top_level: []
+  data: []
+outputs:
+  top_level: []
+  data: [audio_filepath, text]
+produces_cardinality: '1:N'
+params:
+  - {name: lang, type: str, default: '', description: "FLEURS language code, e.g. en_us."}
+  - {name: split, type: enum, default: '', choices: ['', train, validation, test]}
+  - {name: raw_data_dir, type: path, default: ''}
+  - {name: filepath_key, type: str, default: audio_filepath}
+  - {name: text_key, type: str, default: text}
+resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}
+batch_size: 1
+supports_process_batch: false
+preferred_executor: any
+license: Apache-2.0
+commercial_safe: true
+cost_hint: cheap
+tags: [dataset, reader, fleurs, multilingual]
+selection_hints:
+  prefer_when:
+    - "source URI uses the `fleurs://` scheme or the user names 'FLEURS' / 'google/fleurs'"
+    - "user wants a multilingual benchmark corpus (FLEURS covers 100+ languages)"
+    - "the user explicitly picks a FLEURS language code (e.g. en_us, hi_in)"
+  avoid_when:
+    - "user already has a local manifest — use ManifestReader instead"
+    - "user wants English-only single-speaker — CreateInitialManifestReadSpeechStage is the lighter option"
+  notes:
+    - "Cardinality 1:N (one task per FLEURS example in the requested split)."
+    - "lang is REQUIRED in practice — leaving it empty downloads the default split, which may not be what the user wants. Encode the user's language choice."
+    - "Emits `audio_filepath` + `text` (FLEURS provides reference transcripts)."
+source_file: nemo_curator/stages/audio/datasets/fleurs/create_initial_manifest.py
+smoke_test_status: unknown

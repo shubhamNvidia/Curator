@@ -1,0 +1,48 @@
+schema_version: '1.0'
+name: MonoConversionStage
+target: nemo_curator.stages.audio.preprocessing.mono_conversion.MonoConversionStage
+version: 1.0.0
+public_api: true
+description: |
+  Load the file referenced by audio_filepath_key, downmix to mono by averaging
+  channels, and *verify* (NOT resample) that the file's native sample rate
+  matches output_sample_rate. In strict mode (default) files whose native SR
+  differs are DROPPED — they are not resampled. Carries the mono waveform
+  forward in task.data['waveform']. To actually normalize sample rate across a
+  heterogeneous corpus, chain ResampleAudioStage BEFORE this stage.
+summary: Channel-collapse to mono + verify SR (no resampling); load waveform into memory.
+category: preprocess
+capabilities: [normalize_mono]
+also_handles: []
+selection_hints:
+  prefer_when:
+    - "input dataset is already at the target sample rate (or you've already run ResampleAudioStage)"
+    - "you need an in-memory waveform for VAD / diarization / segmentation downstream"
+  avoid_when:
+    - "source has heterogeneous sample rates — Mono will silently drop the non-matching files in strict mode"
+  notes:
+    - "Does NOT resample. The strict_sample_rate flag is a filter, not a converter."
+    - "Use ResampleAudioStage upstream if you need to normalize SR before this stage."
+inputs:
+  top_level: []
+  data: [audio_filepath]
+outputs:
+  top_level: []
+  data: [waveform, sample_rate, is_mono, duration, num_samples]
+produces_cardinality: '1:0|1'
+requires_sample_rate: null
+produces_in_memory_waveform: true
+params:
+  - {name: output_sample_rate, type: int, default: 48000, min: 8000, max: 96000}
+  - {name: audio_filepath_key, type: str, default: audio_filepath}
+  - {name: strict_sample_rate, type: bool, default: true}
+resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}
+batch_size: 1
+supports_process_batch: false
+preferred_executor: any
+license: Apache-2.0
+commercial_safe: true
+cost_hint: cheap
+tags: [mono, sample_rate, in_memory]
+source_file: nemo_curator/stages/audio/preprocessing/mono_conversion.py
+smoke_test_status: unknown

@@ -1,0 +1,39 @@
+schema_version: '1.0'
+name: GetAudioDurationStage
+target: nemo_curator.stages.audio.common.GetAudioDurationStage
+version: 1.0.0
+public_api: true
+description: |
+  Compute audio duration in seconds from the file at audio_filepath_key and
+  store the result under duration_key. Uses soundfile.info for a metadata-only
+  read (does not decode samples).
+summary: Read audio duration via soundfile and stamp it into task.data.
+category: source
+capabilities: [get_duration]
+also_handles: []
+modality_in: audio
+modality_out: audio
+inputs:
+  top_level: []
+  data: [audio_filepath]
+outputs:
+  top_level: []
+  data: [duration]
+produces_cardinality: '1:1'
+requires_on_disk_path: true
+requires_file_extensions: [.wav, .flac, .ogg, .mp3]
+produces_keys_after_run: [duration]
+drops_keys_after_run: []
+params:
+  - {name: audio_filepath_key, type: str, default: audio_filepath}
+  - {name: duration_key, type: str, default: duration}
+resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}
+batch_size: 1
+supports_process_batch: false
+preferred_executor: any
+license: Apache-2.0
+commercial_safe: true
+cost_hint: very_cheap
+tags: [duration, metadata, cpu]
+source_file: nemo_curator/stages/audio/common.py
+smoke_test_status: unknown

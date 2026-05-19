@@ -1,0 +1,57 @@
+schema_version: '1.0'
+name: InferenceSortformerStage
+target: nemo_curator.stages.audio.inference.sortformer.InferenceSortformerStage
+version: 1.0.0
+public_api: true
+description: |
+  Streaming Sortformer diarizer. Default model nvidia/diar_streaming_sortformer_4spk-v2.1.
+  Emits a list of (speaker_id, start, end) tuples under diar_segments_key. Up to 4
+  speakers; chunked streaming inference with configurable left/right context.
+summary: Streaming NVIDIA Sortformer diarizer (up to 4 speakers).
+category: inference
+capabilities: [speaker_diarization, speaker_count]
+also_handles: []
+inputs:
+  top_level: []
+  data: [audio_filepath]
+outputs:
+  top_level: []
+  data: [diar_segments, num_speakers]
+produces_cardinality: '1:1'
+requires_on_disk_path: true
+params:
+  - {name: model_name, type: str, default: 'nvidia/diar_streaming_sortformer_4spk-v2.1'}
+  - {name: filepath_key, type: str, default: audio_filepath}
+  - {name: diar_segments_key, type: str, default: diar_segments}
+  - {name: chunk_len, type: int, default: 340}
+  - {name: chunk_left_context, type: int, default: 1}
+  - {name: chunk_right_context, type: int, default: 40}
+  - {name: fifo_len, type: int, default: 40}
+  - {name: spkcache_update_period, type: int, default: 300}
+  - {name: spkcache_len, type: int, default: 188}
+  - {name: inference_batch_size, type: int, default: 1}
+  - {name: model_path, type: path, default: null, description: "Optional local checkpoint path."}
+  - {name: cache_dir, type: path, default: null, description: "HF cache directory override."}
+  - {name: diar_model, type: str, default: null, affects_behavior: false, description: "Internal handle for the loaded model."}
+  - {name: rttm_out_dir, type: path, default: null, description: "If set, dump per-file RTTM next to results."}
+resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 8.0}
+batch_size: 1
+supports_process_batch: false
+preferred_executor: any
+models:
+  - {name: diar_streaming_sortformer_4spk-v2.1, provider: huggingface, repo_id: 'nvidia/diar_streaming_sortformer_4spk-v2.1', license: CC-BY-4.0}
+license: Apache-2.0
+commercial_safe: true
+cost_hint: expensive
+quality_hint: high
+tags: [diarization, sortformer, streaming, gpu]
+selection_hints:
+  prefer_when:
+    - "user wants speaker LABELS on unchanged audio (intent.need_diarization == true with speakers == 'any')"
+    - "downstream wants to filter on num_speakers (e.g. PreserveByValueStage num_speakers == 1)"
+    - "label-only path — cardinality is 1:1, original task is preserved"
+  avoid_when:
+    - "user wants per-speaker audio extracted (use SpeakerSeparationStage — 1:N fan-out)"
+    - "the dataset is already known to be single-speaker AND no labels are needed"
+source_file: nemo_curator/stages/audio/inference/sortformer.py
+smoke_test_status: unknown

@@ -1,0 +1,56 @@
+schema_version: '1.0'
+name: PyAnnoteDiarizationStage
+target: nemo_curator.stages.audio.inference.speaker_diarization.pyannote.PyAnnoteDiarizationStage
+version: 1.0.0
+public_api: true
+description: |
+  pyannote/speaker-diarization-3.1 wrapper. Requires an HF token (env
+  HF_TOKEN) at run time. Emits a list of (speaker_id, start, end) under
+  segments_key and an overlap_segments list under overlap_segments_key.
+summary: pyannote speaker-diarization 3.1.
+category: inference
+capabilities: [speaker_diarization, speaker_count]
+also_handles: []
+inputs:
+  top_level: []
+  data: [resampled_audio_filepath]
+outputs:
+  top_level: []
+  data: [segments, overlap_segments]
+produces_cardinality: '1:1'
+requires_sample_rate: 16000
+requires_on_disk_path: true
+requires_external_token_env: HF_TOKEN
+params:
+  - {name: model_name, type: str, default: 'pyannote/speaker-diarization-3.1'}
+  - {name: segmentation_batch_size, type: int, default: 128}
+  - {name: embedding_batch_size, type: int, default: 128}
+  - {name: min_length, type: float, default: 0.5}
+  - {name: max_length, type: float, default: 40.0}
+  - {name: audio_filepath_key, type: str, default: resampled_audio_filepath}
+  - {name: segments_key, type: str, default: segments}
+  - {name: overlap_segments_key, type: str, default: overlap_segments}
+  - {name: hf_token, type: str, default: null, description: "HuggingFace token; if null reads from HF_TOKEN env."}
+  - {name: xenna_num_workers, type: int, default: 1, min: 1, max: 64}
+resources: {cpus: 1.0, gpus: 1.0, gpu_memory_gb: 0.0}
+batch_size: 1
+supports_process_batch: false
+preferred_executor: any
+models:
+  - {name: pyannote-speaker-diarization-3.1, provider: huggingface, repo_id: 'pyannote/speaker-diarization-3.1', license: MIT}
+license: Apache-2.0
+commercial_safe: true
+cost_hint: expensive
+quality_hint: high
+tags: [diarization, pyannote, gpu]
+selection_hints:
+  prefer_when:
+    - "user explicitly asks for PyAnnote / requires the pyannote ecosystem"
+    - "speaker labels needed and HF_TOKEN is available"
+  avoid_when:
+    - "user wants per-speaker audio extracted (use SpeakerSeparationStage)"
+    - "the pipeline is otherwise NVIDIA-only — prefer InferenceSortformerStage for consistency"
+  notes:
+    - "Requires HF token for the pyannote-speaker-diarization-3.1 model."
+source_file: nemo_curator/stages/audio/inference/speaker_diarization/pyannote.py
+smoke_test_status: unknown

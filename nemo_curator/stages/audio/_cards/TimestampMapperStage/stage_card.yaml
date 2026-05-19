@@ -1,0 +1,72 @@
+schema_version: '1.0'
+name: TimestampMapperStage
+target: nemo_curator.stages.audio.postprocessing.timestamp_mapper.TimestampMapperStage
+version: 1.0.0
+public_api: true
+description: |
+  Output-boundary normalizer. Resolves the canonical row schema
+  (original_file, original_start_ms, original_end_ms, duration_ms, duration)
+  from one of FOUR fallback timing sources, in priority order:
+    1. segment_mappings on task._metadata  — from SegmentConcatenationStage
+    2. start_ms / end_ms on task.data       — from VADSegmentationStage fan-out
+    3. diar_segments on task.data           — from SpeakerSeparationStage / Sortformer
+    4. duration fallback                    — whole-file duration
+  Then CLEARS task.data and rebuilds it with only the canonical fields plus
+  the whitelisted passthrough_keys (speaker_id, num_speakers, utmos_mos,
+  sigmos_*, band_prediction, …). Non-serializable keys such as `waveform`
+  are unconditionally dropped.
+summary: Output-row normalizer; required directly before SegmentExtraction or ManifestWriter.
+category: postprocess
+capabilities: [timestamp_remap]
+also_handles: []
+inputs:
+  top_level: []
+  data: []
+outputs:
+  top_level: []
+  data: [original_file, original_start_ms, original_end_ms, duration_ms, duration]
+produces_cardinality: '1:1'
+drops_keys_after_run: [waveform, audio, audio_data, audio_array, segments]
+params:
+  - {name: passthrough_keys, type: list, default: null, description: "Whitelist of keys to copy from input to output. ``null`` uses the built-in default: speaker_id, num_speakers, speaking_duration, sample_rate, utmos_mos, sigmos_noise/ovrl/sig/col/disc/loud/reverb, band_prediction. Override to widen for custom fields."}
+resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}
+batch_size: 1
+supports_process_batch: false
+preferred_executor: any
+license: Apache-2.0
+commercial_safe: true
+cost_hint: very_cheap
+tags: [postprocess, normalize, cpu]
+selection_hints:
+  prefer_when:
+    - "ALWAYS, when the pipeline emits per-segment rows that downstream needs to map back to the source file"
+    - "directly before SegmentExtractionStage — extraction needs `original_start_ms` / `original_end_ms`"
+    - "directly before ManifestWriterStage — gives a clean, JSONL-friendly row schema"
+    - "after VAD / SegmentConcatenation / SpeakerSeparation — those produce the timing inputs this stage consumes"
+  avoid_when:
+    - "another waveform-consuming stage (UTMOS, SIGMOS, BandFilter, VAD, SpeakerSeparation) runs AFTER this stage — TimestampMapper strips `waveform` from task.data"
+    - "the pipeline is purely whole-file passthrough with no segmentation; the writer can use the source manifest directly"
+  notes:
+    - "task.data is REBUILT from scratch — keys you want preserved must be in passthrough_keys."
+    - "When SegmentConcatenationStage records segment_mappings on task._metadata, this stage uses them to translate concat-space timings back to original-file timings."
+    - "If a clip ends up spanning multiple original files (rare), it is DROPPED with a debug log."
+  ordering_hints:
+    prefer_after:
+      - vad                 # produces start_ms / end_ms
+      - segment_concat      # produces segment_mappings in _metadata
+      - speaker_separation  # produces diar_segments and per-speaker timing
+      - quality_filter_mos  # MOS scores need to land in the row before normalization
+      - quality_filter_band # bandwidth verdict ditto
+    prefer_before:
+      - segment_extract     # extraction reads original_start_ms / original_end_ms (HARD via inputs)
+      - write_manifest
+    rationale: |
+      TimestampMapper is the final polish before either segment extraction
+      or manifest write. Run it AFTER everything that produces timing
+      information or per-clip metadata (VAD, SegmentConcat,
+      SpeakerSeparation, MOS / Band filters) and BEFORE
+      SegmentExtractionStage / ManifestWriterStage. Crucially, never put
+      another waveform-consuming stage downstream of it — task.data is
+      cleared and `waveform` is dropped here.
+source_file: nemo_curator/stages/audio/postprocessing/timestamp_mapper.py
+smoke_test_status: unknown

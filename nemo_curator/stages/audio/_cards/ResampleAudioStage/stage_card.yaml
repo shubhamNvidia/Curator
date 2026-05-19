@@ -1,0 +1,43 @@
+schema_version: '1.0'
+name: ResampleAudioStage
+target: nemo_curator.stages.audio.tagging.resample_audio.ResampleAudioStage
+version: 1.0.0
+public_api: true
+description: |
+  Shell out to ffmpeg to resample the file at audio_filepath_key to
+  target_sample_rate / target_format / target_nchannels, writing a NEW file
+  to resampled_audio_filepath_key. Required by ASR / diarization / WhisperX
+  paths that expect 16 kHz mono on disk.
+summary: ffmpeg-based on-disk resample to 16 kHz mono (default).
+category: tagging
+capabilities: [normalize_sample_rate]
+also_handles: [normalize_mono]
+inputs:
+  top_level: []
+  data: [audio_filepath]
+outputs:
+  top_level: []
+  data: [audio_filepath, resampled_audio_filepath, duration, audio_item_id]
+produces_cardinality: '1:1'
+requires_on_disk_path: true
+produces_on_disk_files: true
+params:
+  - {name: resampled_audio_dir, type: path, required: true, description: "REQUIRED: output directory for resampled files (created on first run)."}
+  - {name: input_format, type: str, default: wav}
+  - {name: target_sample_rate, type: int, default: 16000, min: 8000, max: 96000}
+  - {name: target_format, type: enum, default: wav, choices: [wav, flac, ogg]}
+  - {name: target_nchannels, type: int, default: 1, min: 1, max: 2}
+  - {name: audio_filepath_key, type: str, default: audio_filepath}
+  - {name: resampled_audio_filepath_key, type: str, default: resampled_audio_filepath}
+  - {name: duration_key, type: str, default: duration}
+  - {name: audio_item_id_key, type: str, default: audio_item_id}
+resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}
+batch_size: 1
+supports_process_batch: false
+preferred_executor: any
+license: Apache-2.0
+commercial_safe: true
+cost_hint: cheap
+tags: [resample, ffmpeg, on_disk]
+source_file: nemo_curator/stages/audio/tagging/resample_audio.py
+smoke_test_status: unknown

@@ -1,0 +1,51 @@
+schema_version: '1.0'
+name: ALMDataOverlapStage
+target: nemo_curator.stages.audio.alm.alm_data_overlap.ALMDataOverlapStage
+version: 1.0.0
+public_api: true
+description: |
+  Overlap-based dedup pass for ALM windows. Drops a window if it overlaps an
+  already-kept window above overlap_percentage. Use after ALMDataBuilderStage
+  to control redundancy in the training set.
+summary: Dedup ALM windows by overlap percentage.
+category: alm
+capabilities: [alm_overlap]
+also_handles: []
+inputs:
+  top_level: []
+  data: [alm_windows]
+outputs:
+  top_level: []
+  data: [alm_windows]
+produces_cardinality: '1:1'
+params:
+  - {name: overlap_percentage, type: int, default: 0, min: 0, max: 100}
+  - {name: target_duration, type: float, default: 120.0, min: 1.0, max: 600.0}
+resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}
+batch_size: 1
+supports_process_batch: false
+preferred_executor: any
+license: Apache-2.0
+commercial_safe: true
+cost_hint: cheap
+tags: [alm, dedup, cpu]
+selection_hints:
+  prefer_when:
+    - "user wants deduplicated ALM windows (mention of 'overlap', 'dedup', 'unique windows', 'no overlap')"
+    - "ALMDataBuilderStage ran upstream and produced potentially overlapping windows"
+  avoid_when:
+    - "no ALM windows exist (no upstream ALMDataBuilderStage)"
+    - "user wants ALL windows including overlapping ones (set overlap_percentage=100 instead of skipping the stage to be explicit)"
+  notes:
+    - "overlap_percentage=0 means 'no two windows may share any time'; 100 means 'allow full overlap' (effectively a no-op)."
+    - "Pairs deterministically with ALMDataBuilderStage — almost always the next stage after it."
+  ordering_hints:
+    prefer_after:
+      - alm_package
+    prefer_before:
+      - write_manifest
+    rationale: |
+      Dedup pass that must run after ALMDataBuilder (the producer of
+      alm_windows) and before manifest writing.
+source_file: nemo_curator/stages/audio/alm/alm_data_overlap.py
+smoke_test_status: unknown

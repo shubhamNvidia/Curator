@@ -1,0 +1,33 @@
+schema_version: '1.0'
+name: ManifestWriterStage
+target: nemo_curator.stages.audio.common.ManifestWriterStage
+version: 1.0.0
+public_api: true
+description: |
+  Append each AudioTask's task.data dict to an output JSONL manifest. Truncates
+  on the driver in setup() so reruns produce a clean file; per-node setup_on_node
+  only creates the directory.
+summary: JSONL manifest sink.
+category: sink
+capabilities: [write_manifest]
+also_handles: []
+inputs:
+  top_level: []
+  data: []
+outputs:
+  top_level: []
+  data: []
+produces_cardinality: '1:1'
+produces_on_disk_files: true
+params:
+  - {name: output_path, type: path, required: true}
+resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}
+batch_size: 1
+supports_process_batch: false
+preferred_executor: any
+license: Apache-2.0
+commercial_safe: true
+cost_hint: very_cheap
+tags: [writer, manifest, jsonl, sink]
+source_file: nemo_curator/stages/audio/common.py
+smoke_test_status: unknown

@@ -1,0 +1,114 @@
+schema_version: '1.0'
+name: SIGMOSFilterStage
+target: nemo_curator.stages.audio.filtering.sigmos.SIGMOSFilterStage
+version: 1.0.0
+public_api: true
+description: |
+  Microsoft SIG-Challenge MOS estimator (ONNX). Outputs seven quality
+  sub-scores (noise / ovrl / sig / col / disc / loud / reverb) and drops
+  clips that fall below any of the *_threshold floors. Model auto-downloads
+  on first use and caches under ~/.cache/nemo_curator/sigmos_model/.
+summary: Multi-axis MOS filter (noise / overall / signal / loudness / reverb / ...).
+category: filter
+capabilities: [quality_filter_mos]
+also_handles: []
+inputs:
+  top_level: []
+  data: [audio_filepath, waveform, sample_rate]
+outputs:
+  top_level: []
+  data: [sigmos_noise, sigmos_ovrl, sigmos_sig, sigmos_col, sigmos_disc, sigmos_loud, sigmos_reverb]
+produces_cardinality: '1:0|1'
+requires_in_memory_waveform: true
+params:
+  - {name: model_dir, type: path, default: ~/.cache/nemo_curator/sigmos_model/}
+  - {name: model_path, type: path, default: null}
+  - {name: noise_threshold, type: float, default: 4.0, min: 0.0, max: 5.0}
+  - {name: ovrl_threshold, type: float, default: 3.5, min: 0.0, max: 5.0}
+  - {name: sig_threshold, type: float, default: null, min: 0.0, max: 5.0}
+  - {name: col_threshold, type: float, default: null, min: 0.0, max: 5.0}
+  - {name: disc_threshold, type: float, default: null, min: 0.0, max: 5.0}
+  - {name: loud_threshold, type: float, default: null, min: 0.0, max: 5.0}
+  - {name: reverb_threshold, type: float, default: null, min: 0.0, max: 5.0}
+resources: {cpus: 1.0, gpus: 0.5, gpu_memory_gb: 0.0}
+batch_size: 1
+supports_process_batch: false
+preferred_executor: any
+models:
+  - {name: sig-mos-onnx, provider: github, license: Apache-2.0, description: "Microsoft SIG-Challenge ONNX"}
+license: Apache-2.0
+commercial_safe: true
+cost_hint: medium
+quality_hint: high
+tags: [mos, sigmos, filter, onnx, gpu]
+selection_hints:
+  prefer_when:
+    - "user wants MULTI-AXIS quality control (noise, reverb, distortion, artifacts, loudness)"
+    - "user mentions a specific dimension ('denoised', 'dry', 'no clipping', 'level-matched')"
+    - "production cleanup pipelines that need to gate on independent perceptual axes"
+    - "TTS / ALM curation (combines well with UTMOSFilterStage)"
+  avoid_when:
+    - "user explicitly wants noisy / unprocessed audio kept"
+  notes:
+    - "Microsoft SIG-Challenge ONNX, predicts seven ITU-T P.804 dimensions, each on the 0-5 MOS ACR scale."
+    - "Higher score is ALWAYS better. Only set the threshold(s) for the axis/axes the user actually cares about; leave the rest null."
+    - "All seven axes can be combined; a clip is dropped if it fails ANY non-null threshold."
+    - "Complementary with UTMOSFilterStage: SIGMOS catches noise/reverb/artifact problems independently of naturalness — chaining BOTH is a common, recommended pattern."
+    - "For multi-word quality prompts ('clean', 'studio', 'broadcast'), CONSULT UTMOSFilterStage.selection_hints.combo_presets — the project-blessed cross-stage presets live there."
+    - "Axis legend: NOISE = background-noise level (higher = quieter), OVRL = overall quality, SIG = speech-signal clarity, COL = coloration / spectral distortion (higher = flatter), DISC = discontinuity / dropouts / artifacts (higher = fewer), LOUD = loudness adequacy (higher = better leveled), REVERB = reverberation (higher = drier)."
+    - "MOS ACR anchors (same for every axis): 1=Bad, 2=Poor, 3=Fair, 4=Good, 5=Excellent."
+  threshold_bands:
+    # --- ovrl_threshold (catch-all overall quality) --------------------
+    - {param: ovrl_threshold, value: 2.5, label: "any quality"}
+    - {param: ovrl_threshold, value: 3.0, label: "fair"}
+    - {param: ovrl_threshold, value: 3.0, label: "decent"}
+    - {param: ovrl_threshold, value: 3.5, label: "good"}
+    - {param: ovrl_threshold, value: 3.5, label: "clean"}
+    - {param: ovrl_threshold, value: 4.0, label: "very good"}
+    - {param: ovrl_threshold, value: 4.0, label: "high quality"}
+    - {param: ovrl_threshold, value: 4.0, label: "broadcast"}
+    - {param: ovrl_threshold, value: 4.3, label: "studio"}
+    # --- noise_threshold (higher = less background noise) --------------
+    - {param: noise_threshold, value: 3.0, label: "noisy"}
+    - {param: noise_threshold, value: 3.5, label: "lightly noisy"}
+    - {param: noise_threshold, value: 3.5, label: "noise-suppressed"}
+    - {param: noise_threshold, value: 4.0, label: "denoised"}
+    - {param: noise_threshold, value: 4.0, label: "broadcast"}
+    - {param: noise_threshold, value: 4.5, label: "studio-quiet"}
+    # --- sig_threshold (speech-signal clarity) -------------------------
+    - {param: sig_threshold, value: 3.0, label: "intelligible"}
+    - {param: sig_threshold, value: 3.5, label: "clear"}
+    - {param: sig_threshold, value: 4.0, label: "pristine"}
+    - {param: sig_threshold, value: 4.0, label: "high quality"}
+    # --- col_threshold (coloration / spectral distortion) --------------
+    - {param: col_threshold, value: 3.0, label: "slight coloration ok"}
+    - {param: col_threshold, value: 3.5, label: "spectrally clean"}
+    - {param: col_threshold, value: 4.0, label: "full bandwidth"}
+    - {param: col_threshold, value: 4.0, label: "broadcast"}
+    # --- disc_threshold (discontinuity / dropouts / artifacts) ---------
+    - {param: disc_threshold, value: 3.0, label: "occasional artifacts ok"}
+    - {param: disc_threshold, value: 3.5, label: "smooth"}
+    - {param: disc_threshold, value: 3.5, label: "artifact-free"}
+    - {param: disc_threshold, value: 4.0, label: "pristine continuity"}
+    # --- loud_threshold (loudness adequacy) ----------------------------
+    - {param: loud_threshold, value: 3.0, label: "audible"}
+    - {param: loud_threshold, value: 3.5, label: "well-leveled"}
+    - {param: loud_threshold, value: 4.0, label: "broadcast-leveled"}
+    # --- reverb_threshold (higher = less reverb / drier) ---------------
+    - {param: reverb_threshold, value: 3.0, label: "room ambience ok"}
+    - {param: reverb_threshold, value: 3.5, label: "dry"}
+    - {param: reverb_threshold, value: 4.0, label: "very dry"}
+    - {param: reverb_threshold, value: 4.3, label: "studio"}
+    - {param: reverb_threshold, value: 4.3, label: "anechoic"}
+  ordering_hints:
+    prefer_after:
+      - quality_filter_band   # let the cheap BandFilter prune first
+      - UTMOSFilterStage      # UTMOS first matches the audio_data_filter default
+    prefer_before:
+      - speaker_separation
+    rationale: |
+      Run after BandFilterStage and UTMOSFilterStage so cheaper gates drop
+      clips first. Run before speaker fan-out for compact reporting; flip
+      this if you want per-speaker SIGMOS scoring.
+source_file: nemo_curator/stages/audio/filtering/sigmos.py
+smoke_test_status: unknown

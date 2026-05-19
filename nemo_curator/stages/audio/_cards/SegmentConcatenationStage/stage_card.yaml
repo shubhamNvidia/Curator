@@ -1,0 +1,53 @@
+schema_version: '1.0'
+name: SegmentConcatenationStage
+target: nemo_curator.stages.audio.preprocessing.concatenation.SegmentConcatenationStage
+version: 1.0.0
+public_api: true
+description: |
+  Consume a single AudioTask whose task.data['segments'] holds a list of
+  VAD-emitted nested segments. Concatenate them in order with silence_duration_sec
+  of silence between each, and emit ONE AudioTask carrying the combined waveform
+  plus segment_mappings in task._metadata.
+summary: Concat nested VAD segments back into a single waveform with silence gaps.
+category: preprocess
+capabilities: [segment_concat]
+also_handles: []
+inputs:
+  top_level: []
+  data: [segments]
+outputs:
+  top_level: []
+  data: [waveform, sample_rate, num_segments, total_duration_sec, original_file]
+produces_cardinality: '1:1'
+produces_in_memory_waveform: true
+params:
+  - {name: silence_duration_sec, type: float, default: 0.5, min: 0.0, max: 5.0}
+resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}
+batch_size: 1
+supports_process_batch: false
+preferred_executor: any
+license: Apache-2.0
+commercial_safe: true
+cost_hint: cheap
+tags: [concat, vad, in_memory]
+selection_hints:
+  prefer_when:
+    - "VAD has run upstream (nested or fanned-out segments need re-stitching)"
+    - "the next stage needs ONE coherent waveform per task (speaker separation, ALM packaging, file extraction with whole-file timing)"
+  avoid_when:
+    - "no segmentation has happened upstream — there is nothing to concatenate"
+  notes:
+    - "Inverse of VADSegmentationStage's segmentation: takes the nested segments list and emits a single AudioTask with the recombined waveform."
+    - "Records segment-to-time mapping in task._metadata so a later TimestampMapperStage can recover per-segment timestamps."
+  ordering_hints:
+    prefer_after:
+      - vad   # we re-stitch what VAD segmented
+    prefer_before:
+      - speaker_separation   # SpeakerSeparation needs a single coherent waveform
+      - alm_package           # ALM windows need full-clip audio
+    rationale: |
+      Bridge between VAD's segmentation and stages that need a whole-clip
+      waveform. When VAD and SpeakerSeparation are both in a pipeline,
+      this stage MUST sit between them.
+source_file: nemo_curator/stages/audio/preprocessing/concatenation.py
+smoke_test_status: unknown

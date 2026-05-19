@@ -1,0 +1,89 @@
+{
+  "schema_version": "1.0",
+  "name": "tts_clean_2_to_60_single_speaker",
+  "description": "Hand-authored IR for the canonical 'clean, single-speaker, 2-60s' TTS prompt. Phase 2 smoke target; the Phase 3 agent will emit IRs in this shape from natural language.",
+  "intent": {
+    "sample_rate": 48000,
+    "channels": "mono",
+    "duration_min_sec": 2.0,
+    "duration_max_sec": 60.0,
+    "quality_mos_min": 3.5,
+    "speakers": 1,
+    "output_extract_clips": true,
+    "output_format": "wav",
+    "commercial_only": true,
+    "raw_prompt": "clean, single-speaker, 2-60s TTS clips"
+  },
+  "source": {
+    "kind": "manifest",
+    "uri": "tutorials/audio/agentic/fixtures/sample.jsonl"
+  },
+  "sink": {
+    "target_dir": "tutorials/audio/agentic/out/tts_clean",
+    "manifest_filename": "manifest.jsonl",
+    "output_format": "wav"
+  },
+  "executor": "xenna",
+  "dry_run_sample_count": 4,
+  "enable_checkpointing": true,
+  "cache_enabled": true,
+  "stages": [
+    {
+      "stage": "ManifestReader",
+      "params": {
+        "manifest_path": "tutorials/audio/agentic/fixtures/sample.jsonl",
+        "files_per_partition": 1
+      }
+    },
+    {
+      "stage": "VADSegmentationStage",
+      "params": {
+        "min_duration_sec": 2.0,
+        "max_duration_sec": 60.0,
+        "nested": false
+      }
+    },
+    {
+      "stage": "UTMOSFilterStage",
+      "params": {
+        "mos_threshold": 3.5
+      }
+    },
+    {
+      "stage": "SIGMOSFilterStage",
+      "params": {
+        "noise_threshold": 4.0,
+        "ovrl_threshold": 3.5
+      }
+    },
+    {
+      "stage": "InferenceSortformerStage",
+      "params": {}
+    },
+    {
+      "stage": "PreserveByValueStage",
+      "params": {
+        "input_value_key": "num_speakers",
+        "target_value": 1,
+        "operator": "eq"
+      }
+    },
+    {
+      "stage": "TimestampMapperStage",
+      "params": {}
+    },
+    {
+      "stage": "SegmentExtractionStage",
+      "params": {
+        "output_dir": "tutorials/audio/agentic/out/tts_clean/audio",
+        "output_format": "wav"
+      }
+    },
+    {
+      "stage": "ManifestWriterStage",
+      "params": {
+        "output_path": "tutorials/audio/agentic/out/tts_clean/manifest.jsonl"
+      }
+    }
+  ]
+}

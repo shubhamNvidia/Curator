@@ -1,0 +1,55 @@
+schema_version: '1.0'
+name: PreserveByValueStage
+target: nemo_curator.stages.audio.common.PreserveByValueStage
+version: 1.0.0
+public_api: true
+description: |
+  Generic key/value filter. Drops tasks whose task.data[input_value_key]
+  fails the comparison `operator` against target_value. Operator is one of
+  {lt, le, eq, ne, ge, gt}. Returns None from process(); all work happens in
+  process_batch().
+summary: Drop tasks that don't satisfy a simple key-vs-value comparison.
+category: filter
+capabilities: [value_filter]
+also_handles: []
+inputs:
+  top_level: []
+  data: []
+outputs:
+  top_level: []
+  data: []
+produces_cardinality: '1:0|1'
+produces_keys_after_run: []
+drops_keys_after_run: []
+params:
+  - {name: input_value_key, type: str, required: true, description: "task.data key to compare."}
+  - {name: target_value, type: str, required: true, description: "Threshold value (int or str)."}
+  - {name: operator, type: enum, default: eq, choices: [lt, le, eq, ne, ge, gt]}
+resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}
+batch_size: 1
+supports_process_batch: true
+preferred_executor: any
+license: Apache-2.0
+commercial_safe: true
+cost_hint: very_cheap
+tags: [filter, cpu, generic]
+selection_hints:
+  prefer_when:
+    - "user wants to filter clips by a specific metadata key (num_speakers, duration, utmos_mos, sigmos_*, band_prediction, language_id, …)"
+    - "an UPSTREAM stage produced the key you want to gate on — e.g. InferenceSortformerStage → num_speakers, UTMOSFilterStage → utmos_mos, BandFilterStage → band_prediction"
+    - "you need a comparison that's NOT a built-in threshold (the dedicated filters only do >= on their own metric; for `==`, `!=`, `<`, `<=` use this stage)"
+  avoid_when:
+    - "the key you want to gate on is the metric of a dedicated filter (UTMOS / SIGMOS / Band) — those filters drop in one step with their own threshold param"
+  notes:
+    - "Cardinality 1:0|1 — keeps or drops; never emits multiple tasks."
+    - "Idiomatic uses: PreserveByValueStage(input_value_key='num_speakers', target_value=1, operator='eq') to keep single-speaker clips after Sortformer; PreserveByValueStage(input_value_key='band_prediction', target_value='narrow_band', operator='eq') for telephone-only corpora; PreserveByValueStage(input_value_key='duration', target_value=2.0, operator='ge') for a duration floor."
+    - "target_value is type-inferred at runtime — pass strings as Python str, numbers as JSON numbers."
+  ordering_hints:
+    rationale: |
+      Position immediately AFTER the stage that produces the key being
+      filtered. The validator topologically sorts based on `inputs.data`
+      anyway, but if you set `inputs.data` to ['<key>'] in your IR (via
+      the agentic layer), the dependency becomes explicit and self-
+      documenting.
+source_file: nemo_curator/stages/audio/common.py
+smoke_test_status: unknown

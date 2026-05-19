@@ -1,0 +1,68 @@
+schema_version: '1.0'
+name: ALMDataBuilderStage
+target: nemo_curator.stages.audio.alm.alm_data_builder.ALMDataBuilderStage
+version: 1.0.0
+public_api: true
+description: |
+  Pack diarized + aligned segments into Audio Language Model training windows
+  of approximately target_window_duration seconds with the given tolerance.
+  Filters windows that fall below min_bandwidth / min_sample_rate and that
+  contain too few or too many speakers.
+summary: Build ALM training windows from diarized/aligned segments.
+category: alm
+capabilities: [alm_package]
+also_handles: []
+inputs:
+  top_level: []
+  data: [segments, words]
+outputs:
+  top_level: []
+  data: [alm_windows]
+produces_cardinality: '1:1'
+params:
+  - {name: target_window_duration, type: float, default: 120.0, min: 1.0, max: 600.0}
+  - {name: tolerance, type: float, default: 0.1, min: 0.0, max: 1.0}
+  - {name: min_bandwidth, type: int, default: 8000, min: 0, max: 24000}
+  - {name: min_sample_rate, type: int, default: 16000, min: 8000, max: 96000}
+  - {name: min_speakers, type: int, default: 2, min: 1, max: 8}
+  - {name: max_speakers, type: int, default: 5, min: 1, max: 8}
+  - {name: truncation, type: bool, default: true}
+  - {name: drop_fields, type: str, default: words}
+  - {name: drop_fields_top_level, type: str, default: 'words,segments'}
+resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}
+batch_size: 1
+supports_process_batch: false
+preferred_executor: any
+license: Apache-2.0
+commercial_safe: true
+cost_hint: cheap
+tags: [alm, packaging, cpu]
+selection_hints:
+  prefer_when:
+    - "user is building training data for an Audio Language Model (ALM) or AudioLLM"
+    - "user mentions 'windows', 'packaging', 'ALM', 'training windows', a target window duration"
+    - "input has been diarized and aligned (segments + words present) — this stage packs that metadata into LM-friendly windows"
+  avoid_when:
+    - "user wants per-clip audio without windowing — this stage is exclusively about packing into time windows"
+    - "no upstream diarization / ASR alignment has run (segments / words wouldn't exist)"
+  notes:
+    - "Each window is approximately target_window_duration seconds wide (±tolerance). Use tolerance to control how aggressively the packer fills windows vs. drops material."
+    - "min_speakers / max_speakers gate windows by speaker variety — defaults (2-5) suit conversational ALMs. Set min_speakers=1 for single-speaker LM data."
+    - "min_bandwidth / min_sample_rate are SOFT pre-filters; pair with BandFilterStage upstream for a stricter gate."
+  ordering_hints:
+    prefer_after:
+      - speaker_diarization
+      - asr_align
+      - segment_concat   # needs whole-clip waveform per task
+    prefer_before:
+      - alm_overlap
+      - write_manifest
+    rationale: |
+      ALMDataBuilder consumes diarization segments + word alignments to
+      build coherent multi-speaker windows. Run after both
+      InferenceSortformerStage (or SpeakerSeparationStage) and an ASR
+      aligner; if VAD ran, SegmentConcatenationStage must precede this
+      so we operate on a single waveform per task. The natural successor
+      is ALMDataOverlapStage to dedup neighbouring windows.
+source_file: nemo_curator/stages/audio/alm/alm_data_builder.py
+smoke_test_status: unknown

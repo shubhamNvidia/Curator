@@ -1,0 +1,35 @@
+schema_version: '1.0'
+name: GetPairwiseWerStage
+target: nemo_curator.stages.audio.metrics.get_wer.GetPairwiseWerStage
+version: 1.0.0
+public_api: true
+description: |
+  Compute editdistance-based WER between text_key (reference) and pred_text_key
+  (ASR hypothesis), writing the result to wer_key (a percent, 0-100). Pairs
+  naturally with InferenceAsrNemoStage upstream and a PreserveByValueStage
+  downstream to enforce asr_wer_max.
+summary: Compute WER between reference and ASR hypothesis.
+category: metric
+capabilities: [wer]
+also_handles: []
+inputs:
+  top_level: []
+  data: [text, pred_text]
+outputs:
+  top_level: []
+  data: [wer]
+produces_cardinality: '1:1'
+params:
+  - {name: text_key, type: str, default: text}
+  - {name: pred_text_key, type: str, default: pred_text}
+  - {name: wer_key, type: str, default: wer}
+resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}
+batch_size: 1
+supports_process_batch: false
+preferred_executor: any
+license: Apache-2.0
+commercial_safe: true
+cost_hint: very_cheap
+tags: [wer, metric, cpu]
+source_file: nemo_curator/stages/audio/metrics/get_wer.py
+smoke_test_status: unknown

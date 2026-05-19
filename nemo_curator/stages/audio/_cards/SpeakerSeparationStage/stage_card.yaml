@@ -1,0 +1,64 @@
+schema_version: '1.0'
+name: SpeakerSeparationStage
+target: nemo_curator.stages.audio.segmentation.speaker_separation.SpeakerSeparationStage
+version: 1.0.0
+public_api: true
+description: |
+  Use the NVIDIA Sortformer diarizer to identify per-speaker activity and
+  fan out one AudioTask per speaker carrying only that speaker's segments.
+  Optionally excludes overlapping regions and enforces min_duration / gap_threshold
+  cleanup between adjacent same-speaker chunks.
+summary: Split a multi-speaker recording into one task per speaker.
+category: segmentation
+capabilities: [speaker_separation, speaker_diarization]
+also_handles: []
+inputs:
+  top_level: []
+  data: [audio_filepath]
+outputs:
+  top_level: []
+  data: [audio_filepath, waveform, sample_rate, speaker_id, num_speakers, start_ms, end_ms, duration]
+produces_cardinality: '1:N'
+requires_in_memory_waveform: false
+params:
+  - {name: model_path, type: str, default: 'nvidia/diar_sortformer_4spk-v1'}
+  - {name: exclude_overlaps, type: bool, default: true}
+  - {name: min_duration, type: float, default: 0.8, min: 0.0, max: 60.0}
+  - {name: gap_threshold, type: float, default: 0.1, min: 0.0, max: 5.0}
+  - {name: buffer_time, type: float, default: 0.5, min: 0.0, max: 5.0}
+resources: {cpus: 1.0, gpus: 1.0, gpu_memory_gb: 0.0}
+batch_size: 1
+supports_process_batch: false
+preferred_executor: any
+incompatible_with_inference_server: false
+models:
+  - {name: diar_sortformer_4spk-v1, provider: huggingface, repo_id: 'nvidia/diar_sortformer_4spk-v1', license: CC-BY-4.0}
+license: Apache-2.0
+commercial_safe: true
+cost_hint: expensive
+quality_hint: high
+tags: [speaker_separation, sortformer, gpu, fanout]
+selection_hints:
+  prefer_when:
+    - "user wants single-speaker output (intent.speakers == 1) — safe default regardless of source: passes through if already 1 speaker, fans out if N > 1"
+    - "source has multi-speaker recordings and the goal is one clean clip per speaker"
+    - "overlapping speech must be removed (exclude_overlaps=true by default)"
+  avoid_when:
+    - "the goal is only speaker LABELS, not split audio — use InferenceSortformerStage (cheaper, 1:1)"
+    - "input is a known-clean single-speaker corpus AND GPU budget is tight"
+  notes:
+    - "Cardinality is 1:N — downstream stages must handle multiple tasks per source file."
+    - "Cost is dominated by Sortformer (GPU); plan accordingly on large datasets."
+    - "Requires ONE coherent waveform per task. If VADSegmentationStage ran upstream and produced nested or fanned-out segments, you MUST insert SegmentConcatenationStage between VAD and this stage to re-stitch them."
+  ordering_hints:
+    prefer_after:
+      - segment_concat   # if VAD ran upstream, re-stitch first
+    rationale: |
+      Sortformer consumes one audio per task. When VAD has segmented the
+      audio (either as nested segments or fan-out), SegmentConcatenationStage
+      must run before this stage to merge those segments back into a single
+      waveform. Without it, SpeakerSeparation would either fail to read
+      the nested list or run per-segment and produce poor diarization
+      results.
+source_file: nemo_curator/stages/audio/segmentation/speaker_separation.py
+smoke_test_status: unknown

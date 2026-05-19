@@ -1,0 +1,48 @@
+schema_version: '1.0'
+name: CreateInitialManifestReadSpeechStage
+target: nemo_curator.stages.audio.datasets.readspeech.create_initial_manifest.CreateInitialManifestReadSpeechStage
+version: 1.0.0
+public_api: true
+description: |
+  Dataset reader for the DNS Challenge Read Speech corpus. Optionally downloads
+  the corpus and emits one AudioTask per file (capped at max_samples). Use
+  for quick experiments without a pre-existing manifest.
+summary: Read Speech (DNS) dataset source — auto-download + tasks.
+category: source
+capabilities: [dataset_create]
+also_handles: []
+inputs:
+  top_level: []
+  data: []
+outputs:
+  top_level: []
+  data: [audio_filepath, text]
+produces_cardinality: '1:N'
+params:
+  - {name: max_samples, type: int, default: 5000, min: 1, max: 1000000}
+  - {name: auto_download, type: bool, default: true}
+  - {name: filepath_key, type: str, default: audio_filepath}
+  - {name: text_key, type: str, default: text}
+  - {name: raw_data_dir, type: path, default: '', description: "Local data directory (auto-resolved when auto_download=true)."}
+resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}
+batch_size: 1
+supports_process_batch: false
+preferred_executor: any
+license: Apache-2.0
+commercial_safe: true
+cost_hint: cheap
+tags: [dataset, reader, dns]
+selection_hints:
+  prefer_when:
+    - "source URI uses the `readspeech://` scheme or the user explicitly names DNS Challenge / Read Speech / DNS corpus"
+    - "user wants a built-in single-speaker English corpus without supplying their own manifest"
+    - "you need a quick sanity-check corpus for testing other stages"
+  avoid_when:
+    - "user already has a manifest or a local directory of audio — use ManifestReader (auto-inserted) instead"
+    - "user wants a multilingual corpus — use CreateInitialManifestFleursStage"
+  notes:
+    - "Cardinality 1:N (one task per file in the picked subset)."
+    - "auto_download=true fetches the corpus on first use; max_samples caps the per-run size."
+    - "Emits `audio_filepath` plus `text` (per-clip transcript when the source provides it)."
+source_file: nemo_curator/stages/audio/datasets/readspeech/create_initial_manifest.py
+smoke_test_status: unknown

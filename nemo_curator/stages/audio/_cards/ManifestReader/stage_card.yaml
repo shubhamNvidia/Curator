@@ -1,0 +1,31 @@
+schema_version: '1.0'
+name: ManifestReader
+target: nemo_curator.stages.audio.common.ManifestReader
+version: 1.0.0
+public_api: true
+description: |
+  Composite reader: FilePartitioningStage discovers JSONL manifest files
+  and groups them, then ManifestReaderStage emits one AudioTask per line.
+summary: High-level JSONL manifest source.
+category: composite
+capabilities: [read_manifest]
+also_handles: []
+inputs: {top_level: [], data: []}
+outputs: {top_level: [], data: [audio_filepath]}
+produces_cardinality: '1:N'
+params:
+  - {name: manifest_path, type: path, required: true}
+  - {name: files_per_partition, type: int, default: 1, min: 1, max: 100000}
+  - {name: blocksize, type: str, default: null}
+  - {name: file_extensions, type: list, default: [.jsonl, .json]}
+  - {name: storage_options, type: dict, default: null}
+resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}
+batch_size: 1
+supports_process_batch: false
+preferred_executor: any
+license: Apache-2.0
+commercial_safe: true
+cost_hint: very_cheap
+tags: [reader, manifest, composite]
+source_file: nemo_curator/stages/audio/common.py
+smoke_test_status: unknown

@@ -1,0 +1,155 @@
+schema_version: '1.0'
+name: UTMOSFilterStage
+target: nemo_curator.stages.audio.filtering.utmos.UTMOSFilterStage
+version: 1.0.0
+public_api: true
+description: |
+  Run the utmos22_strong MOS estimator (torch.hub tarepan/SpeechMOS) on each
+  clip and drop clips whose predicted MOS is below mos_threshold. Audio is
+  resampled to 16 kHz internally.
+summary: Drop clips whose UTMOS score is below a floor.
+category: filter
+capabilities: [quality_filter_mos]
+also_handles: []
+inputs:
+  top_level: []
+  data: [audio_filepath, waveform, sample_rate]
+outputs:
+  top_level: []
+  data: [utmos_mos]
+produces_cardinality: '1:0|1'
+requires_sample_rate: null
+requires_in_memory_waveform: true
+params:
+  - {name: mos_threshold, type: float, default: 3.5, min: 0.0, max: 5.0}
+  - {name: sample_rate, type: int, default: 16000, min: 16000, max: 16000, description: "Internal resample target; not user-tunable in practice."}
+resources: {cpus: 1.0, gpus: 0.5, gpu_memory_gb: 0.0}
+batch_size: 1
+supports_process_batch: false
+preferred_executor: any
+models:
+  - {name: utmos22_strong, provider: torch_hub, license: MIT}
+license: Apache-2.0
+commercial_safe: true
+cost_hint: medium
+quality_hint: high
+tags: [mos, utmos, filter, gpu]
+selection_hints:
+  prefer_when:
+    - "user mentions clean / good / high quality / TTS-ready / broadcast / studio"
+    - "you want a calibrated NATURALNESS gate on top of any other filters"
+    - "TTS-style curation pipelines (combines well with SIGMOS)"
+  avoid_when:
+    - "user explicitly wants noisy / lo-fi audio kept"
+  notes:
+    - "UTMOS22-strong, NATURALNESS estimator on the ITU-T P.800 ACR scale: 1=Bad, 2=Poor, 3=Fair, 4=Good, 5=Excellent."
+    - "Score is a single naturalness number. Pairs well with SIGMOS — it is NOT redundant; UTMOS captures naturalness while SIGMOS catches noise/reverb/artifact issues that can co-exist with natural-sounding speech."
+    - "Internally resamples to 16 kHz; original SR is unaffected."
+  threshold_bands:
+    # ITU-T P.800 ACR mapping for naturalness.
+    - {param: mos_threshold, value: 2.5, label: "any quality"}
+    - {param: mos_threshold, value: 2.5, label: "noisy"}
+    - {param: mos_threshold, value: 3.0, label: "fair"}
+    - {param: mos_threshold, value: 3.0, label: "usable"}
+    - {param: mos_threshold, value: 3.0, label: "decent"}
+    - {param: mos_threshold, value: 3.5, label: "good"}
+    - {param: mos_threshold, value: 3.5, label: "clean"}
+    - {param: mos_threshold, value: 3.5, label: "TTS-ready"}
+    - {param: mos_threshold, value: 4.0, label: "very good"}
+    - {param: mos_threshold, value: 4.0, label: "high quality"}
+    - {param: mos_threshold, value: 4.0, label: "broadcast"}
+    - {param: mos_threshold, value: 4.3, label: "studio"}
+    - {param: mos_threshold, value: 4.5, label: "excellent"}
+  combo_presets:
+    # Cross-stage presets, picked when the user prompt matches a label or
+    # alias. Numeric values + band_value mirror
+    # nemo_curator/stages/audio/advanced_pipelines/audio_data_filter/
+    # default_config.yaml — the project's canonical AudioDataFilter defaults.
+    - label: "clean speech (TTS default)"
+      aliases:
+        - "clean"
+        - "clean non-noisy"
+        - "non-noisy"
+        - "TTS-ready"
+        - "TTS curation"
+        - "production quality"
+      description: |
+        Naturalness + noise + overall-quality gates for TTS/ALM curation.
+        Intentionally does NOT include BandFilterStage — bandwidth gating
+        is only added when the user mentions bandwidth, broadcast, or
+        studio explicitly. MOS values match AudioDataFilter's
+        default_config.yaml for the UTMOS and SIGMOS axes only.
+      settings:
+        - {stage: UTMOSFilterStage,  param: mos_threshold,   value: 3.4}
+        - {stage: SIGMOSFilterStage, param: noise_threshold, value: 4.0}
+        - {stage: SIGMOSFilterStage, param: ovrl_threshold,  value: 3.5}
+    - label: "studio-grade speech"
+      aliases:
+        - "studio"
+        - "studio-quality"
+        - "broadcast studio"
+      description: |
+        Tighter floors for premium TTS / voice-cloning corpora. Pushes
+        naturalness to "very good" and demands very low noise + very dry
+        rooms, full-bandwidth only.
+      settings:
+        - {stage: UTMOSFilterStage,  param: mos_threshold,    value: 4.0}
+        - {stage: SIGMOSFilterStage, param: noise_threshold,  value: 4.5}
+        - {stage: SIGMOSFilterStage, param: ovrl_threshold,   value: 4.0}
+        - {stage: SIGMOSFilterStage, param: reverb_threshold, value: 4.0}
+        - {stage: BandFilterStage,   param: band_value,       value: "full_band"}
+    - label: "broadcast-quality speech"
+      aliases:
+        - "broadcast"
+        - "broadcast quality"
+        - "full-bandwidth clean"
+      description: |
+        Tuned for broadcast/podcast usage: well-leveled, full-bandwidth,
+        low coloration, no perceptible noise.
+      settings:
+        - {stage: UTMOSFilterStage,  param: mos_threshold,   value: 4.0}
+        - {stage: SIGMOSFilterStage, param: ovrl_threshold,  value: 4.0}
+        - {stage: SIGMOSFilterStage, param: noise_threshold, value: 4.0}
+        - {stage: SIGMOSFilterStage, param: col_threshold,   value: 4.0}
+        - {stage: SIGMOSFilterStage, param: loud_threshold,  value: 3.5}
+        - {stage: BandFilterStage,   param: band_value,      value: "full_band"}
+    - label: "lightly cleaned"
+      aliases:
+        - "decent"
+        - "fair"
+        - "usable"
+      description: |
+        Loose floors for high-recall corpora where downstream training is
+        more important than fidelity. No bandwidth gate so narrow-band
+        sources are kept.
+      settings:
+        - {stage: UTMOSFilterStage,  param: mos_threshold,   value: 3.0}
+        - {stage: SIGMOSFilterStage, param: ovrl_threshold,  value: 3.0}
+    - label: "telephone / narrow-band speech"
+      aliases:
+        - "telephone"
+        - "telephone-quality"
+        - "narrow-band"
+        - "call-center"
+        - "phone audio"
+      description: |
+        Keep ONLY narrow-band (≤ ~8 kHz effective bandwidth) clips — useful
+        for telephony / call-center corpora. Loosens MOS floors because
+        narrow-band scoring scale is different.
+      settings:
+        - {stage: UTMOSFilterStage,  param: mos_threshold,  value: 2.8}
+        - {stage: SIGMOSFilterStage, param: ovrl_threshold, value: 3.0}
+        - {stage: BandFilterStage,   param: band_value,     value: "narrow_band"}
+  ordering_hints:
+    prefer_after:
+      - quality_filter_band   # let the cheap BandFilter run first
+    prefer_before:
+      - speaker_separation    # score before fan-out keeps the report compact
+    rationale: |
+      Run after BandFilterStage so narrow-band clips don't waste GPU MOS
+      compute. Run before speaker fan-out so the MOS score reflects the
+      original clip-level audio; per-speaker MOS is also valid if you
+      want each speaker graded independently — that's the project's
+      default config alternative.
+source_file: nemo_curator/stages/audio/filtering/utmos.py
+smoke_test_status: unknown

@@ -1,0 +1,76 @@
+schema_version: '1.0'
+name: NeMoASRAlignerStage
+target: nemo_curator.stages.audio.tagging.inference.nemo_asr_align.NeMoASRAlignerStage
+version: 1.0.0
+public_api: true
+description: |
+  NeMo ASR + word/segment alignment. Loads a Parakeet-class model and emits
+  per-clip transcripts plus word-level timestamps when compute_timestamps is on.
+summary: NeMo ASR transcription with word-level alignment.
+category: tagging
+capabilities: [asr, asr_align]
+also_handles: []
+inputs:
+  top_level: []
+  data: [audio_filepath, duration, segments, split_filepaths, split_metadata]
+outputs:
+  top_level: []
+  data: [duration, segments, split_filepaths, split_metadata, text, words]
+produces_cardinality: '1:1'
+requires_on_disk_path: true
+params:
+  - {name: model_name, type: str, default: 'nvidia/parakeet-tdt_ctc-1.1b'}
+  - {name: min_len, type: float, default: 1.0}
+  - {name: max_len, type: float, default: 40.0}
+  - {name: is_fastconformer, type: bool, default: true}
+  - {name: decoder_type, type: enum, default: rnnt, choices: [rnnt, ctc]}
+  - {name: transcribe_batch_size, type: int, default: 32}
+  - {name: num_workers, type: int, default: 10}
+  - {name: split_batch_size, type: int, default: 5000}
+  - {name: model_path, type: path, default: null, description: "Optional local NeMo .nemo path overriding model_name."}
+  - {name: compute_timestamps, type: bool, default: true}
+  - {name: timestamp_type, type: enum, default: word, choices: [word, char]}
+  - {name: infer_segment_only, type: bool, default: false}
+  - {name: segments_key, type: str, default: segments}
+  - {name: text_key, type: str, default: text}
+  - {name: words_key, type: str, default: words}
+  - {name: disable_word_confidence, type: bool, default: false}
+resources: {cpus: 1.0, gpus: 1.0, gpu_memory_gb: 0.0}
+batch_size: 100
+supports_process_batch: true
+preferred_executor: any
+models:
+  - {name: parakeet-tdt_ctc-1.1b, provider: huggingface, repo_id: 'nvidia/parakeet-tdt_ctc-1.1b', license: CC-BY-4.0}
+license: Apache-2.0
+commercial_safe: true
+cost_hint: expensive
+quality_hint: high
+tags: [asr, alignment, parakeet, gpu]
+selection_hints:
+  prefer_when:
+    - "user wants transcripts AND word-level / segment-level timestamps in one step"
+    - "input clips are short-to-medium (≤ ~40 s); for longer files chain SplitASRAlignJoinStage instead"
+    - "downstream consumers need both `text` and `words` (e.g. ALM training data, dataset filtering by transcript content, WER scoring)"
+  avoid_when:
+    - "input is a single long-form file (use SplitASRAlignJoinStage which wraps split + ASR + align + join)"
+    - "user only needs transcripts without timestamps — InferenceAsrNemoStage is cheaper (no alignment cost)"
+  notes:
+    - "Emits `text` (full transcript) and `words` (list of {{word, start, end}}). With compute_timestamps=false it skips alignment and only writes `text`."
+    - "min_len / max_len enforce per-clip length bounds in seconds — clips outside are dropped silently. Match these to your VAD or duration filter settings."
+    - "Setting `infer_segment_only=true` re-runs ASR per nested VAD segment rather than per task, useful for VAD-fanned-out flows."
+  ordering_hints:
+    prefer_after:
+      - vad                 # cleaner clip boundaries, better alignment
+      - normalize_sample_rate
+      - normalize_mono
+    prefer_before:
+      - wer
+      - timestamp_remap
+      - segment_extract
+    rationale: |
+      Run after VAD / sample-rate normalization so the ASR model sees
+      consistent, speech-only inputs. Run before any WER filter (which
+      consumes `text`) and before TimestampMapperStage (which would
+      clear the waveform).
+source_file: nemo_curator/stages/audio/tagging/inference/nemo_asr_align.py
+smoke_test_status: unknown
