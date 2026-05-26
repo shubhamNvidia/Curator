@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tests for the multi-agent planner DAG.
+"""Tests for the multi-agent planner DAG (V2 intent JSON).
 
 Each test stubs the LLM with :class:`MockLLM` and dispatches per-step
 responses based on the system-prompt content. This keeps the tests
@@ -23,8 +23,6 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from typing import Any
-from unittest.mock import patch
 
 import pytest
 
@@ -33,12 +31,16 @@ from nemo_curator.agentic.cards import (
     DatasetCard,
     DatasetProfile,
 )
-from nemo_curator.agentic.intent import IntentCategories, required_capabilities
+from nemo_curator.agentic.intent import (
+    FilterMode,
+    IntentCategories,
+    Quality,
+    Segmentation,
+    Speakers,
+    required_capabilities,
+)
 from nemo_curator.agentic.llm import Message, MockLLM
 from nemo_curator.agentic.planner_dag import (
-    CriticVerdict,
-    critic_review,
-    derive_capabilities,
     extract_intent,
     pick_stages,
     plan,
@@ -53,8 +55,6 @@ def registry():
 
 
 def _detect_role(messages: list[Message]) -> str:
-    """Identify which role prompt is in the system message of an LLM call."""
-
     sys_msg = next((m.content for m in messages if m.role == "system"), "")
     if "Intent Extractor" in sys_msg:
         return "extractor"
@@ -70,16 +70,7 @@ def _detect_role(messages: list[Message]) -> str:
 def _make_mock(
     responses_by_role: dict[str, list[str] | dict[str, str]],
 ) -> tuple[MockLLM, Counter[str]]:
-    """Build a MockLLM that returns canned per-role responses.
-
-    For each role:
-
-    - A ``list[str]`` means consume one entry per call in order (looping
-      the last one forever).
-    - A ``dict[str, str]`` is a per-capability or per-stage dispatch: the
-      mock peeks at the user JSON for a ``capability`` or ``stage`` key
-      and returns the matching entry. Missing key → ``""`` empty JSON.
-    """
+    """Build a MockLLM that returns canned per-role responses."""
 
     counter: Counter[str] = Counter()
 
@@ -103,35 +94,42 @@ def _make_mock(
     return MockLLM(responder=responder), counter
 
 
+def _v2_clean_tts_json() -> str:
+    """Standard V2 IntentCategories payload for a clean single-speaker TTS intent."""
+
+    return json.dumps({
+        "output": {"sample_rate": 48000, "channels": "mono"},
+        "segmentation": {
+            "output_unit": "single_speaker_clips",
+            "duration_min_sec": 2.0,
+            "duration_max_sec": 60.0,
+        },
+        "quality": {"mos": "filter", "mos_threshold": 3.5},
+        "speakers": {"mode": "split"},
+        "policy": {"commercial_only": True},
+    })
+
+
 # ----------------------------------------------------------------------------
 # Step 1: Intent Extractor
 # ----------------------------------------------------------------------------
 
 
 class TestIntentExtractor:
-    def test_clean_translates_to_quality_mos_min(self) -> None:
-        llm, counter = _make_mock({
-            "extractor": [json.dumps({
-                "sample_rate": 48000,
-                "channels": "mono",
-                "duration_min_sec": 2.0,
-                "duration_max_sec": 60.0,
-                "output_extract_clips": True,
-                "quality_mos_min": 3.5,
-                "speakers": 1,
-                "commercial_only": True,
-            })],
-        })
+    def test_v2_json_round_trips_into_namespaced_intent(self) -> None:
+        llm, counter = _make_mock({"extractor": [_v2_clean_tts_json()]})
         intent = extract_intent(
             "Build a clean single-speaker dataset at 48 kHz mono, 2-60 s, commercial-safe.",
             profile=None,
             llm=llm,
         )
         assert counter["extractor"] == 1
-        assert intent.quality_mos_min == 3.5
-        assert intent.speakers == 1
-        assert intent.sample_rate == 48000
-        assert intent.channels == "mono"
+        assert intent.output.sample_rate == 48000
+        assert intent.output.channels == "mono"
+        assert intent.quality.mos == FilterMode.FILTER
+        assert intent.quality.mos_threshold == 3.5
+        assert intent.speakers.mode == FilterMode.SPLIT
+        assert intent.policy.commercial_only is True
 
 
 # ----------------------------------------------------------------------------
@@ -140,22 +138,24 @@ class TestIntentExtractor:
 
 
 class TestStagePicker:
-    def test_picker_dispatches_per_capability(self, registry) -> None:
-        """The picker is invoked once per CapabilityRequirement that has
-        multiple candidates. Single-candidate caps short-circuit (no LLM)."""
-        intent = IntentCategories(
-            quality_mos_min=3.5,
-            speakers=1,
-            duration_min_sec=2.0,
-            duration_max_sec=60.0,
-            output_extract_clips=True,
+    def _tts_intent(self) -> IntentCategories:
+        return IntentCategories(
+            segmentation=Segmentation(
+                output_unit="single_speaker_clips",
+                duration_min_sec=2.0, duration_max_sec=60.0,
+            ),
+            quality=Quality(mos=FilterMode.FILTER, mos_threshold=3.5),
+            speakers=Speakers(mode=FilterMode.SPLIT),
         )
-        caps = required_capabilities(intent)
 
-        # Capability → picker's choice. AudioDataFilterStage is a composite
-        # that claims many capabilities via also_handles; tests choose the
-        # dedicated specialist for each cap so the picker's behavior is
-        # explicit.
+    def test_picker_dispatches_per_capability(self, registry) -> None:
+        """``single_speaker_clips`` pulls speaker-separation + extract +
+        the user-requested quality filter; with a duration cap it ALSO
+        pulls VAD as the post-segmenter trim (see
+        :func:`required_capabilities`)."""
+
+        intent = self._tts_intent()
+        caps = required_capabilities(intent)
         llm, counter = _make_mock({
             "picker": {
                 "quality_filter_mos": json.dumps({"capability": "quality_filter_mos", "chosen_stages": ["UTMOSFilterStage", "SIGMOSFilterStage"]}),
@@ -164,21 +164,19 @@ class TestStagePicker:
             },
         })
         names = pick_stages(caps, registry, llm)
-
         assert "SpeakerSeparationStage" in names
-        assert "VADSegmentationStage" in names
         assert "SegmentExtractionStage" in names  # single candidate, no LLM call
         assert "UTMOSFilterStage" in names
-        assert "SIGMOSFilterStage" in names  # multi-stage pick from picker
-
-        # 3 multi-candidate capabilities → 3 picker calls.
+        assert "SIGMOSFilterStage" in names
+        assert "VADSegmentationStage" in names  # post-segmenter trim
+        # 3 multi-candidate capabilities → 3 picker calls
+        # (quality_filter_mos, speaker_separation, vad).
         assert counter["picker"] == 3
 
     def test_picker_accepts_legacy_single_stage_shape(self, registry) -> None:
-        """The shim should accept the older ``chosen_stage: str`` schema too."""
-        intent = IntentCategories(quality_mos_min=3.5)
+        intent = IntentCategories(quality=Quality(mos=FilterMode.FILTER, mos_threshold=3.5))
         caps = required_capabilities(intent)
-        llm, _counter = _make_mock({
+        llm, _ = _make_mock({
             "picker": {
                 "quality_filter_mos": json.dumps({"capability": "quality_filter_mos", "chosen_stage": "UTMOSFilterStage"}),
             },
@@ -187,16 +185,14 @@ class TestStagePicker:
         assert "UTMOSFilterStage" in names
 
     def test_picker_falls_back_when_llm_returns_unknown_stage(self, registry) -> None:
-        intent = IntentCategories(quality_mos_min=3.5)
+        intent = IntentCategories(quality=Quality(mos=FilterMode.FILTER, mos_threshold=3.5))
         caps = required_capabilities(intent)
-        llm, _counter = _make_mock({
+        llm, _ = _make_mock({
             "picker": {
                 "quality_filter_mos": json.dumps({"capability": "quality_filter_mos", "chosen_stages": ["NotARealStage"]}),
             },
         })
         names = pick_stages(caps, registry, llm)
-        # Fallback to the first registry candidate; either UTMOS, SIGMOS, or
-        # AudioDataFilterStage is acceptable as long as it's in the registry.
         candidates = {e.card.name for e in registry.search_by_capability(CapabilityTag.QUALITY_FILTER_MOS)}
         assert set(names) & candidates
 
@@ -208,7 +204,7 @@ class TestStagePicker:
 
 class TestParamTuner:
     def test_uses_threshold_bands(self, registry) -> None:
-        intent = IntentCategories(quality_mos_min=3.5)
+        intent = IntentCategories(quality=Quality(mos=FilterMode.FILTER, mos_threshold=3.5))
         llm, counter = _make_mock({
             "tuner": [json.dumps({
                 "stage": "UTMOSFilterStage",
@@ -222,8 +218,7 @@ class TestParamTuner:
         assert counter["tuner"] == 1
 
     def test_tuner_clamps_out_of_range_values(self, registry) -> None:
-        """The tuner shim drops unknown params and clamps numeric values to min/max."""
-        intent = IntentCategories(quality_mos_min=3.5)
+        intent = IntentCategories(quality=Quality(mos=FilterMode.FILTER, mos_threshold=3.5))
         llm, _ = _make_mock({
             "tuner": [json.dumps({
                 "stage": "UTMOSFilterStage",
@@ -245,26 +240,14 @@ class TestParamTuner:
 
 class TestCriticLoop:
     def test_refinement_terminates_at_max_iters(self, registry, monkeypatch) -> None:
-        """If the critic keeps complaining, the planner must give up after
-        ``max_refine_iters`` and return whatever it has."""
-
-        # Profile mock — bypass real I/O.
         monkeypatch.setattr(
             "nemo_curator.agentic.planner_dag.profile_source",
             lambda *a, **kw: DatasetCard(
                 name="mock", uri="/tmp/m.jsonl", profile=DatasetProfile()
             ),
         )
-
         responses = {
-            "extractor": [json.dumps({
-                "channels": "mono",
-                "speakers": 1,
-                "duration_min_sec": 2.0,
-                "duration_max_sec": 60.0,
-                "output_extract_clips": True,
-                "quality_mos_min": 3.5,
-            })],
+            "extractor": [_v2_clean_tts_json()],
             "picker": [json.dumps({"capability": "quality_filter_mos", "chosen_stages": ["UTMOSFilterStage"]})],
             "tuner": [json.dumps({"stage": "X", "params": {}})],
             "critic": [json.dumps({"approved": False, "score": 0.4, "complaints": ["nope"], "patch": {}})],
@@ -292,9 +275,7 @@ class TestCriticLoop:
 
 class TestEndToEndDAG:
     def test_tts_prompt_includes_speaker_and_mos(self, registry, monkeypatch) -> None:
-        """The big de-bias regression test: 'clean single-speaker' must
-        produce a pipeline containing SpeakerSeparationStage and at least
-        one MOS filter, and must NOT include BandFilterStage."""
+        """The big de-bias regression test."""
 
         monkeypatch.setattr(
             "nemo_curator.agentic.planner_dag.profile_source",
@@ -302,27 +283,14 @@ class TestEndToEndDAG:
                 name="mock", uri="/tmp/m.jsonl", profile=DatasetProfile()
             ),
         )
-
         responses = {
-            "extractor": [json.dumps({
-                "sample_rate": 48000,
-                "channels": "mono",
-                "duration_min_sec": 2.0,
-                "duration_max_sec": 60.0,
-                "output_extract_clips": True,
-                "quality_mos_min": 3.5,
-                "speakers": 1,
-                "commercial_only": True,
-            })],
+            "extractor": [_v2_clean_tts_json()],
             "picker": {
                 "quality_filter_mos": json.dumps({"capability": "quality_filter_mos", "chosen_stages": ["UTMOSFilterStage", "SIGMOSFilterStage"]}),
                 "speaker_separation": json.dumps({"capability": "speaker_separation", "chosen_stages": ["SpeakerSeparationStage"]}),
                 "vad": json.dumps({"capability": "vad", "chosen_stages": ["VADSegmentationStage"]}),
                 "segment_extract": json.dumps({"capability": "segment_extract", "chosen_stages": ["SegmentExtractionStage"]}),
             },
-            # Tuner answer — used for every stage that has tunable params.
-            # The shim drops unrecognized params per-stage, so a single
-            # generic reply is safe.
             "tuner": [json.dumps({
                 "stage": "any",
                 "params": {
@@ -349,12 +317,9 @@ class TestEndToEndDAG:
         )
         names = {s.stage for s in result.ir.stages}
         assert "SpeakerSeparationStage" in names, f"expected SpeakerSeparation in {names}"
-        # Both MOS filters (the picker returns the complementary pair).
         assert {"UTMOSFilterStage", "SIGMOSFilterStage"} <= names, (
             f"expected both MOS filters in {names}"
         )
-        # BandFilter should not be triggered by 'clean' alone.
         assert "BandFilterStage" not in names, f"BandFilter sneaked in: {names}"
-        # The critic approved on the first turn.
         assert result.critic_history[-1].approved
         assert counter["critic"] == 1

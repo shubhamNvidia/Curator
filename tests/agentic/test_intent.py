@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tests for :mod:`nemo_curator.agentic.intent`."""
+"""Tests for :mod:`nemo_curator.agentic.intent` (V2 ingredient schema)."""
 
 from __future__ import annotations
 
@@ -19,84 +19,173 @@ import pytest
 from pydantic import ValidationError
 
 from nemo_curator.agentic.cards import CapabilityTag
-from nemo_curator.agentic.intent import IntentCategories, required_capabilities
+from nemo_curator.agentic.intent import (
+    FilterMode,
+    IntentCategories,
+    Policy,
+    Quality,
+    Segmentation,
+    Speakers,
+    TextPolicy,
+    required_capabilities,
+)
 
 
 class TestIntentCategoriesDefaults:
-    def test_all_defaults_unset(self) -> None:
+    def test_all_submodels_default_unset(self) -> None:
         ic = IntentCategories()
-        assert ic.sample_rate is None
-        assert ic.duration_min_sec is None
-        assert ic.duration_max_sec is None
-        assert ic.output_extract_clips is True  # the one non-None default
+        assert ic.output.sample_rate is None
+        assert ic.output.channels is None
+        assert ic.output.audio_format == "wav"
+        assert ic.segmentation.output_unit == "original_files"
+        assert ic.segmentation.speech_policy == FilterMode.OFF
+        assert ic.quality.mos == FilterMode.OFF
+        assert ic.quality.sigmos == FilterMode.OFF
+        assert ic.quality.band == FilterMode.OFF
+        assert ic.speakers.mode == FilterMode.OFF
+        assert ic.text.transcript_source == "off"
+        assert ic.text.wer_mode == FilterMode.OFF
+        assert ic.policy.commercial_only is False
+        assert ic.policy.privacy_mode is False
 
-    def test_duration_order(self) -> None:
+    def test_duration_min_max_order(self) -> None:
         with pytest.raises(ValidationError):
-            IntentCategories(duration_min_sec=10.0, duration_max_sec=5.0)
+            IntentCategories(segmentation=Segmentation(
+                duration_min_sec=10.0, duration_max_sec=5.0,
+            ))
 
-    def test_known_sample_rate(self) -> None:
-        IntentCategories(sample_rate=16000)
-        IntentCategories(sample_rate="any")
-        with pytest.raises(ValidationError):
-            IntentCategories(sample_rate=14000)
+    def test_speakers_filter_without_count_records_note(self) -> None:
+        ic = IntentCategories(speakers=Speakers(mode=FilterMode.FILTER))
+        assert any("speakers.mode=FILTER" in n for n in ic.notes)
 
-    def test_unknown_keys_are_silently_dropped(self) -> None:
-        """The schema is extra='ignore' so LLM-invented fields don't crash planning."""
+    def test_long_windows_without_window_sec_records_note(self) -> None:
+        ic = IntentCategories(segmentation=Segmentation(output_unit="long_windows"))
+        assert any("long_windows" in n for n in ic.notes)
+
+    def test_extra_keys_silently_dropped_top_level(self) -> None:
+        """V2 still uses extra='ignore' so unknown LLM keys don't crash."""
         ic = IntentCategories.model_validate({"language": "en", "budgets": {"gpu_hours": 4}})
-        # Unknown keys must NOT become attributes on the model.
         assert not hasattr(ic, "language")
         assert not hasattr(ic, "budgets")
 
+    def test_v1_unnamespaced_keys_silently_dropped_to_v2_defaults(self) -> None:
+        """V1-flat keys that are no longer top-level fields are dropped to defaults.
+
+        ``speakers`` is intentionally NOT in this list because V2 still has
+        a top-level ``speakers`` key (now a submodel), so a V1 integer
+        ``speakers=1`` would now correctly raise a typed validation error
+        — surfacing the schema break to the LLM rather than silently
+        coercing.
+        """
+        ic = IntentCategories.model_validate({
+            "sample_rate": 48000,
+            "channels": "mono",
+            "quality_mos_min": 3.5,
+            "duration_min_sec": 2.0,
+            "duration_max_sec": 60.0,
+            "output_extract_clips": True,
+        })
+        assert ic.output.sample_rate is None
+        assert ic.output.channels is None
+        assert ic.quality.mos == FilterMode.OFF
+        assert ic.segmentation.duration_min_sec is None
+
+    def test_namespaced_construction_works(self) -> None:
+        ic = IntentCategories(
+            output={"sample_rate": 48000, "channels": "mono"},
+            quality={"mos": FilterMode.FILTER, "mos_threshold": 3.5},
+            speakers={"mode": FilterMode.SPLIT},
+        )
+        assert ic.output.sample_rate == 48000
+        assert ic.output.channels == "mono"
+        assert ic.quality.mos == FilterMode.FILTER
+        assert ic.quality.mos_threshold == 3.5
+        assert ic.speakers.mode == FilterMode.SPLIT
+
 
 class TestRequiredCapabilities:
-    def test_only_clip_extraction_keeps_vad_plus_extract(self) -> None:
+    def test_default_intent_has_no_capabilities(self) -> None:
         ic = IntentCategories()
+        assert required_capabilities(ic) == []
+
+    def test_speech_segments_requires_vad_and_extract(self) -> None:
+        ic = IntentCategories(segmentation=Segmentation(output_unit="speech_segments"))
         caps = {r.capability for r in required_capabilities(ic)}
         assert CapabilityTag.VAD in caps
         assert CapabilityTag.SEGMENT_EXTRACT in caps
 
-    def test_mos_floor_triggers_mos_filter(self) -> None:
-        ic = IntentCategories(quality_mos_min=3.5)
+    def test_single_speaker_clips_pulls_separation_and_extract(self) -> None:
+        """``single_speaker_clips`` is segmented by ``SpeakerSeparationStage``;
+        VAD is intentionally NOT required (forcing VAD upfront would
+        double-segment the audio and break the one-clip-per-speaker
+        semantic). The cleaning flow is reserved for ``original_files``."""
+
+        ic = IntentCategories(segmentation=Segmentation(output_unit="single_speaker_clips"))
+        caps = {r.capability for r in required_capabilities(ic)}
+        assert CapabilityTag.VAD not in caps
+        assert CapabilityTag.SPEAKER_SEPARATION in caps
+        assert CapabilityTag.SEGMENT_EXTRACT in caps
+
+    def test_speech_policy_filter_pulls_vad_even_on_original_files(self) -> None:
+        ic = IntentCategories(segmentation=Segmentation(
+            output_unit="original_files",
+            speech_policy=FilterMode.FILTER,
+        ))
+        caps = {r.capability for r in required_capabilities(ic)}
+        assert CapabilityTag.VAD in caps
+
+    def test_mos_annotate_still_requires_quality_filter_capability(self) -> None:
+        """ANNOTATE = same stage as FILTER, threshold-zero — still needs the cap."""
+        ic = IntentCategories(quality=Quality(mos=FilterMode.ANNOTATE))
         caps = {r.capability for r in required_capabilities(ic)}
         assert CapabilityTag.QUALITY_FILTER_MOS in caps
 
-    def test_speakers_single_routes_to_separation(self) -> None:
-        """speakers=1 → SpeakerSeparationStage (safe default for single-speaker output)."""
-        ic = IntentCategories(speakers=1)
+    def test_mos_filter_threshold_pulls_quality_cap(self) -> None:
+        ic = IntentCategories(quality=Quality(mos=FilterMode.FILTER, mos_threshold=3.5))
+        caps = {r.capability for r in required_capabilities(ic)}
+        assert CapabilityTag.QUALITY_FILTER_MOS in caps
+
+    def test_band_filter_requires_band_capability(self) -> None:
+        ic = IntentCategories(quality=Quality(band=FilterMode.FILTER, band_value="narrow_band"))
+        caps = {r.capability for r in required_capabilities(ic)}
+        assert CapabilityTag.QUALITY_FILTER_BAND in caps
+
+    def test_speakers_split_routes_to_separation(self) -> None:
+        ic = IntentCategories(speakers=Speakers(mode=FilterMode.SPLIT))
         caps = {r.capability for r in required_capabilities(ic)}
         assert CapabilityTag.SPEAKER_SEPARATION in caps
         assert CapabilityTag.SPEAKER_DIARIZATION not in caps
 
-    def test_speakers_multi_routes_to_diarization(self) -> None:
-        """speakers>1 → diarization + value-filter on num_speakers (no separation)."""
-        ic = IntentCategories(speakers=3)
+    def test_speakers_annotate_routes_to_diarization(self) -> None:
+        ic = IntentCategories(speakers=Speakers(mode=FilterMode.ANNOTATE))
         caps = {r.capability for r in required_capabilities(ic)}
         assert CapabilityTag.SPEAKER_DIARIZATION in caps
         assert CapabilityTag.SPEAKER_SEPARATION not in caps
 
-    def test_speakers_any_does_not_require_speaker_capabilities(self) -> None:
-        """'any' speakers means the agent has no speaker-side constraint."""
-        ic = IntentCategories(speakers="any")
+    def test_speakers_off_pulls_no_speaker_caps(self) -> None:
+        ic = IntentCategories(speakers=Speakers(mode=FilterMode.OFF))
         caps = {r.capability for r in required_capabilities(ic)}
         assert CapabilityTag.SPEAKER_DIARIZATION not in caps
         assert CapabilityTag.SPEAKER_SEPARATION not in caps
 
-    def test_wer_max_triggers_asr_and_wer(self) -> None:
-        ic = IntentCategories(asr_wer_max=25.0)
+    def test_transcript_generate_pulls_asr(self) -> None:
+        ic = IntentCategories(text=TextPolicy(transcript_source="generate"))
         caps = {r.capability for r in required_capabilities(ic)}
         assert CapabilityTag.ASR in caps
+
+    def test_word_timing_pulls_asr_align(self) -> None:
+        ic = IntentCategories(text=TextPolicy(transcript_source="generate", word_timing=True))
+        caps = {r.capability for r in required_capabilities(ic)}
+        assert CapabilityTag.ASR_ALIGN in caps
+
+    def test_wer_filter_pulls_wer_capability(self) -> None:
+        ic = IntentCategories(text=TextPolicy(wer_mode=FilterMode.FILTER, wer_max=0.5))
+        caps = {r.capability for r in required_capabilities(ic)}
         assert CapabilityTag.WER in caps
 
-    def test_alm_window_triggers_alm_package(self) -> None:
-        ic = IntentCategories(alm_window_sec=120.0, alm_overlap_dedupe=True)
+    def test_long_windows_pulls_alm_package(self) -> None:
+        ic = IntentCategories(segmentation=Segmentation(
+            output_unit="long_windows", long_window_sec=120.0,
+        ))
         caps = {r.capability for r in required_capabilities(ic)}
         assert CapabilityTag.ALM_PACKAGE in caps
-        assert CapabilityTag.ALM_OVERLAP in caps
-
-    def test_unsupported_intents_are_dropped_not_persisted(self) -> None:
-        """Phase 1 schema doesn't know about language/emotion/etc. — they must be silently
-        dropped (with extra='ignore'), not become accidental hidden state."""
-        for missing in ("language", "emotion", "accent", "gender", "quality_dnsmos_min", "quality_snr_min_db"):
-            ic = IntentCategories.model_validate({missing: "en"})
-            assert not hasattr(ic, missing)
-            assert missing not in ic.model_dump()

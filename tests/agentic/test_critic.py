@@ -25,7 +25,11 @@ from nemo_curator.agentic.cards import (
     RunStageRecord,
 )
 from nemo_curator.agentic.critic import CriticOptions, critique
-from nemo_curator.agentic.intent import IntentCategories
+from nemo_curator.agentic.intent import (
+    IntentCategories,
+    OutputFormat,
+    Segmentation,
+)
 
 
 def _run_card(records: list[RunStageRecord]) -> RunCard:
@@ -102,17 +106,17 @@ class TestDurationDrift:
 
 class TestIntentAlignment:
     def test_p95_above_intent_max(self) -> None:
-        intent = IntentCategories(duration_max_sec=10.0)
+        intent = IntentCategories(segmentation=Segmentation(duration_max_sec=10.0))
         out_card = DatasetCard(
             name="out", uri="y",
             profile=DatasetProfile(total_files=10, decodable_files=10, duration_p95_sec=20.0),
         )
         rep = critique(run_card=_run_card([]), intent=intent, output_card=out_card)
         joined = " ".join(rep.deterministic_findings)
-        assert "exceeds intent.duration_max_sec" in joined
+        assert "exceeds intent.segmentation.duration_max_sec" in joined
 
     def test_sample_rate_mismatch(self) -> None:
-        intent = IntentCategories(sample_rate=48000)
+        intent = IntentCategories(output=OutputFormat(sample_rate=48000))
         out_card = DatasetCard(
             name="out", uri="y",
             profile=DatasetProfile(total_files=10, decodable_files=10, sample_rates_hz={"16000": 10}),
@@ -122,7 +126,10 @@ class TestIntentAlignment:
         assert "majority sample rate" in joined
 
     def test_aligned_output_is_quiet(self) -> None:
-        intent = IntentCategories(sample_rate=48000, duration_max_sec=60.0, duration_min_sec=2.0)
+        intent = IntentCategories(
+            output=OutputFormat(sample_rate=48000),
+            segmentation=Segmentation(duration_max_sec=60.0, duration_min_sec=2.0),
+        )
         out_card = DatasetCard(
             name="out", uri="y",
             profile=DatasetProfile(

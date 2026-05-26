@@ -3,15 +3,27 @@
   "name": "tts_clean_2_to_60_single_speaker",
   "description": "Hand-authored IR for the canonical 'clean, single-speaker, 2-60s' TTS prompt. Phase 2 smoke target; the Phase 3 agent will emit IRs in this shape from natural language.",
   "intent": {
-    "sample_rate": 48000,
-    "channels": "mono",
-    "duration_min_sec": 2.0,
-    "duration_max_sec": 60.0,
-    "quality_mos_min": 3.5,
-    "speakers": 1,
-    "output_extract_clips": true,
-    "output_format": "wav",
-    "commercial_only": true,
+    "output": {
+      "sample_rate": 48000,
+      "channels": "mono",
+      "audio_format": "wav",
+      "resample_input": true
+    },
+    "segmentation": {
+      "output_unit": "single_speaker_clips",
+      "duration_min_sec": 2.0,
+      "duration_max_sec": 60.0
+    },
+    "quality": {
+      "mos": "filter",
+      "mos_threshold": 3.5
+    },
+    "speakers": {
+      "mode": "split"
+    },
+    "policy": {
+      "commercial_only": true
+    },
     "raw_prompt": "clean, single-speaker, 2-60s TTS clips"
   },
   "source": {

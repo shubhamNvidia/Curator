@@ -72,21 +72,17 @@ def _build_run_card() -> RunCard:
 
 
 def _build_intent() -> IntentCategories:
+    """A V2 namespaced TTS-style intent used by the critic tests."""
+
     return IntentCategories(
-        sample_rate=48000,
-        channels="mono",
-        output_format="wav",
-        duration_min_sec=2.0,
-        duration_max_sec=60.0,
-        output_extract_clips=True,
-        quality_mos_min=None,
-        quality_bandwidth_min_hz=None,
-        speakers=1,
-        alm_window_sec=None,
-        commercial_only=True,
-        budget_gpu_hours=None,
-        budget_disk_gb=None,
-        privacy_mode=False,
+        output={"sample_rate": 48000, "channels": "mono", "audio_format": "wav"},
+        segmentation={
+            "output_unit": "single_speaker_clips",
+            "duration_min_sec": 2.0,
+            "duration_max_sec": 60.0,
+        },
+        speakers={"mode": "split"},
+        policy={"commercial_only": True},
         raw_prompt="test",
     )
 
@@ -174,5 +170,10 @@ def test_critic_handles_llm_failure_gracefully() -> None:
 
 def test_llm_tier_static_defaults_documented() -> None:
     tier = LLMTier()
-    assert tier.planner.startswith("nvidia/")
-    assert tier.synth.startswith("nvidia/")
+    # Defaults must point at real, currently-supported models on a
+    # NIM-style endpoint. Path layout is "<provider>/<model>" — kept
+    # provider-agnostic so we can swap Qwen / Llama / DeepSeek without
+    # touching this assertion.
+    for name in (tier.planner, tier.synth):
+        assert "/" in name
+        assert len(name.split("/")[1]) > 0

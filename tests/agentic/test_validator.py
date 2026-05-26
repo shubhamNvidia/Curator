@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from nemo_curator.agentic.intent import IntentCategories
+from nemo_curator.agentic.intent import IntentCategories, Policy
 from nemo_curator.agentic.ir import PipelineIR, SinkSpec, SourceSpec, stage
 from nemo_curator.agentic.registry import build_registry
 from nemo_curator.agentic.validator import Severity, validate
@@ -135,6 +135,39 @@ class TestAutoInsert:
         resample = report.ir.stages[idx_resample]
         assert resample.params["target_sample_rate"] == 16000
 
+    def test_existing_normalizer_pair_is_retuned_not_duplicated(self, registry) -> None:
+        """When the IR already carries a Resample+Mono pair (e.g. from the
+        deterministic planner because the user asked for 48 kHz output) and a
+        downstream stage requires a DIFFERENT SR, the validator must retune
+        the existing pair instead of emitting a second Resample+Mono chain."""
+
+        ir = _ir(
+            stage("ManifestReader", manifest_path="/tmp/m.jsonl"),
+            stage(
+                "ResampleAudioStage",
+                resampled_audio_dir="/tmp/_resampled",
+                target_sample_rate=48000,
+                target_nchannels=1,
+                target_format="wav",
+                resampled_audio_filepath_key="audio_filepath",
+            ),
+            stage(
+                "MonoConversionStage",
+                output_sample_rate=48000,
+                strict_sample_rate=True,
+            ),
+            stage("WhisperXVADStage"),  # requires_sample_rate=16000
+            stage("ManifestWriterStage", output_path="/tmp/out.jsonl"),
+        )
+        report = validate(ir, registry, mutate=True)
+        names = [s.stage for s in report.ir.stages]
+        assert names.count("ResampleAudioStage") == 1, names
+        assert names.count("MonoConversionStage") == 1, names
+        resample = report.ir.stages[names.index("ResampleAudioStage")]
+        mono = report.ir.stages[names.index("MonoConversionStage")]
+        assert resample.params["target_sample_rate"] == 16000
+        assert mono.params["output_sample_rate"] == 16000
+
 
 class TestLicenseGate:
     def test_commercial_only_allows_apache(self, registry) -> None:
@@ -145,7 +178,7 @@ class TestLicenseGate:
                 stage("ManifestWriterStage", output_path="/tmp/out.jsonl"),
             ),
             registry,
-            intent=IntentCategories(commercial_only=True),
+            intent=IntentCategories(policy=Policy(commercial_only=True)),
         )
         codes = {f.code for f in report.errors()}
         assert "commercial_only_violation" not in codes
