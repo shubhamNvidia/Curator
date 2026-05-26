@@ -314,14 +314,21 @@ def _configure_agent_logging(*, verbose: bool) -> None:
 def cmd_plan_from_prompt(args: argparse.Namespace) -> int:
     """Phase 3: turn a natural-language prompt into a validated pipeline.
 
-    Two planner modes:
+    Four planner modes:
 
-    - ``--planner dag`` (default): the multi-agent DAG in
-      :mod:`nemo_curator.agentic.planner_dag`. Four focused LLM steps
-      (intent / pick / tune / critique) wrapped around the deterministic
-      validator and compiler. The flow we want as of Phase 3 closeout.
+    - ``--planner compiler`` (default): one LLM call for intent extraction,
+      followed by deterministic capability selection, param binding,
+      validator mutation, and symbolic dry-run as a hard structural gate.
+    - ``--planner team``: the supervisor-led team in
+      :mod:`nemo_curator.agentic.team`. Four async specialists with one
+      critic each; deterministic phase + topo ordering enforced by the
+      validator. Selection and parameter tuning fan out concurrently.
+    - ``--planner dag``: the older multi-agent DAG in
+      :mod:`nemo_curator.agentic.planner_dag`. Four sequential LLM steps
+      around the deterministic validator and compiler. Kept as a
+      fallback while the team planner stabilises.
     - ``--planner react``: legacy single-React-agent path through NAT.
-      Kept as an escape hatch while the DAG matures.
+      Kept as an escape hatch.
     """
 
     _configure_agent_logging(verbose=args.verbose)
@@ -329,9 +336,157 @@ def cmd_plan_from_prompt(args: argparse.Namespace) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     os.environ["ADV_AGENT_OUT_DIR"] = str(out_dir)
 
+    if args.planner == "compiler":
+        return _cmd_plan_from_prompt_compiler(args, out_dir)
+    if args.planner == "team":
+        return _cmd_plan_from_prompt_team(args, out_dir)
     if args.planner == "dag":
         return _cmd_plan_from_prompt_dag(args, out_dir)
     return _cmd_plan_from_prompt_react(args, out_dir)
+
+
+def _cmd_plan_from_prompt_compiler(args: argparse.Namespace, out_dir: Path) -> int:
+    """Run the LLM-front, deterministic compiler planner."""
+
+    from nemo_curator.agentic.compiler import write_compiled_yaml  # noqa: PLC0415
+    from nemo_curator.agentic.deterministic_planner import (  # noqa: PLC0415
+        DeterministicPlanningError,
+        plan_from_prompt,
+    )
+    from nemo_curator.agentic.llm import LLMClient  # noqa: PLC0415
+
+    if not args.dataset:
+        print("--dataset is required for the compiler planner.", file=sys.stderr)
+        return 2
+
+    registry = _registry(cross_check=False)
+    llm = LLMClient()
+    try:
+        result = plan_from_prompt(
+            prompt=args.prompt,
+            source_uri=args.dataset,
+            source_kind=args.kind,
+            target_dir=str(out_dir),
+            llm=llm,
+            registry=registry,
+            tier=args.tier,
+        )
+    except DeterministicPlanningError as exc:
+        print(f"compiler planner rejected the plan: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        print(f"compiler planner failed: {exc}", file=sys.stderr)
+        return 1
+
+    ir_path = out_dir / "ir.validated.json"
+    result.ir.write(ir_path)
+    yaml_path = write_compiled_yaml(result.ir, registry, out_dir / "compiled.yaml")
+    findings_path = out_dir / "findings.json"
+    findings_path.write_text(
+        json.dumps([
+            {
+                "severity": f.severity.value,
+                "code": f.code,
+                "detail": f.detail,
+                "stage_index": f.stage_index,
+                "stage_name": f.stage_name,
+            }
+            for f in result.report.findings
+        ], indent=2),
+        encoding="utf-8",
+    )
+    dry_run_path = out_dir / "dry_run.json"
+    dry_run_path.write_text(
+        json.dumps(result.dry_run.to_payload(), indent=2, default=str),
+        encoding="utf-8",
+    )
+    intent_path = out_dir / "intent.json"
+    intent_path.write_text(result.intent.model_dump_json(indent=2), encoding="utf-8")
+
+    print(f"validated IR: {ir_path}")
+    print(f"compiled YAML: {yaml_path}")
+    print(f"findings:     {findings_path}")
+    print(f"dry-run:      {dry_run_path}")
+    print(f"intent:       {intent_path}")
+    return 0
+
+
+def _cmd_plan_from_prompt_team(args: argparse.Namespace, out_dir: Path) -> int:
+    """Run the team-based (supervisor + specialists + critics) planner."""
+
+    import asyncio  # noqa: PLC0415
+
+    from nemo_curator.agentic.compiler import write_compiled_yaml  # noqa: PLC0415
+    from nemo_curator.agentic.llm import LLMClient  # noqa: PLC0415
+    from nemo_curator.agentic.team import run_team_planner  # noqa: PLC0415
+
+    if not args.dataset:
+        print("--dataset is required for the team planner.", file=sys.stderr)
+        return 2
+
+    registry = _registry(cross_check=False)
+    llm = LLMClient()
+    try:
+        result = asyncio.run(run_team_planner(
+            prompt=args.prompt,
+            source_uri=args.dataset,
+            source_kind=args.kind,
+            target_dir=str(out_dir),
+            llm=llm,
+            registry=registry,
+            producer_tier=args.tier,
+            critic_tier="planner",
+            retry_cap=args.retry_cap,
+            soft_budget=args.soft_budget,
+            hard_budget=args.hard_budget,
+            use_critics=not args.no_critics,
+        ))
+    except Exception as exc:  # noqa: BLE001
+        print(f"team planner failed: {exc}", file=sys.stderr)
+        return 1
+
+    ir_path = out_dir / "ir.validated.json"
+    result.ir.write(ir_path)
+    yaml_path = write_compiled_yaml(result.ir, registry, out_dir / "compiled.yaml")
+    findings_path = out_dir / "findings.json"
+    findings_path.write_text(
+        json.dumps([
+            {
+                "severity": f.severity.value,
+                "code": f.code,
+                "detail": f.detail,
+                "stage_index": f.stage_index,
+                "stage_name": f.stage_name,
+            }
+            for f in result.report.findings
+        ], indent=2),
+        encoding="utf-8",
+    )
+    bb_path = out_dir / "blackboard.json"
+    bb_path.write_text(
+        json.dumps(result.blackboard.to_debug_dict(), indent=2, default=str),
+        encoding="utf-8",
+    )
+    dry_run_path: Path | None = None
+    if result.blackboard.last_dry_run is not None:
+        dry_run_path = out_dir / "dry_run.json"
+        dry_run_path.write_text(
+            json.dumps(result.blackboard.last_dry_run, indent=2, default=str),
+            encoding="utf-8",
+        )
+
+    print(f"validated IR: {ir_path}")
+    print(f"compiled YAML: {yaml_path}")
+    print(f"findings:     {findings_path}")
+    print(f"blackboard:   {bb_path}")
+    if dry_run_path is not None:
+        print(f"dry-run:      {dry_run_path}")
+    print()
+    print(f"llm_calls:    {result.blackboard.llm_calls_made} "
+          f"(soft={result.blackboard.soft_budget}, hard={result.blackboard.hard_budget})")
+    if result.blackboard.terminated_reason:
+        print(f"warning:      {result.blackboard.terminated_reason}")
+    return 0
 
 
 def _cmd_plan_from_prompt_dag(args: argparse.Namespace, out_dir: Path) -> int:
@@ -473,6 +628,21 @@ def cmd_gc(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_web(args: argparse.Namespace) -> int:
+    """Run the lightweight prompt clarification web UI."""
+
+    from nemo_curator.agentic.web import WebDefaults, serve  # noqa: PLC0415
+
+    defaults = WebDefaults(
+        dataset=args.dataset,
+        kind=args.kind,
+        out_root=args.out_root,
+        tier=args.tier,
+    )
+    serve(host=args.host, port=args.port, defaults=defaults)
+    return 0
+
+
 # ----------------------------------------------------------------------------
 # Entry point
 # ----------------------------------------------------------------------------
@@ -526,15 +696,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Phase 3: turn a natural-language prompt into a validated IR + compiled YAML.",
     )
     p_pfp.add_argument("prompt", help="The user's natural-language curation request.")
-    p_pfp.add_argument("--dataset", default=None, help="Dataset URI (required for the dag planner).")
+    p_pfp.add_argument("--dataset", default=None, help="Dataset URI (required except in react mode).")
     p_pfp.add_argument("--kind", default="manifest", choices=["manifest", "directory"], help="Dataset kind.")
     p_pfp.add_argument("--out", default="./adv_run", help="Output directory for artifacts.")
     p_pfp.add_argument("--config", default=None, help="NAT workflow YAML (react mode only).")
     p_pfp.add_argument(
         "--planner",
-        default="dag",
-        choices=["dag", "react"],
-        help="Planner backend. 'dag' = multi-agent (default); 'react' = legacy single-agent NAT loop.",
+        default="compiler",
+        choices=["compiler", "team", "dag", "react"],
+        help=(
+            "Planner backend. 'compiler' = one LLM intent call + deterministic "
+            "pipeline compiler (default); 'team' = supervisor + specialists + "
+            "critics; 'dag' = sequential multi-agent DAG; 'react' = legacy "
+            "single-agent NAT loop."
+        ),
     )
     p_pfp.add_argument(
         "--max-refine-iters",
@@ -546,7 +721,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--tier",
         default="synth",
         choices=["planner", "synth"],
-        help="DAG planner: LLM tier to use for every step (default 'synth').",
+        help="LLM tier for producer agents (default 'synth'). Critics always use 'planner'.",
+    )
+    p_pfp.add_argument(
+        "--retry-cap",
+        type=int,
+        default=3,
+        help="Team planner: per-agent critic-retry cap (default 3).",
+    )
+    p_pfp.add_argument(
+        "--soft-budget",
+        type=int,
+        default=15,
+        help="Team planner: soft LLM-call budget; warn only (default 15).",
+    )
+    p_pfp.add_argument(
+        "--hard-budget",
+        type=int,
+        default=30,
+        help="Team planner: hard LLM-call budget; abort if exceeded (default 30).",
+    )
+    p_pfp.add_argument(
+        "--no-critics",
+        action="store_true",
+        help="Team planner: skip every critic (fastest, least safe).",
     )
     p_pfp.add_argument(
         "-v", "--verbose",
@@ -559,6 +757,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_gc.add_argument("target_dir", help="Pipeline target directory.")
     p_gc.add_argument("--max-bytes", type=int, default=50 * 1024 * 1024 * 1024)
     p_gc.set_defaults(func=cmd_gc)
+
+    p_web = sub.add_parser("web", help="Run a local prompt-to-YAML chat UI with smart clarification.")
+    p_web.add_argument("--host", default="127.0.0.1", help="Bind host.")
+    p_web.add_argument("--port", type=int, default=7860, help="Bind port.")
+    p_web.add_argument("--dataset", default=None, help="Default dataset path shown in the UI.")
+    p_web.add_argument("--kind", default="directory", choices=["directory", "manifest"])
+    p_web.add_argument("--out-root", default="/tmp/curator_adv_web", help="Root directory for web-generated artifacts.")
+    p_web.add_argument("--tier", default="synth", choices=["planner", "synth"])
+    p_web.set_defaults(func=cmd_web)
 
     p_ver = sub.add_parser("version", help="Print the agentic-layer version.")
     p_ver.set_defaults(func=cmd_version)

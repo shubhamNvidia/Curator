@@ -186,23 +186,26 @@ def _llm_intent_alignment(
 
 def _check_intent_alignment(intent: IntentCategories, profile: DatasetProfile) -> list[str]:
     out: list[str] = []
-    if intent.duration_max_sec is not None and profile.duration_p95_sec is not None:
-        if profile.duration_p95_sec > intent.duration_max_sec * 1.05:
+    seg = intent.segmentation
+    if seg.duration_max_sec is not None and profile.duration_p95_sec is not None:
+        if profile.duration_p95_sec > seg.duration_max_sec * 1.05:
             out.append(
                 f"95th-percentile output duration ({profile.duration_p95_sec:.1f}s) exceeds "
-                f"intent.duration_max_sec ({intent.duration_max_sec}s)."
+                f"intent.segmentation.duration_max_sec ({seg.duration_max_sec}s)."
             )
-    if intent.duration_min_sec is not None and profile.duration_p05_sec is not None:
-        if profile.duration_p05_sec < intent.duration_min_sec * 0.95:
+    if seg.duration_min_sec is not None and profile.duration_p05_sec is not None:
+        if profile.duration_p05_sec < seg.duration_min_sec * 0.95:
             out.append(
                 f"5th-percentile output duration ({profile.duration_p05_sec:.1f}s) is below "
-                f"intent.duration_min_sec ({intent.duration_min_sec}s)."
+                f"intent.segmentation.duration_min_sec ({seg.duration_min_sec}s)."
             )
-    if isinstance(intent.sample_rate, int) and profile.sample_rates_hz:
+    target_sr = intent.output.sample_rate
+    if isinstance(target_sr, int) and profile.sample_rates_hz:
         majority = max(profile.sample_rates_hz.items(), key=lambda kv: kv[1])[0]
-        if int(majority) != intent.sample_rate:
+        if int(majority) != target_sr:
             out.append(
-                f"Output majority sample rate ({majority} Hz) does not match intent ({intent.sample_rate} Hz)."
+                f"Output majority sample rate ({majority} Hz) does not match "
+                f"intent.output.sample_rate ({target_sr} Hz)."
             )
     return out
 

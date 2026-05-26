@@ -49,6 +49,20 @@ def compile_ir_to_yaml(ir: PipelineIR, registry: CapabilityRegistry) -> str:
     """Render the IR to a canonical YAML string."""
 
     payload: dict[str, Any] = {"stages": [_render_stage(s, registry) for s in ir.stages]}
+    if ir.executor_config is not None:
+        cfg = ir.executor_config
+        payload["executor"] = {
+            "backend": cfg.backend,
+            "execution_mode": cfg.execution_mode,
+            "cpu_allocation_percentage": cfg.cpu_allocation_percentage,
+            "reserved_cpus": cfg.reserved_cpus,
+            "reserved_gpus": cfg.reserved_gpus,
+            "autoscale_interval_s": cfg.autoscale_interval_s,
+            "logging_interval_s": cfg.logging_interval_s,
+            "ignore_failures": cfg.ignore_failures,
+        }
+    if ir.cluster is not None:
+        payload["cluster"] = ir.cluster.model_dump(mode="json")
     return yaml.safe_dump(payload, sort_keys=False)
 
 
@@ -77,6 +91,12 @@ def _render_stage(stage_ref: StageRef, registry: CapabilityRegistry) -> dict[str
         out[k] = v
     if stage_ref.resources is not None:
         out["resources"] = stage_ref.resources.to_resources_kwargs()
+    if stage_ref.batch_size is not None:
+        out["batch_size"] = stage_ref.batch_size
+    if stage_ref.backend_hints is not None:
+        hints = stage_ref.backend_hints.model_dump(exclude_none=True)
+        if hints:
+            out["backend_hints"] = hints
     return out
 
 

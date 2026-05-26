@@ -24,8 +24,8 @@ Eight checks, none of which use the LLM:
    ``requires_sample_rate`` and the upstream does not produce that SR, the
    validator inserts ``MonoConversionStage`` (48 kHz) or ``ResampleAudioStage``
    (16 kHz) ahead of it.
-5. **License gate** — if ``IntentCategories.commercial_only`` is true, every
-   stage / model in the IR must be ``commercial_safe``.
+5. **License gate** — if ``IntentCategories.policy.commercial_only`` is true,
+   every stage / model in the IR must be ``commercial_safe``.
 6. **Resource sanity** — ``gpus`` and ``gpu_memory_gb`` cannot both be > 0.
 7. **Read/write boundary** — the first stage must be a source (``READ_MANIFEST``
    or ``DATASET_CREATE``) and the last must be a sink (``WRITE_MANIFEST``).
@@ -335,7 +335,7 @@ def _check_license_gate(
     intent: IntentCategories,
     findings: list[Finding],
 ) -> None:
-    if not intent.commercial_only:
+    if not intent.policy.commercial_only:
         return
     for i, s in enumerate(ir.stages):
         entry = reg.get(s.stage)
@@ -346,7 +346,7 @@ def _check_license_gate(
             findings.append(Finding(
                 severity=Severity.ERROR,
                 code="commercial_only_violation",
-                detail=f"{s.stage}: card.commercial_safe=false but intent.commercial_only=true.",
+                detail=f"{s.stage}: card.commercial_safe=false but intent.policy.commercial_only=true.",
                 stage_index=i,
                 stage_name=s.stage,
             ))
@@ -510,39 +510,81 @@ def _apply_autoinsert(
         needs_waveform = bool(card and card.requires_in_memory_waveform)
 
         if card is not None and needs_sr and upstream_sr != needs_sr:
-            chain = _auto_insert_for_sample_rate(needs_sr, ir.sink.target_dir)
-            for ins in chain:
-                new_stages.append(ins)
-                inserted_out.append(ins)
-            findings.append(Finding(
-                severity=Severity.INFO,
-                code="auto_inserted",
-                detail=(
-                    f"Auto-inserted [{' -> '.join(c.stage for c in chain)}] "
-                    f"before {s.stage} (target_sr={needs_sr})."
-                ),
-                stage_index=i,
-                stage_name=s.stage,
-            ))
-            upstream_sr = needs_sr
-            has_in_memory_waveform = any(c.stage == MONO_STAGE for c in chain)
+            mutated = _retune_trailing_normalizer_chain(new_stages, needs_sr)
+            if mutated:
+                findings.append(Finding(
+                    severity=Severity.INFO,
+                    code="auto_inserted",
+                    detail=(
+                        f"Retuned existing trailing {RESAMPLE_STAGE}/{MONO_STAGE} "
+                        f"chain to target_sr={needs_sr} for {s.stage} instead of "
+                        "inserting a duplicate pair."
+                    ),
+                    stage_index=i,
+                    stage_name=s.stage,
+                ))
+                upstream_sr = needs_sr
+                has_in_memory_waveform = any(
+                    ref.stage == MONO_STAGE for ref in _trailing_normalizers(new_stages)
+                ) or has_in_memory_waveform
+            else:
+                chain = _auto_insert_for_sample_rate(needs_sr, ir.sink.target_dir)
+                for ins in chain:
+                    new_stages.append(ins)
+                    inserted_out.append(ins)
+                findings.append(Finding(
+                    severity=Severity.INFO,
+                    code="auto_inserted",
+                    detail=(
+                        f"Auto-inserted [{' -> '.join(c.stage for c in chain)}] "
+                        f"before {s.stage} (target_sr={needs_sr})."
+                    ),
+                    stage_index=i,
+                    stage_name=s.stage,
+                ))
+                upstream_sr = needs_sr
+                has_in_memory_waveform = any(c.stage == MONO_STAGE for c in chain)
         elif needs_waveform and not has_in_memory_waveform:
-            chain = _auto_insert_for_sample_rate(48000, ir.sink.target_dir)
-            for ins in chain:
-                new_stages.append(ins)
-                inserted_out.append(ins)
-            findings.append(Finding(
-                severity=Severity.INFO,
-                code="auto_inserted",
-                detail=(
-                    f"Auto-inserted [{' -> '.join(c.stage for c in chain)}] "
-                    f"before {s.stage} (in-memory waveform required)."
-                ),
-                stage_index=i,
-                stage_name=s.stage,
-            ))
-            upstream_sr = 48000
-            has_in_memory_waveform = True
+            # Only insert a fresh chain if the tail isn't already a normalizer
+            # we can promote (e.g. the planner-emitted Resample without a
+            # following Mono). Promoting means appending a Mono so the
+            # in-memory waveform contract is satisfied without doubling up.
+            promoted = _promote_trailing_resample_to_full_chain(
+                new_stages, target_sr=upstream_sr or 48000
+            )
+            if promoted is not None:
+                new_stages.append(promoted)
+                inserted_out.append(promoted)
+                findings.append(Finding(
+                    severity=Severity.INFO,
+                    code="auto_inserted",
+                    detail=(
+                        f"Auto-inserted {promoted.stage} after the existing "
+                        f"{RESAMPLE_STAGE} so {s.stage} has an in-memory "
+                        "waveform without duplicating resampling."
+                    ),
+                    stage_index=i,
+                    stage_name=s.stage,
+                ))
+                upstream_sr = int(promoted.params.get("output_sample_rate", 48000))
+                has_in_memory_waveform = True
+            else:
+                chain = _auto_insert_for_sample_rate(48000, ir.sink.target_dir)
+                for ins in chain:
+                    new_stages.append(ins)
+                    inserted_out.append(ins)
+                findings.append(Finding(
+                    severity=Severity.INFO,
+                    code="auto_inserted",
+                    detail=(
+                        f"Auto-inserted [{' -> '.join(c.stage for c in chain)}] "
+                        f"before {s.stage} (in-memory waveform required)."
+                    ),
+                    stage_index=i,
+                    stage_name=s.stage,
+                ))
+                upstream_sr = 48000
+                has_in_memory_waveform = True
 
         new_stages.append(s)
         # Update upstream knowledge based on this stage's behavior.
@@ -555,6 +597,82 @@ def _apply_autoinsert(
             has_in_memory_waveform = True
 
     ir.stages = new_stages
+
+
+def _trailing_normalizers(stages: list[StageRef]) -> list[StageRef]:
+    """Return the contiguous run of Resample/Mono stages at the tail of ``stages``.
+
+    The run is returned in pipeline order. An empty list means the tail
+    is not a normalizer block, so it's not safe to mutate.
+    """
+
+    tail: list[StageRef] = []
+    for ref in reversed(stages):
+        if ref.stage in (RESAMPLE_STAGE, MONO_STAGE):
+            tail.append(ref)
+        else:
+            break
+    return list(reversed(tail))
+
+
+def _retune_trailing_normalizer_chain(
+    stages: list[StageRef],
+    target_sr: int,
+) -> bool:
+    """Mutate the trailing Resample/Mono block to target ``target_sr``.
+
+    Returns ``True`` when at least one normalizer's target SR was updated.
+    """
+
+    tail = _trailing_normalizers(stages)
+    if not tail:
+        return False
+    mutated = False
+    for ref in tail:
+        if ref.stage == RESAMPLE_STAGE:
+            current = ref.params.get("target_sample_rate")
+            if current != target_sr:
+                ref.params = {**ref.params, "target_sample_rate": target_sr}
+                mutated = True
+        elif ref.stage == MONO_STAGE:
+            current = ref.params.get("output_sample_rate")
+            if current != target_sr:
+                ref.params = {**ref.params, "output_sample_rate": target_sr}
+                mutated = True
+    return mutated
+
+
+def _promote_trailing_resample_to_full_chain(
+    stages: list[StageRef],
+    *,
+    target_sr: int,
+) -> StageRef | None:
+    """If the tail is a lone Resample (no Mono after), return the Mono to append.
+
+    Returns ``None`` when promotion is not applicable (no trailing Resample,
+    or a Mono is already there).
+    """
+
+    tail = _trailing_normalizers(stages)
+    if not tail:
+        return None
+    if any(ref.stage == MONO_STAGE for ref in tail):
+        return None
+    last_resample = next(
+        (ref for ref in reversed(tail) if ref.stage == RESAMPLE_STAGE), None
+    )
+    if last_resample is None:
+        return None
+    sr = int(last_resample.params.get("target_sample_rate", target_sr))
+    return StageRef(
+        stage=MONO_STAGE,
+        params={"output_sample_rate": sr, "strict_sample_rate": True},
+        auto_inserted=True,
+        insert_reason=(
+            f"load mono in-memory waveform at {sr} (promoted alongside existing "
+            f"{RESAMPLE_STAGE})"
+        ),
+    )
 
 
 def _check_preconditions_only(
@@ -613,7 +731,7 @@ def _check_key_flow(
                     stage_index=i,
                     stage_name=s.stage,
                 ))
-        for produced in card.outputs.data:
+        for produced in _produced_data_keys(card, s):
             available.add(produced)
         for produced in card.produces_keys_after_run:
             available.add(produced)
@@ -622,6 +740,19 @@ def _check_key_flow(
 
 
 _INITIAL_KEYS: frozenset[str] = frozenset({"audio_filepath", "task_id"})
+
+
+def _produced_data_keys(card: StageCard, ref: StageRef) -> set[str]:
+    """Data keys produced by a stage, including param-dependent outputs."""
+
+    produced = set(card.outputs.data)
+    if (
+        card.name == "VADSegmentationStage"
+        and bool(ref.params.get("nested"))
+        and card.nested_segment_key
+    ):
+        produced.add(card.nested_segment_key)
+    return produced
 
 
 def _topo_sort_stages(
@@ -669,7 +800,7 @@ def _topo_sort_stages(
             requires_sets.append(set())
             continue
         produces_sets.append(
-            set(card.outputs.data) | set(card.produces_keys_after_run)
+            _produced_data_keys(card, s) | set(card.produces_keys_after_run)
         )
         requires_sets.append(set(card.inputs.data))
 
@@ -950,7 +1081,7 @@ def _phase_reorder(
 # ----------------------------------------------------------------------------
 
 
-_FAN_OUT_SHAPES = {OutputShape.FAN_OUT_SEGMENTS, OutputShape.FAN_OUT_SPEAKERS}
+_FAN_OUT_SHAPES = {OutputShape.FAN_OUT_SEGMENTS}
 
 
 def _apply_shape_autoinsert(
@@ -989,6 +1120,7 @@ def _apply_shape_autoinsert(
             needs == InputShape.WHOLE_FILE
             and current_shape in _FAN_OUT_SHAPES
         ):
+            _force_upstream_vad_nested(ir.stages[:i])
             concat = StageRef(
                 stage="SegmentConcatenationStage",
                 params={},
@@ -1005,7 +1137,9 @@ def _apply_shape_autoinsert(
                 detail=(
                     f"Auto-inserted SegmentConcatenationStage before {s.stage} "
                     f"because upstream shape was {current_shape.value!r} but "
-                    f"{s.stage} requires whole_file."
+                    f"{s.stage} requires whole_file. Set upstream "
+                    "VADSegmentationStage.nested=true so concat receives "
+                    "task.data['segments']."
                 ),
                 stage_index=i,
                 stage_name="SegmentConcatenationStage",
@@ -1021,6 +1155,15 @@ def _apply_shape_autoinsert(
         elif s.stage == "SegmentConcatenationStage":
             current_shape = OutputShape.PASSTHROUGH
         i += 1
+
+
+def _force_upstream_vad_nested(stages: list[StageRef]) -> None:
+    """Switch the nearest upstream VAD to nested mode before inserting concat."""
+
+    for ref in reversed(stages):
+        if ref.stage == "VADSegmentationStage":
+            ref.params = {**ref.params, "nested": True}
+            return
 
 
 # ----------------------------------------------------------------------------

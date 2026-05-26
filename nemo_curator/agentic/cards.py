@@ -332,6 +332,19 @@ class ModelRef(BaseModel):
     requires_token_env: str | None = None
     download_size_mb: float | None = None
     description: str | None = None
+    # --- heaviness fields (populated by tools/inspect_models.py) -------------
+    # The tuner reads these to compute per-stage GPU fractions and cost
+    # weights. Defaults are ``None`` so cards that haven't been audited
+    # yet degrade gracefully to gpu_class-based defaults.
+    params_total: int | None = None
+    params_trainable: int | None = None
+    dtype: Literal["fp32", "fp16", "bf16", "int8", "int4"] | None = None
+    est_vram_inference_gb: float | None = None
+    params_audit_source: Literal[
+        "manual", "huggingface_api", "hf_download", "nemo_archive",
+        "torch_hub", "onnx_graph", "bundled",
+    ] | None = None
+    params_audit_at: str | None = None
 
 
 class ThresholdBand(BaseModel):
@@ -658,6 +671,17 @@ class ModelCard(BaseModel):
     benchmarks: dict[str, float] = Field(default_factory=dict)
     languages: list[str] | None = None
     tags: list[str] = Field(default_factory=list)
+    # Heaviness fields (mirror of ModelRef so a standalone ModelCard
+    # remains self-contained when ingested by the tuner).
+    params_total: int | None = None
+    params_trainable: int | None = None
+    dtype: Literal["fp32", "fp16", "bf16", "int8", "int4"] | None = None
+    est_vram_inference_gb: float | None = None
+    params_audit_source: Literal[
+        "manual", "huggingface_api", "hf_download", "nemo_archive",
+        "torch_hub", "onnx_graph", "bundled",
+    ] | None = None
+    params_audit_at: str | None = None
 
 
 # ----------------------------------------------------------------------------

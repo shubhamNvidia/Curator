@@ -240,6 +240,21 @@ _DESCRIPTIONS: dict[str, str] = {
         "{\"category\": \"filter\", \"commercial_only\": false, "
         "\"limit\": 64, \"offset\": 0}."
     ),
+    "profile_dataset": (
+        "Typed DatasetCard variant of profile_source. Input JSON: "
+        "{\"source_uri\": \"...\", \"kind\": \"manifest|directory\", "
+        "\"sample_limit\": 64}. Used by the team planner."
+    ),
+    "propose_topo_order": (
+        "Deterministic phase + data-flow topological sort over a list of "
+        "stage names. Input JSON: {\"stage_names\": [\"...\", \"...\"]}. "
+        "Returns {\"ordered_stages\": [...]}."
+    ),
+    "dataset_quantiles": (
+        "Extract P05/P50/P95 of a metric (e.g. duration) from a DatasetCard. "
+        "Input JSON: {\"profile\": {...DatasetCard...}, \"metric\": "
+        "\"duration\"}. Returns {\"p05\": ..., \"p50\": ..., \"p95\": ...}."
+    ),
 }
 
 

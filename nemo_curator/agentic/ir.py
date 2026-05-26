@@ -76,6 +76,32 @@ class SinkSpec(BaseModel):
 # ----------------------------------------------------------------------------
 
 
+class BackendHints(BaseModel):
+    """Backend-neutral hints attached to a stage by the tuner.
+
+    Each executor honours the subset it understands:
+
+    - XennaExecutor reads ``num_workers``, ``num_workers_per_node``,
+      ``slots_per_actor``, ``worker_max_lifetime_m``,
+      ``worker_restart_interval_m``, ``ignore_failures``.
+    - RayActorPoolExecutor reads ``num_workers`` (as an upper cap via
+      :meth:`ProcessingStage.num_workers`).
+    - RayDataExecutor reads ``num_workers``.
+
+    Fields that a given backend doesn't understand are silently ignored —
+    the IR stays portable.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    num_workers: int | None = Field(default=None, ge=1)
+    num_workers_per_node: int | None = Field(default=None, ge=1)
+    slots_per_actor: int | None = Field(default=None, ge=1)
+    worker_max_lifetime_m: int | None = Field(default=None, ge=1)
+    worker_restart_interval_m: int | None = Field(default=None, ge=1)
+    ignore_failures: bool | None = None
+
+
 class StageRef(BaseModel):
     """One node in the IR — references a stage by class name and binds its params."""
 
@@ -91,12 +117,80 @@ class StageRef(BaseModel):
         default=None,
         description="Override the card's default resources (passed to .with_()).",
     )
+    batch_size: int | None = Field(
+        default=None,
+        ge=1,
+        description="Override the card's default batch_size (passed to .with_()).",
+    )
+    backend_hints: BackendHints | None = Field(
+        default=None,
+        description="Per-stage backend tuning hints emitted by the resource tuner.",
+    )
+    tuner_reasons: list[str] = Field(
+        default_factory=list,
+        description="Human-readable why-chips for the tuner's decisions on this stage.",
+    )
     notes: str | None = None
     auto_inserted: bool = Field(
         default=False,
         description="True for stages added by the validator's auto-insert layer.",
     )
     insert_reason: str | None = None
+
+
+# ----------------------------------------------------------------------------
+# Cluster + executor configuration
+# ----------------------------------------------------------------------------
+
+
+class ClusterProfile(BaseModel):
+    """User-supplied cluster size the tuner allocates against.
+
+    The web form collects these; the runner uses them to pick fractional
+    GPU shares and worker counts that fit. The values are an *upper bound*
+    — the executor's own resource discovery may still cap things lower at
+    runtime (e.g. when other Ray jobs are sharing the cluster).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    cpus: int = Field(default=8, ge=1, description="Total schedulable CPU cores.")
+    gpus: int = Field(default=0, ge=0, description="Total schedulable GPUs.")
+    gpu_memory_gb: float = Field(
+        default=24.0,
+        ge=0.0,
+        description="Per-GPU memory in GB. Used to map gpu_memory_gb hints to fractional gpus.",
+    )
+    nodes: int = Field(default=1, ge=1)
+    reserved_cpus: float = Field(default=0.0, ge=0.0)
+    reserved_gpus: float = Field(default=0.0, ge=0.0)
+
+
+class ExecutorConfig(BaseModel):
+    """Top-level executor configuration emitted by the tuner.
+
+    ``backend`` and ``execution_mode`` together pin the runtime behaviour:
+
+    - ``backend="xenna"`` + ``execution_mode="streaming"`` — autoscaling,
+      all stages run concurrently. GPU stages compete for the GPU pool.
+    - ``backend="xenna"`` + ``execution_mode="batch"`` — Xenna in batch
+      mode (drains each stage before the next).
+    - ``backend="ray_actor_pool"`` — synchronous, one stage at a time,
+      each stage owns the full cluster for its turn. ``execution_mode``
+      is ignored.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    backend: Literal["xenna", "ray_actor_pool", "ray_data"] = "xenna"
+    execution_mode: Literal["streaming", "batch"] = "streaming"
+    cpu_allocation_percentage: float = Field(default=0.95, ge=0.1, le=1.0)
+    autoscale_interval_s: int = Field(default=180, ge=10)
+    logging_interval_s: int = Field(default=60, ge=5)
+    reserved_cpus: float = Field(default=0.0, ge=0.0)
+    reserved_gpus: float = Field(default=0.0, ge=0.0)
+    ignore_failures: bool = False
+    tuner_reasons: list[str] = Field(default_factory=list)
 
 
 # ----------------------------------------------------------------------------
@@ -120,6 +214,15 @@ class PipelineIR(BaseModel):
 
     intent: IntentCategories | None = None
     notes: list[str] = Field(default_factory=list)
+
+    cluster: ClusterProfile | None = Field(
+        default=None,
+        description="User-supplied cluster size used by the resource tuner.",
+    )
+    executor_config: ExecutorConfig | None = Field(
+        default=None,
+        description="Executor selection + tuning emitted by the tuner.",
+    )
 
     executor: Literal["xenna", "ray_data", "ray_actor_pool"] = "xenna"
     dry_run_sample_count: int = Field(default=4, ge=1, le=1024)
@@ -184,4 +287,13 @@ def stage(name: str, **params: Any) -> StageRef:
     return StageRef(stage=name, params=params)
 
 
-__all__ = ["PipelineIR", "SinkSpec", "SourceSpec", "StageRef", "stage"]
+__all__ = [
+    "BackendHints",
+    "ClusterProfile",
+    "ExecutorConfig",
+    "PipelineIR",
+    "SinkSpec",
+    "SourceSpec",
+    "StageRef",
+    "stage",
+]

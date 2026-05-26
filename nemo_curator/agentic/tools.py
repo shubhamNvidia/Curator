@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""The 12 agentic tools — core (NAT-independent) implementations.
+"""The agentic tools — core (NAT-independent) implementations.
 
 These are plain Python callables. The NAT registration shim under
 :mod:`nemo_curator.agentic.nat.register` wraps each one as a
@@ -19,7 +19,7 @@ These are plain Python callables. The NAT registration shim under
 tool-calling. Keeping the core logic NAT-free here means the same functions
 are directly testable from pytest without bootstrapping the agent runtime.
 
-Tool inventory:
+Tool inventory (the trailing four are used by the team-based planner):
 
 1. ``profile_source_tool``      — Layer 1 dataset characterization.
 2. ``capability_search_tool``   — find stages by :class:`CapabilityTag`.
@@ -33,6 +33,13 @@ Tool inventory:
 10. ``deterministic_critic_tool`` — drop-rate + drift summary.
 11. ``cache_gc_tool``           — LRU-evict the per-stage cache.
 12. ``list_stages_tool``        — list every loaded card (paginated).
+13. ``profile_dataset_tool``    — alias of ``profile_source_tool`` returning
+    a fully-typed :class:`DatasetCard` (used by team Intent Agent).
+14. ``propose_topo_order_tool`` — deterministic phase + data-flow ordering
+    of a list of stage names (used by team Staging Agent).
+15. ``dataset_quantiles_tool``  — pull p05 / p50 / p95 from a
+    :class:`DatasetProfile` so the Tuner can resolve "drop bottom N percent"
+    relative thresholds against the actual data.
 """
 
 from __future__ import annotations
@@ -377,6 +384,140 @@ def list_stages_tool(
 
 
 # ----------------------------------------------------------------------------
+# 13. profile_dataset_tool  (team Intent Agent)
+# ----------------------------------------------------------------------------
+
+
+def profile_dataset_tool(
+    source_uri: str,
+    *,
+    kind: str = "manifest",
+    sample_limit: int = 64,
+) -> DatasetCard:
+    """Profile a source URI and return a fully-typed :class:`DatasetCard`.
+
+    Same underlying call as :func:`profile_source_tool` but returns the
+    Pydantic model (not a dict) so the Python-side team manager can
+    pass it around without re-validating.
+    """
+
+    from nemo_curator.agentic.adapters import SourceSpec  # noqa: PLC0415
+
+    src = SourceSpec(kind=kind, uri=source_uri)
+    return profile_source(src, sample_limit=sample_limit)
+
+
+# ----------------------------------------------------------------------------
+# 14. propose_topo_order_tool  (team Staging Agent)
+# ----------------------------------------------------------------------------
+
+
+def propose_topo_order_tool(stage_names: list[str]) -> dict[str, Any]:
+    """Return a deterministic phase-and-data-flow ordering of ``stage_names``.
+
+    Algorithm:
+
+    1. Resolve each stage to its card. Unknown names are dropped from the
+       output and reported in ``unknown``.
+    2. Group by :class:`Phase` and sort phases by their canonical rank.
+    3. Within each phase, use the user-provided order (stable).
+    4. Re-walk the resulting sequence and bubble each consumer down past
+       any later producer of a key it needs (one pass; sufficient because
+       phase ordering already covers the gross structure).
+
+    The team Staging Agent calls this BEFORE proposing its final order so
+    it gets a strong deterministic suggestion to start from; it can still
+    override but typically does not need to.
+    """
+
+    from nemo_curator.agentic.cards import PHASE_ORDER, Phase  # noqa: PLC0415
+
+    reg = _registry()
+    known: list[tuple[str, Any]] = []
+    unknown: list[str] = []
+    for name in stage_names:
+        entry = reg.get(name)
+        if entry is None:
+            unknown.append(name)
+        else:
+            known.append((name, entry.card))
+
+    # Phase grouping (stable within-phase).
+    def _phase_rank(card: Any) -> int:
+        return PHASE_ORDER.get(card.phase, PHASE_ORDER[Phase.ANALYZE])
+
+    indexed = list(enumerate(known))
+    indexed.sort(key=lambda pair: (_phase_rank(pair[1][1]), pair[0]))
+
+    ordered_names = [name for _, (name, _card) in indexed]
+    ordered_cards = [card for _, (_name, card) in indexed]
+
+    # One forward pass producer-before-consumer correction within phases.
+    produces: list[set[str]] = [
+        set(c.outputs.data) | set(c.produces_keys_after_run) for c in ordered_cards
+    ]
+    requires: list[set[str]] = [set(c.inputs.data) for c in ordered_cards]
+    available: set[str] = {"audio_filepath", "task_id"}
+    fixed = list(ordered_names)
+    for i, _ in enumerate(fixed):
+        needed = requires[i] - available
+        if needed:
+            for j in range(i + 1, len(fixed)):
+                if produces[j] & needed:
+                    # Move j before i.
+                    fixed.insert(i, fixed.pop(j))
+                    produces.insert(i, produces.pop(j))
+                    requires.insert(i, requires.pop(j))
+                    available |= produces[i]
+                    break
+            else:
+                available |= produces[i]
+        else:
+            available |= produces[i]
+
+    return {
+        "ordered_stages": fixed,
+        "unknown": unknown,
+        "by_phase": {
+            phase.value: [n for n, c in zip(fixed, ordered_cards) if c.phase == phase]
+            for phase in Phase
+        },
+    }
+
+
+# ----------------------------------------------------------------------------
+# 15. dataset_quantiles_tool  (team Param Tuner)
+# ----------------------------------------------------------------------------
+
+
+def dataset_quantiles_tool(
+    profile: DatasetCard | dict | None,
+    *,
+    metric: str = "duration",
+) -> dict[str, float | None]:
+    """Return ``{p05, p50, p95}`` for a metric on the dataset profile.
+
+    Currently the profiler captures only the duration distribution
+    (:attr:`DatasetProfile.duration_p05_sec` etc.). Other metrics — MOS,
+    SNR, bandwidth — will be added when their per-clip scorers ship; the
+    tool already returns ``None`` rather than failing so the Tuner can
+    degrade gracefully.
+    """
+
+    dc = _coerce_dataset_card(profile)
+    if dc is None:
+        return {"p05": None, "p50": None, "p95": None, "metric": metric}
+    if metric == "duration":
+        return {
+            "p05": dc.profile.duration_p05_sec,
+            "p50": dc.profile.duration_p50_sec,
+            "p95": dc.profile.duration_p95_sec,
+            "metric": "duration",
+        }
+    return {"p05": None, "p50": None, "p95": None, "metric": metric}
+
+
+# ----------------------------------------------------------------------------
 # Card summarization (kept lightweight to fit in LLM context)
 # ----------------------------------------------------------------------------
 
@@ -436,6 +577,9 @@ TOOLS: dict[str, Any] = {
     "deterministic_critic": deterministic_critic_tool,
     "cache_gc": cache_gc_tool,
     "list_stages": list_stages_tool,
+    "profile_dataset": profile_dataset_tool,
+    "propose_topo_order": propose_topo_order_tool,
+    "dataset_quantiles": dataset_quantiles_tool,
 }
 
 
@@ -444,11 +588,14 @@ __all__ = [
     "cache_gc_tool",
     "capability_search_tool",
     "compile_ir_tool",
+    "dataset_quantiles_tool",
     "deterministic_critic_tool",
     "dry_run_ir_tool",
     "gap_report_tool",
     "list_stages_tool",
+    "profile_dataset_tool",
     "profile_source_tool",
+    "propose_topo_order_tool",
     "required_capabilities_tool",
     "run_ir_tool",
     "stage_inspect_tool",

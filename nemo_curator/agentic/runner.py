@@ -227,8 +227,10 @@ def _full_run(
         cache = StageCache(cache_dir, max_bytes=opts.max_cache_bytes) if opts.enable_cache else None
         del cache  # Phase 2: cache wiring stops at the StageCache; in-pipeline use is wired by composite stages.
 
+        executor = _build_executor(ir)
+
         t0 = time.perf_counter()
-        pipeline.run()
+        pipeline.run(executor=executor)
         elapsed = time.perf_counter() - t0
 
         run_card.stage_records = [_record_for(s, elapsed=elapsed / max(1, len(pipeline.stages))) for s in pipeline.stages]
@@ -236,6 +238,44 @@ def _full_run(
     except Exception as exc:  # noqa: BLE001
         logger.opt(exception=True).error(f"run failed: {exc}")
         return False, f"{type(exc).__name__}: {exc}\n{traceback.format_exc(limit=10)}"
+
+
+def _build_executor(ir: PipelineIR):
+    """Instantiate the executor from ``ir.executor_config``.
+
+    Falls back to ``XennaExecutor()`` with default config when no executor
+    config is present (older IRs).
+    """
+
+    cfg = ir.executor_config
+    backend = ir.executor
+    if cfg is not None:
+        backend = cfg.backend
+    if backend == "ray_actor_pool":
+        from nemo_curator.backends.ray_actor_pool import RayActorPoolExecutor  # noqa: PLC0415
+
+        return RayActorPoolExecutor(
+            config={
+                "reserved_cpus": (cfg.reserved_cpus if cfg else 0.0),
+                "reserved_gpus": (cfg.reserved_gpus if cfg else 0.0),
+            },
+        )
+    if backend == "ray_data":
+        from nemo_curator.backends.ray_data import RayDataExecutor  # noqa: PLC0415
+
+        return RayDataExecutor()
+    # default → xenna
+    from nemo_curator.backends.xenna import XennaExecutor  # noqa: PLC0415
+
+    return XennaExecutor(
+        config={
+            "execution_mode": (cfg.execution_mode if cfg else "streaming"),
+            "cpu_allocation_percentage": (cfg.cpu_allocation_percentage if cfg else 0.95),
+            "autoscale_interval_s": (cfg.autoscale_interval_s if cfg else 180),
+            "logging_interval": (cfg.logging_interval_s if cfg else 60),
+            "ignore_failures": (cfg.ignore_failures if cfg else False),
+        },
+    )
 
 
 # ----------------------------------------------------------------------------
@@ -281,11 +321,63 @@ def _build_pipeline(
             if v is not None and (allowed is None or k in allowed)
         }
         instance = klass(**kwargs)
+        with_kwargs: dict[str, Any] = {}
         if stage_ref.resources is not None:
-            instance = instance.with_(resources=Resources(**stage_ref.resources.to_resources_kwargs()))
+            with_kwargs["resources"] = Resources(**stage_ref.resources.to_resources_kwargs())
+        if stage_ref.batch_size is not None:
+            with_kwargs["batch_size"] = stage_ref.batch_size
+        if with_kwargs:
+            instance = instance.with_(**with_kwargs)
+        if stage_ref.backend_hints is not None:
+            _apply_backend_hints(instance, stage_ref.backend_hints)
         pipeline.add_stage(instance)
     pipeline.build()
     return pipeline
+
+
+def _apply_backend_hints(instance: Any, hints: Any) -> None:
+    """Bind backend hints onto the stage instance.
+
+    NeMo Curator's :class:`ProcessingStage` exposes two hooks the
+    backends read for non-resource tuning:
+
+    - ``num_workers() -> int | None``: an upper cap honoured by every
+      backend.
+    - ``xenna_stage_spec() -> dict``: free-form kwargs Xenna forwards to
+      ``StageSpec`` (e.g. ``slots_per_actor``).
+
+    We monkey-patch the instance (NOT the class) so other instances of
+    the same stage class keep their original behaviour.
+    """
+
+    if hints is None:
+        return
+
+    nw = getattr(hints, "num_workers", None)
+    if nw is not None and nw > 0:
+        instance.num_workers = lambda nw=nw: nw  # type: ignore[assignment]
+
+    spec_overrides: dict[str, Any] = {}
+    for key in (
+        "num_workers",
+        "num_workers_per_node",
+        "slots_per_actor",
+        "worker_max_lifetime_m",
+        "worker_restart_interval_m",
+        "ignore_failures",
+    ):
+        val = getattr(hints, key, None)
+        if val is not None:
+            spec_overrides[key] = val
+    if spec_overrides:
+        base_spec = type(instance).xenna_stage_spec
+        def _xenna_spec(self, _overrides=spec_overrides, _base=base_spec):
+            spec = dict(_base(self))
+            spec.update(_overrides)
+            return spec
+        import types  # noqa: PLC0415
+
+        instance.xenna_stage_spec = types.MethodType(_xenna_spec, instance)
 
 
 def _record_for(stage: Any, elapsed: float) -> RunStageRecord:
