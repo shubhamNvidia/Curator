@@ -12,17 +12,24 @@ description: |
   heterogeneous corpus, chain ResampleAudioStage BEFORE this stage.
 summary: Channel-collapse to mono + verify SR (no resampling); load waveform into memory.
 category: preprocess
+phase: load
+input_shape: whole_file
+output_shape: passthrough
+terminal: false
 capabilities: [normalize_mono]
 also_handles: []
 selection_hints:
   prefer_when:
     - "input dataset is already at the target sample rate (or you've already run ResampleAudioStage)"
     - "you need an in-memory waveform for VAD / diarization / segmentation downstream"
+    - "the user mentions 'mono' / 'single channel' or any stage downstream needs `task.data['waveform']`"
   avoid_when:
-    - "source has heterogeneous sample rates — Mono will silently drop the non-matching files in strict mode"
+    - "source has heterogeneous sample rates and you have NOT run ResampleAudioStage — Mono will silently drop non-matching files in strict mode"
+    - "the entire downstream pipeline only needs `audio_filepath` (works directly on disk via ffmpeg or soundfile)"
   notes:
     - "Does NOT resample. The strict_sample_rate flag is a filter, not a converter."
-    - "Use ResampleAudioStage upstream if you need to normalize SR before this stage."
+    - "Use `ResampleAudioStage` upstream if you need to normalize SR before this stage."
+    - "Produces in-memory waveform: every downstream stage that reads `task.data['waveform']` requires this (or another loader) upstream."
 inputs:
   top_level: []
   data: [audio_filepath]
@@ -33,9 +40,9 @@ produces_cardinality: '1:0|1'
 requires_sample_rate: null
 produces_in_memory_waveform: true
 params:
-  - {name: output_sample_rate, type: int, default: 48000, min: 8000, max: 96000}
-  - {name: audio_filepath_key, type: str, default: audio_filepath}
-  - {name: strict_sample_rate, type: bool, default: true}
+  - {name: output_sample_rate, type: int, default: 48000, min: 8000, max: 96000, description: "Required native SR of the input files. NOT a target — this is the SR the stage will VERIFY against."}
+  - {name: audio_filepath_key, type: str, default: audio_filepath, description: "Key in task.data holding the file path to load."}
+  - {name: strict_sample_rate, type: bool, default: true, description: "If true, files whose native SR != output_sample_rate are DROPPED. If false, they pass through unchanged."}
 resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}
 batch_size: 1
 supports_process_batch: false

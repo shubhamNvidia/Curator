@@ -10,6 +10,10 @@ description: |
   plus segment_mappings in task._metadata.
 summary: Concat nested VAD segments back into a single waveform with silence gaps.
 category: preprocess
+phase: concat
+input_shape: nested_segments
+output_shape: fan_in
+terminal: false
 capabilities: [segment_concat]
 also_handles: []
 inputs:
@@ -32,13 +36,15 @@ cost_hint: cheap
 tags: [concat, vad, in_memory]
 selection_hints:
   prefer_when:
-    - "VAD has run upstream (nested or fanned-out segments need re-stitching)"
-    - "the next stage needs ONE coherent waveform per task (speaker separation, ALM packaging, file extraction with whole-file timing)"
+    - "`VADSegmentationStage` ran upstream with `nested=true` AND a downstream stage needs `input_shape: whole_file` (e.g. `SpeakerSeparationStage`, `ALMDataBuilderStage`)"
+    - "the next stage needs ONE coherent waveform per task"
   avoid_when:
     - "no segmentation has happened upstream — there is nothing to concatenate"
+    - "VAD ran with `nested=false` (the default) — that produces fan-out across N tasks, and this stage CANNOT collapse fan-out. Re-run VAD with `nested=true` instead, or accept the fanned-out stream all the way to sink"
   notes:
-    - "Inverse of VADSegmentationStage's segmentation: takes the nested segments list and emits a single AudioTask with the recombined waveform."
-    - "Records segment-to-time mapping in task._metadata so a later TimestampMapperStage can recover per-segment timestamps."
+    - "REQUIRES `task.data['segments']` (a list) to be present. This only exists when an upstream stage produced `output_shape: nested_segments` — today, only `VADSegmentationStage(nested=true)`."
+    - "Cannot fan-in across fanned-out tasks. If you see `output_shape: fan_out_segments` upstream, this stage will not fix it."
+    - "Records segment-to-time mapping in `task._metadata['segment_mappings']` so a later `TimestampMapperStage` can recover per-segment timestamps."
   ordering_hints:
     prefer_after:
       - vad   # we re-stitch what VAD segmented

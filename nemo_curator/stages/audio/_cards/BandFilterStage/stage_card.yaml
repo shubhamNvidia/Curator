@@ -9,6 +9,10 @@ description: |
   don't match band_value.
 summary: Keep only clips matching the chosen bandwidth class.
 category: filter
+phase: analyze
+input_shape: any
+output_shape: passthrough
+terminal: false
 capabilities: [quality_filter_band]
 also_handles: []
 inputs:

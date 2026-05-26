@@ -17,6 +17,10 @@ description: |
   are unconditionally dropped.
 summary: Output-row normalizer; required directly before SegmentExtraction or ManifestWriter.
 category: postprocess
+phase: polish
+input_shape: any
+output_shape: rebuild_task
+terminal: true
 capabilities: [timestamp_remap]
 also_handles: []
 inputs:
@@ -26,7 +30,18 @@ outputs:
   top_level: []
   data: [original_file, original_start_ms, original_end_ms, duration_ms, duration]
 produces_cardinality: '1:1'
-drops_keys_after_run: [waveform, audio, audio_data, audio_array, segments]
+produces_keys_after_run:
+  - original_file
+  - original_start_ms
+  - original_end_ms
+  - duration_ms
+  - duration
+drops_keys_after_run:
+  - waveform
+  - audio
+  - audio_data
+  - audio_array
+  - segments
 params:
   - {name: passthrough_keys, type: list, default: null, description: "Whitelist of keys to copy from input to output. ``null`` uses the built-in default: speaker_id, num_speakers, speaking_duration, sample_rate, utmos_mos, sigmos_noise/ovrl/sig/col/disc/loud/reverb, band_prediction. Override to widen for custom fields."}
 resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}

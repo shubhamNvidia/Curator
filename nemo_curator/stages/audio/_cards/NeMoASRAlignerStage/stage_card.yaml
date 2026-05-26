@@ -8,14 +8,19 @@ description: |
   per-clip transcripts plus word-level timestamps when compute_timestamps is on.
 summary: NeMo ASR transcription with word-level alignment.
 category: tagging
+phase: analyze
+input_shape: any
+output_shape: passthrough
+terminal: false
 capabilities: [asr, asr_align]
 also_handles: []
 inputs:
   top_level: []
-  data: [audio_filepath, duration, segments, split_filepaths, split_metadata]
+  data: [audio_filepath]
 outputs:
-  top_level: []
-  data: [duration, segments, split_filepaths, split_metadata, text, words]
+  top_level: [data]
+  data: [duration, segments, split_filepaths, split_metadata]
+produces_keys_after_run: [duration, segments, split_filepaths, split_metadata]
 produces_cardinality: '1:1'
 requires_on_disk_path: true
 params:
@@ -40,7 +45,7 @@ batch_size: 100
 supports_process_batch: true
 preferred_executor: any
 models:
-  - {name: parakeet-tdt_ctc-1.1b, provider: huggingface, repo_id: 'nvidia/parakeet-tdt_ctc-1.1b', license: CC-BY-4.0}
+  - {name: parakeet-tdt_ctc-1.1b, provider: huggingface, repo_id: 'nvidia/parakeet-tdt_ctc-1.1b', license: CC-BY-4.0, params_total: 1071593617, dtype: fp32, est_vram_inference_gb: 5.57, params_audit_source: nemo_archive, params_audit_at: '2026-05-21T12:57:48+00:00'}
 license: Apache-2.0
 commercial_safe: true
 cost_hint: expensive

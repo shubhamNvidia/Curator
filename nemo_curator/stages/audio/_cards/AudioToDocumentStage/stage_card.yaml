@@ -9,6 +9,10 @@ description: |
   The only existing many-to-one stage in the catalog.
 summary: Collapse a batch of AudioTasks into one DocumentBatch.
 category: io
+phase: sink
+input_shape: any
+output_shape: fan_in
+terminal: true
 capabilities: [audio_to_document]
 also_handles: []
 modality_in: audio

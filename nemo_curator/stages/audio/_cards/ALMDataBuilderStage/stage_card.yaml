@@ -10,25 +10,29 @@ description: |
   contain too few or too many speakers.
 summary: Build ALM training windows from diarized/aligned segments.
 category: alm
+phase: package
+input_shape: whole_file
+output_shape: passthrough
+terminal: false
 capabilities: [alm_package]
 also_handles: []
 inputs:
   top_level: []
-  data: [segments, words]
+  data: [audio_filepath, segments, sample_rate]
 outputs:
   top_level: []
-  data: [alm_windows]
+  data: [windows, stats, truncation_events]
 produces_cardinality: '1:1'
 params:
-  - {name: target_window_duration, type: float, default: 120.0, min: 1.0, max: 600.0}
-  - {name: tolerance, type: float, default: 0.1, min: 0.0, max: 1.0}
-  - {name: min_bandwidth, type: int, default: 8000, min: 0, max: 24000}
-  - {name: min_sample_rate, type: int, default: 16000, min: 8000, max: 96000}
-  - {name: min_speakers, type: int, default: 2, min: 1, max: 8}
-  - {name: max_speakers, type: int, default: 5, min: 1, max: 8}
-  - {name: truncation, type: bool, default: true}
-  - {name: drop_fields, type: str, default: words}
-  - {name: drop_fields_top_level, type: str, default: 'words,segments'}
+  - {name: target_window_duration, type: float, default: 120.0, min: 1.0, max: 600.0, description: "Target duration (seconds) of each ALM training window."}
+  - {name: tolerance, type: float, default: 0.1, min: 0.0, max: 1.0, description: "Fraction by which a window may deviate from target_window_duration before being dropped (e.g. 0.1 = +/- 10%)."}
+  - {name: min_bandwidth, type: int, default: 8000, min: 0, max: 24000, description: "Soft per-window minimum effective bandwidth in Hz; windows below this are dropped."}
+  - {name: min_sample_rate, type: int, default: 16000, min: 8000, max: 96000, description: "Soft per-window minimum sample rate in Hz; windows below this are dropped."}
+  - {name: min_speakers, type: int, default: 2, min: 1, max: 8, description: "Drop any window with fewer than this many distinct speakers."}
+  - {name: max_speakers, type: int, default: 5, min: 1, max: 8, description: "Drop any window with more than this many distinct speakers."}
+  - {name: truncation, type: bool, default: true, description: "If true, allow trimming the last segment of a window to fit target_window_duration; if false, drop windows that don't fit cleanly."}
+  - {name: drop_fields, type: str, default: words, description: "Comma-separated keys to drop from each per-window record (e.g. 'words,alignment')."}
+  - {name: drop_fields_top_level, type: str, default: 'words,segments', description: "Comma-separated keys to drop from task.data after packaging; typically heavy intermediate fields."}
 resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}
 batch_size: 1
 supports_process_batch: false

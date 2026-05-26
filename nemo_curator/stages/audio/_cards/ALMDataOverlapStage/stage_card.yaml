@@ -9,6 +9,10 @@ description: |
   to control redundancy in the training set.
 summary: Dedup ALM windows by overlap percentage.
 category: alm
+phase: package
+input_shape: any
+output_shape: passthrough
+terminal: false
 capabilities: [alm_overlap]
 also_handles: []
 inputs:

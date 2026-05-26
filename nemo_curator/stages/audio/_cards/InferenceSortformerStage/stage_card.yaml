@@ -9,6 +9,10 @@ description: |
   speakers; chunked streaming inference with configurable left/right context.
 summary: Streaming NVIDIA Sortformer diarizer (up to 4 speakers).
 category: inference
+phase: analyze
+input_shape: any
+output_shape: passthrough
+terminal: false
 capabilities: [speaker_diarization, speaker_count]
 also_handles: []
 inputs:
@@ -39,7 +43,7 @@ batch_size: 1
 supports_process_batch: false
 preferred_executor: any
 models:
-  - {name: diar_streaming_sortformer_4spk-v2.1, provider: huggingface, repo_id: 'nvidia/diar_streaming_sortformer_4spk-v2.1', license: CC-BY-4.0}
+  - {name: diar_streaming_sortformer_4spk-v2.1, provider: huggingface, repo_id: 'nvidia/diar_streaming_sortformer_4spk-v2.1', license: CC-BY-4.0, params_total: 117744681, dtype: fp32, est_vram_inference_gb: 0.61, params_audit_source: nemo_archive, params_audit_at: '2026-05-21T12:58:58+00:00'}
 license: Apache-2.0
 commercial_safe: true
 cost_hint: expensive

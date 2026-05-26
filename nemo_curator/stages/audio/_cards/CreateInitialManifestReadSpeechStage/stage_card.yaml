@@ -9,6 +9,10 @@ description: |
   for quick experiments without a pre-existing manifest.
 summary: Read Speech (DNS) dataset source — auto-download + tasks.
 category: source
+phase: source
+input_shape: any
+output_shape: passthrough
+terminal: false
 capabilities: [dataset_create]
 also_handles: []
 inputs:

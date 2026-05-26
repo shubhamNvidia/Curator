@@ -10,6 +10,10 @@ description: |
   cleanup between adjacent same-speaker chunks.
 summary: Split a multi-speaker recording into one task per speaker.
 category: segmentation
+phase: segment
+input_shape: whole_file
+output_shape: fan_out_speakers
+terminal: false
 capabilities: [speaker_separation, speaker_diarization]
 also_handles: []
 inputs:
@@ -17,7 +21,7 @@ inputs:
   data: [audio_filepath]
 outputs:
   top_level: []
-  data: [audio_filepath, waveform, sample_rate, speaker_id, num_speakers, start_ms, end_ms, duration]
+  data: [waveform, sample_rate, speaker_id, num_speakers, duration, diar_segments]
 produces_cardinality: '1:N'
 requires_in_memory_waveform: false
 params:
@@ -32,7 +36,7 @@ supports_process_batch: false
 preferred_executor: any
 incompatible_with_inference_server: false
 models:
-  - {name: diar_sortformer_4spk-v1, provider: huggingface, repo_id: 'nvidia/diar_sortformer_4spk-v1', license: CC-BY-4.0}
+  - {name: diar_sortformer_4spk-v1, provider: huggingface, repo_id: 'nvidia/diar_sortformer_4spk-v1', license: CC-BY-4.0, params_total: 123259386, dtype: fp32, est_vram_inference_gb: 0.64, params_audit_source: nemo_archive, params_audit_at: '2026-05-21T12:59:04+00:00'}
 license: Apache-2.0
 commercial_safe: true
 cost_hint: expensive
@@ -50,6 +54,7 @@ selection_hints:
     - "Cardinality is 1:N — downstream stages must handle multiple tasks per source file."
     - "Cost is dominated by Sortformer (GPU); plan accordingly on large datasets."
     - "Requires ONE coherent waveform per task. If VADSegmentationStage ran upstream and produced nested or fanned-out segments, you MUST insert SegmentConcatenationStage between VAD and this stage to re-stitch them."
+    - "Each fan-out task's per-speaker waveform is the FULL source duration with silence outside that speaker's regions (see speaker_separation_module/speaker_sep.py). That means timestamps stay in source-file coordinates end-to-end, so a downstream VADSegmentationStage(nested=false) can run as a post-segmenter duration / speech-policy trim without any per-task → source translation — see advanced_pipelines/audio_data_filter for the reference layout."
   ordering_hints:
     prefer_after:
       - segment_concat   # if VAD ran upstream, re-stitch first

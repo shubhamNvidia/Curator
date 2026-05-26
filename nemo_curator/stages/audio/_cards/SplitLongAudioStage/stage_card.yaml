@@ -9,14 +9,18 @@ description: |
   child-file metadata into task.data for downstream rejoin.
 summary: Cut long recordings into ~max_len chunks for downstream batched processing.
 category: tagging
+phase: segment
+input_shape: whole_file
+output_shape: passthrough
+terminal: false
 capabilities: [long_audio_split]
 also_handles: []
 inputs:
   top_level: []
-  data: [audio_filepath]
+  data: [resampled_audio_filepath, audio_item_id]
 outputs:
   top_level: []
-  data: [audio_filepath, split_files]
+  data: [split_filepaths, split_metadata, split_offsets, split_timestamps]
 produces_cardinality: '1:1'
 requires_on_disk_path: true
 produces_on_disk_files: true
@@ -31,5 +35,14 @@ license: Apache-2.0
 commercial_safe: true
 cost_hint: cheap
 tags: [split, long_audio, on_disk]
+selection_hints:
+  prefer_when:
+    - "the source corpus contains very long recordings (hours-long) that need chunking before ASR/diarization"
+    - "downstream stages (ASR aligner, diarizer) cap their per-task duration"
+  avoid_when:
+    - "the source corpus is already short clips (< the suggested max_len)"
+  notes:
+    - "Operates on `resampled_audio_filepath` — pair with `ResampleAudioStage` upstream."
+    - "Writes child WAV files alongside the resampled file; populates `split_filepaths`, `split_metadata`, `split_offsets`, `split_timestamps` in `task.data` so downstream stages (e.g. `JoinSplitAudioMetadataStage`) can stitch results back."
 source_file: nemo_curator/stages/audio/tagging/split.py
 smoke_test_status: unknown

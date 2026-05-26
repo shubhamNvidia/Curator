@@ -9,6 +9,10 @@ description: |
   to output_dir. Operates batched; one source file is opened once per batch.
 summary: Write per-segment audio files from manifest entries.
 category: io
+phase: materialize
+input_shape: any
+output_shape: write_files
+terminal: false
 capabilities: [segment_extract]
 also_handles: []
 inputs:
@@ -30,5 +34,14 @@ license: Apache-2.0
 commercial_safe: true
 cost_hint: cheap
 tags: [io, extract, segment, wav]
+selection_hints:
+  prefer_when:
+    - "the user wants per-clip audio files materialised on disk (intent.output_extract_clips is true)"
+    - "the canonical row schema (`original_file`, `original_start_ms`, `original_end_ms`) is already present — i.e. `TimestampMapperStage` ran upstream"
+  avoid_when:
+    - "the manifest can ship without per-clip files (downstream training reads from the source file using offsets)"
+  notes:
+    - "Re-reads slices from `original_file` on disk; does NOT use the in-memory waveform — that has been dropped by `TimestampMapperStage`."
+    - "Writes one file per row under `output_dir`. Names are derived from task_id + segment boundaries."
 source_file: nemo_curator/stages/audio/io/extract_segments.py
 smoke_test_status: unknown

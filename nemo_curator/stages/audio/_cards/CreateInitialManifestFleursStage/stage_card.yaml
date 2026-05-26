@@ -8,6 +8,10 @@ description: |
   lang + split; emits one AudioTask per fleurs example.
 summary: FLEURS dataset source — multilingual auto-download.
 category: source
+phase: source
+input_shape: any
+output_shape: passthrough
+terminal: false
 capabilities: [dataset_create]
 also_handles: []
 inputs:

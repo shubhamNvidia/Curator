@@ -113,6 +113,7 @@ class InferenceSortformerStage(ProcessingStage[AudioTask, AudioTask]):
     diar_model: Any | None = None
     filepath_key: str = "audio_filepath"
     diar_segments_key: str = "diar_segments"
+    num_speakers_key: str = "num_speakers"
     rttm_out_dir: str | None = None
     chunk_len: int = 340
     chunk_left_context: int = 1
@@ -197,7 +198,7 @@ class InferenceSortformerStage(ProcessingStage[AudioTask, AudioTask]):
         return ["data"], []
 
     def outputs(self) -> tuple[list[str], list[str]]:
-        return ["data"], [self.filepath_key, self.diar_segments_key]
+        return ["data"], [self.filepath_key, self.diar_segments_key, self.num_speakers_key]
 
     def diarize(self, audio_paths: list[str]) -> list[list[dict[str, Any]]]:
         """Run Sortformer on a list of audio files.
@@ -228,6 +229,9 @@ class InferenceSortformerStage(ProcessingStage[AudioTask, AudioTask]):
 
         output_data = dict(task.data)
         output_data[self.diar_segments_key] = segments
+        # Stage card promises num_speakers; downstream filters
+        # (e.g. PreserveByValueStage on num_speakers == 1) require it.
+        output_data[self.num_speakers_key] = len({s["speaker"] for s in segments})
 
         return AudioTask(
             task_id=f"{task.task_id}_sortformer",

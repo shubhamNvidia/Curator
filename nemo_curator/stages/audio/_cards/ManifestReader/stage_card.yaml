@@ -6,19 +6,26 @@ public_api: true
 description: |
   Composite reader: FilePartitioningStage discovers JSONL manifest files
   and groups them, then ManifestReaderStage emits one AudioTask per line.
-summary: High-level JSONL manifest source.
+  Each output task has `task.data` populated with the JSONL row (at minimum
+  `audio_filepath`, plus any other fields present in the row such as
+  `text`, `language`, `duration`, etc.).
+summary: High-level JSONL manifest source — produces one whole-file AudioTask per row.
 category: composite
+phase: source
+input_shape: any
+output_shape: passthrough
+terminal: false
 capabilities: [read_manifest]
 also_handles: []
 inputs: {top_level: [], data: []}
 outputs: {top_level: [], data: [audio_filepath]}
 produces_cardinality: '1:N'
 params:
-  - {name: manifest_path, type: path, required: true}
-  - {name: files_per_partition, type: int, default: 1, min: 1, max: 100000}
-  - {name: blocksize, type: str, default: null}
-  - {name: file_extensions, type: list, default: [.jsonl, .json]}
-  - {name: storage_options, type: dict, default: null}
+  - {name: manifest_path, type: path, required: true, description: "Path or glob to one or more JSONL manifest files."}
+  - {name: files_per_partition, type: int, default: 1, min: 1, max: 100000, description: "How many manifest files to group into one partition (downstream Ray task)."}
+  - {name: blocksize, type: str, default: null, description: "Optional byte block size for partitioning very large manifests."}
+  - {name: file_extensions, type: list, default: [.jsonl, .json], description: "Manifest file extensions to discover under manifest_path."}
+  - {name: storage_options, type: dict, default: null, description: "fsspec storage options (e.g. anonymous S3 access)."}
 resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}
 batch_size: 1
 supports_process_batch: false
@@ -27,5 +34,17 @@ license: Apache-2.0
 commercial_safe: true
 cost_hint: very_cheap
 tags: [reader, manifest, composite]
+selection_hints:
+  prefer_when:
+    - "user provides a JSONL manifest path or a directory of JSONL manifests"
+    - "the source URI scheme is `manifest://` or a plain path ending in .jsonl"
+    - "you need to consume the user's own corpus (any modality of audio)"
+  avoid_when:
+    - "user names a built-in dataset like FLEURS or DNS — use the dataset-specific reader"
+    - "user supplies a directory of audio files with no manifest (separate code path)"
+  notes:
+    - "Output cardinality is 1 task per JSONL row across all manifest files."
+    - "Arbitrary manifest fields are propagated into `task.data` as-is — downstream stages can read them."
+    - "This is a Composite of FilePartitioningStage + ManifestReaderStage; the planner usually references this composite, not its internals."
 source_file: nemo_curator/stages/audio/common.py
 smoke_test_status: unknown

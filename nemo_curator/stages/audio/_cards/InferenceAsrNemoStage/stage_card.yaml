@@ -9,6 +9,10 @@ description: |
   than NeMoASRAlignerStage when timestamps aren't needed.
 summary: NeMo ASR transcription only (no alignment).
 category: inference
+phase: analyze
+input_shape: any
+output_shape: passthrough
+terminal: false
 capabilities: [asr]
 also_handles: []
 inputs:
@@ -25,12 +29,12 @@ params:
   - {name: pred_text_key, type: str, default: pred_text}
   - {name: cache_dir, type: path, default: null, description: "HF cache directory override."}
   - {name: asr_model, type: str, default: null, affects_behavior: false, description: "Internal handle for the loaded ASR model; not user-set in YAML."}
-resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}
+resources: {cpus: 1.0, gpus: 0.5, gpu_memory_gb: 0.0}
 batch_size: 16
 supports_process_batch: true
 preferred_executor: any
 models:
-  - {name: parakeet-tdt_ctc-1.1b, provider: huggingface, repo_id: 'nvidia/parakeet-tdt_ctc-1.1b', license: CC-BY-4.0}
+  - {name: parakeet-tdt_ctc-1.1b, provider: huggingface, repo_id: 'nvidia/parakeet-tdt_ctc-1.1b', license: CC-BY-4.0, params_total: 1071593617, dtype: fp32, est_vram_inference_gb: 5.57, params_audit_source: nemo_archive, params_audit_at: '2026-05-21T12:55:58Z'}
 license: Apache-2.0
 commercial_safe: true
 cost_hint: expensive

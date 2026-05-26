@@ -9,6 +9,10 @@ description: |
   only creates the directory.
 summary: JSONL manifest sink.
 category: sink
+phase: sink
+input_shape: any
+output_shape: passthrough
+terminal: false
 capabilities: [write_manifest]
 also_handles: []
 inputs:
@@ -29,5 +33,11 @@ license: Apache-2.0
 commercial_safe: true
 cost_hint: very_cheap
 tags: [writer, manifest, jsonl, sink]
+selection_hints:
+  prefer_when:
+    - "the pipeline must end with a JSONL manifest (the canonical Curator output)"
+  notes:
+    - "Appends one JSON object per task. Only fields present in `task.data` are written; `task._metadata` is NOT serialised."
+    - "Run AFTER `TimestampMapperStage` so the row schema is clean and waveforms are dropped."
 source_file: nemo_curator/stages/audio/common.py
 smoke_test_status: unknown

@@ -4,11 +4,16 @@ target: nemo_curator.stages.audio.common.ManifestReaderStage
 version: 1.0.0
 public_api: true
 description: |
-  Reads each JSONL line from a FileGroupTask and emits one AudioTask per line.
-  Streams via fsspec; supports local + cloud (s3, gs) paths. Typically used as
-  the second half of the ManifestReader composite.
-summary: Stream JSONL manifests line-by-line into AudioTasks.
+  Reads each JSONL line from an upstream FileGroupTask and emits one AudioTask
+  per line. Streams via fsspec; supports local + cloud (s3, gs) paths.
+  Typically the second half of the `ManifestReader` composite. Arbitrary JSONL
+  fields are propagated into `task.data` unchanged.
+summary: Stream JSONL manifests line-by-line into AudioTasks (whole-file shape).
 category: source
+phase: source
+input_shape: any
+output_shape: passthrough
+terminal: false
 capabilities: [read_manifest]
 also_handles: []
 inputs:
@@ -27,5 +32,12 @@ license: Apache-2.0
 commercial_safe: true
 cost_hint: very_cheap
 tags: [reader, manifest, jsonl]
+selection_hints:
+  prefer_when:
+    - "the planner needs the low-level reader half of `ManifestReader`"
+  avoid_when:
+    - "you only have a manifest path string — use the `ManifestReader` composite which also discovers files"
+  notes:
+    - "Pass-through of arbitrary JSONL fields into `task.data` — downstream stages may read them."
 source_file: nemo_curator/stages/audio/common.py
 smoke_test_status: unknown

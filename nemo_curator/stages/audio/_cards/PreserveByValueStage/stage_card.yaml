@@ -10,6 +10,10 @@ description: |
   process_batch().
 summary: Drop tasks that don't satisfy a simple key-vs-value comparison.
 category: filter
+phase: analyze
+input_shape: any
+output_shape: passthrough
+terminal: false
 capabilities: [value_filter]
 also_handles: []
 inputs:

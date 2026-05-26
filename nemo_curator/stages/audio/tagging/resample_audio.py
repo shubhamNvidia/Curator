@@ -117,6 +117,15 @@ class ResampleAudioStage(ProcessingStage[AudioTask, AudioTask]):
         fs, output_path = url_to_fs(output_audio_path)
         skipped_conversion = fs.exists(output_path)
         if not skipped_conversion:
+            # ffmpeg's `-acodec pcm_s16le` is only valid for the wav muxer;
+            # picking it for .flac/.ogg/.mp3 yields a "muxer does not support
+            # codec" failure (exit 234). For non-wav containers let ffmpeg
+            # choose the default encoder for the chosen target_format.
+            codec_args = (
+                ["-acodec", "pcm_s16le"]
+                if self.target_format.lower() == "wav"
+                else []
+            )
             cmd = [
                 "ffmpeg",
                 "-v",
@@ -127,8 +136,7 @@ class ResampleAudioStage(ProcessingStage[AudioTask, AudioTask]):
                 str(self.target_sample_rate),
                 "-ac",
                 str(self.target_nchannels),
-                "-acodec",
-                "pcm_s16le",
+                *codec_args,
                 output_audio_path,
             ]
 

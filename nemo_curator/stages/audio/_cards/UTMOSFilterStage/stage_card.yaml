@@ -9,6 +9,10 @@ description: |
   resampled to 16 kHz internally.
 summary: Drop clips whose UTMOS score is below a floor.
 category: filter
+phase: analyze
+input_shape: any
+output_shape: passthrough
+terminal: false
 capabilities: [quality_filter_mos]
 also_handles: []
 inputs:
@@ -18,7 +22,7 @@ outputs:
   top_level: []
   data: [utmos_mos]
 produces_cardinality: '1:0|1'
-requires_sample_rate: null
+requires_sample_rate:
 requires_in_memory_waveform: true
 params:
   - {name: mos_threshold, type: float, default: 3.5, min: 0.0, max: 5.0}
@@ -28,7 +32,7 @@ batch_size: 1
 supports_process_batch: false
 preferred_executor: any
 models:
-  - {name: utmos22_strong, provider: torch_hub, license: MIT}
+  - {name: utmos22_strong, provider: torch_hub, license: MIT, params_total: 102772865, dtype: fp32, est_vram_inference_gb: 0.53, params_audit_source: torch_hub, params_audit_at: '2026-05-21T13:48:05+00:00'}
 license: Apache-2.0
 commercial_safe: true
 cost_hint: medium
@@ -80,9 +84,9 @@ selection_hints:
         studio explicitly. MOS values match AudioDataFilter's
         default_config.yaml for the UTMOS and SIGMOS axes only.
       settings:
-        - {stage: UTMOSFilterStage,  param: mos_threshold,   value: 3.4}
+        - {stage: UTMOSFilterStage, param: mos_threshold, value: 3.4}
         - {stage: SIGMOSFilterStage, param: noise_threshold, value: 4.0}
-        - {stage: SIGMOSFilterStage, param: ovrl_threshold,  value: 3.5}
+        - {stage: SIGMOSFilterStage, param: ovrl_threshold, value: 3.5}
     - label: "studio-grade speech"
       aliases:
         - "studio"
@@ -93,11 +97,11 @@ selection_hints:
         naturalness to "very good" and demands very low noise + very dry
         rooms, full-bandwidth only.
       settings:
-        - {stage: UTMOSFilterStage,  param: mos_threshold,    value: 4.0}
-        - {stage: SIGMOSFilterStage, param: noise_threshold,  value: 4.5}
-        - {stage: SIGMOSFilterStage, param: ovrl_threshold,   value: 4.0}
+        - {stage: UTMOSFilterStage, param: mos_threshold, value: 4.0}
+        - {stage: SIGMOSFilterStage, param: noise_threshold, value: 4.5}
+        - {stage: SIGMOSFilterStage, param: ovrl_threshold, value: 4.0}
         - {stage: SIGMOSFilterStage, param: reverb_threshold, value: 4.0}
-        - {stage: BandFilterStage,   param: band_value,       value: "full_band"}
+        - {stage: BandFilterStage, param: band_value, value: "full_band"}
     - label: "broadcast-quality speech"
       aliases:
         - "broadcast"
@@ -107,12 +111,12 @@ selection_hints:
         Tuned for broadcast/podcast usage: well-leveled, full-bandwidth,
         low coloration, no perceptible noise.
       settings:
-        - {stage: UTMOSFilterStage,  param: mos_threshold,   value: 4.0}
-        - {stage: SIGMOSFilterStage, param: ovrl_threshold,  value: 4.0}
+        - {stage: UTMOSFilterStage, param: mos_threshold, value: 4.0}
+        - {stage: SIGMOSFilterStage, param: ovrl_threshold, value: 4.0}
         - {stage: SIGMOSFilterStage, param: noise_threshold, value: 4.0}
-        - {stage: SIGMOSFilterStage, param: col_threshold,   value: 4.0}
-        - {stage: SIGMOSFilterStage, param: loud_threshold,  value: 3.5}
-        - {stage: BandFilterStage,   param: band_value,      value: "full_band"}
+        - {stage: SIGMOSFilterStage, param: col_threshold, value: 4.0}
+        - {stage: SIGMOSFilterStage, param: loud_threshold, value: 3.5}
+        - {stage: BandFilterStage, param: band_value, value: "full_band"}
     - label: "lightly cleaned"
       aliases:
         - "decent"
@@ -123,8 +127,8 @@ selection_hints:
         more important than fidelity. No bandwidth gate so narrow-band
         sources are kept.
       settings:
-        - {stage: UTMOSFilterStage,  param: mos_threshold,   value: 3.0}
-        - {stage: SIGMOSFilterStage, param: ovrl_threshold,  value: 3.0}
+        - {stage: UTMOSFilterStage, param: mos_threshold, value: 3.0}
+        - {stage: SIGMOSFilterStage, param: ovrl_threshold, value: 3.0}
     - label: "telephone / narrow-band speech"
       aliases:
         - "telephone"
@@ -137,9 +141,9 @@ selection_hints:
         for telephony / call-center corpora. Loosens MOS floors because
         narrow-band scoring scale is different.
       settings:
-        - {stage: UTMOSFilterStage,  param: mos_threshold,  value: 2.8}
+        - {stage: UTMOSFilterStage, param: mos_threshold, value: 2.8}
         - {stage: SIGMOSFilterStage, param: ovrl_threshold, value: 3.0}
-        - {stage: BandFilterStage,   param: band_value,     value: "narrow_band"}
+        - {stage: BandFilterStage, param: band_value, value: "narrow_band"}
   ordering_hints:
     prefer_after:
       - quality_filter_band   # let the cheap BandFilter run first

@@ -9,6 +9,10 @@ description: |
   read (does not decode samples).
 summary: Read audio duration via soundfile and stamp it into task.data.
 category: source
+phase: source
+input_shape: any
+output_shape: passthrough
+terminal: false
 capabilities: [get_duration]
 also_handles: []
 modality_in: audio

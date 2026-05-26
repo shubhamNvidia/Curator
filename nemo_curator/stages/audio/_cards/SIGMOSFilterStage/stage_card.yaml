@@ -10,6 +10,10 @@ description: |
   on first use and caches under ~/.cache/nemo_curator/sigmos_model/.
 summary: Multi-axis MOS filter (noise / overall / signal / loudness / reverb / ...).
 category: filter
+phase: analyze
+input_shape: any
+output_shape: passthrough
+terminal: false
 capabilities: [quality_filter_mos]
 also_handles: []
 inputs:
@@ -35,7 +39,7 @@ batch_size: 1
 supports_process_batch: false
 preferred_executor: any
 models:
-  - {name: sig-mos-onnx, provider: github, license: Apache-2.0, description: "Microsoft SIG-Challenge ONNX"}
+  - {name: sig-mos-onnx, provider: github, license: Apache-2.0, description: "Microsoft SIG-Challenge ONNX", params_total: 6564441, dtype: fp32, est_vram_inference_gb: 0.03, params_audit_source: onnx_graph, params_audit_at: '2026-05-21T13:47:21+00:00'}
 license: Apache-2.0
 commercial_safe: true
 cost_hint: medium

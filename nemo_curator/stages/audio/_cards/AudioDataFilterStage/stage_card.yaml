@@ -11,6 +11,10 @@ description: |
   config_path or config dict.
 summary: Blessed clean-single-speaker preset composite.
 category: composite
+phase: analyze
+input_shape: whole_file
+output_shape: rebuild_task
+terminal: true
 capabilities: [vad, quality_filter_mos, quality_filter_band, speaker_separation, speaker_diarization, segment_concat]
 also_handles: [duration_filter, silence_removal, normalize_mono, normalize_sample_rate, timestamp_remap]
 inputs:
@@ -32,5 +36,16 @@ commercial_safe: true
 cost_hint: very_expensive
 quality_hint: high
 tags: [preset, composite, clean_speech, gpu]
+selection_hints:
+  prefer_when:
+    - "the user prompt closely matches the bundled preset: 'clean single-speaker TTS pipeline' with default thresholds"
+    - "the user explicitly names `AudioDataFilterStage` or 'audio data filter preset'"
+    - "you want the project-blessed defaults end-to-end (Mono → VAD → MOS filters → Concat → SpeakerSep → TimestampMapper) and do NOT need any custom stage tuning"
+  avoid_when:
+    - "the user wants custom thresholds, custom stage ordering, or any stage NOT in the bundled preset — compose the individual stages instead"
+    - "the user wants any ASR / diarization / WhisperX path (this composite stops at TimestampMapper)"
+  notes:
+    - "Internally a CompositeStage that EXPANDS into ~10 stages at validation time. Picking it commits to all of them — including TimestampMapperStage, which clears `task.data`. After this stage only SINK/MATERIALIZE stages may run."
+    - "Because the composite ends in a terminal stage, the planner sets `terminal: true` on this card."
 source_file: nemo_curator/stages/audio/advanced_pipelines/audio_data_filter/audio_data_filter.py
 smoke_test_status: unknown

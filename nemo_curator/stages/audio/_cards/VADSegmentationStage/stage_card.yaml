@@ -10,6 +10,10 @@ description: |
   so the planner can drop a downstream duration filter when this stage is in the IR.
 summary: Voice-activity segmentation with built-in min/max duration gates.
 category: segmentation
+phase: segment
+input_shape: whole_file
+output_shape: fan_out_segments
+terminal: false
 capabilities: [vad]
 also_handles: [duration_filter, silence_removal]
 inputs:
@@ -35,7 +39,7 @@ batch_size: 1
 supports_process_batch: false
 preferred_executor: any
 models:
-  - {name: silero-vad, provider: torch_hub, license: MIT}
+  - {name: silero-vad, provider: torch_hub, license: MIT, params_total: 462594, dtype: fp32, est_vram_inference_gb: 0.0, params_audit_source: torch_hub, params_audit_at: '2026-05-21T13:48:06+00:00'}
 license: MIT
 commercial_safe: true
 cost_hint: cheap
@@ -46,8 +50,11 @@ selection_hints:
     - "duration is constrained (intent.duration_min_sec / duration_max_sec set)"
     - "user wants speech-only segments (silence trimmed)"
     - "downstream filters benefit from clean speech inputs"
+    - "the pipeline needs to fan out into per-segment tasks (default `nested=false`)"
   notes:
-    - "Cardinality 1:N — emits one task per detected speech segment."
+    - "Cardinality 1:N — emits one task per detected speech segment when `nested=false` (the default)."
+    - "When `nested=true`, the stage stays 1:1 and writes `task.data['segments']` (a list) — only this mode is compatible with `SegmentConcatenationStage` downstream."
+    - "If any downstream stage requires `input_shape: whole_file` (e.g. `SpeakerSeparationStage`), set `nested=true` here AND insert `SegmentConcatenationStage` in between."
     - "Use min_duration_sec / max_duration_sec to enforce the user's duration window directly."
   ordering_hints:
     prefer_before:

@@ -8,6 +8,10 @@ description: |
   and writes a list of speech segments under segments_key.
 summary: WhisperX VAD on 16 kHz resampled audio.
 category: inference
+phase: segment
+input_shape: whole_file
+output_shape: passthrough
+terminal: false
 capabilities: [vad]
 also_handles: []
 inputs:
@@ -31,11 +35,21 @@ batch_size: 1
 supports_process_batch: false
 preferred_executor: any
 models:
-  - {name: pyannote-vad, provider: huggingface, license: MIT}
+  - {name: pyannote-vad, provider: huggingface, license: MIT, params_total: 1472999, dtype: fp32, est_vram_inference_gb: 0.01, params_audit_source: bundled, params_audit_at: '2026-05-21T15:27:38+00:00'}
 license: Apache-2.0
 commercial_safe: true
 cost_hint: medium
 quality_hint: high
 tags: [vad, whisperx, pyannote, gpu]
+selection_hints:
+  prefer_when:
+    - "the pipeline already produces 16 kHz mono audio on disk (e.g. `ResampleAudioStage` ran upstream) AND a NeMo / WhisperX ASR pathway will follow"
+    - "the user specifically asks for WhisperX-style VAD or pyannote VAD"
+  avoid_when:
+    - "you want one task per speech segment — this stage stays 1:1 and writes a list under `vad_segments`; prefer `VADSegmentationStage` (Silero) for fan-out"
+    - "no GPU is available — Silero VAD (`VADSegmentationStage`) runs on CPU"
+  notes:
+    - "Stays 1:1; downstream stages must read `task.data['vad_segments']` themselves (no fan-out)."
+    - "Reads from `resampled_audio_filepath` — pair with `ResampleAudioStage` upstream to guarantee 16 kHz mono on disk."
 source_file: nemo_curator/stages/audio/inference/vad/whisperx_vad.py
 smoke_test_status: unknown

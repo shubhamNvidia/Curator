@@ -9,6 +9,10 @@ description: |
   alignment.
 summary: One-call split-ASR-align-join for long files.
 category: composite
+phase: analyze
+input_shape: whole_file
+output_shape: passthrough
+terminal: false
 capabilities: [asr_align, long_audio_split, long_audio_join]
 also_handles: []
 inputs:
@@ -41,7 +45,7 @@ batch_size: 100
 supports_process_batch: true
 preferred_executor: any
 models:
-  - {name: parakeet-tdt_ctc-1.1b, provider: huggingface, repo_id: 'nvidia/parakeet-tdt_ctc-1.1b', license: CC-BY-4.0}
+  - {name: parakeet-tdt_ctc-1.1b, provider: huggingface, repo_id: 'nvidia/parakeet-tdt_ctc-1.1b', license: CC-BY-4.0, params_total: 1071593617, dtype: fp32, est_vram_inference_gb: 5.57, params_audit_source: nemo_archive, params_audit_at: '2026-05-21T12:57:57+00:00'}
 license: Apache-2.0
 commercial_safe: true
 cost_hint: very_expensive

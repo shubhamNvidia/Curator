@@ -10,6 +10,10 @@ description: |
   downstream to enforce asr_wer_max.
 summary: Compute WER between reference and ASR hypothesis.
 category: metric
+phase: analyze
+input_shape: any
+output_shape: passthrough
+terminal: false
 capabilities: [wer]
 also_handles: []
 inputs:
@@ -31,5 +35,12 @@ license: Apache-2.0
 commercial_safe: true
 cost_hint: very_cheap
 tags: [wer, metric, cpu]
+selection_hints:
+  prefer_when:
+    - "the manifest already has a reference `text` AND an ASR stage produced `pred_text` — and the user asks for a WER filter or an ASR-quality gate"
+  avoid_when:
+    - "no reference transcript exists — WER is not computable"
+  notes:
+    - "Outputs `wer` as a PERCENT (0–100). Pair with `PreserveByValueStage(input_value_key='wer', target_value=<max>, operator='le')` to enforce a WER cap."
 source_file: nemo_curator/stages/audio/metrics/get_wer.py
 smoke_test_status: unknown

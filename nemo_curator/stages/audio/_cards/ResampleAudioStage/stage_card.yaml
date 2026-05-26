@@ -10,6 +10,10 @@ description: |
   paths that expect 16 kHz mono on disk.
 summary: ffmpeg-based on-disk resample to 16 kHz mono (default).
 category: tagging
+phase: preprocess
+input_shape: whole_file
+output_shape: passthrough
+terminal: false
 capabilities: [normalize_sample_rate]
 also_handles: [normalize_mono]
 inputs:
@@ -39,5 +43,17 @@ license: Apache-2.0
 commercial_safe: true
 cost_hint: cheap
 tags: [resample, ffmpeg, on_disk]
+selection_hints:
+  prefer_when:
+    - "the source corpus has heterogeneous sample rates and a downstream stage needs a uniform SR"
+    - "the user explicitly asks for a target sample rate (e.g. 16 kHz, 48 kHz) and the corpus is not already at that SR"
+    - "an ASR / diarization / WhisperX path needs 16 kHz mono on disk"
+  avoid_when:
+    - "all input files are already at the target SR — Mono alone is enough"
+    - "the downstream pipeline never reads `audio_filepath` again (e.g. it works only on the in-memory waveform from MonoConversion)"
+  notes:
+    - "This stage is COMPLEMENTARY to `MonoConversionStage`, not an alternative. Resample re-writes the file on disk; Mono loads audio into memory and verifies SR. If both are needed, the order is: ResampleAudioStage → MonoConversionStage."
+    - "Outputs a new file at `<resampled_audio_dir>/<filename>` and writes its path into `task.data['resampled_audio_filepath']`. The original `audio_filepath` is left unchanged."
+    - "Setting `target_nchannels=1` here is functionally equivalent to a downstream mono load, but downstream stages that read the in-memory waveform still need `MonoConversionStage`."
 source_file: nemo_curator/stages/audio/tagging/resample_audio.py
 smoke_test_status: unknown

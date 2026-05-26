@@ -9,14 +9,18 @@ description: |
   per-chunk annotations.
 summary: Re-attach chunk-level results onto the original long file.
 category: tagging
+phase: analyze
+input_shape: any
+output_shape: passthrough
+terminal: false
 capabilities: [long_audio_join]
 also_handles: [timestamp_remap]
 inputs:
   top_level: []
-  data: [split_files]
+  data: [split_filepaths, split_metadata, split_offsets, split_timestamps]
 outputs:
   top_level: []
-  data: [audio_filepath, segments]
+  data: [text, alignment]
 produces_cardinality: '1:1'
 params: []
 resources: {cpus: 1.0, gpus: 0.0, gpu_memory_gb: 0.0}
@@ -27,5 +31,12 @@ license: Apache-2.0
 commercial_safe: true
 cost_hint: cheap
 tags: [join, long_audio]
+selection_hints:
+  prefer_when:
+    - "an upstream `SplitLongAudioStage` ran and per-chunk ASR / alignment results need to be remapped back onto the original long file"
+  avoid_when:
+    - "no long-audio split happened — this stage requires `task.data['split_filepaths']` etc."
+  notes:
+    - "Reads the four keys produced by `SplitLongAudioStage`: `split_filepaths`, `split_metadata`, `split_offsets`, `split_timestamps`. Writes a re-stitched `text` and `alignment` (NOT `segments` directly)."
 source_file: nemo_curator/stages/audio/tagging/split.py
 smoke_test_status: unknown

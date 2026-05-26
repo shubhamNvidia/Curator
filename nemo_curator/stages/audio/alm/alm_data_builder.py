@@ -188,14 +188,23 @@ class ALMDataBuilderStage(ProcessingStage[AudioTask, AudioTask]):
         segments = entry_data.get("segments", [])
         total_dur = sum(seg["end"] - seg["start"] for seg in segments)
 
+        # ``audio_sample_rate`` is the legacy SDP key. When the agentic
+        # planner wires us up, the upstream `MonoConversionStage` populates
+        # `sample_rate` instead — fall back to that so the SR-gating below
+        # doesn't silently drop every window for the auto-built pipeline.
+        effective_sr = (
+            entry_data.get("audio_sample_rate")
+            or entry_data.get("sample_rate", 0)
+        )
+
         stat = BuilderStats(
             total_segments=len(segments),
             total_dur=total_dur,
             swift_path=entry_data.get("swift_audio_filepath", ""),
-            audio_sample_rate=entry_data.get("audio_sample_rate", 0),
+            audio_sample_rate=effective_sr,
         )
 
-        if entry_data.get("audio_sample_rate", 0) < self.min_sample_rate:
+        if effective_sr < self.min_sample_rate:
             stat.lost_sr = len(segments)
             stat.dur_lost_sr = total_dur
             return {
