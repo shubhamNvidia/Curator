@@ -164,8 +164,18 @@ class LLMClient:
         temperature: float = 0.0,
         response_format: dict[str, Any] | None = None,
         max_tokens: int | None = 4096,
+        purpose: str = "",
     ) -> str:
-        """Synchronous chat completion. Returns the assistant message body."""
+        """Synchronous chat completion. Returns the assistant message body.
+
+        When a transcript is bound via
+        :func:`nemo_curator.agentic.llm_transcript.bind_transcript`, the
+        request payload + final response + latency are appended to that
+        log. ``purpose`` is a free-form tag (e.g. ``"extractor"``,
+        ``"plan_critic"``) the recorder includes in the row.
+        """
+
+        from nemo_curator.agentic.llm_transcript import start_call  # noqa: PLC0415
 
         client = self._ensure_client()
         model = self._model_for(tier)
@@ -174,8 +184,28 @@ class LLMClient:
             f"llm.chat(tier={tier}, model={model}, msgs={len(messages)}, "
             f"timeout={kwargs['timeout']}s)"
         )
-        resp = self._call_with_retry(lambda: client.chat.completions.create(**kwargs), tier=tier)
-        return resp.choices[0].message.content or ""
+        pending = start_call(
+            purpose=purpose or "chat",
+            tier=tier,
+            model=model,
+            base_url=self.base_url,
+            messages=[m.to_openai() for m in messages],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=response_format,
+        )
+        try:
+            resp = self._call_with_retry(
+                lambda: client.chat.completions.create(**kwargs), tier=tier,
+            )
+            content = resp.choices[0].message.content or ""
+            if pending is not None:
+                pending.finish(response_text=content)
+            return content
+        except Exception as exc:  # noqa: BLE001
+            if pending is not None:
+                pending.finish(response_text="", error=f"{type(exc).__name__}: {exc}")
+            raise
 
     def chat_json(
         self,
@@ -184,6 +214,7 @@ class LLMClient:
         tier: str = "planner",
         temperature: float = 0.0,
         max_tokens: int | None = 4096,
+        purpose: str = "",
     ) -> Any:
         """Helper that forces JSON output and parses it.
 
@@ -197,6 +228,7 @@ class LLMClient:
             temperature=temperature,
             response_format={"type": "json_object"},
             max_tokens=max_tokens,
+            purpose=purpose or "chat_json",
         )
         return _parse_json_lenient(text)
 
@@ -208,6 +240,7 @@ class LLMClient:
         temperature: float = 0.0,
         response_format: dict[str, Any] | None = None,
         max_tokens: int | None = 4096,
+        purpose: str = "",
     ) -> str:
         """Asynchronous chat completion. Same contract as :meth:`chat`.
 
@@ -216,6 +249,8 @@ class LLMClient:
         with :func:`asyncio.gather`.
         """
 
+        from nemo_curator.agentic.llm_transcript import start_call  # noqa: PLC0415
+
         client = self._ensure_async_client()
         model = self._model_for(tier)
         kwargs = self._build_kwargs(messages, model, tier, temperature, max_tokens, response_format)
@@ -223,10 +258,28 @@ class LLMClient:
             f"llm.achat(tier={tier}, model={model}, msgs={len(messages)}, "
             f"timeout={kwargs['timeout']}s)"
         )
-        resp = await self._acall_with_retry(
-            lambda: client.chat.completions.create(**kwargs), tier=tier,
+        pending = start_call(
+            purpose=purpose or "achat",
+            tier=tier,
+            model=model,
+            base_url=self.base_url,
+            messages=[m.to_openai() for m in messages],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=response_format,
         )
-        return resp.choices[0].message.content or ""
+        try:
+            resp = await self._acall_with_retry(
+                lambda: client.chat.completions.create(**kwargs), tier=tier,
+            )
+            content = resp.choices[0].message.content or ""
+            if pending is not None:
+                pending.finish(response_text=content)
+            return content
+        except Exception as exc:  # noqa: BLE001
+            if pending is not None:
+                pending.finish(response_text="", error=f"{type(exc).__name__}: {exc}")
+            raise
 
     async def achat_json(
         self,
@@ -235,6 +288,7 @@ class LLMClient:
         tier: str = "planner",
         temperature: float = 0.0,
         max_tokens: int | None = 4096,
+        purpose: str = "",
     ) -> Any:
         """Async counterpart of :meth:`chat_json`."""
 
@@ -244,6 +298,7 @@ class LLMClient:
             temperature=temperature,
             response_format={"type": "json_object"},
             max_tokens=max_tokens,
+            purpose=purpose or "achat_json",
         )
         return _parse_json_lenient(text)
 
@@ -384,8 +439,29 @@ class MockLLM(LLMClient):
         temperature: float = 0.0,
         response_format: dict[str, Any] | None = None,
         max_tokens: int | None = 4096,
+        purpose: str = "",
     ) -> str:
-        return self.responder(messages, tier)
+        from nemo_curator.agentic.llm_transcript import start_call  # noqa: PLC0415
+
+        pending = start_call(
+            purpose=purpose or "chat",
+            tier=tier,
+            model=self._model_for(tier) if self.tiers else "mock",
+            base_url=self.base_url,
+            messages=[m.to_openai() for m in messages],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=response_format,
+        )
+        try:
+            out = self.responder(messages, tier)
+        except Exception as exc:  # noqa: BLE001
+            if pending is not None:
+                pending.finish(response_text="", error=f"{type(exc).__name__}: {exc}")
+            raise
+        if pending is not None:
+            pending.finish(response_text=out)
+        return out
 
     async def achat(
         self,
@@ -395,11 +471,32 @@ class MockLLM(LLMClient):
         temperature: float = 0.0,
         response_format: dict[str, Any] | None = None,
         max_tokens: int | None = 4096,
+        purpose: str = "",
     ) -> str:
+        from nemo_curator.agentic.llm_transcript import start_call  # noqa: PLC0415
+
+        pending = start_call(
+            purpose=purpose or "achat",
+            tier=tier,
+            model=self._model_for(tier) if self.tiers else "mock",
+            base_url=self.base_url,
+            messages=[m.to_openai() for m in messages],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=response_format,
+        )
         if self.async_delay > 0:
             import asyncio  # noqa: PLC0415
             await asyncio.sleep(self.async_delay)
-        return self.responder(messages, tier)
+        try:
+            out = self.responder(messages, tier)
+        except Exception as exc:  # noqa: BLE001
+            if pending is not None:
+                pending.finish(response_text="", error=f"{type(exc).__name__}: {exc}")
+            raise
+        if pending is not None:
+            pending.finish(response_text=out)
+        return out
 
 
 # ----------------------------------------------------------------------------

@@ -155,7 +155,7 @@ def extract_intent(
         Message("system", sys_prompt),
         Message("user", json.dumps(payload, indent=2)),
     ]
-    raw = _call_json(llm, messages, tier=tier)
+    raw = _call_json(llm, messages, tier=tier, purpose="extractor")
     try:
         return IntentCategories.model_validate(raw)
     except Exception as exc:  # noqa: BLE001
@@ -556,13 +556,14 @@ def _call_json(
     *,
     tier: str,
     max_retries: int = 1,
+    purpose: str = "planner_dag",
 ) -> dict[str, Any]:
     """LLM call that demands JSON output. One retry at temperature=0 on bad JSON."""
 
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):
         try:
-            return llm.chat_json(messages, tier=tier, temperature=0.0)
+            return llm.chat_json(messages, tier=tier, temperature=0.0, purpose=purpose)
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
             logger.warning(
