@@ -54,9 +54,18 @@ from nemo_curator.agentic.smart_clarifier import (
 
 def test_analyze_gaps_essentials_when_empty_intent():
     """A blank intent surfaces sample_rate as a gap and stays quiet on
-    families the user didn't mention."""
+    families the user didn't mention.
 
-    gaps = analyze_gaps(IntentCategories(), prompt="just process my audio", profile=None)
+    Uses a 15-word prompt so the vague-prompt safety net (which fires
+    for ≤12 words) doesn't kick in — the test isolates the keyword-only
+    branch.
+    """
+
+    long_prompt = (
+        "I would like to process the audio recordings from my "
+        "corpus into a consistent, deduplicated dataset for downstream use."
+    )
+    gaps = analyze_gaps(IntentCategories(), prompt=long_prompt, profile=None)
     paths = [g.intent_path for g in gaps]
     assert "output.sample_rate" in paths
     # audio_format has a sensible "wav" default → no need to ask.
@@ -65,6 +74,94 @@ def test_analyze_gaps_essentials_when_empty_intent():
     assert "quality.mos" not in paths
     assert "speakers.mode" not in paths
     assert "text.transcript_source" not in paths
+
+
+def test_analyze_gaps_vague_prompt_forces_pivot_questions():
+    """A short/vague prompt should force pivot questions even when the
+    keyword heuristic has no signal.
+
+    Regression for run 332c0ecf06a981f6 where ``"generate the tts dataset
+    with short segment and also generate transcripts"`` produced zero
+    follow-up questions because the heuristic prefills had already
+    closed every gap.
+    """
+
+    intent = IntentCategories()
+    gaps = analyze_gaps(intent, prompt="make a dataset for me", profile=None)
+    paths = [g.intent_path for g in gaps]
+    # The safety-net always lifts these three to the surface.
+    assert "output.sample_rate" in paths
+    assert "speakers.mode" in paths
+    assert "quality.mos" in paths
+    # And it tags them as essential_uncertain so the UI shows them with
+    # a "we guessed this, confirm?" affordance.
+    pivot = [g for g in gaps if g.intent_path == "speakers.mode"][0]
+    assert pivot.category == "essential_uncertain"
+
+
+def test_duration_question_fires_even_when_extractor_prefilled():
+    """When the prompt has duration wording we MUST surface the
+    duration question — even if the LLM extractor or the dataset
+    profile already wrote concrete min/max values.
+
+    Regression for run cc8df6826c902f69 where the prompt said "short
+    duration" and the LLM extractor silently picked
+    ``duration_max_sec=10.0`` while the profile prefill set min=1.33s;
+    the user never saw or confirmed either value because the gap
+    analyzer thought the question was settled.
+    """
+
+    from nemo_curator.agentic.intent import Segmentation
+    intent = IntentCategories(
+        segmentation=Segmentation(
+            output_unit="speech_segments",
+            duration_min_sec=1.328,
+            duration_max_sec=10.0,
+        ),
+    )
+    gaps = analyze_gaps(
+        intent,
+        prompt="generate tts dataset with short duration and transcripts",
+        profile=None,
+    )
+    paths = [g.intent_path for g in gaps]
+    assert "__duration_constraint__" in paths, (
+        "Duration question must fire whenever the user used a "
+        "duration word, even if the values are already set — "
+        "otherwise the user can't override the LLM's guess."
+    )
+    duration_gap = next(g for g in gaps if g.intent_path == "__duration_constraint__")
+    # The follow-ups should carry the currently-settled values as
+    # suggested defaults so the form pre-selects them.
+    min_fu = next(fu for fu in duration_gap.follow_ups if fu.intent_path == "segmentation.duration_min_sec")
+    max_fu = next(fu for fu in duration_gap.follow_ups if fu.intent_path == "segmentation.duration_max_sec")
+    assert abs(min_fu.suggested_value - 1.328) < 1e-6
+    assert max_fu.suggested_value == 10.0
+
+
+def test_duration_template_prefills_match_inferred_values():
+    """The rendered duration question (template fallback) should pre-
+    select the inferred values via ``prefill`` so the user knows
+    what we're proposing."""
+
+    from nemo_curator.agentic.intent import Segmentation
+    intent = IntentCategories(
+        segmentation=Segmentation(
+            output_unit="speech_segments",
+            duration_min_sec=1.328,
+            duration_max_sec=10.0,
+        ),
+    )
+    gaps = analyze_gaps(intent, "short duration tts", profile=None)
+    qs = template_questions(gaps, intent)
+    dur = next(q for q in qs if q.id == "q_duration_enable")
+    # Top-level toggle is pre-selected to "yes" because values exist.
+    assert dur.prefill == "yes"
+    # Follow-ups expose the inferred values.
+    qmin = next(fu for fu in dur.follow_ups if fu.id == "q_duration_min")
+    qmax = next(fu for fu in dur.follow_ups if fu.id == "q_duration_max")
+    assert abs(qmin.prefill - 1.328) < 1e-6
+    assert qmax.prefill == 10.0
 
 
 def test_analyze_gaps_audio_format_fires_only_when_cleared():
@@ -78,15 +175,58 @@ def test_analyze_gaps_audio_format_fires_only_when_cleared():
     assert "output.audio_format" not in paths_default
 
 
-def test_analyze_gaps_suppresses_essentials_already_set():
-    """Don't re-ask for sample_rate / format the extractor already filled."""
+def test_speakers_filter_option_reveals_count_followup():
+    """Picking 'filter' on the speakers question must surface a follow-up
+    that asks for the target_count.
+
+    Without this, the user picks ``filter`` in the form, no count is
+    set, the selector silently degrades FILTER → ANNOTATE, and the
+    critic later reports the degradation as info — too late to be
+    useful. See run c27f2786eaad1d75.
+    """
+
+    from nemo_curator.agentic.smart_clarifier import compose_smart_form
+
+    form = compose_smart_form("make tts dataset", IntentCategories(), llm=None)
+    sp = next(q for q in form.questions if q.id == "q_speakers")
+    filter_opt = next(o for o in sp.options if o.id == "filter")
+    assert "q_speaker_count" in filter_opt.reveals, (
+        "filter option must reveal the speaker-count follow-up"
+    )
+    fu_ids = [fu.id for fu in sp.follow_ups]
+    assert "q_speaker_count" in fu_ids, fu_ids
+    count_q = next(fu for fu in sp.follow_ups if fu.id == "q_speaker_count")
+    assert count_q.intent_path == "speakers.target_count"
+    option_values = [o.value for o in count_q.options if not o.is_freeform]
+    assert 1 in option_values  # single-speaker for TTS
+    custom = next(o for o in count_q.options if o.is_freeform)
+    assert custom.freeform_kind == "speaker_count"
+
+
+def test_analyze_gaps_sample_rate_always_asked_with_suggestion():
+    """Sample rate is always surfaced as a question, even when the extractor
+    or heuristic prefilled a concrete value.
+
+    The prefill is a guess driven by keywords (TTS → 24 k, phone → 8 k,
+    ASR → 16 k) or the dataset profile; the user must confirm because
+    sample rate decides resampling, model compatibility, and disk
+    footprint. The currently-settled value rides along as
+    ``suggested_value`` so the rendered question pre-selects the right
+    radio.
+
+    Sibling output fields (audio_format, resample_input) DO stay quiet
+    when set — only sample_rate carries this special "confirm even
+    when known" treatment.
+    """
 
     intent = IntentCategories(
         output=OutputFormat(sample_rate=24000, audio_format="wav", resample_input=True)
     )
     gaps = analyze_gaps(intent, prompt="tts dataset", profile=None)
     paths = [g.intent_path for g in gaps]
-    assert "output.sample_rate" not in paths
+    sr_gap = next(g for g in gaps if g.intent_path == "output.sample_rate")
+    assert sr_gap.suggested_value == 24000
+    assert sr_gap.category == "essential_uncertain"
     assert "output.audio_format" not in paths
     assert "output.resample_input" not in paths
 
@@ -109,11 +249,24 @@ def test_analyze_gaps_duration_only_when_mentioned():
 
 
 def test_analyze_gaps_quality_only_when_mentioned():
-    """Don't ask about MOS / SIGMOS unless the user used quality words."""
+    """Don't ask about MOS / SIGMOS unless the user used quality words.
+
+    Uses prompts >12 words so the vague-prompt safety net (which
+    *always* surfaces quality.mos for short prompts) doesn't fire —
+    this test isolates the keyword path.
+    """
 
     intent = IntentCategories()
-    silent = analyze_gaps(intent, "build an asr dataset", profile=None)
-    spoken = analyze_gaps(intent, "build an asr dataset, drop noisy clips", profile=None)
+    long_silent = (
+        "build a production asr dataset from these recordings into a "
+        "deduplicated normalized manifest ready for training."
+    )
+    long_spoken = (
+        "build a production asr dataset and drop noisy clips with "
+        "background hum or distortion above the usual threshold please."
+    )
+    silent = analyze_gaps(intent, long_silent, profile=None)
+    spoken = analyze_gaps(intent, long_spoken, profile=None)
     assert "quality.mos" not in [g.intent_path for g in silent]
     assert "quality.mos" in [g.intent_path for g in spoken]
 
@@ -179,11 +332,43 @@ def test_quality_options_carry_utmos_sigmos_combinations():
 
 
 def test_analyze_gaps_speakers_only_when_mentioned():
+    """Speaker question fires on speaker words OR on TTS prompts (since
+    TTS is ambiguous about fan-out).
+
+    Uses a long, *non*-TTS, *non*-speaker prompt for the negative case
+    so neither the vague-prompt safety net nor the TTS pivot triggers.
+    """
+
     intent = IntentCategories()
-    no = analyze_gaps(intent, "clean tts dataset", profile=None)
+    long_no = (
+        "produce a clean balanced audio dataset for speech research "
+        "from these recordings, organised into a per-utterance manifest."
+    )
+    no = analyze_gaps(intent, long_no, profile=None)
     yes = analyze_gaps(intent, "build a diarized meeting dataset, one speaker per row", profile=None)
     assert "speakers.mode" not in [g.intent_path for g in no]
     assert "speakers.mode" in [g.intent_path for g in yes]
+
+
+def test_analyze_gaps_speakers_fires_for_tts_even_without_speaker_word():
+    """TTS prompts must ALWAYS surface the speakers question.
+
+    Regression for the silent ``speakers=SPLIT`` quick-pack that
+    produced wrong pipelines (run 332c0ecf06a981f6).
+    """
+
+    intent = IntentCategories()
+    # Long enough to dodge the vague-prompt safety net (>12 words).
+    long_tts = (
+        "build a tts ready dataset of clean recordings sampled at 24 kHz "
+        "with reasonable segment lengths suitable for downstream training."
+    )
+    gaps = analyze_gaps(intent, long_tts, profile=None)
+    paths = [g.intent_path for g in gaps]
+    assert "speakers.mode" in paths
+    # And we suggest the safe default ("off"), not the legacy "split".
+    spk = [g for g in gaps if g.intent_path == "speakers.mode"][0]
+    assert spk.suggested_value == "off"
 
 
 def test_analyze_gaps_transcripts_only_when_mentioned():

@@ -261,18 +261,42 @@ def analyze_gaps(
 
     # ---- Essentials -------------------------------------------------------
 
-    if intent.output.sample_rate is None:
-        gaps.append(
-            Gap(
-                intent_path="output.sample_rate",
-                category="essential_missing",
-                reason=(
-                    "The output sample rate sets the target for every file "
-                    "and decides whether we need a resample stage."
-                ),
-                suggested_value=_suggest_sample_rate(text, profile),
+    # Output sample rate is asked on every run, even when the heuristic
+    # prefill or LLM extractor already wrote a value. The prefill is a
+    # guess driven by keywords (TTS → 24 k, phone → 8 k, ASR → 16 k) or
+    # the dataset profile's dominant rate; the user must confirm because
+    # it changes resampling, model compatibility, and disk footprint.
+    # The currently-settled value (if any) is the ``suggested_value`` so
+    # the form pre-selects the right radio button.
+    current_sr = intent.output.sample_rate
+    if isinstance(current_sr, int):
+        sr_suggest: Any = current_sr
+    elif current_sr == "any":
+        sr_suggest = "any"
+    else:
+        sr_suggest = _suggest_sample_rate(text, profile)
+    sr_reason = (
+        f"We picked {current_sr} Hz from your prompt / dataset — confirm or change."
+        if isinstance(current_sr, int)
+        else (
+            "You asked us to keep input rates — confirm or override."
+            if current_sr == "any"
+            else (
+                "The output sample rate sets the target for every file "
+                "and decides whether we need a resample stage."
             )
         )
+    )
+    gaps.append(
+        Gap(
+            intent_path="output.sample_rate",
+            category=(
+                "essential_uncertain" if current_sr is not None else "essential_missing"
+            ),
+            reason=sr_reason,
+            suggested_value=sr_suggest,
+        )
+    )
 
     if intent.output.audio_format is None:
         gaps.append(
@@ -307,31 +331,47 @@ def analyze_gaps(
         )
 
     # ---- Conditional: duration -------------------------------------------
-
+    # When the user uses duration wording we ALWAYS surface the
+    # min/max question — even if the extractor or profile pre-fill
+    # already wrote concrete values. The prefill is a guess (e.g. the
+    # LLM mapped "short duration" → 10 s, or the dataset p05 → 1.3 s);
+    # the user must confirm. Compare with the quality-aggressiveness
+    # branch below — same pattern.
     seg = intent.segmentation
     duration_already_set = (
         seg.duration_min_sec is not None or seg.duration_max_sec is not None
     )
     duration_mentioned = _has(text, *_DURATION_TERMS)
-    # Only surface when the prompt brushes the topic AND nothing is set yet.
-    if duration_mentioned and not duration_already_set:
+    if duration_mentioned:
+        # Pass currently-settled values as suggested defaults so the
+        # form pre-selects them; the user can keep or override.
         gaps.append(
             Gap(
                 intent_path="__duration_constraint__",
                 category="prompt_mentioned",
-                reason="You mentioned clip / segment lengths.",
+                reason=(
+                    "You mentioned clip / segment lengths."
+                    if not duration_already_set
+                    else (
+                        "We picked min "
+                        f"{seg.duration_min_sec}s / max "
+                        f"{seg.duration_max_sec}s from your prompt and "
+                        "dataset profile — confirm or change."
+                    )
+                ),
+                suggested_value="yes" if duration_already_set else None,
                 follow_ups=[
                     Gap(
                         intent_path="segmentation.duration_min_sec",
                         category="prompt_mentioned",
                         reason="Minimum clip length (seconds).",
-                        suggested_value=2.0,
+                        suggested_value=seg.duration_min_sec or 2.0,
                     ),
                     Gap(
                         intent_path="segmentation.duration_max_sec",
                         category="prompt_mentioned",
                         reason="Maximum clip length (seconds).",
-                        suggested_value=30.0,
+                        suggested_value=seg.duration_max_sec or 30.0,
                     ),
                 ],
             )
@@ -403,6 +443,91 @@ def analyze_gaps(
                 reason="You mentioned transcripts / ASR — generate, use existing, or skip?",
             )
         )
+
+    # ---- TTS pivot questions ---------------------------------------------
+    # "TTS dataset" is ambiguous about two things the user almost always
+    # cares about — speaker fan-out and quality filtering — but neither
+    # is explicitly said. The legacy clarifier used to *silently* enable
+    # both, which produced wrong pipelines (see ticket: 332c0ecf06a981f6).
+    # Surface them as questions so the user picks.
+    tts_mentioned = _has(text, *_TTS_TERMS)
+    if tts_mentioned:
+        if not speaker_mentioned and not any(
+            g.intent_path == "speakers.mode" for g in gaps
+        ):
+            gaps.append(Gap(
+                intent_path="speakers.mode",
+                category="prompt_mentioned",
+                reason=(
+                    "TTS datasets can be single-speaker (most common) or "
+                    "per-speaker fan-out. Pick one — we won't guess."
+                ),
+                suggested_value="off",
+            ))
+        if not quality_mentioned and not any(
+            g.intent_path == "quality.mos" for g in gaps
+        ):
+            gaps.append(Gap(
+                intent_path="quality.mos",
+                category="prompt_mentioned",
+                reason=(
+                    "TTS quality bar varies widely. Pick how aggressive "
+                    "the MOS / SIGMOS filters should be (or skip filtering)."
+                ),
+                suggested_value=_suggest_quality_level(intent),
+            ))
+
+    # ---- Vague-prompt safety net -----------------------------------------
+    # Short or generic prompts ("generate a dataset", "clean my data")
+    # often leave critical fields unmentioned. Ask the user instead of
+    # silently inheriting defaults — better one extra question than
+    # producing a wrong pipeline.
+    #
+    # We skip a pivot if the field is *already* set to a concrete value,
+    # because then the prompt-mentioned / heuristic prefill is at least
+    # an explicit choice (or the extractor's). The point is to catch
+    # the "nobody said anything, the pipeline used a hard-coded default"
+    # case, not to second-guess every concrete value.
+    word_count = sum(1 for w in text.split() if len(w) > 1)
+    is_vague = word_count <= 12
+    if is_vague:
+        spk_mode_val = (
+            intent.speakers.mode.value
+            if hasattr(intent.speakers.mode, "value")
+            else intent.speakers.mode
+        )
+        q_mos_val = (
+            intent.quality.mos.value
+            if hasattr(intent.quality.mos, "value")
+            else intent.quality.mos
+        )
+
+        # Sample rate is handled by the unconditional essential gap above,
+        # so it's intentionally omitted here to avoid duplicates.
+        pivots: list[tuple[str, str, Any, bool]] = [
+            (
+                "speakers.mode",
+                "How should we handle speakers — ignore, label them, filter by count, or split into per-speaker clips?",
+                spk_mode_val,
+                spk_mode_val == FilterMode.OFF.value or spk_mode_val == FilterMode.OFF,
+            ),
+            (
+                "quality.mos",
+                "Do you want quality filtering? If yes, pick how aggressive — otherwise we'll keep everything.",
+                _suggest_quality_level(intent),
+                q_mos_val == FilterMode.OFF.value or q_mos_val == FilterMode.OFF,
+            ),
+        ]
+        existing = {g.intent_path for g in gaps}
+        for path, reason, suggested, should_ask in pivots:
+            if path in existing or not should_ask:
+                continue
+            gaps.append(Gap(
+                intent_path=path,
+                category="essential_uncertain",
+                reason=reason,
+                suggested_value=suggested,
+            ))
 
     return gaps
 
@@ -663,12 +788,58 @@ def _seg_unit_options() -> list[SmartOption]:
 
 
 def _speakers_options() -> list[SmartOption]:
+    # The ``filter`` option reveals ``q_speaker_count`` so the user
+    # actually picks N — without that follow-up the selector silently
+    # degrades FILTER to ANNOTATE (every row passes through). See run
+    # c27f2786eaad1d75 for the regression this guards against.
     return [
         SmartOption(id="annotate", label="Tag rows with speaker info", description="Diarize and add num_speakers etc.", value="annotate"),
-        SmartOption(id="filter", label="Keep only exactly-N speakers", description="Filter rows by speaker count.", value="filter"),
+        SmartOption(
+            id="filter",
+            label="Keep only exactly-N speakers",
+            description="Filter rows by speaker count.",
+            value="filter",
+            reveals=["q_speaker_count"],
+        ),
         SmartOption(id="split", label="Split — one row per speaker", description="Speaker separation; fans out rows.", value="split"),
         SmartOption(id="off", label="Don't care / no speaker work", description="Skip the diarization stage entirely.", value="off"),
     ]
+
+
+def _speaker_count_question(prefill: int | None = None) -> SmartQuestion:
+    """Conditional follow-up of the speakers question (``filter`` mode).
+
+    Picks the ``target_count`` so the selector's PBV gate actually
+    drops files. The most common pick is ``1`` (TTS / voice cloning
+    style file-level single-speaker filtering); meeting / interview
+    use-cases use ``2`` or higher. Anything beyond ``4`` goes through
+    the freeform ``custom`` option.
+    """
+
+    return SmartQuestion(
+        id="q_speaker_count",
+        intent_path="speakers.target_count",
+        title="Keep files with how many speakers?",
+        detail=(
+            "We'll drop any file whose Sortformer-counted number of "
+            "speakers doesn't match. For single-speaker TTS data pick 1."
+        ),
+        options=[
+            SmartOption(id="one", label="Exactly 1 (single-speaker only)", value=1),
+            SmartOption(id="two", label="Exactly 2 (dialog / interview)", value=2),
+            SmartOption(id="three", label="Exactly 3", value=3),
+            SmartOption(id="four", label="Exactly 4", value=4),
+            SmartOption(
+                id="custom",
+                label="Custom count…",
+                description="Enter a positive integer.",
+                is_freeform=True,
+                freeform_kind="speaker_count",
+                freeform_placeholder="e.g. 5",
+            ),
+        ],
+        prefill=prefill,
+    )
 
 
 def _quality_options() -> list[SmartOption]:
@@ -804,7 +975,9 @@ def _yes_no(yes_label: str, no_label: str, reveals_on_yes: list[str]) -> list[Sm
     ]
 
 
-def _duration_min_question() -> SmartQuestion:
+def _duration_min_question(prefill: float | None = None) -> SmartQuestion:
+    # When a value was inferred, surface it as the pre-selected radio
+    # so the user sees what we picked and can keep or override.
     return SmartQuestion(
         id="q_duration_min",
         intent_path="segmentation.duration_min_sec",
@@ -821,10 +994,11 @@ def _duration_min_question() -> SmartQuestion:
                 freeform_placeholder="e.g. 0.5",
             ),
         ],
+        prefill=prefill,
     )
 
 
-def _duration_max_question() -> SmartQuestion:
+def _duration_max_question(prefill: float | None = None) -> SmartQuestion:
     return SmartQuestion(
         id="q_duration_max",
         intent_path="segmentation.duration_max_sec",
@@ -842,6 +1016,7 @@ def _duration_max_question() -> SmartQuestion:
                 freeform_placeholder="e.g. 45",
             ),
         ],
+        prefill=prefill,
     )
 
 
@@ -896,6 +1071,7 @@ def _template_question_for(gap: Gap, intent: IntentCategories) -> SmartQuestion 
             title="How should we handle speakers?",
             detail=gap.reason,
             options=_speakers_options(),
+            follow_ups=[_speaker_count_question(intent.speakers.target_count)],
         )
 
     if path == "quality.mos":
@@ -919,7 +1095,13 @@ def _template_question_for(gap: Gap, intent: IntentCategories) -> SmartQuestion 
         )
 
     if path == "__duration_constraint__":
-        # One yes/no, follow-ups for min and max.
+        # One yes/no, follow-ups for min and max. When the LLM
+        # extractor or profile already wrote concrete values we
+        # surface them as prefills on the follow-ups so the user
+        # confirms instead of starting from a blank slate.
+        seg = intent.segmentation
+        prefill_min = seg.duration_min_sec
+        prefill_max = seg.duration_max_sec
         return SmartQuestion(
             id="q_duration_enable",
             intent_path="__duration_constraint__",
@@ -930,7 +1112,13 @@ def _template_question_for(gap: Gap, intent: IntentCategories) -> SmartQuestion 
                 no_label="No — keep any length",
                 reveals_on_yes=["q_duration_min", "q_duration_max"],
             ),
-            follow_ups=[_duration_min_question(), _duration_max_question()],
+            prefill=(
+                "yes" if (prefill_min is not None or prefill_max is not None) else None
+            ),
+            follow_ups=[
+                _duration_min_question(prefill_min),
+                _duration_max_question(prefill_max),
+            ],
         )
 
     logger.warning("smart_clarifier: no template for gap %s", path)
@@ -1014,7 +1202,7 @@ def _llm_phrase_questions(
         Message("system", sys_prompt),
         Message("user", json.dumps(payload, indent=2)),
     ]
-    raw = llm.chat_json(messages, tier=tier)
+    raw = llm.chat_json(messages, tier=tier, purpose="smart_clarifier")
     questions_raw = raw.get("questions") if isinstance(raw, dict) else None
     if not isinstance(questions_raw, list):
         msg = f"smart_clarifier: LLM did not return a 'questions' list (got: {type(raw).__name__})"

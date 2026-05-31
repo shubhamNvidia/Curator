@@ -155,6 +155,13 @@ def plan_from_intent(
 ) -> DeterministicPlannerResult:
     """Compile a fully-filled intent into a validated, dry-run-clean IR."""
 
+    # Re-validate the intent in case the caller built it with
+    # ``model_copy(update=...)`` (which skips validators in Pydantic v2)
+    # — that would silently miss our consistency coercions, like
+    # speakers=SPLIT + speech_segments → single_speaker_clips. Doing a
+    # round-trip through ``model_validate`` is cheap and idempotent.
+    intent = IntentCategories.model_validate(intent.model_dump())
+
     sink = SinkSpec(
         target_dir=target_dir,
         manifest_filename=intent.policy.target_manifest_filename,

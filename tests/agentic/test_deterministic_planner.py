@@ -101,6 +101,187 @@ def test_deterministic_planner_builds_clean_single_speaker_pipeline(registry) ->
     assert not result.dry_run.has_errors, result.dry_run.all_issues
 
 
+def test_single_speaker_clips_with_filter_mode_reverts_output_unit(registry) -> None:
+    """Inverse-coercion safety net.
+
+    Reproduces run ``c27f2786eaad1d75`` where the Plan Critic patched
+    ``output_unit=single_speaker_clips`` while the user had locked
+    ``speakers.mode=filter`` in the clarifier. With FILTER (or
+    ANNOTATE) mode the selector cannot emit ``SpeakerSeparationStage``,
+    so leaving the intent untouched produced
+    ``[sanity] single_speaker_clips_missing_separation`` and broke the
+    build.
+
+    The validator must now revert ``output_unit`` back to
+    ``speech_segments`` so the compiled pipeline is internally
+    consistent (Sortformer-annotate + VAD + quality), while preserving
+    the user's deliberate file-level speaker pick.
+    """
+
+    intent = IntentCategories(
+        output=OutputFormat(sample_rate=24000, audio_format="wav", resample_input=True),
+        segmentation=Segmentation(output_unit="single_speaker_clips"),
+        speakers=Speakers(mode=FilterMode.FILTER, exclude_overlaps=True),
+    )
+    assert intent.segmentation.output_unit == "speech_segments"
+    assert intent.speakers.mode == FilterMode.FILTER
+    assert any(
+        "output_unit reverted to 'speech_segments'" in n for n in intent.notes
+    ), intent.notes
+    result = plan_from_intent(
+        intent, source_uri="/data/audio", source_kind="manifest",
+        target_dir="/out", registry=registry,
+    )
+    names = [s.stage for s in result.ir.stages]
+    assert "SpeakerSeparationStage" not in names
+    assert "VADSegmentationStage" in names
+    assert not result.dry_run.has_errors, result.dry_run.all_issues
+
+
+def test_single_speaker_clips_with_off_mode_upgrades_to_split(registry) -> None:
+    """The symmetric resolution when speakers.mode is OFF (not user-locked):
+    upgrade to SPLIT so the per-clip output unit becomes producible."""
+
+    intent = IntentCategories(
+        output=OutputFormat(sample_rate=24000, audio_format="wav", resample_input=True),
+        segmentation=Segmentation(output_unit="single_speaker_clips"),
+    )
+    assert intent.speakers.mode == FilterMode.SPLIT
+    assert intent.segmentation.output_unit == "single_speaker_clips"
+    result = plan_from_intent(
+        intent, source_uri="/data/audio", source_kind="manifest",
+        target_dir="/out", registry=registry,
+    )
+    names = [s.stage for s in result.ir.stages]
+    assert "SpeakerSeparationStage" in names
+    assert not result.dry_run.has_errors, result.dry_run.all_issues
+
+
+def test_speakers_filter_with_speech_segments_runs_diarization_on_whole_files(registry) -> None:
+    """File-level speaker filtering must run BEFORE VAD fan-out.
+
+    Without this guarantee a per-VAD-segment row would always look
+    monospeaker (each 2-30 s clip almost always has a single speaker
+    even when the source file has many), making the user's
+    ``num_speakers`` filter a silent no-op.
+
+    Verified by:
+    - The phase rank: ``InferenceSortformerStage`` carries a
+      ``phase_override='preprocess'`` so the validator's phase-aware
+      reorder keeps it before ``VADSegmentationStage`` (``segment``).
+    - The PBV gates on ``num_speakers`` also inherit the override so
+      they don't get phase-sorted past the segmenter.
+    """
+
+    intent = IntentCategories(
+        output=OutputFormat(sample_rate=22050, channels="mono", resample_input=True),
+        segmentation=Segmentation(
+            output_unit="speech_segments",
+            duration_min_sec=1.0,
+            duration_max_sec=15.0,
+        ),
+        speakers=Speakers(mode=FilterMode.FILTER, target_count=1),
+    )
+    result = plan_from_intent(intent, source_uri="/data/audio",
+                              source_kind="manifest", target_dir="/out",
+                              registry=registry)
+    names = [s.stage for s in result.ir.stages]
+    sortformer_idx = names.index("InferenceSortformerStage")
+    vad_idx = names.index("VADSegmentationStage")
+    # The PBV(num_speakers == 1) must sit between Sortformer and VAD,
+    # so the file-level filter actually drops multi-speaker files
+    # before per-segment fan-out begins.
+    pbv_idx = next(
+        i for i, s in enumerate(result.ir.stages)
+        if s.stage == "PreserveByValueStage"
+        and s.params.get("input_value_key") == "num_speakers"
+    )
+    assert sortformer_idx < pbv_idx < vad_idx, (
+        f"Expected Sortformer + PBV(num_speakers) before VAD; got {names}"
+    )
+    assert not result.dry_run.has_errors, result.dry_run.all_issues
+
+
+def test_speech_segments_plus_speakers_split_compiles_to_canonical_order(registry) -> None:
+    """Regression for run 06578e4b178f11e3.
+
+    When the user picks ``speakers.mode=SPLIT`` in the clarifier the
+    natural ``output_unit`` they want is per-speaker, per-VAD-segment
+    clips. The legacy compile path emitted
+    ``VAD → quality → Concat → SpeakerSep → PBV`` which:
+
+    1. applied the duration window to *file-level* VAD segments,
+    2. then concatenated them back to whole-file audio,
+    3. then ran SpeakerSeparation, which produced per-speaker stems
+       spanning the *full* source duration — so the duration window
+       was effectively lost,
+    4. and ran PBV on stale per-file scores that no longer matched
+       the per-speaker rows.
+
+    The fix coerces ``speech_segments + speakers=SPLIT`` to
+    ``single_speaker_clips`` at the intent boundary so both routes
+    converge on the canonical SpeakerSep→VAD→quality order.
+    """
+
+    intent = IntentCategories(
+        output=OutputFormat(sample_rate=24000, channels="mono", resample_input=True),
+        segmentation=Segmentation(
+            output_unit="speech_segments",
+            duration_min_sec=1.0,
+            duration_max_sec=10.0,
+        ),
+        speakers=Speakers(mode=FilterMode.SPLIT),
+        quality=Quality(
+            mos=FilterMode.FILTER,
+            mos_threshold=4.0,
+            sigmos=FilterMode.FILTER,
+            sigmos_axes=["ovrl", "noise"],
+            sigmos_thresholds={"ovrl": 4.0, "noise": 4.0},
+        ),
+    )
+    # The coercion happens right inside the validator.
+    assert intent.segmentation.output_unit == "single_speaker_clips"
+    assert any("coerced from 'speech_segments'" in n for n in intent.notes)
+
+    result = plan_from_intent(
+        intent,
+        source_uri="/data/audio",
+        source_kind="manifest",
+        target_dir="/out",
+        registry=registry,
+    )
+    names = [s.stage for s in result.ir.stages]
+
+    sep_idx = names.index("SpeakerSeparationStage")
+    vad_idx = names.index("VADSegmentationStage")
+    utmos_idx = names.index("UTMOSFilterStage")
+    pbv_idx = next(
+        i for i, s in enumerate(result.ir.stages)
+        if s.stage == "PreserveByValueStage" and s.params.get("input_value_key") == "utmos_mos"
+    )
+    extract_idx = names.index("SegmentExtractionStage")
+
+    # Canonical order: SpeakerSep → VAD → quality → PBV → ASR → Extract.
+    assert sep_idx < vad_idx, f"SpeakerSep must run before VAD; got order {names}"
+    assert vad_idx < utmos_idx
+    assert utmos_idx < pbv_idx
+    assert pbv_idx < extract_idx
+
+    # The VAD that runs is the post-segmenter trim — non-nested — and
+    # carries the user's exact min/max so the rows really respect the
+    # 1-10 s cap.
+    vad = next(s for s in result.ir.stages if s.stage == "VADSegmentationStage")
+    assert vad.params["nested"] is False
+    assert vad.params["min_duration_sec"] == 1.0
+    assert vad.params["max_duration_sec"] == 10.0
+
+    # No Concat: it would discard the duration window AND the per-clip
+    # row schema downstream consumers expect.
+    assert "SegmentConcatenationStage" not in names
+
+    assert not result.dry_run.has_errors, result.dry_run.all_issues
+
+
 def test_deterministic_planner_emits_cleaning_block_for_original_files(registry) -> None:
     """The cleaning flow (nested VAD + filters + Concat) fires only when
     ``output_unit=='original_files'`` AND ``speech_policy`` is enabled."""

@@ -1039,14 +1039,23 @@ def _phase_reorder(
     if n < 2:
         return
 
-    def _rank(stage_name: str) -> int:
-        entry = reg.get(stage_name)
+    def _rank(ref: StageRef) -> int:
+        # An explicit per-ref override always wins. The selector sets this
+        # when it legitimately places a stage in an unusual phase (e.g.
+        # InferenceSortformerStage at PREPROCESS so num_speakers is
+        # computed on the whole file, not on a per-VAD-segment row).
+        if ref.phase_override:
+            try:
+                return PHASE_ORDER[Phase(ref.phase_override)]
+            except (KeyError, ValueError):
+                pass
+        entry = reg.get(ref.stage)
         if entry is None:
             return PHASE_ORDER[Phase.ANALYZE]
         return PHASE_ORDER.get(entry.card.phase, PHASE_ORDER[Phase.ANALYZE])
 
     indexed = list(enumerate(ir.stages))
-    indexed.sort(key=lambda pair: (_rank(pair[1].stage), pair[0]))
+    indexed.sort(key=lambda pair: (_rank(pair[1]), pair[0]))
     new_order = [orig_i for orig_i, _ in indexed]
 
     if new_order == list(range(n)):

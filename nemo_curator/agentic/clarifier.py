@@ -271,28 +271,25 @@ def infer_intent_from_prompt(prompt: str, intent: IntentCategories) -> tuple[Int
             data["text"]["word_timing"] = True
         assumptions.append("Prompt mentions transcripts/ASR; enabling text.transcript_source=generate.")
 
-    # --- TTS quick-pack ------------------------------------------------
-    # Side-effects are independent so they layer on top of any earlier
-    # high-quality / balanced detection: TTS flips speakers→SPLIT and the
-    # output SR default to 24 kHz, even when the quality block has
-    # already set MOS=FILTER from a "clean" word.
+    # --- TTS hint (intentionally minimal) ------------------------------
+    # We used to silently turn on SpeakerSeparation + UTMOS filtering +
+    # SIGMOS filtering whenever the prompt mentioned "TTS". That was too
+    # aggressive: most TTS curation prompts don't actually need speaker
+    # fan-out, and the assumed thresholds were wrong as often as they
+    # were right. Now we only default the *sample rate* (which is safe
+    # because resampling is cheap and reversible), and record a hint so
+    # the smart clarifier knows to *ask* about speakers + quality
+    # explicitly rather than guessing.
     if _has(text, *_TTS_TERMS):
-        changed_anything = False
-        if data["quality"]["mos"] == FilterMode.OFF.value:
-            data["quality"]["mos"] = FilterMode.FILTER.value
-            data["quality"]["mos_threshold"] = 3.4
-            changed_anything = True
-        if data["speakers"]["mode"] == FilterMode.OFF.value:
-            data["speakers"]["mode"] = FilterMode.SPLIT.value
-            changed_anything = True
         if data["output"].get("sample_rate") in (None, "any"):
             data["output"]["sample_rate"] = 24000
             data["output"]["resample_input"] = True
-            changed_anything = True
-        if changed_anything:
             assumptions.append(
-                "Prompt mentions TTS / voice cloning; pre-filling speakers=SPLIT, mos=FILTER, output SR=24 kHz."
+                "Prompt mentions TTS / voice cloning; defaulting output sample rate to 24 kHz."
             )
+        assumptions.append(
+            "TTS hint: speakers + quality knobs left at OFF — ask the user explicitly."
+        )
 
     data["raw_prompt"] = data.get("raw_prompt") or prompt
     if assumptions:

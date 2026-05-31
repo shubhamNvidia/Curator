@@ -62,6 +62,47 @@ class TestIntentCategoriesDefaults:
         ic = IntentCategories(segmentation=Segmentation(output_unit="long_windows"))
         assert any("long_windows" in n for n in ic.notes)
 
+    def test_speech_segments_with_speakers_split_coerces_to_single_speaker_clips(self) -> None:
+        """``speakers.mode=SPLIT`` + ``output_unit=speech_segments`` is
+        the same intent as ``single_speaker_clips``. The validator
+        normalizes it so the selector produces the canonical
+        SpeakerSep→VAD→quality order instead of the broken
+        VAD→Concat→SpeakerSep→PBV order.
+
+        Regression for run 06578e4b178f11e3 where VAD's duration
+        window was applied at the file level, then concat threw the
+        windows away, then SpeakerSep produced full-length per-speaker
+        stems that no longer respected the user's 1-10 s cap.
+        """
+
+        ic = IntentCategories(
+            segmentation=Segmentation(
+                output_unit="speech_segments",
+                duration_min_sec=1.0,
+                duration_max_sec=10.0,
+            ),
+            speakers=Speakers(mode=FilterMode.SPLIT),
+        )
+        assert ic.segmentation.output_unit == "single_speaker_clips"
+        assert any(
+            "coerced from 'speech_segments' to 'single_speaker_clips'" in n
+            for n in ic.notes
+        )
+        # Duration window is preserved through the coercion.
+        assert ic.segmentation.duration_min_sec == 1.0
+        assert ic.segmentation.duration_max_sec == 10.0
+
+    def test_speech_segments_without_split_is_not_coerced(self) -> None:
+        """Coercion is gated on speakers.mode=SPLIT. Other modes leave
+        ``speech_segments`` alone (it's a valid output unit on its own)."""
+
+        for mode in (FilterMode.OFF, FilterMode.ANNOTATE, FilterMode.FILTER):
+            ic = IntentCategories(
+                segmentation=Segmentation(output_unit="speech_segments"),
+                speakers=Speakers(mode=mode),
+            )
+            assert ic.segmentation.output_unit == "speech_segments", mode
+
     def test_extra_keys_silently_dropped_top_level(self) -> None:
         """V2 still uses extra='ignore' so unknown LLM keys don't crash."""
         ic = IntentCategories.model_validate({"language": "en", "budgets": {"gpu_hours": 4}})

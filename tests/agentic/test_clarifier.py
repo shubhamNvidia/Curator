@@ -90,16 +90,48 @@ class TestInferIntentFromPrompt:
         )
         assert intent.speakers.mode == FilterMode.ANNOTATE
 
-    def test_tts_layers_on_top_of_existing_mos_state(self) -> None:
-        """TTS quick-pack must flip speakers→SPLIT and SR→24 kHz even when
-        the quality block already set MOS=FILTER from a "clean" word."""
+    def test_tts_hint_only_sets_sample_rate_and_leaves_speakers_off(self) -> None:
+        """The 'TTS' word is a hint for sample-rate only.
+
+        Speakers and quality are *not* auto-enabled — those decisions
+        belong to the user (or the smart clarifier's LLM follow-up
+        question). The old behavior silently flipped speakers→SPLIT and
+        mos→FILTER, which produced wrong pipelines for single-speaker
+        TTS datasets — see regression run 332c0ecf06a981f6.
+
+        ``"clean"`` is still picked up by the high-quality keyword path
+        (separate branch), so MOS=FILTER here comes from that word —
+        not from "TTS".
+        """
         intent, assumptions = infer_intent_from_prompt(
             "Clean TTS dataset at 24 kHz", IntentCategories(),
         )
-        assert intent.speakers.mode == FilterMode.SPLIT
+        # TTS still sets the sample-rate default.
         assert intent.output.sample_rate == 24000
+        # TTS no longer touches speakers — left at the default.
+        assert intent.speakers.mode == FilterMode.OFF
+        # MOS=FILTER here is driven by the "clean" keyword, not the TTS
+        # quick-pack; the assumption mentions both branches.
         assert intent.quality.mos == FilterMode.FILTER
         assert any("TTS" in a for a in assumptions)
+        # An explicit hint that we deferred speakers/quality to the user.
+        assert any(
+            "ask the user" in a.lower() or "leave" in a.lower() or "left at off" in a.lower()
+            for a in assumptions
+        ), assumptions
+
+    def test_tts_alone_does_not_enable_quality_filter(self) -> None:
+        """Without any quality word in the prompt, "TTS" alone leaves
+        MOS / SIGMOS at OFF. Pre-fix, the TTS quick-pack would have
+        set ``mos=FILTER`` with a 3.4 threshold and a SpeakerSeparation
+        stage — silently, with no question to the user."""
+        intent, _ = infer_intent_from_prompt(
+            "build a tts dataset", IntentCategories(),
+        )
+        assert intent.quality.mos == FilterMode.OFF
+        assert intent.quality.sigmos == FilterMode.OFF
+        assert intent.speakers.mode == FilterMode.OFF
+        assert intent.output.sample_rate == 24000
 
     def test_duration_range_switches_to_speech_segments(self) -> None:
         intent, _ = infer_intent_from_prompt(
@@ -219,10 +251,19 @@ class TestBuildClarificationForm:
         assert sc.visible is True
 
     def test_form_intent_carries_prefilled_values(self) -> None:
+        """Only safe, reversible prefills (sample rate) are carried through.
+
+        Pre-fix, the form also carried speakers=SPLIT silently because
+        the prompt mentioned "TTS". We now leave that to the smart
+        clarifier's follow-up question instead.
+        """
+
         form = build_clarification_form("Clean TTS dataset at 24 kHz", IntentCategories())
         assert form.intent.output.sample_rate == 24000
+        # "clean" still triggers MOS=FILTER (high-quality keyword branch).
         assert form.intent.quality.mos == FilterMode.FILTER
-        assert form.intent.speakers.mode == FilterMode.SPLIT
+        # TTS no longer flips speakers.
+        assert form.intent.speakers.mode == FilterMode.OFF
 
     def test_form_includes_profile_summary_when_card_present(self) -> None:
         card = DatasetCard(
@@ -273,9 +314,25 @@ class TestApplyAnswers:
 
 class TestEndToEnd:
     def test_clean_tts_prompt_compiles(self, registry) -> None:
-        prompt = "I have voice recordings. Make a clean TTS dataset at 24 kHz, 2-60 second clips."
+        """An explicit prompt should still produce a working pipeline.
+
+        We pass ``speakers=split`` and ``mos=filter`` explicitly via the
+        intent (mimicking the user answering the new clarifier
+        questions) and verify the pipeline shape, since the heuristic
+        prefills no longer flip those for us.
+
+        Once :class:`IntentCategories` coerces ``speech_segments`` +
+        ``speakers=SPLIT`` to ``single_speaker_clips``, the compiled
+        pipeline runs SpeakerSeparation **before** VAD — fixing the
+        regression in run 06578e4b178f11e3 where the duration window
+        applied at the wrong stage.
+        """
+
+        prompt = "I have voice recordings. Make a clean TTS dataset at 24 kHz, 2-60 second clips, split by speaker."
         form = build_clarification_form(prompt, IntentCategories())
-        intent = form.intent
+        intent = form.intent.model_copy(update={
+            "speakers": form.intent.speakers.model_copy(update={"mode": FilterMode.SPLIT}),
+        })
         result = plan_from_intent(
             intent,
             source_uri="/data/audio",
@@ -290,6 +347,22 @@ class TestEndToEnd:
         assert "SpeakerSeparationStage" in names
         assert "UTMOSFilterStage" in names
         assert not result.dry_run.has_errors, result.dry_run.all_issues
+        # SpeakerSeparation must run BEFORE VAD so the per-clip duration
+        # window applies to per-speaker stems (not to file-level VAD
+        # segments that get concatenated away).
+        idx_speaker = names.index("SpeakerSeparationStage")
+        idx_vad = names.index("VADSegmentationStage")
+        assert idx_speaker < idx_vad, (
+            f"Expected SpeakerSeparationStage before VADSegmentationStage; "
+            f"got order {names}"
+        )
+        # Quality scoring + PBV gating must run AFTER VAD so the score
+        # values refer to the final per-clip rows the user receives.
+        idx_utmos = names.index("UTMOSFilterStage")
+        assert idx_vad < idx_utmos
+        # No SegmentConcat should be auto-inserted — it would discard
+        # the duration window the user picked.
+        assert "SegmentConcatenationStage" not in names
 
     def test_speech_presence_filter_adds_nested_vad(self, registry) -> None:
         prompt = "Drop empty audio; keep files with at least some speech."

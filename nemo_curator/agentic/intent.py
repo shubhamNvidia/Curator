@@ -489,6 +489,75 @@ class IntentCategories(BaseModel):
                 f"({spk.max_count})"
             )
             raise ValueError(msg)
+
+        # ---- speech_segments + speakers=SPLIT  →  single_speaker_clips ----
+        # When the user asks for speaker fan-out AND a per-segment output
+        # unit, the canonical pipeline is the one the selector already
+        # emits for ``single_speaker_clips``:
+        #
+        #   SpeakerSeparation → VAD(nested=False, min/max) → quality → ASR
+        #
+        # Leaving the intent as ``speech_segments`` forces the validator
+        # to auto-insert a SegmentConcatenationStage *before*
+        # SpeakerSeparation, which throws away the duration window and
+        # makes per-speaker scoring useless (see regression run
+        # 06578e4b178f11e3). Coerce now so both routes converge on the
+        # same compiled pipeline.
+        if (
+            seg.output_unit == "speech_segments"
+            and spk.mode == FilterMode.SPLIT
+        ):
+            self.segmentation = seg.model_copy(update={"output_unit": "single_speaker_clips"})
+            self.notes.append(
+                "segmentation.output_unit coerced from 'speech_segments' to "
+                "'single_speaker_clips' because speakers.mode=SPLIT means "
+                "per-speaker fan-out (SpeakerSeparation must run before VAD "
+                "and quality scoring, not after a Concat)."
+            )
+
+        # ---- single_speaker_clips ↔ speakers=SPLIT (inverse) ----------------
+        # The opposite asymmetry: ``output_unit=single_speaker_clips``
+        # only makes sense when SpeakerSeparation is going to fan rows
+        # out. If the selector won't emit that stage (because
+        # ``speakers.mode`` is OFF / FILTER / ANNOTATE) the SanityCritic
+        # later raises ``single_speaker_clips_missing_separation`` and
+        # the build dies. This happened in run c27f2786eaad1d75 where
+        # the Plan Critic patched the output_unit but the user had
+        # locked ``speakers.mode=filter``, leaving the intent in a
+        # state no selector path could satisfy.
+        #
+        # Resolution depends on whether the user has shown intent for
+        # any file-level speaker handling:
+        #
+        # - ``mode=OFF``  → quietly upgrade to ``SPLIT``; the
+        #   per-clip output unit was the explicit signal.
+        # - ``mode=FILTER`` or ``mode=ANNOTATE`` → these are file-level
+        #   diarization knobs the user usually picks deliberately; revert
+        #   ``output_unit`` to ``speech_segments`` instead. The audit
+        #   note explains the revert so the critic UI can surface it.
+        if (
+            self.segmentation.output_unit == "single_speaker_clips"
+            and spk.mode != FilterMode.SPLIT
+        ):
+            if spk.mode == FilterMode.OFF:
+                self.speakers = spk.model_copy(update={"mode": FilterMode.SPLIT})
+                self.notes.append(
+                    "speakers.mode coerced from OFF to SPLIT because "
+                    "segmentation.output_unit=single_speaker_clips needs "
+                    "per-speaker fan-out (SpeakerSeparationStage)."
+                )
+            else:
+                # FILTER / ANNOTATE — file-level intent wins.
+                self.segmentation = self.segmentation.model_copy(
+                    update={"output_unit": "speech_segments"}
+                )
+                self.notes.append(
+                    "segmentation.output_unit reverted to 'speech_segments' "
+                    f"because speakers.mode={spk.mode.value} is incompatible "
+                    "with 'single_speaker_clips' (only speakers.mode=SPLIT "
+                    "produces per-speaker fan-out). To get per-speaker clips, "
+                    "set speakers.mode=SPLIT."
+                )
         return self
 
 

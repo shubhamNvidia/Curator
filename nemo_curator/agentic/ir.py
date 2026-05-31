@@ -136,6 +136,18 @@ class StageRef(BaseModel):
         description="True for stages added by the validator's auto-insert layer.",
     )
     insert_reason: str | None = None
+    phase_override: str | None = Field(
+        default=None,
+        description=(
+            "Optional pipeline-phase override that wins over the card's "
+            "declared phase during the validator's phase-aware reorder. "
+            "Use when the selector legitimately places a stage in a "
+            "different phase than its card declares (e.g. running "
+            "InferenceSortformerStage in PREPROCESS so the file-level "
+            "num_speakers count is computed before VAD fans out into "
+            "per-segment rows)."
+        ),
+    )
 
 
 # ----------------------------------------------------------------------------

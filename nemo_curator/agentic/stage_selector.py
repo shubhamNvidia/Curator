@@ -154,6 +154,14 @@ def select_stages(
 
     stages: list[StageRef] = []
     stages.extend(_output_normalizers(intent, sink))
+    # File-level speaker filtering / annotation has to run BEFORE any
+    # segmenter that fans out into per-segment rows. Sortformer reports
+    # the number of speakers it hears *in the row it's given*, so a
+    # 2-30 s VAD clip will almost always look monospeaker even when the
+    # source file has many. Keeping Sortformer+PBV upstream of VAD means
+    # the user's "single-speaker files only" filter actually drops the
+    # right files. SPLIT goes in its usual place (it's the segmenter).
+    stages.extend(_file_level_speaker_stages(intent))
     stages.extend(_segmentation_stages(intent, sink, cleaning_flow=cleaning))
     stages.extend(_quality_stages(intent))
     stages.extend(_cleaning_concat_stages(cleaning_flow=cleaning))
@@ -628,8 +636,104 @@ def _quality_gate_to_pbv(gate: QualityGate) -> StageRef:
 # ----------------------------------------------------------------------------
 
 
+def _file_level_speaker_stages(intent: IntentCategories) -> list[StageRef]:
+    """Emit file-level diarization + speaker filtering BEFORE segmentation.
+
+    ``InferenceSortformerStage`` accepts any input shape and writes
+    ``num_speakers`` on the row it processes. If the pipeline first
+    fans out into VAD segments and *then* runs Sortformer, each
+    per-segment row reports the speakers *in that segment* (usually
+    one, because the clip is short) — so a downstream
+    ``PreserveByValueStage(num_speakers, op, value)`` would never drop
+    the files the user actually meant to filter.
+
+    We therefore emit Sortformer + the speaker-count PBV(s) *before*
+    any segmenter when:
+
+    * ``speakers.mode == ANNOTATE`` — the user wants the per-file
+      speaker count carried through to every downstream row, and
+    * ``speakers.mode == FILTER`` — the speaker-count gate is
+      genuinely a file-level decision (drop the file if N != target).
+
+    ``SPLIT`` stays in :func:`_speaker_stages` because there
+    ``SpeakerSeparationStage`` *is* the segmenter and must run later.
+    """
+
+    spk = intent.speakers
+    if spk.mode not in (FilterMode.ANNOTATE, FilterMode.FILTER):
+        return []
+
+    # ``phase_override='preprocess'`` is the key: the validator's
+    # phase-aware reorder would otherwise push Sortformer (ANALYZE)
+    # after VAD (SEGMENT) and the file-level filter would silently
+    # become a per-segment no-op.
+    out: list[StageRef] = [StageRef(
+        stage="InferenceSortformerStage",
+        params={},
+        auto_inserted=True,
+        phase_override="preprocess",
+        insert_reason=(
+            f"speakers.mode={spk.mode.value} → file-level diarization "
+            "must run before any segmenter so num_speakers reflects the "
+            "whole source file, not a single VAD segment."
+        ),
+    )]
+
+    if spk.mode != FilterMode.FILTER:
+        return out
+
+    # FILTER → translate the count bounds into PBV gate(s). Same
+    # operator ladder as the post-segmenter variant used to use.
+    # PBVs also need the preprocess override to stay co-located with
+    # the upstream Sortformer; otherwise phase-sort would push them
+    # past the segmenter, where they'd run on per-segment rows.
+    def _file_level_pbv(*, key, operator, value, reason):
+        ref = _preserve_by_value(key=key, operator=operator, value=value, reason=reason)
+        ref.phase_override = "preprocess"
+        return ref
+
+    if spk.target_count is not None:
+        out.append(_file_level_pbv(
+            key="num_speakers",
+            operator="eq",
+            value=int(spk.target_count),
+            reason=(
+                f"speakers.target_count={spk.target_count} → keep "
+                f"files where num_speakers == {spk.target_count}."
+            ),
+        ))
+    else:
+        if spk.min_count is not None:
+            out.append(_file_level_pbv(
+                key="num_speakers",
+                operator="ge",
+                value=int(spk.min_count),
+                reason=(
+                    f"speakers.min_count={spk.min_count} → keep "
+                    f"files where num_speakers >= {spk.min_count}."
+                ),
+            ))
+        if spk.max_count is not None:
+            out.append(_file_level_pbv(
+                key="num_speakers",
+                operator="le",
+                value=int(spk.max_count),
+                reason=(
+                    f"speakers.max_count={spk.max_count} → keep "
+                    f"files where num_speakers <= {spk.max_count}."
+                ),
+            ))
+    return out
+
+
 def _speaker_stages(intent: IntentCategories) -> list[StageRef]:
-    """Emit speaker-handling stages.
+    """Emit segmenter-position speaker stages: SpeakerSeparation for
+    SPLIT, and the degraded Sortformer-only fallback when SPLIT is
+    incompatible with ``output_unit=='original_files'``.
+
+    File-level diarization for ANNOTATE / FILTER is emitted earlier by
+    :func:`_file_level_speaker_stages` so the num_speakers count is
+    computed on whole files, not per VAD segment.
 
     No special wiring is needed for a downstream post-segmenter VAD trim:
     ``SpeakerSeparationStage`` returns a per-speaker waveform that is the
@@ -675,54 +779,10 @@ def _speaker_stages(intent: IntentCategories) -> list[StageRef]:
         ))
         return out
 
-    # ANNOTATE or FILTER → diarize first, then optionally a value filter.
-    out.append(StageRef(stage="InferenceSortformerStage", params={}))
-
-    if spk.mode == FilterMode.FILTER:
-        # Operator selection ladder, in order of "most specific wins":
-        #
-        # * ``target_count``  -> ``eq`` (exact-N; mutually exclusive with the
-        #   min/max range; if the user pinned an exact number, the range
-        #   bounds become noise).
-        # * ``min_count`` AND ``max_count`` -> closed range:
-        #   emit two stages (``ge`` floor + ``le`` ceiling).
-        # * ``min_count``  alone -> ``ge``.
-        # * ``max_count``  alone -> ``le``.
-        # * Nothing set -> the schema validator already appended a "degrade
-        #   to ANNOTATE" note; we emit no PreserveByValueStage so nothing
-        #   is dropped silently.
-        if spk.target_count is not None:
-            out.append(_preserve_by_value(
-                key="num_speakers",
-                operator="eq",
-                value=int(spk.target_count),
-                reason=(
-                    f"speakers.target_count={spk.target_count} → "
-                    f"keep rows where num_speakers == {spk.target_count}."
-                ),
-            ))
-        else:
-            if spk.min_count is not None:
-                out.append(_preserve_by_value(
-                    key="num_speakers",
-                    operator="ge",
-                    value=int(spk.min_count),
-                    reason=(
-                        f"speakers.min_count={spk.min_count} → "
-                        f"keep rows where num_speakers >= {spk.min_count}."
-                    ),
-                ))
-            if spk.max_count is not None:
-                out.append(_preserve_by_value(
-                    key="num_speakers",
-                    operator="le",
-                    value=int(spk.max_count),
-                    reason=(
-                        f"speakers.max_count={spk.max_count} → "
-                        f"keep rows where num_speakers <= {spk.max_count}."
-                    ),
-                ))
-
+    # ANNOTATE / FILTER are emitted upstream by
+    # :func:`_file_level_speaker_stages` so num_speakers is computed on
+    # the whole source file, not a per-VAD-segment row that would
+    # almost always report a single speaker.
     return out
 
 
