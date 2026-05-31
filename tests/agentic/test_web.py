@@ -95,7 +95,8 @@ def app(monkeypatch, tmp_path: Path) -> AgenticWebApp:
     test_user = UserSession(
         user_id="test-user-id",
         email="test@nvidia.com",
-        api_key=_FAKE_API_KEY,
+        nim_api_key=_FAKE_API_KEY,
+        gateway_api_key=None,
         created_at=datetime.now(timezone.utc),
         session_dir=session_dir,
     )
@@ -240,3 +241,135 @@ def test_freeform_apply_side_effect_writes_both_legs(
     assert build_resp["status"] == "ready", build_resp
     vad_stages = [s for s in build_resp.get("stages", []) if s == "VADSegmentationStage"]
     assert vad_stages, build_resp
+
+
+def test_login_accepts_both_keys_and_routes_by_model(tmp_path: Path) -> None:
+    """A single login can register both NIM + Gateway keys.
+
+    The session then picks the right key based on the model namespace
+    (``aws/anthropic/...`` → gateway; ``qwen/...`` → NIM).
+    """
+
+    app = AgenticWebApp(WebDefaults(dataset=str(tmp_path), out_root=str(tmp_path)))
+    resp = app.login({
+        "email": "dual@nvidia.com",
+        "nim_api_key": "nvapi-testkey1234567890abcdef",
+        "gateway_api_key": "sk-cKcFsrv9LAcWPKuTn_ms9w",
+    })
+    assert resp["status"] == "ok", resp
+    assert resp["endpoints"] == {"nim": True, "gateway": True}
+    user = app.user_sessions[resp["user_id"]]
+    assert user.nim_api_key and user.gateway_api_key
+
+    # Model-namespace based routing.
+    assert user.key_for_model("aws/anthropic/claude-opus-4-5") == user.gateway_api_key
+    assert user.key_for_model("qwen/qwen3-next-80b-a3b-instruct") == user.nim_api_key
+    assert user.key_for_model("openai/gpt-5") == user.gateway_api_key
+
+
+def test_login_requires_at_least_one_key(tmp_path: Path) -> None:
+    """Empty key fields are rejected with a helpful message."""
+
+    app = AgenticWebApp(WebDefaults(dataset=str(tmp_path), out_root=str(tmp_path)))
+    resp = app.login({"email": "x@y.com"})
+    assert resp["status"] == "error"
+    assert "at least one api key" in resp["error"].lower()
+
+
+def test_login_legacy_api_key_field_still_works(tmp_path: Path) -> None:
+    """Old clients posting ``api_key`` get sorted by prefix automatically."""
+
+    app = AgenticWebApp(WebDefaults(dataset=str(tmp_path), out_root=str(tmp_path)))
+    resp = app.login({"email": "legacy@nvidia.com", "api_key": "sk-abcdefghij"})
+    assert resp["status"] == "ok"
+    user = app.user_sessions[resp["user_id"]]
+    assert user.gateway_api_key == "sk-abcdefghij"
+    assert user.nim_api_key is None
+
+
+def test_login_rejects_malformed_keys(tmp_path: Path) -> None:
+    app = AgenticWebApp(WebDefaults(dataset=str(tmp_path), out_root=str(tmp_path)))
+    resp = app.login({"email": "x@y.com", "nim_api_key": "not-a-key"})
+    assert resp["status"] == "error"
+    assert "nvapi" in resp["error"].lower()
+
+    resp2 = app.login({"email": "x@y.com", "gateway_api_key": "wrong"})
+    assert resp2["status"] == "error"
+    assert "sk-" in resp2["error"].lower()
+
+
+def test_get_llm_none_keeps_previously_picked_model(tmp_path: Path) -> None:
+    """Once a model is bound to the session, ``get_llm(None)`` must
+    keep it instead of falling back to library defaults.
+
+    Regression for run 332c0ecf06a981f6 where the user picked Claude in
+    ``plan()`` but the Plan Critic running in ``build()`` ended up on
+    Qwen because ``user.get_llm()`` (called with no args) rebuilt with
+    an empty model.
+    """
+
+    app = AgenticWebApp(WebDefaults(dataset=str(tmp_path), out_root=str(tmp_path)))
+    resp = app.login({
+        "email": "model@nvidia.com",
+        "nim_api_key": "nvapi-testkey1234567890abcdef",
+        "gateway_api_key": "sk-cKcFsrv9LAcWPKuTn_ms9w",
+    })
+    user = app.user_sessions[resp["user_id"]]
+
+    # First call mimics plan() picking the explicit model.
+    first = user.get_llm("aws/anthropic/claude-opus-4-5")
+    assert user._llm_model == "aws/anthropic/claude-opus-4-5"
+
+    # Second call mimics build() calling get_llm() with no override.
+    second = user.get_llm(None)
+    assert second is first, "must return the same cached client"
+    assert user._llm_model == "aws/anthropic/claude-opus-4-5", (
+        "model selection must NOT have been cleared by get_llm(None)"
+    )
+
+    # An explicit override still works and rebuilds.
+    third = user.get_llm("qwen/qwen3-next-80b-a3b-instruct")
+    assert third is not first
+    assert user._llm_model == "qwen/qwen3-next-80b-a3b-instruct"
+
+
+def test_user_session_key_for_model_with_only_one_key(tmp_path: Path) -> None:
+    """When only one key is registered, every model routes to it."""
+
+    app = AgenticWebApp(WebDefaults(dataset=str(tmp_path), out_root=str(tmp_path)))
+    resp = app.login({"email": "one@nvidia.com", "gateway_api_key": "sk-onlygateway"})
+    user = app.user_sessions[resp["user_id"]]
+    # No NIM key, so even a NIM-namespace model falls back to the gateway key.
+    assert user.key_for_model("qwen/qwen3") == "sk-onlygateway"
+    assert user.key_for_model("aws/anthropic/claude-opus-4-5") == "sk-onlygateway"
+
+
+def test_build_response_carries_critic_block(
+    app: AgenticWebApp, dataset_dir: Path, tmp_path: Path
+) -> None:
+    """Every successful build emits a ``critic`` block and persists critic.json.
+
+    The LLM is stubbed (no PlanCritic) but the deterministic SanityCritic
+    always runs, so the block shape must be present even without a NIM key.
+    """
+
+    out_dir = tmp_path / "run5"
+    plan_resp = _plan(app, {
+        "prompt": "Clean TTS dataset at 24 kHz.",
+        "dataset": str(dataset_dir),
+        "kind": "directory",
+        "out": str(out_dir),
+    })
+    session_id = plan_resp["session_id"]
+    build_resp = _build(app, {"session_id": session_id, "answers": {}})
+    assert build_resp["status"] == "ready", build_resp
+    critic = build_resp.get("critic")
+    assert isinstance(critic, dict), build_resp
+    assert "findings" in critic and isinstance(critic["findings"], list)
+    assert "iterations" in critic
+    assert "re_planned" in critic
+    assert "patches_applied" in critic
+    # critic.json was persisted alongside other artifacts.
+    assert (out_dir / "critic.json").exists()
+    saved = json.loads((out_dir / "critic.json").read_text())
+    assert "findings" in saved

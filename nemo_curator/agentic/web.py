@@ -65,6 +65,8 @@ from nemo_curator.agentic.deterministic_planner import (
 from nemo_curator.agentic.intent import IntentCategories
 from nemo_curator.agentic.ir import ClusterProfile, SourceSpec
 from nemo_curator.agentic.llm import LLMClient
+from nemo_curator.agentic.llm_transcript import LLMTranscript, bind_transcript
+from nemo_curator.agentic.plan_critic import default_critics, review_and_replan
 from nemo_curator.agentic.planner_dag import extract_intent
 from nemo_curator.agentic.profiler import profile_source
 from nemo_curator.agentic.registry import build_registry
@@ -135,12 +137,25 @@ class UserSession:
 
     user_id: str
     email: str
-    api_key: str
+    # NVIDIA exposes two OpenAI-compatible endpoints, each with its own
+    # key format. The user can sign in with one or both. The session
+    # routes per-request based on the model the user selects.
+    nim_api_key: str | None       # nvapi-... → integrate.api.nvidia.com/v1
+    gateway_api_key: str | None   # sk-...    → inference-api.nvidia.com/v1
     created_at: datetime
     session_dir: Path
     runs: dict[str, SessionState] = field(default_factory=dict)
     _llm: LLMClient | None = None
     _llm_model: str | None = None
+
+    # ------------------------------------------------------------------
+    # Back-compat: many call sites + tests still read ``user.api_key``.
+    # We expose it as a property that returns whichever key is set
+    # (prefer NIM since it has the broader model catalog).
+    # ------------------------------------------------------------------
+    @property
+    def api_key(self) -> str:
+        return self.nim_api_key or self.gateway_api_key or ""
 
     @property
     def events_log(self) -> Path:
@@ -155,25 +170,106 @@ class UserSession:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def key_for_model(self, model: str | None) -> str | None:
+        """Pick the right key for *model* given which ones we have.
+
+        Model namespace conventions:
+
+        - Gateway (Claude / GPT / Gemini, etc.): ``aws/anthropic/...``,
+          ``aws/openai/...``, ``aws/google/...``, ``openai/...``,
+          ``anthropic/...``, ``google/...``.
+        - NIM (open models): ``qwen/...``, ``meta/...``, ``nvidia/...``,
+          ``mistralai/...``, ``moonshotai/...``, ``deepseek-ai/...``.
+
+        When only one key is registered we use it regardless — better to
+        fail with a clean 404 than to refuse the request.
+        """
+
+        m = (model or "").lower()
+        gateway_prefixes = (
+            "aws/", "anthropic/", "openai/", "google/",
+        )
+        wants_gateway = any(m.startswith(p) for p in gateway_prefixes)
+        if wants_gateway and self.gateway_api_key:
+            return self.gateway_api_key
+        if not wants_gateway and self.nim_api_key:
+            return self.nim_api_key
+        # Fallback: use whichever we have.
+        return self.nim_api_key or self.gateway_api_key
+
     def get_llm(self, model: str | None = None) -> LLMClient:
         """Return (and lazily build) an LLMClient bound to this user's key.
 
-        If *model* changes from the cached client's model the client is
-        rebuilt so per-request UI overrides take effect immediately.
+        The client picks the NIM or Inference-Gateway key based on the
+        model namespace. If *model* changes from the cached client's
+        model the client is rebuilt so per-request UI overrides take
+        effect immediately.
+
+        Important: ``get_llm(None)`` is treated as "give me whatever
+        you have" — it returns the cached client without rebuilding,
+        so downstream callers (e.g. the Plan Critic in ``build()``)
+        don't accidentally drop the model the user picked in
+        ``plan()`` and fall back to library defaults.
         """
 
-        if self._llm is not None and (model or None) == self._llm_model:
-            return self._llm
-        self._llm = _make_llm(model or "", api_key=self.api_key)
-        self._llm_model = model or None
+        if self._llm is not None:
+            same_model = (model is None) or (model == self._llm_model)
+            if same_model:
+                return self._llm
+
+        chosen_key = self.key_for_model(model) or ""
+        self._llm = _make_llm(model or "", api_key=chosen_key)
+        self._llm_model = model or self._llm_model
         return self._llm
 
-    @property
-    def masked_key(self) -> str:
-        k = self.api_key or ""
+    @staticmethod
+    def _mask(k: str | None) -> str:
+        if not k:
+            return "—"
         if len(k) <= 8:
             return "***"
         return f"{k[:6]}…{k[-4:]}"
+
+    @property
+    def masked_key(self) -> str:
+        """Single-line summary used in audit logs."""
+
+        bits = []
+        if self.nim_api_key:
+            bits.append(f"nim={self._mask(self.nim_api_key)}")
+        if self.gateway_api_key:
+            bits.append(f"gateway={self._mask(self.gateway_api_key)}")
+        return ", ".join(bits) or "—"
+
+
+_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
+_INFERENCE_GATEWAY_BASE_URL = "https://inference-api.nvidia.com/v1"
+
+
+def _base_url_for_key(api_key: str | None) -> str | None:
+    """Pick the right NVIDIA endpoint from the key prefix.
+
+    NVIDIA exposes two OpenAI-compatible endpoints, each with its own
+    key format:
+
+    - ``nvapi-...`` → NIM at ``https://integrate.api.nvidia.com/v1``
+      (open-source models: Qwen, Llama, Kimi, Nemotron, …)
+    - ``sk-...``    → Inference Gateway at
+      ``https://inference-api.nvidia.com/v1``
+      (proprietary models: Claude, GPT, …)
+
+    Returns ``None`` when we can't infer — the caller will then fall
+    back to the ``CURATOR_ADV_LLM_BASE_URL`` env var or the LLMClient
+    default.
+    """
+
+    if not api_key:
+        return None
+    if api_key.startswith("sk-"):
+        return _INFERENCE_GATEWAY_BASE_URL
+    if api_key.startswith("nvapi-"):
+        return _NIM_BASE_URL
+    return None
 
 
 def _make_llm(model: str, *, api_key: str | None = None) -> LLMClient:
@@ -185,6 +281,10 @@ def _make_llm(model: str, *, api_key: str | None = None) -> LLMClient:
     supplied it overrides any ``NVIDIA_API_KEY`` / ``OPENAI_API_KEY`` in
     the process environment — required for per-user sessions so two
     users can have different keys without leaking state.
+
+    The base URL is auto-selected from the key prefix (``sk-`` → NVIDIA
+    Inference Gateway, ``nvapi-`` → NIM). An explicit
+    ``CURATOR_ADV_LLM_BASE_URL`` env var still wins if set.
     """
 
     from nemo_curator.agentic.llm import LLMTier, default_tiers  # noqa: PLC0415
@@ -192,6 +292,10 @@ def _make_llm(model: str, *, api_key: str | None = None) -> LLMClient:
     kwargs: dict[str, Any] = {}
     if api_key:
         kwargs["api_key"] = api_key
+        if "CURATOR_ADV_LLM_BASE_URL" not in os.environ:
+            base = _base_url_for_key(api_key)
+            if base:
+                kwargs["base_url"] = base
     if model:
         _ = default_tiers()  # validate env var presence without keeping it
         kwargs["tiers"] = LLMTier(synth=model, planner=model)
@@ -214,9 +318,28 @@ def _looks_like_email(email: str) -> bool:
     return bool(local) and "." in domain
 
 
-def _looks_like_nvidia_key(key: str) -> bool:
+def _looks_like_nim_key(key: str) -> bool:
+    """NVIDIA NIM (build.nvidia.com) keys start with ``nvapi-``."""
+
     k = (key or "").strip()
     return k.startswith("nvapi-") and len(k) >= 24
+
+
+def _looks_like_gateway_key(key: str) -> bool:
+    """NVIDIA Inference Hub / Gateway keys start with ``sk-``.
+
+    The accepted minimum length is shorter than NIM keys because the
+    gateway issues compact keys (``sk-`` + ~20 chars).
+    """
+
+    k = (key or "").strip()
+    return k.startswith("sk-") and len(k) >= 8
+
+
+def _looks_like_nvidia_key(key: str) -> bool:
+    """Either flavour of NVIDIA API key is accepted by the web app."""
+
+    return _looks_like_nim_key(key) or _looks_like_gateway_key(key)
 
 
 class AgenticWebApp:
@@ -262,6 +385,29 @@ class AgenticWebApp:
         except OSError as exc:  # noqa: BLE001
             logger.warning("user_log: failed to write %s for %s: %s", event, user.email, exc)
 
+    def _make_transcript(
+        self,
+        user: UserSession,
+        run_id: str,
+        *,
+        phase: str,
+    ) -> LLMTranscript:
+        """Return a fresh LLMTranscript writing to ``<run_dir>/llm_calls.jsonl``.
+
+        ``phase`` (``"plan"`` / ``"build"``) is recorded on every row so
+        you can filter the same JSONL for either step without crossing
+        streams. The transcript is bound by ``plan()`` / ``build()`` for
+        the duration of the request — see :func:`bind_transcript`.
+        """
+
+        run_dir = user.run_dir(run_id)
+        return LLMTranscript(
+            path=run_dir / "llm_calls.jsonl",
+            run_id=run_id,
+            user_id=user.user_id,
+            tags={"phase": phase, "email": user.email},
+        )
+
     def _save_run_file(
         self,
         user: UserSession,
@@ -300,11 +446,29 @@ class AgenticWebApp:
 
     def login(self, payload: dict[str, Any]) -> dict[str, Any]:
         email = str(payload.get("email") or "").strip()
-        api_key = str(payload.get("api_key") or "").strip()
+        # Accept the legacy single ``api_key`` field plus the new
+        # explicit ``nim_api_key`` / ``gateway_api_key`` fields. The
+        # legacy field is sorted into the right bucket by prefix.
+        nim_key = str(payload.get("nim_api_key") or "").strip()
+        gateway_key = str(payload.get("gateway_api_key") or "").strip()
+        legacy_key = str(payload.get("api_key") or "").strip()
+        if legacy_key and not nim_key and not gateway_key:
+            if _looks_like_nim_key(legacy_key):
+                nim_key = legacy_key
+            elif _looks_like_gateway_key(legacy_key):
+                gateway_key = legacy_key
+
         if not _looks_like_email(email):
             return _error("Please enter a valid email address.")
-        if not _looks_like_nvidia_key(api_key):
-            return _error("API key looks malformed (expected 'nvapi-...').")
+        if not nim_key and not gateway_key:
+            return _error(
+                "Please enter at least one API key — NVIDIA Build (nvapi-...) "
+                "or NVIDIA Inference Hub (sk-...).",
+            )
+        if nim_key and not _looks_like_nim_key(nim_key):
+            return _error("NVIDIA Build API key looks malformed (expected 'nvapi-...').")
+        if gateway_key and not _looks_like_gateway_key(gateway_key):
+            return _error("NVIDIA Inference Hub API key looks malformed (expected 'sk-...').")
 
         user_id = secrets.token_hex(16)
         session_name = f"{_sanitize_email_for_filename(email)}__{user_id[:8]}"
@@ -313,7 +477,8 @@ class AgenticWebApp:
         user = UserSession(
             user_id=user_id,
             email=email,
-            api_key=api_key,
+            nim_api_key=nim_key or None,
+            gateway_api_key=gateway_key or None,
             created_at=datetime.now(timezone.utc),
             session_dir=session_dir,
         )
@@ -325,9 +490,11 @@ class AgenticWebApp:
             "login",
             api_key=user.masked_key,
             session_dir=str(session_dir),
+            has_nim_key=bool(nim_key),
+            has_gateway_key=bool(gateway_key),
         )
         logger.info(
-            "web: login email=%s user_id=%s key=%s session_dir=%s",
+            "web: login email=%s user_id=%s keys=%s session_dir=%s",
             email, user_id, user.masked_key, session_dir,
         )
         return {
@@ -335,6 +502,10 @@ class AgenticWebApp:
             "user_id": user_id,
             "email": email,
             "session_dir": str(session_dir),
+            "endpoints": {
+                "nim": bool(nim_key),
+                "gateway": bool(gateway_key),
+            },
         }
 
     def _user_or_error(self, payload: dict[str, Any]) -> tuple[UserSession | None, dict[str, Any] | None]:
@@ -415,13 +586,15 @@ class AgenticWebApp:
             model=model_override or "<default>",
         )
         t0 = time.monotonic()
+        transcript = self._make_transcript(user, run_id, phase="plan")
         try:
-            rough_intent, profile = self._extract_intent_and_profile(
-                prompt, source_uri, source_kind, llm,
-            )
-            smart = compose_smart_form(
-                prompt, rough_intent, profile=profile, llm=llm, tier="synth",
-            )
+            with bind_transcript(transcript):
+                rough_intent, profile = self._extract_intent_and_profile(
+                    prompt, source_uri, source_kind, llm,
+                )
+                smart = compose_smart_form(
+                    prompt, rough_intent, profile=profile, llm=llm, tier="synth",
+                )
         except Exception as exc:  # noqa: BLE001
             self._user_log(
                 user,
@@ -509,8 +682,10 @@ class AgenticWebApp:
             answers=state.answers,
         )
         t0 = time.monotonic()
+        transcript = self._make_transcript(user, run_id, phase="build")
         try:
-            response = self._compile(run_id, intent)
+            with bind_transcript(transcript):
+                response = self._compile(run_id, intent, user=user)
         except Exception as exc:  # noqa: BLE001
             self._user_log(
                 user,
@@ -586,23 +761,72 @@ class AgenticWebApp:
             intent = intent.model_copy(update={"raw_prompt": prompt})
         return intent, profile
 
-    def _compile(self, session_id: str, intent: IntentCategories) -> dict[str, Any]:
+    def _compile(
+        self,
+        session_id: str,
+        intent: IntentCategories,
+        *,
+        user: "UserSession | None" = None,
+    ) -> dict[str, Any]:
         state = self.sessions[session_id]
         out_dir = Path(state.target_dir).expanduser().resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            result = plan_from_intent(
-                intent,
+
+        # Wrap planning + result tracking so the critic orchestrator can
+        # re-plan while we keep hold of the full DeterministicPlannerResult.
+        plan_state = {"result": None}
+
+        def _plan(it: IntentCategories) -> Any:
+            new_result = plan_from_intent(
+                it,
                 source_uri=state.source_uri,
                 source_kind=state.source_kind,
                 target_dir=str(out_dir),
                 registry=self.registry,
                 cluster=state.cluster,
             )
+            plan_state["result"] = new_result
+            return new_result.ir
+
+        try:
+            initial_ir = _plan(intent)
         except DeterministicPlanningError as exc:
             return _error(f"The compiler rejected this pipeline: {exc}", status="rejected")
         except Exception as exc:  # noqa: BLE001
             return _error(f"Planning failed: {exc}", status="failed")
+
+        # ── Plan Critic + Sanity Critic ────────────────────────────────
+        # The sanity critic always runs; the LLM-driven plan critic only
+        # if the user is authenticated and an LLM is available. The
+        # orchestrator applies patches and re-plans once if anything
+        # actionable comes back.
+        critic_llm = user.get_llm() if user is not None else None
+        try:
+            review = review_and_replan(
+                intent=plan_state["result"].intent,
+                ir=initial_ir,
+                replan=_plan,
+                critics=default_critics(critic_llm),
+                profile=None,  # TODO: pass dataset profile once it's persisted
+                max_iterations=2,
+            )
+            critic_report = review.report
+            critic_iterations = review.iterations
+            critic_re_planned = review.re_planned
+            critic_patches = [
+                p.model_dump(mode="json", exclude_none=True) for p in review.patches_applied
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("plan critics failed; continuing with un-critiqued pipeline: %s", exc)
+            critic_report = None
+            critic_iterations = 1
+            critic_re_planned = False
+            critic_patches = []
+
+        # `_plan` always stashes the latest DeterministicPlannerResult into
+        # plan_state, so even if the critics re-planned we still have the
+        # final, validated result here.
+        result = plan_state["result"]
 
         yaml_text = compile_ir_to_yaml(result.ir, self.registry)
         ir_path = out_dir / "ir.validated.json"
@@ -649,14 +873,34 @@ class AgenticWebApp:
             else None
         )
 
+        # ── critic payload + persist to disk ─────────────────────────
+        critic_payload = critic_report.to_payload() if critic_report is not None else []
+        critic_path = out_dir / "critic.json"
+        critic_path.write_text(json.dumps({
+            "findings": critic_payload,
+            "iterations": critic_iterations,
+            "re_planned": critic_re_planned,
+            "patches_applied": critic_patches,
+        }, indent=2), encoding="utf-8")
+
+        msg = "Pipeline compiled and dry-run validation passed."
+        if critic_re_planned:
+            msg += f" Critic adjusted {len(critic_patches)} setting(s) automatically."
+
         return {
             "status": "ready",
             "session_id": session_id,
-            "message": "Pipeline compiled and dry-run validation passed.",
+            "message": msg,
             "yaml": yaml_text,
             "intent": result.intent.model_dump(mode="json"),
             "stages": [s.stage for s in result.ir.stages],
             "findings": findings,
+            "critic": {
+                "findings": critic_payload,
+                "iterations": critic_iterations,
+                "re_planned": critic_re_planned,
+                "patches_applied": critic_patches,
+            },
             "dry_run_has_errors": result.dry_run.has_errors,
             "executor_config": executor_config,
             "cluster": state.cluster.model_dump(mode="json"),
@@ -667,6 +911,7 @@ class AgenticWebApp:
                 "ir": str(ir_path),
                 "intent": str(intent_path),
                 "findings": str(findings_path),
+                "critic": str(critic_path),
                 "dry_run": str(dry_run_path),
                 "prompt": str(prompt_path),
                 "answers": str(answers_path),
@@ -1275,6 +1520,25 @@ _HTML = r"""<!doctype html>
     }
     .login-card .login-help a { color: var(--accent); text-decoration: none; }
     .login-card .login-help a:hover { text-decoration: underline; }
+    .login-card .login-tag {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 1px 7px;
+      border-radius: 999px;
+      font-size: 10px; font-weight: 700; letter-spacing: .04em;
+      background: rgba(118, 185, 0, .14); color: var(--nv-green-deep, #2f4d00);
+      border: 1px solid rgba(118, 185, 0, .35);
+      vertical-align: middle;
+    }
+    .login-card .login-tag.alt {
+      background: rgba(60, 120, 255, .14); color: #1c4ad1;
+      border-color: rgba(60, 120, 255, .35);
+    }
+    .login-card .login-fieldhint {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted); font-size: 11.5px; line-height: 1.4;
+    }
 
     /* ── auth chip in topbar ──────────────────────────────────────── */
     .auth-chip {
@@ -1538,6 +1802,82 @@ _HTML = r"""<!doctype html>
       box-shadow: 0 0 0 3px rgba(118, 185, 0, .22);
     }
 
+    /* ── Plan critic panel ─────────────────────────────────────── */
+    .critic-panel {
+      margin-top: 14px;
+      position: relative; overflow: hidden;
+      background: #fff;
+      border: 1px solid var(--nv-green-border);
+      border-radius: 14px;
+      padding: 18px;
+      box-shadow: 0 4px 14px rgba(31, 51, 0, .05);
+    }
+    .critic-panel.empty { background: linear-gradient(135deg, #f3faea 0%, #ffffff 100%); }
+    .critic-header {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; margin-bottom: 10px;
+    }
+    .critic-title {
+      margin: 0;
+      font-size: 13px; font-weight: 800; letter-spacing: .08em;
+      color: var(--nv-green-deep); text-transform: uppercase;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .critic-title::before {
+      content: ""; width: 8px; height: 8px; border-radius: 50%;
+      background: var(--nv-green);
+      box-shadow: 0 0 0 3px rgba(118, 185, 0, .22);
+    }
+    .critic-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border-radius: 999px;
+      font-size: 11px; font-weight: 700; letter-spacing: .04em;
+      background: rgba(118, 185, 0, .14); color: var(--nv-green-deep);
+      border: 1px solid var(--nv-green-border);
+    }
+    .critic-badge.warn { background: #fff5e0; color: #8a5500; border-color: #f1c66a; }
+    .critic-badge.error { background: #ffe6e6; color: #9b1212; border-color: #f29b9b; }
+    .critic-empty {
+      margin: 0; padding: 6px 0; font-size: 13px; color: var(--nv-slate);
+    }
+    .critic-list { display: flex; flex-direction: column; gap: 8px; }
+    .critic-item {
+      display: grid; grid-template-columns: auto 1fr; gap: 10px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: #fafbf7;
+      border: 1px solid #e3e7d6;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .critic-item .sev {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 18px; height: 18px; border-radius: 4px;
+      font-size: 10px; font-weight: 800; letter-spacing: .03em;
+      color: #fff;
+    }
+    .critic-item.info .sev { background: #4a90e2; }
+    .critic-item.warn .sev { background: #d68a00; }
+    .critic-item.error .sev { background: #c0392b; }
+    .critic-item.info { background: #f1f7fb; border-color: #cfdbe6; }
+    .critic-item.warn { background: #fff5e0; border-color: #f1c66a; }
+    .critic-item.error { background: #ffe6e6; border-color: #f29b9b; }
+    .critic-item .code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px; color: var(--nv-slate-2);
+    }
+    .critic-item .detail { color: var(--nv-slate); font-weight: 600; margin: 2px 0 4px; }
+    .critic-item .patch {
+      display: inline-block;
+      margin-top: 4px; padding: 2px 8px;
+      border-radius: 6px;
+      background: rgba(118, 185, 0, .14);
+      color: var(--nv-green-deep);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px; font-weight: 700;
+    }
+    .critic-item.applied .patch { background: var(--nv-green-dark); color: #fff; }
+
     .pipe-highlights { display: flex; flex-wrap: wrap; gap: 10px; }
     .pipe-hl {
       display: inline-flex; align-items: center; gap: 10px;
@@ -1726,13 +2066,18 @@ _HTML = r"""<!doctype html>
         <strong>NeMo Curator ADV</strong>
       </div>
       <h1>Sign in to start a session</h1>
-      <p class="sub">Each user runs with their own NVIDIA build / NGC API key. We don't store it on disk — it lives in memory for this session only.</p>
+      <p class="sub">Each user runs with their own NVIDIA API keys. Provide one or both — we don't store them on disk, they live in memory for this session only.</p>
       <form id="loginForm" autocomplete="off">
         <label>Email
           <input id="loginEmail" type="email" required placeholder="you@nvidia.com" />
         </label>
-        <label>NVIDIA build API key
-          <input id="loginKey" type="password" required placeholder="nvapi-..." spellcheck="false" autocapitalize="off" autocorrect="off" />
+        <label>NVIDIA Build API key <span class="login-tag">open models · NIM</span>
+          <input id="loginKey" type="password" placeholder="nvapi-..." spellcheck="false" autocapitalize="off" autocorrect="off" />
+          <span class="login-fieldhint">Qwen, Llama, Nemotron, Kimi, Mistral, …</span>
+        </label>
+        <label>NVIDIA Inference Hub API key <span class="login-tag alt">proprietary · Gateway</span>
+          <input id="loginGatewayKey" type="password" placeholder="sk-..." spellcheck="false" autocapitalize="off" autocorrect="off" />
+          <span class="login-fieldhint">Claude, GPT, Gemini, … (aws/anthropic/*, openai/*, etc.)</span>
         </label>
         <button class="primary login-btn" id="loginBtn" type="submit">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14L21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
@@ -1740,7 +2085,7 @@ _HTML = r"""<!doctype html>
         </button>
         <p class="login-error" id="loginError"></p>
       </form>
-      <p class="login-help">Get a free key at <a href="https://build.nvidia.com/" target="_blank" rel="noopener noreferrer">build.nvidia.com</a>. Your activity is logged per-session under <code>website/sessions/</code>.</p>
+      <p class="login-help">Get a Build key at <a href="https://build.nvidia.com/" target="_blank" rel="noopener noreferrer">build.nvidia.com</a> · Inference Hub keys are issued internally. At least one key is required.</p>
     </div>
   </div>
 
@@ -1776,19 +2121,24 @@ _HTML = r"""<!doctype html>
         <div>
           <label for="model">LLM model</label>
           <select id="model">
-            <option value="qwen/qwen3-next-80b-a3b-instruct">Qwen3 80B MoE — current default</option>
-            <option value="moonshotai/kimi-k2.6">Kimi K2 — 1T MoE, best structured JSON on NIM</option>
-            <option value="nvidia/llama-3.3-nemotron-super-49b-v1">Nemotron Super 49B — best quality/speed balance</option>
-            <option value="nvidia/llama-3.3-nemotron-super-49b-v1.5">Nemotron Super 49B v1.5 — latest NVIDIA tuned</option>
-            <option value="meta/llama-3.3-70b-instruct">Llama 3.3 70B — reliable, fast, great JSON</option>
-            <option value="nvidia/llama-3.1-nemotron-70b-instruct">Nemotron 70B — NVIDIA-tuned, very fast</option>
-            <option value="meta/llama-3.1-70b-instruct">Llama 3.1 70B — solid fallback</option>
-            <option value="nvidia/llama-3.1-nemotron-51b-instruct">Nemotron 51B — fast mid-size</option>
-            <option value="mistralai/mistral-large-2-instruct">Mistral Large 2 — strong instruction following</option>
-            <option value="mistralai/mistral-large-3-675b-instruct-2512">Mistral Large 3 675B — maximum quality</option>
-            <option value="meta/llama-3.1-8b-instruct">Llama 3.1 8B — dev / quick iteration only</option>
+            <optgroup label="NVIDIA Inference Gateway (sk- key)">
+              <option value="aws/anthropic/claude-opus-4-5">Claude Opus 4.5 — top critic / reasoning quality</option>
+            </optgroup>
+            <optgroup label="NIM (nvapi- key)">
+              <option value="qwen/qwen3-next-80b-a3b-instruct">Qwen3 80B MoE — current default</option>
+              <option value="moonshotai/kimi-k2.6">Kimi K2 — 1T MoE, best structured JSON on NIM</option>
+              <option value="nvidia/llama-3.3-nemotron-super-49b-v1">Nemotron Super 49B — best quality/speed balance</option>
+              <option value="nvidia/llama-3.3-nemotron-super-49b-v1.5">Nemotron Super 49B v1.5 — latest NVIDIA tuned</option>
+              <option value="meta/llama-3.3-70b-instruct">Llama 3.3 70B — reliable, fast, great JSON</option>
+              <option value="nvidia/llama-3.1-nemotron-70b-instruct">Nemotron 70B — NVIDIA-tuned, very fast</option>
+              <option value="meta/llama-3.1-70b-instruct">Llama 3.1 70B — solid fallback</option>
+              <option value="nvidia/llama-3.1-nemotron-51b-instruct">Nemotron 51B — fast mid-size</option>
+              <option value="mistralai/mistral-large-2-instruct">Mistral Large 2 — strong instruction following</option>
+              <option value="mistralai/mistral-large-3-675b-instruct-2512">Mistral Large 3 675B — maximum quality</option>
+              <option value="meta/llama-3.1-8b-instruct">Llama 3.1 8B — dev / quick iteration only</option>
+            </optgroup>
           </select>
-          <p class="hint">Pick a NIM-hosted model. Click the dropdown to see all options.</p>
+          <p class="hint">Endpoint is auto-picked from your API-key prefix (sk- → Inference Gateway · nvapi- → NIM).</p>
         </div>
         <fieldset class="cluster-box">
           <legend>Cluster resources</legend>
@@ -1910,11 +2260,15 @@ _HTML = r"""<!doctype html>
     function hideLogin() {
       document.getElementById("loginOverlay").classList.add("hidden");
     }
-    async function tryLogin(email, apiKey) {
+    async function tryLogin(email, nimKey, gatewayKey) {
       const res = await fetch("/api/login", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({email, api_key: apiKey})
+        body: JSON.stringify({
+          email,
+          nim_api_key: nimKey || "",
+          gateway_api_key: gatewayKey || "",
+        })
       });
       const data = await res.json();
       if (data.status === "ok") {
@@ -2056,9 +2410,41 @@ _HTML = r"""<!doctype html>
       pendingFreeform = {};
       revealedFollowups = {};
       pickedOptions = {};
+      prepopulatePrefills(currentForm.questions || []);
       const hasQ = currentForm.questions && currentForm.questions.length;
       setDone(hasQ ? "Answer the questions below" : "Ready to build");
       renderSmartForm(currentForm);
+    }
+    function prepopulatePrefills(questions) {
+      // For every question that arrived with a non-null prefill, find the
+      // matching option and:
+      //   1. set pickedOptions so the render adds the .selected class
+      //   2. write pendingAnswers so 'Build' uses the prefill if the user
+      //      doesn't override
+      //   3. reveal follow-ups so e.g. the duration min/max questions
+      //      appear when q_duration_enable is prefilled to 'yes'
+      // Freeform options (custom Hz, custom seconds) are skipped because
+      // we have no typed value yet.
+      for (const q of (questions || [])) {
+        if (q.prefill !== null && q.prefill !== undefined) {
+          const target = JSON.stringify(q.prefill);
+          const match = (q.options || []).find(o => {
+            if (o.is_freeform) return false;
+            return JSON.stringify(o.value) === target;
+          });
+          if (match) {
+            pickedOptions[q.id] = match.id;
+            if (q.intent_path && !q.intent_path.startsWith("__")) {
+              pendingAnswers[q.intent_path] = match.value;
+            }
+            if (match.apply && typeof match.apply === "object") {
+              for (const p in match.apply) pendingAnswers[p] = match.apply[p];
+            }
+            revealedFollowups[q.id] = new Set(match.reveals || []);
+          }
+        }
+        prepopulatePrefills(q.follow_ups || []);
+      }
     }
     function renderSmartForm(form) {
       let html = "";
@@ -2595,7 +2981,7 @@ _HTML = r"""<!doctype html>
       const pathsHtml = `
         <div class="pipe-paths">
           <strong>Run artefacts</strong>: ${escapeHtml(paths.out_dir || "—")}<br/>
-          compiled.yaml · ir.validated.json · findings.json · dry_run.json · intent.json
+          compiled.yaml · ir.validated.json · findings.json · critic.json · dry_run.json · intent.json
         </div>`;
 
       const yamlEsc = escapeHtml(data.yaml || "");
@@ -2621,6 +3007,8 @@ _HTML = r"""<!doctype html>
           <h3>${ICONS.target} What we tuned for you</h3>
           ${hlHtml}
         </div>
+
+        ${criticPanelHtml(data)}
 
         ${pathsHtml}
 
@@ -2735,6 +3123,82 @@ _HTML = r"""<!doctype html>
       }
       return parts.join(" ");
     }
+    function criticPanelHtml(data) {
+      const c = data.critic || {};
+      const findings = Array.isArray(c.findings) ? c.findings : [];
+      const applied = Array.isArray(c.patches_applied) ? c.patches_applied : [];
+      const appliedCodes = new Set(applied.map(p => p.code).filter(Boolean));
+
+      if (findings.length === 0) {
+        return `
+          <div class="critic-panel empty">
+            <div class="critic-header">
+              <h3 class="critic-title">${ICONS.check} Plan critic</h3>
+              <span class="critic-badge">Looks good</span>
+            </div>
+            <p class="critic-empty">No issues found — sanity checks passed and the plan critic had no notes.</p>
+          </div>`;
+      }
+
+      const counts = { info: 0, warn: 0, error: 0 };
+      for (const f of findings) {
+        const s = (f.severity || "info").toLowerCase();
+        if (counts[s] != null) counts[s]++;
+      }
+      let badgeCls = "";
+      let badgeText = "";
+      if (counts.error) { badgeCls = "error"; badgeText = `${counts.error} error${counts.error > 1 ? "s" : ""}`; }
+      else if (counts.warn) { badgeCls = "warn"; badgeText = `${counts.warn} warning${counts.warn > 1 ? "s" : ""}`; }
+      else { badgeText = `${counts.info} note${counts.info > 1 ? "s" : ""}`; }
+
+      const adjustedHtml = c.re_planned
+        ? `<span class="critic-badge">Auto-fixed ${applied.length}</span>`
+        : "";
+
+      const items = findings.map(f => {
+        const sev = (f.severity || "info").toLowerCase();
+        const sevTag = sev[0].toUpperCase();
+        const isApplied = appliedCodes.has(f.code);
+        const isUserLocked = typeof f.code === "string" && f.code.endsWith("__user_locked");
+        let patchLine = "";
+        if (f.suggested_change && Object.keys(f.suggested_change).length) {
+          const parts = Object.entries(f.suggested_change)
+            .map(([k, v]) => `${k} = ${JSON.stringify(v)}`)
+            .join(", ");
+          const label = isApplied ? "Applied: " : "Suggested: ";
+          patchLine = `<div><span class="patch">${escapeHtml(label + parts)}</span></div>`;
+        } else if (isUserLocked) {
+          patchLine = `<div><span class="patch">Not applied — your form pick wins.</span></div>`;
+        }
+        let rationaleLine = "";
+        if (f.rationale) {
+          rationaleLine = `<div class="detail" style="opacity:0.8">${escapeHtml(f.rationale)}</div>`;
+        }
+        const sourceTag = f.source ? `<span class="code">[${escapeHtml(f.source)}]</span> ` : "";
+        return `
+          <div class="critic-item ${sev}${isApplied ? " applied" : ""}">
+            <span class="sev" title="${escapeHtml(sev)}">${sevTag}</span>
+            <div>
+              ${sourceTag}<span class="code">${escapeHtml(f.code || "")}</span>
+              <div class="detail">${escapeHtml(f.detail || "")}</div>
+              ${patchLine}
+              ${rationaleLine}
+            </div>
+          </div>`;
+      }).join("");
+
+      return `
+        <div class="critic-panel">
+          <div class="critic-header">
+            <h3 class="critic-title">${ICONS.target} Plan critic</h3>
+            <div>
+              ${adjustedHtml}
+              <span class="critic-badge ${badgeCls}">${badgeText}</span>
+            </div>
+          </div>
+          <div class="critic-list">${items}</div>
+        </div>`;
+    }
     function resetAll() {
       sessionId = null; currentForm = null;
       pendingAnswers = {}; pendingFreeform = {};
@@ -2760,15 +3224,20 @@ _HTML = r"""<!doctype html>
     /* ── login wiring ──────────────────────────────────────────── */
     document.getElementById("loginForm").addEventListener("submit", async (ev) => {
       ev.preventDefault();
-      const btn   = document.getElementById("loginBtn");
-      const email = document.getElementById("loginEmail").value.trim();
-      const key   = document.getElementById("loginKey").value.trim();
-      const err   = document.getElementById("loginError");
+      const btn        = document.getElementById("loginBtn");
+      const email      = document.getElementById("loginEmail").value.trim();
+      const nimKey     = document.getElementById("loginKey").value.trim();
+      const gatewayKey = document.getElementById("loginGatewayKey").value.trim();
+      const err        = document.getElementById("loginError");
       err.textContent = "";
-      if (!email || !key) { err.textContent = "Email and API key are required."; return; }
+      if (!email) { err.textContent = "Email is required."; return; }
+      if (!nimKey && !gatewayKey) {
+        err.textContent = "Enter at least one API key (Build or Inference Hub).";
+        return;
+      }
       btn.disabled = true; btn.textContent = "Signing in…";
       try {
-        await tryLogin(email, key);
+        await tryLogin(email, nimKey, gatewayKey);
       } catch (e) {
         err.textContent = e.message || "Sign-in failed";
       } finally {
