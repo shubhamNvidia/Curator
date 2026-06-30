@@ -200,9 +200,17 @@ class WhisperXVADStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         child[self.end_ms_key] = int(round(end * 1000))
         child[self.duration_key] = max(0.0, end - start)
         child[self.segment_num_key] = segment_num
+        # Resolve source provenance from the configured key, then fall back to the
+        # canonical ``audio_filepath`` (mirrors the composability fallback in
+        # ``process()``) before the legacy resampled path. This keeps fan-out
+        # children's ``original_file`` correct when audio came in under the
+        # canonical key rather than ``resampled_audio_filepath``.
         original_file = item.get(
             self.original_file_key,
-            item.get(self.audio_filepath_key, item.get("resampled_audio_filepath", "unknown")),
+            item.get(
+                self.audio_filepath_key,
+                item.get("audio_filepath", item.get("resampled_audio_filepath", "unknown")),
+            ),
         )
         child.setdefault(self.original_file_key, original_file)
         return child
