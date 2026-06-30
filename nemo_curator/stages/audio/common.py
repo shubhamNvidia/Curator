@@ -94,6 +94,7 @@ class PreserveByValueStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     """
 
     name: str = "PreserveByValueStage"
+    BATCH_ONLY = True  # process() raises; only process_batch is implemented (agent-discovery hint)
 
     def __init__(
         self,

@@ -51,6 +51,7 @@ class AudioToDocumentStage(AgentReady, ProcessingStage[AudioTask, DocumentBatch]
     """
 
     name = "AudioToDocumentStage"
+    BATCH_ONLY = True  # process() raises; only process_batch is implemented (agent-discovery hint)
     batch_size: int = 64
 
     def __init__(

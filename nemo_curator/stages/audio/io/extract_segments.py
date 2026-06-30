@@ -297,6 +297,7 @@ class SegmentExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     """
 
     name: str = "SegmentExtraction"
+    BATCH_ONLY = True  # process() raises; only process_batch is implemented (agent-discovery hint)
     output_dir: str = ""
     output_format: str = DEFAULT_OUTPUT_FORMAT
     output_key: str = "extracted_path"

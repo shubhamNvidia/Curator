@@ -44,6 +44,7 @@ class InferenceAsrNemoStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     """
 
     name: str = "ASR_inference"
+    BATCH_ONLY = True  # process() raises; only process_batch is implemented (agent-discovery hint)
     model_name: str = ""
     cache_dir: str | None = None
     asr_model: Any | None = field(default=None, repr=False)

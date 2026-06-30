@@ -60,6 +60,7 @@ class TorchSquimQualityMetricsStage(AgentReady, ProcessingStage[AudioTask, Audio
 
     # Stage metadata
     name: str = "TorchSquimQualityMetrics"
+    BATCH_ONLY = True  # process() raises; only process_batch is implemented (agent-discovery hint)
     resources: Resources = field(default_factory=lambda: Resources(gpus=1.0))
 
     model: Any = field(default=None, repr=False)
