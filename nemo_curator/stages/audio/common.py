@@ -25,6 +25,7 @@ from fsspec.core import url_to_fs
 from loguru import logger
 
 from nemo_curator.backends.base import NodeInfo, WorkerMetadata
+from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, SizeEnvelope, StageContract
 from nemo_curator.stages.base import CompositeStage, ProcessingStage
 from nemo_curator.stages.file_partitioning import FilePartitioningStage
 from nemo_curator.tasks import AudioTask, EmptyTask, FileGroupTask
@@ -41,7 +42,7 @@ def get_audio_duration(audio_filepath: str) -> float:
 
 
 @dataclass
-class GetAudioDurationStage(ProcessingStage[AudioTask, AudioTask]):
+class GetAudioDurationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     """Compute audio duration from the file at *audio_filepath_key* and
     store the result under *duration_key*.
 
@@ -65,6 +66,12 @@ class GetAudioDurationStage(ProcessingStage[AudioTask, AudioTask]):
     def outputs(self) -> tuple[list[str], list[str]]:
         return [], [self.duration_key]
 
+    def describe(self) -> StageContract:
+        return StageContract(
+            reads=IOSpec(data_keys=[self.audio_filepath_key], accepts=["file"]),
+            writes=IOSpec(data_keys=[self.duration_key]),
+        )
+
     def process(self, task: AudioTask) -> AudioTask:
         t0 = time.perf_counter()
         audio_filepath = task.data[self.audio_filepath_key]
@@ -74,7 +81,7 @@ class GetAudioDurationStage(ProcessingStage[AudioTask, AudioTask]):
         return task
 
 
-class PreserveByValueStage(ProcessingStage[AudioTask, AudioTask]):
+class PreserveByValueStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     """Filter entries by comparing *input_value_key* against *target_value*.
 
     Returns ``None`` from ``process()`` to drop entries that fail the
@@ -108,6 +115,13 @@ class PreserveByValueStage(ProcessingStage[AudioTask, AudioTask]):
     def outputs(self) -> tuple[list[str], list[str]]:
         return [], [self.input_value_key]
 
+    def describe(self) -> StageContract:
+        return StageContract(
+            reads=IOSpec(data_keys=[self.input_value_key]),
+            writes=IOSpec(data_keys=[self.input_value_key]),
+            cardinality="filter",
+        )
+
     def process(self, task: AudioTask) -> AudioTask | None:
         msg = "PreserveByValueStage only supports process_batch"
         raise NotImplementedError(msg)
@@ -133,7 +147,7 @@ class PreserveByValueStage(ProcessingStage[AudioTask, AudioTask]):
 
 
 @dataclass
-class ManifestReaderStage(ProcessingStage[FileGroupTask, AudioTask]):
+class ManifestReaderStage(AgentReady, ProcessingStage[FileGroupTask, AudioTask]):
     """Read JSONL manifest files from a FileGroupTask and emit one AudioTask per line.
 
     Uses line-by-line streaming via fsspec (no Pandas) to keep memory at ~1x file size.
@@ -177,9 +191,16 @@ class ManifestReaderStage(ProcessingStage[FileGroupTask, AudioTask]):
     def num_workers(self) -> int | None:
         return 1
 
+    def describe(self) -> StageContract:
+        return StageContract(
+            writes=IOSpec(data_keys=["audio_filepath"]),
+            cardinality="1:N fan-out",
+            gates=Gates(lifecycle_side_effects=True),
+        )
+
 
 @dataclass
-class ManifestReader(CompositeStage[EmptyTask, AudioTask]):
+class ManifestReader(AgentReady, CompositeStage[EmptyTask, AudioTask]):
     """Composite stage for reading JSONL manifests.
 
     Decomposes into:
@@ -227,9 +248,12 @@ class ManifestReader(CompositeStage[EmptyTask, AudioTask]):
             parts.append(f"with target blocksize {self.blocksize}")
         return ", ".join(parts)
 
+    def describe(self) -> StageContract:
+        return StageContract(cardinality="1:N fan-out", wrappable=False)
+
 
 @dataclass
-class ManifestWriterStage(ProcessingStage[AudioTask, AudioTask]):
+class ManifestWriterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     """Append a single AudioTask to a JSONL manifest file.
 
     The output file is truncated once in ``setup()`` (called on the driver)
@@ -289,6 +313,11 @@ class ManifestWriterStage(ProcessingStage[AudioTask, AudioTask]):
 
     def num_workers(self) -> int | None:
         return 1
+
+    def describe(self) -> StageContract:
+        return StageContract(
+            gates=Gates(writes_to_disk=True, lifecycle_side_effects=True),
+        )
 
 
 def load_audio_file(audio_path: str, mono: bool = True) -> tuple[torch.Tensor, int]:

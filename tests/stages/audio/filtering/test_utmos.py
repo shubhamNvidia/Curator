@@ -58,6 +58,17 @@ class TestUTMOSFilterStage:
         assert result == []
 
     @patch("nemo_curator.stages.audio.filtering.utmos.UTMOSFilterStage._ensure_model")
+    def test_annotate_keeps_below_threshold(self, mock_ensure: MagicMock) -> None:
+        stage = UTMOSFilterStage(mos_threshold=4.0, action="annotate")
+        stage._model = _mock_model(2.5)
+
+        result = stage.process(_make_task())
+
+        assert isinstance(result, AudioTask)
+        assert abs(result.data["utmos_mos"] - 2.5) < 1e-3
+        assert stage.describe().cardinality == "1:1"
+
+    @patch("nemo_curator.stages.audio.filtering.utmos.UTMOSFilterStage._ensure_model")
     def test_none_threshold_passes_all(self, mock_ensure: MagicMock) -> None:
         stage = UTMOSFilterStage(mos_threshold=None)
         stage._model = _mock_model(1.0)
@@ -147,3 +158,22 @@ class TestUTMOSFilterStage:
         result = stage.process(task)
 
         assert result == []
+
+    @patch("nemo_curator.stages.audio.filtering.utmos.UTMOSFilterStage._ensure_model")
+    def test_annotate_nested_keeps_all_segments(self, mock_ensure: MagicMock) -> None:
+        """Nested annotate mode scores every segment without threshold dropping."""
+        stage = UTMOSFilterStage(mos_threshold=4.0, action="annotate")
+        stage._model = _mock_model(2.0)
+
+        sr = 16000
+        segments = [{"waveform": torch.randn(1, sr), "sample_rate": sr, "segment_num": i} for i in range(3)]
+        task = AudioTask(
+            data={"segments": segments},
+            dataset_name="test",
+        )
+
+        result = stage.process(task)
+
+        assert isinstance(result, AudioTask)
+        assert len(result.data["segments"]) == 3
+        assert all(seg["utmos_mos"] == 2.0 for seg in result.data["segments"])

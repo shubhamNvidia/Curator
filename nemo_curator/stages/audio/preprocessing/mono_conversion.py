@@ -27,19 +27,23 @@ Example:
 """
 
 import os
+import tempfile
 from dataclasses import dataclass, field
 
+import soundfile as sf
 import torch
 from loguru import logger
 
-from nemo_curator.stages.audio.common import load_audio_file
+from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, StageContract
+from nemo_curator.stages.audio._residency import produce_audio_filepath, resolve_audio
+from nemo_curator.stages.audio.common import ensure_waveform_2d
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.stages.resources import Resources
 from nemo_curator.tasks import AudioTask
 
 
 @dataclass
-class MonoConversionStage(ProcessingStage[AudioTask, AudioTask]):
+class MonoConversionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     """
     Audio mono conversion and sample rate verification stage.
 
@@ -54,7 +58,19 @@ class MonoConversionStage(ProcessingStage[AudioTask, AudioTask]):
 
     output_sample_rate: int = 48000
     audio_filepath_key: str = "audio_filepath"
+    waveform_key: str = "waveform"
+    sample_rate_key: str = "sample_rate"
+    is_mono_key: str = "is_mono"
+    duration_key: str = "duration"
+    num_samples_key: str = "num_samples"
+    output_audio_filepath_key: str = "mono_audio_filepath"
+    original_audio_filepath_key: str = "original_audio_filepath"
     strict_sample_rate: bool = True
+    input_residency: str = "auto"
+    keep_waveform_in_task: bool = True
+    write_to_disk: bool = False
+    update_audio_filepath: bool = False
+    output_dir: str | None = None
 
     name: str = "MonoConversion"
     batch_size: int = 1
@@ -67,7 +83,52 @@ class MonoConversionStage(ProcessingStage[AudioTask, AudioTask]):
         return [], []
 
     def outputs(self) -> tuple[list[str], list[str]]:
-        return [], ["waveform", "sample_rate", "is_mono", "duration", "num_samples"]
+        outputs = [
+            self.waveform_key,
+            self.sample_rate_key,
+            self.is_mono_key,
+            self.duration_key,
+            self.num_samples_key,
+        ]
+        if self.write_to_disk:
+            outputs.append(self.output_audio_filepath_key)
+            if self.update_audio_filepath:
+                outputs.append(self.audio_filepath_key)
+        return [], outputs
+
+    def describe(self) -> StageContract:
+        produces = []
+        if self.keep_waveform_in_task:
+            produces.append("tensor")
+        if self.write_to_disk:
+            produces.append("disk")
+        writes = [
+            self.is_mono_key,
+            self.duration_key,
+            self.num_samples_key,
+        ]
+        if self.keep_waveform_in_task:
+            writes.extend([self.waveform_key, self.sample_rate_key])
+        if self.write_to_disk:
+            writes.append(self.output_audio_filepath_key)
+            if self.update_audio_filepath:
+                writes.append(self.audio_filepath_key)
+        return StageContract(
+            reads=IOSpec(data_keys=[self.audio_filepath_key], accepts=["file", "waveform"]),
+            writes=IOSpec(data_keys=writes, produces=produces),
+            gates=Gates(writes_to_disk=self.write_to_disk),
+        )
+
+    def _write_audio(self, waveform: torch.Tensor, sample_rate: int, task: AudioTask) -> str:
+        output_dir = self.output_dir or tempfile.gettempdir()
+        os.makedirs(output_dir, exist_ok=True)
+        stem = os.path.splitext(os.path.basename(str(task.data.get(self.audio_filepath_key, "audio"))))[0]
+        fd, path = tempfile.mkstemp(prefix=f"{stem}_mono_", suffix=".wav", dir=output_dir)
+        os.close(fd)
+        audio = waveform.detach().cpu()
+        arr = audio[0].numpy() if audio.shape[0] == 1 else audio.T.numpy()
+        sf.write(path, arr, sample_rate)
+        return path
 
     def process(self, task: AudioTask) -> AudioTask | list[AudioTask]:
         """
@@ -76,24 +137,32 @@ class MonoConversionStage(ProcessingStage[AudioTask, AudioTask]):
         Mutates task.data in-place with waveform data.
         Returns task if successful, [] if doesn't meet requirements.
         """
-        audio_filepath = task.data.get(self.audio_filepath_key)
-
-        if not audio_filepath or not os.path.exists(audio_filepath):
-            logger.error(f"Audio file not found: {audio_filepath}")
+        resolved = resolve_audio(
+            task.data,
+            residency=self.input_residency,  # type: ignore[arg-type]
+            audio_filepath_key=self.audio_filepath_key,
+            waveform_key=self.waveform_key,
+            sample_rate_key=self.sample_rate_key,
+            mono=False,
+        )
+        if resolved is None:
+            logger.error(f"Audio input not found for key {self.audio_filepath_key!r}")
             return []
 
         try:
-            waveform, sample_rate = load_audio_file(audio_filepath, mono=False)
+            waveform, sample_rate = resolved
+            waveform = ensure_waveform_2d(waveform)
 
             if sample_rate <= 0:
-                logger.error(f"Invalid sample rate ({sample_rate}) in {audio_filepath}")
+                logger.error(f"Invalid sample rate ({sample_rate}) in audio input")
                 return []
 
             num_channels = waveform.shape[0]
 
             if self.strict_sample_rate and sample_rate != self.output_sample_rate:
+                audio_source = task.data.get(self.audio_filepath_key, self.waveform_key)
                 logger.warning(
-                    f"Sample rate {sample_rate}Hz != expected {self.output_sample_rate}Hz: {audio_filepath}"
+                    f"Sample rate {sample_rate}Hz != expected {self.output_sample_rate}Hz: {audio_source}"
                 )
                 return []
 
@@ -103,14 +172,26 @@ class MonoConversionStage(ProcessingStage[AudioTask, AudioTask]):
             else:
                 mono_waveform = waveform
 
-            task.data["waveform"] = mono_waveform
-            task.data["sample_rate"] = sample_rate
-            task.data["is_mono"] = True
-            task.data["duration"] = mono_waveform.shape[1] / sample_rate
-            task.data["num_samples"] = mono_waveform.shape[1]
+            if self.keep_waveform_in_task:
+                task.data[self.waveform_key] = mono_waveform
+                task.data[self.sample_rate_key] = sample_rate
+            task.data[self.is_mono_key] = True
+            task.data[self.duration_key] = mono_waveform.shape[1] / sample_rate
+            task.data[self.num_samples_key] = mono_waveform.shape[1]
+
+            if self.write_to_disk:
+                path = self._write_audio(mono_waveform, sample_rate, task)
+                task.data[self.output_audio_filepath_key] = path
+                if self.update_audio_filepath:
+                    produce_audio_filepath(
+                        task.data,
+                        path,
+                        key=self.audio_filepath_key,
+                        original_key=self.original_audio_filepath_key,
+                    )
 
         except (OSError, RuntimeError) as e:
-            logger.error(f"Error processing {audio_filepath}: {e}")
+            logger.error(f"Error processing audio input: {e}")
             return []
         else:
             return task

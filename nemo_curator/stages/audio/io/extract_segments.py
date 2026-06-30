@@ -66,6 +66,7 @@ if TYPE_CHECKING:
 
     import numpy as np
 
+from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, StageContract
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.stages.resources import Resources
 from nemo_curator.tasks import AudioTask
@@ -274,7 +275,7 @@ def _write_metadata_csv(output_dir: str, metadata_rows: list[dict]) -> str:
 
 
 @dataclass
-class SegmentExtractionStage(ProcessingStage[AudioTask, AudioTask]):
+class SegmentExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     """Extract audio segments from original files based on manifest entries.
 
     Receives ``AudioTask`` objects whose ``data`` dicts are manifest
@@ -298,6 +299,7 @@ class SegmentExtractionStage(ProcessingStage[AudioTask, AudioTask]):
     name: str = "SegmentExtraction"
     output_dir: str = ""
     output_format: str = DEFAULT_OUTPUT_FORMAT
+    output_key: str = "extracted_path"
     batch_size: int = 64
     resources: Resources = field(default_factory=lambda: Resources(cpus=1.0))
 
@@ -317,7 +319,17 @@ class SegmentExtractionStage(ProcessingStage[AudioTask, AudioTask]):
         return [], ["original_file"]
 
     def outputs(self) -> tuple[list[str], list[str]]:
-        return [], ["extracted_path"]
+        return [], [self.output_key]
+
+    def describe(self) -> StageContract:
+        return StageContract(
+            reads_one_of=[
+                IOSpec(data_keys=["original_file", "original_start_ms", "original_end_ms"], accepts=["file"]),
+                IOSpec(data_keys=["original_file", "diar_segments", "speaker_id"], accepts=["file"]),
+            ],
+            writes=IOSpec(data_keys=[self.output_key], produces=["disk"]),
+            gates=Gates(writes_to_disk=True),
+        )
 
     def num_workers(self) -> int | None:
         return 1
@@ -453,6 +465,7 @@ class SegmentExtractionStage(ProcessingStage[AudioTask, AudioTask]):
                     try:
                         audio = _read_segment(original_file, start_ms, end_ms, info.samplerate)
                         sf.write(output_path, audio, info.samplerate, subtype=SOUNDFILE_FORMATS[self.output_format])
+                        entry[self.output_key] = output_path
                         extracted += 1
                         total_dur += dur
 
