@@ -357,6 +357,13 @@ def resolve_waveform_from_item(
     item['audio_filepath'], resolves missing sample_rate from file header.
     Updates item in-place when loading from file.
     Returns None if resolution fails.
+
+    .. note::
+       The canonical resolver is :func:`nemo_curator.stages.audio._residency.resolve_audio`.
+       This helper is retained for its unique behavior — reading ``sample_rate`` from the
+       file header *without* reloading an already-present waveform, and writing the loaded
+       waveform/sample_rate back into ``item`` — which ``resolve_audio`` does not replicate.
+       Prefer ``resolve_audio`` in new code.
     """
     waveform = item.get("waveform")
     sample_rate = item.get("sample_rate")
