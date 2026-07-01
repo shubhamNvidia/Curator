@@ -191,12 +191,49 @@ class TimestampMapperStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         item = task.data
 
         if mappings:
-            # Combo-4: when diarization segments (concat-time) accompany concat
-            # mappings (e.g. VAD -> Concat -> SpeakerSep -> VAD -> TimestampMapper),
-            # compose each diar segment through the mappings instead of treating
-            # start_ms/end_ms as concat-time.
-            diar_segments = item.get(self.diar_segments_key)
-            if diar_segments:
+            # Priority: a refined per-segment range (start_ms/end_ms — e.g. from a
+            # VAD pass after speaker separation) is the most precise timing, so map
+            # it through the concat->original mappings FIRST. Only when it is absent
+            # do we fall back to composing coarser diar segments (concat-time)
+            # through the mappings (e.g. SpeakerSep with no trailing VAD).
+            #
+            # NOTE (known limitation, tracked separately): start_ms/end_ms are
+            # 0-based within each *extracted* speaker clip, so for multi-speaker
+            # inputs this drops the speaker's offset into the concatenated timeline.
+            # A fully-correct fix needs SpeakerSeparation to emit a clip->concat
+            # mapping that is then composed here.
+            start_ms = item.get(self.start_ms_key)
+            end_ms = item.get(self.end_ms_key)
+            if start_ms is not None and end_ms is not None:
+                if end_ms <= start_ms:
+                    logger.warning(
+                        f"[TimestampMapper] Skipping task with invalid range: start_ms={start_ms}, end_ms={end_ms}"
+                    )
+                    return []
+                original_ranges = _translate_to_original(mappings, start_ms, end_ms)
+                if len(original_ranges) > 1:
+                    logger.debug(
+                        f"[TimestampMapper] Rejecting segment "
+                        f"[{start_ms}-{end_ms}ms] that spans "
+                        f"{len(original_ranges)} concat mappings"
+                    )
+                    return []
+                if len(original_ranges) == 1:
+                    result = self._build_output_item(item, original_ranges[0])
+                else:
+                    logger.warning(
+                        f"[TimestampMapper] No overlapping mappings for task {task.task_id} "
+                        f"[{start_ms}-{end_ms}ms], dropping"
+                    )
+                    return []
+            else:
+                diar_segments = item.get(self.diar_segments_key)
+                if not diar_segments:
+                    logger.warning(
+                        f"[TimestampMapper] Task {task.task_id} has mappings but no start_ms/end_ms "
+                        f"or diar_segments to resolve against, dropping"
+                    )
+                    return []
                 result = self._build_output_from_diar_and_mappings(item, diar_segments, mappings)
                 if result is None:
                     logger.warning(
@@ -204,35 +241,6 @@ class TimestampMapperStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                         f"{task.task_id}, dropping"
                     )
                     return []
-                task.data.clear()
-                task.data.update(result)
-                return task
-
-            concat_start = item.get(self.start_ms_key, 0)
-            concat_end = item.get(self.end_ms_key, 0)
-            if concat_end <= concat_start:
-                logger.warning(
-                    f"[TimestampMapper] Skipping task with invalid range: start_ms={concat_start}, end_ms={concat_end}"
-                )
-                return []
-            original_ranges = _translate_to_original(mappings, concat_start, concat_end)
-
-            if len(original_ranges) > 1:
-                logger.debug(
-                    f"[TimestampMapper] Rejecting segment "
-                    f"[{concat_start}-{concat_end}ms] that spans "
-                    f"{len(original_ranges)} concat mappings"
-                )
-                return []
-
-            if len(original_ranges) == 1:
-                result = self._build_output_item(item, original_ranges[0])
-            else:
-                logger.warning(
-                    f"[TimestampMapper] No overlapping mappings for task {task.task_id} "
-                    f"[{concat_start}-{concat_end}ms], dropping"
-                )
-                return []
         else:
             result = self._build_output_item_no_mapping(item)
 
