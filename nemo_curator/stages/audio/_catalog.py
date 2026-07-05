@@ -30,10 +30,12 @@ import importlib
 import json
 import pkgutil
 import warnings
+from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
 from nemo_curator.stages.audio._agent_ready import AgentReady
 from nemo_curator.stages.audio._agent_registry import build_contract, static_contract
+from nemo_curator.stages.audio._conformance import produced_roles
 
 if TYPE_CHECKING:
     from nemo_curator.stages.audio._agent_ready import StageContract
@@ -125,3 +127,104 @@ def audio_stage_catalog(*, include_dynamic_defaults: bool = False) -> list[dict[
 def catalog_as_json(*, include_dynamic_defaults: bool = False, indent: int | None = None) -> str:
     """JSON-serialized :func:`audio_stage_catalog` (an agent/UI tool schema)."""
     return json.dumps(audio_stage_catalog(include_dynamic_defaults=include_dynamic_defaults), indent=indent)
+
+
+# --------------------------------------------------------------------------- #
+# Role -> producer/consumer index (composition + repair)
+# --------------------------------------------------------------------------- #
+def _consumed_roles(contract: StageContract) -> set[str]:
+    """Semantic roles a stage requires (primary reads + every reads_one_of option)."""
+    roles = {contract.key_roles.get(k, "unknown") for k in [*contract.reads.data_keys, *contract.reads.segment_data_keys]}
+    for opt in contract.reads_one_of:
+        roles |= {contract.key_roles.get(k, "unknown") for k in [*opt.data_keys, *opt.segment_data_keys]}
+    return roles - {"unknown"}
+
+
+def _dummy_for_param(type_str: str | None) -> Any:
+    """A harmless placeholder for a required constructor arg, so ``describe()`` can
+    run for a required-arg stage. ``*_key`` fields have defaults (never required),
+    so these dummies only fill non-semantic args (paths, model names) and never
+    perturb the resolved key roles."""
+    t = (type_str or "").lower()
+    if "bool" in t:
+        return False
+    if "int" in t:
+        return 0
+    if "float" in t:
+        return 0.0
+    if t.startswith("list"):
+        return []
+    if t.startswith("dict"):
+        return {}
+    return "x"  # str / path / model-name / anything else
+
+
+def _default_contract(cls: type) -> StageContract | None:
+    """Best-effort dynamic contract. Tries progressively: a no-arg instance, then
+    a probe filling required args with harmless dummies, then also filling
+    ``None``-default args (to satisfy "one-of" ``__post_init__`` guards, e.g. ASR
+    needs ``model_name`` OR ``asr_model``). Only ``describe()`` is called, and
+    ``*_key`` fields keep their real defaults, so produced/consumed roles stay
+    correct. ``None`` only if every probe fails (e.g. needs a live model object)."""
+    try:
+        return build_contract(cls())
+    except Exception:  # noqa: BLE001 - fall through to dummy-filled probes
+        pass
+    from nemo_curator.stages.audio._agent_registry import stage_params
+
+    params = stage_params(cls)
+    for also_fill_none in (False, True):
+        kwargs = {
+            p.name: _dummy_for_param(p.type)
+            for p in params
+            if p.required or (also_fill_none and p.default is None)
+        }
+        if not kwargs:
+            continue
+        try:
+            return build_contract(cls(**kwargs))
+        except Exception:  # noqa: BLE001 - try the next, broader probe
+            continue
+    return None
+
+
+def role_index() -> dict[str, Any]:
+    """Map each semantic role to the stages that produce/consume it.
+
+    Returns ``{"producers": {role: [stage, ...]}, "consumers": {...},
+    "unresolved_stages": [...]}``. Built from each stage's *default* (no-arg)
+    dynamic contract; stages needing required constructor args can't be
+    introspected without config and are listed under ``unresolved_stages``.
+
+    This is what turns an ``unsatisfied_reads`` validation error into an
+    actionable repair ("insert a stage that produces role X") and lets an agent
+    detect an *unproducible* role (``find_producers`` returns ``[]``).
+    """
+    producers: dict[str, set[str]] = defaultdict(set)
+    consumers: dict[str, set[str]] = defaultdict(set)
+    unresolved: list[str] = []
+    for name in list_agent_ready_stages():
+        contract = _default_contract(get_agent_ready_stage_class(name))
+        if contract is None:
+            unresolved.append(name)
+            continue
+        for role in produced_roles(contract):
+            producers[role].add(name)
+        for role in _consumed_roles(contract):
+            consumers[role].add(name)
+    return {
+        "producers": {r: sorted(v) for r, v in sorted(producers.items())},
+        "consumers": {r: sorted(v) for r, v in sorted(consumers.items())},
+        "unresolved_stages": sorted(unresolved),
+    }
+
+
+def find_producers(role: str) -> list[str]:
+    """Stages that produce ``role``. An empty list means no stage produces it
+    (the role is *unproducible* — an agent should not try to satisfy it)."""
+    return role_index()["producers"].get(role, [])
+
+
+def find_consumers(role: str) -> list[str]:
+    """Stages that consume ``role``."""
+    return role_index()["consumers"].get(role, [])
