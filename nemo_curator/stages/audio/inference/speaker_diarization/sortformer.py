@@ -267,6 +267,7 @@ class InferenceSortformerStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
         segment: dict[str, Any],
         segment_num: int,
         file_path: str,
+        file_path_is_temp: bool = False,
     ) -> dict[str, Any]:
         child = {k: v for k, v in item.items() if k != self.diar_segments_key}
         child.update({k: v for k, v in segment.items() if k not in {"start", "end", "speaker"}})
@@ -280,9 +281,20 @@ class InferenceSortformerStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
         child[self.segment_num_key] = segment_num
         if "speaker" in segment:
             child[self.speaker_key] = segment["speaker"]
-        child.setdefault(self.filepath_key, file_path)
-        original_file = item.get(self.original_file_key, item.get(self.filepath_key, file_path))
-        child.setdefault(self.original_file_key, original_file)
+        # Never pin a fan-out child to a materialized temp WAV: process()'s
+        # `finally` deletes it, which would leave every child referencing a
+        # missing file. Only carry a real (non-temp) source path forward; when
+        # only an in-memory waveform exists, children rely on the copied waveform.
+        if not file_path_is_temp:
+            child.setdefault(self.filepath_key, file_path)
+        original_file = (
+            item.get(self.original_file_key)
+            or item.get(self.filepath_key)
+            or item.get("audio_filepath")
+            or (None if file_path_is_temp else file_path)
+        )
+        if original_file is not None:
+            child.setdefault(self.original_file_key, original_file)
         return child
 
     def _fanout_segments(
@@ -290,12 +302,13 @@ class InferenceSortformerStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
         task: AudioTask,
         segments: list[dict[str, Any]],
         file_path: str,
+        file_path_is_temp: bool = False,
     ) -> list[AudioTask]:
         return [
             AudioTask(
                 dataset_name=task.dataset_name,
                 filepath_key=task.filepath_key or self.filepath_key,
-                data=self._segment_child_data(task.data, segment, index, file_path),
+                data=self._segment_child_data(task.data, segment, index, file_path, file_path_is_temp),
                 _metadata=dict(task._metadata or {}),
                 _stage_perf=list(task._stage_perf),
             )
@@ -346,7 +359,7 @@ class InferenceSortformerStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
                 _write_rttm(segments, resolved_sess_name, self.rttm_out_dir)
 
             if self.fanout:
-                return self._fanout_segments(task, segments, file_path)
+                return self._fanout_segments(task, segments, file_path, file_path in temp_paths)
 
             output_data = dict(task.data)
             output_data[self.diar_segments_key] = segments

@@ -216,7 +216,18 @@ class SpeakerSeparationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 logger.debug(f"Skipping {speaker_id}: duration {result.duration:.2f}s < {self.min_duration}s")
                 continue
             spk_waveform, spk_sr = _pydub_to_waveform_sr(result.audio)
-            drop_keys = {*self._INHERITED_DROP_KEYS, self.waveform_key, self.duration_key}
+            # Drop the parent's file path(s) too: they point at the FULL
+            # multi-speaker file, so a file-preferring downstream stage would
+            # process the whole file per speaker instead of this speaker's
+            # extracted waveform. With the path gone, downstream resolves the
+            # per-speaker waveform (input_residency="auto") instead.
+            drop_keys = {
+                *self._INHERITED_DROP_KEYS,
+                self.waveform_key,
+                self.duration_key,
+                self.audio_filepath_key,
+                "audio_filepath",
+            }
             speaker_data = {
                 **{k: v for k, v in item.items() if k not in drop_keys},
                 self.waveform_key: spk_waveform,
