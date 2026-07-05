@@ -165,6 +165,7 @@ def validate_pipeline(
     """
     available: set[str] = set(initial_roles) if initial_roles is not None else set(_DEFAULT_INITIAL_ROLES)
     available_keys: set[str] = set(initial_keys) if initial_keys is not None else set(_DEFAULT_INITIAL_KEYS)
+    tensor_resident = False  # an upstream stage left a non-serializable tensor in task.data
     issues: list[PipelineIssue] = []
 
     for index, stage in enumerate(stages):
@@ -226,8 +227,25 @@ def validate_pipeline(
                 )
             )
 
+        # Serializability: a resident tensor (e.g. a waveform) reaching a
+        # serialize-as-is sink (raw json.dumps) crashes at runtime. Warn before
+        # the sink; a sanitizing stage (AudioToDocumentStage) clears the flag.
+        if contract.gates.requires_serializable_input and tensor_resident:
+            issues.append(
+                PipelineIssue(
+                    index, name, "warning", "tensor_into_sink",
+                    "a resident tensor/audio blob from an upstream stage reaches this "
+                    "serialize-as-JSON sink; route through AudioToDocumentStage first "
+                    "(or drop the tensor) or it will fail at json.dumps",
+                )
+            )
+
         available |= produced_roles(contract)
         available_keys |= _write_key_values(contract)
+        if "tensor" in contract.writes.produces:
+            tensor_resident = True
+        if contract.gates.sanitizes_output:
+            tensor_resident = False
 
     return PipelineReport(issues=issues, produced_roles=available, produced_keys=available_keys)
 

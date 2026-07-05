@@ -317,7 +317,14 @@ class ManifestWriterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
 
     def describe(self) -> StageContract:
         return StageContract(
-            gates=Gates(writes_to_disk=True, lifecycle_side_effects=True),
+            gates=Gates(
+                writes_to_disk=True,
+                lifecycle_side_effects=True,
+                # Serializes task.data as-is via json.dumps; a resident tensor
+                # (e.g. a waveform) will crash it. Route through
+                # AudioToDocumentStage (which sanitizes) if one may be present.
+                requires_serializable_input=True,
+            ),
         )
 
 

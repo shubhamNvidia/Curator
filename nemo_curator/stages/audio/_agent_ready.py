@@ -110,6 +110,13 @@ class Gates:
     requires_ffmpeg: bool = False
     lifecycle_side_effects: bool = False
     runtime_secrets: list[str] = field(default_factory=list)
+    # Serializability contract for sinks (distinguishes the two JSON sinks):
+    #   requires_serializable_input — this stage serializes task.data as-is (e.g.
+    #     raw json.dumps) and will fail on a resident tensor/audio blob.
+    #   sanitizes_output — this stage strips tensors/audio blobs, so anything
+    #     downstream of it is serialization-safe.
+    requires_serializable_input: bool = False
+    sanitizes_output: bool = False
 
 
 @dataclass(frozen=True)

@@ -15,7 +15,7 @@
 import pandas as pd
 from loguru import logger
 
-from nemo_curator.stages.audio._agent_ready import AgentReady, IOSpec, StageContract
+from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, StageContract
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.tasks import AudioTask, DocumentBatch
 
@@ -77,6 +77,11 @@ class AudioToDocumentStage(AgentReady, ProcessingStage[AudioTask, DocumentBatch]
             reads=IOSpec(data_keys=[]),
             writes=IOSpec(data_keys=[]),
             cardinality="N:1",
+            # Strips tensors/audio blobs while building the DataFrame, so its
+            # output is serialization-safe — the sanctioned sink to place before
+            # a JSON writer when a resident tensor may be present.
+            gates=Gates(sanitizes_output=True),
+            description="Aggregate AudioTasks into a DocumentBatch, stripping tensors/audio blobs (JSON/disk-safe).",
         )
 
     def _sanitize_nested(self, value: object) -> object:
