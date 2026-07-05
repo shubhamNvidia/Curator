@@ -20,9 +20,20 @@ by semantic *role*, not key string) must be produced by an upstream stage or be
 present in the initial task. It also surfaces resource-gate problems (GPU needed
 but none available) and composite stages that must be decomposed first.
 
-This is the safety net that turns per-stage contracts into a pipeline an agent
-can trust: it catches "stage B reads a waveform nobody produced" *before* the
-pipeline runs. It is advisory and read-only — it never executes a stage.
+Two levels of confidence, deliberately separated:
+
+* ``report.ok`` certifies a *role-level necessary condition* — every required
+  input role is available. This is rename-tolerant by design and is the gate.
+* ``report.keys_ok`` adds the stronger *literal-key-identity* check: each
+  role-satisfied read's actual key *value* is produced upstream (or seeded). A
+  ``True`` ``ok`` with ``False`` ``keys_ok`` means the roles line up but a
+  producer key was renamed away from what the consumer reads — the pipeline
+  would validate yet yield zero rows at runtime. It is surfaced as a WARNING
+  (not an error) so that legitimate reads of source-manifest columns are not
+  false-rejected.
+
+This is advisory and read-only — it never executes a stage. ``ok`` is a
+necessary, not sufficient, condition for a pipeline to run.
 """
 
 from __future__ import annotations
@@ -40,6 +51,8 @@ Severity = Literal["error", "warning"]
 
 # Roles a typical audio task carries at the start (a manifest row with a file path).
 _DEFAULT_INITIAL_ROLES: frozenset[str] = frozenset({"audio_filepath"})
+# Key VALUES a typical audio task carries at the start (the conventional path key).
+_DEFAULT_INITIAL_KEYS: frozenset[str] = frozenset({"audio_filepath"})
 
 
 @dataclass(frozen=True)
@@ -59,11 +72,24 @@ class PipelineReport:
 
     issues: list[PipelineIssue] = field(default_factory=list)
     produced_roles: set[str] = field(default_factory=set)  # roles available after the last stage
+    produced_keys: set[str] = field(default_factory=set)  # key VALUES available after the last stage
 
     @property
     def ok(self) -> bool:
-        """True when there are no error-severity issues."""
+        """True when there are no error-severity issues (role-level composability).
+
+        This is a *necessary* condition, not a guarantee the pipeline runs — see
+        :attr:`keys_ok` for the stronger literal-key check.
+        """
         return not any(i.severity == "error" for i in self.issues)
+
+    @property
+    def keys_ok(self) -> bool:
+        """True when no ``dangling_key`` warnings — every role-satisfied read's
+        actual key *value* is produced upstream or seeded. ``ok and keys_ok`` is
+        the strong signal that the pipeline will actually flow data end-to-end.
+        """
+        return not any(i.code == "dangling_key" for i in self.issues)
 
     @property
     def errors(self) -> list[PipelineIssue]:
@@ -87,10 +113,34 @@ def _required_roles(contract: StageContract) -> set[str]:
     return {contract.key_roles.get(k, "unknown") for k in keys}
 
 
+def _write_key_values(contract: StageContract) -> set[str]:
+    """The literal key VALUES a stage writes (top-level + segment-level)."""
+    return {*contract.writes.data_keys, *contract.writes.segment_data_keys}
+
+
+def _dangling_read_keys(contract: StageContract, available_keys: set[str]) -> set[str]:
+    """Primary-read key VALUES whose role is known but whose exact value was not
+    produced upstream nor seeded — the renamed-producer dangle the role check misses.
+
+    Scoped to primary ``reads`` (not ``reads_one_of`` alternatives) and to
+    role-bearing keys (``unknown``/internal bookkeeping keys are excluded — a
+    separate value-identity check for those is tracked in the backlog).
+    """
+    dangling: set[str] = set()
+    for k in [*contract.reads.data_keys, *contract.reads.segment_data_keys]:
+        role = contract.key_roles.get(k, "unknown")
+        if role == "unknown":
+            continue
+        if k not in available_keys:
+            dangling.add(k)
+    return dangling
+
+
 def validate_pipeline(
     stages: list[Any],  # noqa: ANN401
     *,
     initial_roles: set[str] | None = None,
+    initial_keys: set[str] | None = None,
     available_gpus: float | None = None,
 ) -> PipelineReport:
     """Validate that an ordered list of configured stages composes.
@@ -100,13 +150,21 @@ def validate_pipeline(
         initial_roles: Semantic roles present in the input task. Defaults to
             ``{"audio_filepath"}`` (a manifest row). Pass an explicit set when the
             first stage is a source/reader or the input already carries waveforms.
+        initial_keys: Literal key VALUES present in the input task (e.g. the
+            columns of the source manifest: ``{"audio_filepath", "text"}``).
+            Defaults to ``{"audio_filepath"}``. Seeding this lets the
+            literal-key check (``keys_ok``) recognize reads satisfied by the
+            input rather than by an upstream producer.
         available_gpus: If given, stages whose contract declares ``requires_gpu``
             while this is ``<= 0`` raise a warning.
 
     Returns:
-        A :class:`PipelineReport`. ``report.ok`` is True when no errors were found.
+        A :class:`PipelineReport`. ``report.ok`` is True when no errors were
+        found (role-level); ``report.keys_ok`` additionally confirms literal-key
+        identity (see the class docstring).
     """
     available: set[str] = set(initial_roles) if initial_roles is not None else set(_DEFAULT_INITIAL_ROLES)
+    available_keys: set[str] = set(initial_keys) if initial_keys is not None else set(_DEFAULT_INITIAL_KEYS)
     issues: list[PipelineIssue] = []
 
     for index, stage in enumerate(stages):
@@ -143,6 +201,22 @@ def validate_pipeline(
                     f"not produced upstream; available so far: {sorted(available)}{alt}",
                 )
             )
+        else:
+            # Role-satisfied: check literal-key identity. A read whose role is
+            # available but whose exact key VALUE was not produced/seeded means a
+            # producer key was renamed away from what this stage reads -> the
+            # pipeline validates by role but yields no rows at runtime. WARNING
+            # (not error) so source-manifest reads aren't false-rejected.
+            dangling = _dangling_read_keys(contract, available_keys)
+            if dangling:
+                issues.append(
+                    PipelineIssue(
+                        index, name, "warning", "dangling_key",
+                        f"reads key(s) {sorted(dangling)} satisfied by role but not produced "
+                        f"upstream under that key value nor seeded (renamed producer key?); "
+                        f"available keys: {sorted(available_keys)}",
+                    )
+                )
 
         if available_gpus is not None and contract.gates.requires_gpu and available_gpus <= 0:
             issues.append(
@@ -153,8 +227,9 @@ def validate_pipeline(
             )
 
         available |= produced_roles(contract)
+        available_keys |= _write_key_values(contract)
 
-    return PipelineReport(issues=issues, produced_roles=available)
+    return PipelineReport(issues=issues, produced_roles=available, produced_keys=available_keys)
 
 
 def _roles_of(spec: Any, contract: StageContract) -> set[str]:  # noqa: ANN401
