@@ -77,6 +77,20 @@ class VADSegmentationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         speech_pad_ms: Padding in ms to add before/after speech segments.
         waveform_key: Key to get waveform data.
         sample_rate_key: Key to get sample rate.
+        audio_filepath_key: Key in data dict for the input audio file path.
+        segments_key: Key where the nested segments list is written (nested=True).
+        start_ms_key: Key where each segment's start time in milliseconds is written.
+        end_ms_key: Key where each segment's end time in milliseconds is written.
+        segment_num_key: Key where each segment's index is written.
+        duration_key: Key where each segment's duration in seconds is written.
+        original_file_key: Key carrying the source file path for provenance.
+        nested: If True, return one task with all segment dicts under segments_key
+            instead of fanning out one task per segment (default False).
+        input_residency: Which input to use — "waveform" (in-memory only), "file"
+            (audio_filepath only), or "auto" (waveform first, file fallback; default).
+        keep_segment_waveform_in_task: If True (default), store each segment's waveform
+            in the segment item. If False, nested segments are metadata-only — waveform
+            consumers such as SegmentConcatenation will skip them.
 
     Note:
         Default resources: cpus=1.0, gpus=0.0 (CPU). Silero VAD is lightweight.
@@ -109,6 +123,12 @@ class VADSegmentationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         super().__init__()
         self._vad_model = None
         self._device = None
+        if self.nested and not self.keep_segment_waveform_in_task:
+            logger.warning(
+                "[VADSegmentation] nested=True with keep_segment_waveform_in_task=False: "
+                "segments will carry no audio — SegmentConcatenation (and any waveform "
+                "consumer) will silently drop every segment. Metadata-only use intended?"
+            )
 
     def inputs(self) -> tuple[list[str], list[str]]:
         return [], []
@@ -119,6 +139,7 @@ class VADSegmentationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         outputs = [self.sample_rate_key, self.start_ms_key, self.end_ms_key, self.segment_num_key, self.duration_key]
         if self.keep_segment_waveform_in_task:
             outputs.append(self.waveform_key)
+        outputs.append(self.original_file_key)
         return [], outputs
 
     def describe(self) -> StageContract:
@@ -128,6 +149,7 @@ class VADSegmentationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             self.end_ms_key,
             self.segment_num_key,
             self.duration_key,
+            self.original_file_key,  # _build_segment_item always writes it
         ]
         produces = []
         if self.keep_segment_waveform_in_task:
@@ -257,7 +279,7 @@ class VADSegmentationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             logger.error("Missing waveform/sample_rate and no valid audio path provided")
         return resolved
 
-    def process(self, task: AudioTask) -> AudioTask | list[AudioTask]:
+    def process(self, task: AudioTask) -> AudioTask | list[AudioTask]:  # noqa: PLR0911 (complexity accepted: one early return per input/error condition)
         """
         Process a single AudioTask.
 
@@ -271,7 +293,11 @@ class VADSegmentationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             msg = "VAD model failed to initialize. Cannot process audio."
             raise RuntimeError(msg)
 
-        audio_result = self._resolve_audio(task.data)
+        try:
+            audio_result = self._resolve_audio(task.data)
+        except (OSError, RuntimeError) as e:  # corrupt/unreadable audio -> skip the row, don't crash the batch
+            logger.error(f"Failed to load audio for {task.data.get(self.audio_filepath_key)!r}: {e}")
+            return []
         if audio_result is None:
             return []
         waveform, sample_rate = audio_result

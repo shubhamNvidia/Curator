@@ -26,7 +26,7 @@ from nemo_curator.stages.audio.common import ensure_waveform_2d, load_audio_file
 InputResidency = Literal["file", "waveform", "auto"]
 
 
-def resolve_audio(
+def resolve_audio(  # noqa: PLR0913 (complexity accepted: keyword-only residency/key knobs mirror the stage fields)
     item: dict[str, Any],
     *,
     residency: InputResidency = "auto",
@@ -63,7 +63,7 @@ def _as_soundfile_array(waveform: Any) -> Any:  # noqa: ANN401
         waveform = waveform.cpu()
     if hasattr(waveform, "numpy"):
         waveform = waveform.numpy()
-    if getattr(waveform, "ndim", 0) == 2:
+    if getattr(waveform, "ndim", 0) == 2:  # noqa: PLR2004 - 2 == a (channels, samples) 2-D array
         channels, samples = waveform.shape
         if channels == 1:
             return waveform[0]
@@ -72,7 +72,7 @@ def _as_soundfile_array(waveform: Any) -> Any:  # noqa: ANN401
     return waveform
 
 
-def resolve_audio_path(
+def resolve_audio_path(  # noqa: PLR0913 (complexity accepted: keyword-only residency/key knobs mirror the stage fields)
     item: dict[str, Any],
     *,
     residency: InputResidency = "auto",
@@ -90,8 +90,21 @@ def resolve_audio_path(
     ``register_temp`` the caller is responsible for cleanup itself.
     """
     path = item.get(audio_filepath_key)
-    if residency != "waveform" and path and os.path.exists(path):
-        return path
+    if residency != "waveform" and path:
+        if os.path.exists(path):
+            return path
+        # Protocol-prefixed paths (file://, http(s)://, s3://, ...) were handled
+        # by the stages' own fsspec machinery before the residency layer existed;
+        # keep accepting them when the target exists remotely.
+        if "://" in str(path):
+            try:
+                from fsspec.core import url_to_fs
+
+                fs, fspath = url_to_fs(str(path))
+                if fs.exists(fspath):
+                    return path
+            except Exception:  # noqa: BLE001, S110 - unknown protocol/creds -> deliberate fall-through
+                pass
 
     if residency == "file":
         return None

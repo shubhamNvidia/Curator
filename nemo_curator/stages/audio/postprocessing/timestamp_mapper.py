@@ -166,10 +166,13 @@ class TimestampMapperStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
 
     def describe(self) -> StageContract:
         return StageContract(
+            # original_file is optional-with-fallback in every branch (process()
+            # falls back to audio_filepath / 'unknown'), so it must NOT gate
+            # composition — requiring it false-rejected runnable topologies.
             reads_one_of=[
-                IOSpec(data_keys=[self.start_ms_key, self.end_ms_key, self.original_file_key]),
-                IOSpec(data_keys=[self.diar_segments_key, self.original_file_key]),
-                IOSpec(data_keys=[self.duration_key, self.original_file_key]),
+                IOSpec(data_keys=[self.start_ms_key, self.end_ms_key]),
+                IOSpec(data_keys=[self.diar_segments_key]),
+                IOSpec(data_keys=[self.duration_key]),
             ],
             writes=IOSpec(
                 data_keys=[
@@ -186,7 +189,7 @@ class TimestampMapperStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             preserves_upstream_keys=False,
         )
 
-    def process(self, task: AudioTask) -> AudioTask | list[AudioTask]:
+    def process(self, task: AudioTask) -> AudioTask | list[AudioTask]:  # noqa: PLR0911 (complexity accepted: one early return per mapping fallback tier)
         mappings = (task._metadata or {}).get(self.mappings_key)
         item = task.data
 

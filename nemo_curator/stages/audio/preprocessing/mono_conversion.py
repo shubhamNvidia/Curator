@@ -54,6 +54,26 @@ class MonoConversionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         output_sample_rate: Expected sample rate in Hz (default: 48000)
         audio_filepath_key: Key in data dict for audio file path
         strict_sample_rate: If True, reject audio with wrong sample rate
+        waveform_key: Key in data dict for the in-memory mono waveform tensor.
+        sample_rate_key: Key in data dict for the waveform sample rate.
+        is_mono_key: Key where the mono flag is written.
+        duration_key: Key where the audio duration in seconds is written.
+        num_samples_key: Key where the number of samples is written.
+        output_audio_filepath_key: Key where the written mono WAV path is stored
+            (write_to_disk=True only).
+        original_audio_filepath_key: Key preserving the pre-conversion path when
+            update_audio_filepath=True.
+        input_residency: Which input to use — "waveform" (in-memory only), "file"
+            (audio_filepath only), or "auto" (waveform first, file fallback; default).
+        keep_waveform_in_task: If True (default), store the mono waveform and sample
+            rate in task.data for downstream in-memory consumers.
+        write_to_disk: If True, write the converted mono audio to a WAV file.
+            write_to_disk without output_dir writes WAV files to the system temp dir
+            and nothing cleans them up; in multi-node runs point output_dir at a
+            shared filesystem.
+        update_audio_filepath: If True (with write_to_disk), repoint audio_filepath_key
+            at the written mono WAV and keep the old path under original_audio_filepath_key.
+        output_dir: Directory for the written WAV files (default: system temp dir).
     """
 
     output_sample_rate: int = 48000
@@ -130,21 +150,25 @@ class MonoConversionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         sf.write(path, arr, sample_rate)
         return path
 
-    def process(self, task: AudioTask) -> AudioTask | list[AudioTask]:
+    def process(self, task: AudioTask) -> AudioTask | list[AudioTask]:  # noqa: C901 (complexity accepted: residency/sample-rate branch matrix; no refactor pre-PR)
         """
         Convert audio to mono and verify sample rate.
 
         Mutates task.data in-place with waveform data.
         Returns task if successful, [] if doesn't meet requirements.
         """
-        resolved = resolve_audio(
-            task.data,
-            residency=self.input_residency,  # type: ignore[arg-type]
-            audio_filepath_key=self.audio_filepath_key,
-            waveform_key=self.waveform_key,
-            sample_rate_key=self.sample_rate_key,
-            mono=False,
-        )
+        try:
+            resolved = resolve_audio(
+                task.data,
+                residency=self.input_residency,  # type: ignore[arg-type]
+                audio_filepath_key=self.audio_filepath_key,
+                waveform_key=self.waveform_key,
+                sample_rate_key=self.sample_rate_key,
+                mono=False,
+            )
+        except (OSError, RuntimeError) as e:  # corrupt/unreadable audio -> skip the row, don't crash the batch
+            logger.error(f"Failed to load audio for {task.data.get(self.audio_filepath_key)!r}: {e}")
+            return []
         if resolved is None:
             logger.error(f"Audio input not found for key {self.audio_filepath_key!r}")
             return []

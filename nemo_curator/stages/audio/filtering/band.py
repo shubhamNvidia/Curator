@@ -57,14 +57,27 @@ class BandFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     """
     Band filter stage for bandwidth classification.
 
-    Classifies audio as "full_band" or "narrow_band" and filters
-    based on the specified band_value to pass.
+    Classifies audio as "full_band" or "narrow_band". With action="filter"
+    (default) only items matching band_value pass; with action="annotate" every
+    item is kept and only the prediction is recorded.
 
     Args:
         model_path: Local path to band classifier model (.joblib). If not provided,
             the model is downloaded from HuggingFace (nvidia/nemocurator-speech-bandwidth-filter).
         cache_dir: Directory to cache downloaded models.
         band_value: Which band type to pass ("full_band" or "narrow_band")
+        mode: Where to classify — "task" (top-level audio), "segments" (nested segments list),
+            or "auto" (segments when segments_key is present, else task; default). Setting
+            "task" or "segments" overrides the auto-detection.
+        action: "filter" drops items that fail the band check; "annotate" keeps every item —
+            including items that fail or cannot be classified — and only writes prediction_key.
+        audio_filepath_key: Key in data dict for the input audio file path.
+        waveform_key: Key in data dict for the in-memory waveform tensor.
+        sample_rate_key: Key in data dict for the waveform sample rate.
+        segments_key: Key in data dict holding the nested segments list (segments/auto mode).
+        prediction_key: Key where the band prediction ("full_band"/"narrow_band") is written.
+        input_residency: Which input to use — "waveform" (in-memory only), "file"
+            (audio_filepath only), or "auto" (waveform first, file fallback; default).
 
     Note:
         GPU is used automatically when resources specify gpus > 0.
@@ -88,7 +101,7 @@ class BandFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     sample_rate_key: str = "sample_rate"
     segments_key: str = "segments"
     prediction_key: str = "band_prediction"
-    input_residency: str = "auto"
+    input_residency: Literal["file", "waveform", "auto"] = "auto"
 
     name: str = "BandFilter"
     batch_size: int = 1
@@ -177,13 +190,18 @@ class BandFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
 
     def process(self, task: AudioTask) -> AudioTask | list[AudioTask]:
         """
-        Filter audio based on bandwidth classification.
+        Filter or annotate audio based on bandwidth classification.
 
-        When ``task.data`` contains a ``"segments"`` key (nested mode from VAD),
-        each segment is evaluated individually and only survivors are kept.
+        Segment handling follows ``mode``: with ``mode="auto"`` (default), nested
+        mode is used when ``task.data`` contains the ``segments_key``; ``mode="task"``
+        or ``mode="segments"`` overrides that auto-detection. In nested mode each
+        segment is evaluated individually. With ``action="filter"`` only survivors
+        are kept; with ``action="annotate"`` every item is kept — including items
+        that fail the band check or cannot be classified — and only the prediction
+        annotation is written.
 
         Returns:
-            AudioTask if passes the band filter, [] if filtered out.
+            AudioTask if it passes (or ``action="annotate"``), [] if filtered out.
         """
         use_segments = self.mode == "segments" or (self.mode == "auto" and self.segments_key in task.data)
         if use_segments:
@@ -203,13 +221,17 @@ class BandFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             logger.error("Band predictor not available")
             return None
 
-        audio = resolve_audio(
-            task.data,
-            residency=self.input_residency,  # type: ignore[arg-type]
-            audio_filepath_key=self.audio_filepath_key,
-            waveform_key=self.waveform_key,
-            sample_rate_key=self.sample_rate_key,
-        )
+        try:
+            audio = resolve_audio(
+                task.data,
+                residency=self.input_residency,  # type: ignore[arg-type]
+                audio_filepath_key=self.audio_filepath_key,
+                waveform_key=self.waveform_key,
+                sample_rate_key=self.sample_rate_key,
+            )
+        except (OSError, RuntimeError) as e:  # corrupt/unreadable audio -> skip the row, don't crash the batch
+            logger.error(f"Failed to load audio for {task.data.get(self.audio_filepath_key)!r}: {e}")
+            return None
         if audio is None:
             return None
         waveform, sample_rate = audio

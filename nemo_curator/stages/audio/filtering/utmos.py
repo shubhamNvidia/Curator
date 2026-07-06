@@ -55,7 +55,7 @@ _VALID_MODES = {"task", "segments", "auto"}
 _VALID_ACTIONS = {"filter", "annotate"}
 
 
-def _load_waveform_tensor(
+def _load_waveform_tensor(  # noqa: PLR0913 (complexity accepted: keyword-only residency/key knobs mirror the stage fields)
     item: dict[str, Any],
     task_id: str,
     *,
@@ -115,6 +115,18 @@ class UTMOSFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     Args:
         mos_threshold: Minimum MOS score to pass (None to disable)
         sample_rate: Target sample rate for UTMOS inference (default 16000)
+        input_residency: Which input to use — "waveform" (in-memory only), "file"
+            (audio_filepath only), or "auto" (waveform first, file fallback; default).
+        mode: Where to score — "task" (top-level audio), "segments" (nested segments list),
+            or "auto" (segments when segments_key is present, else task; default). Setting
+            "task" or "segments" overrides the auto-detection.
+        action: "filter" drops items below mos_threshold; "annotate" keeps every item —
+            including items that fail or cannot be scored — and only writes score_key.
+        audio_filepath_key: Key in data dict for the input audio file path.
+        waveform_key: Key in data dict for the in-memory waveform tensor.
+        sample_rate_key: Key in data dict for the waveform sample rate.
+        segments_key: Key in data dict holding the nested segments list (segments/auto mode).
+        score_key: Key where the UTMOS MOS score is written.
 
     Note:
         GPU assignment is handled by the executor via _resources.
@@ -236,10 +248,13 @@ class UTMOSFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         logger.info(f"UTMOS model loaded on {device}")
 
     def process(self, task: AudioTask) -> AudioTask | list[AudioTask]:
-        """Process a single AudioTask and filter by UTMOS MOS score.
+        """Process a single AudioTask and filter or annotate by UTMOS MOS score.
 
-        When ``task.data`` contains a ``"segments"`` key (nested mode from VAD),
-        each segment is evaluated individually and only survivors are kept.
+        Segment mode applies when ``mode="segments"``, or when ``mode="auto"``
+        (default) and ``task.data`` contains the ``segments_key``; each segment is
+        then evaluated individually. With ``action="filter"`` only survivors are
+        kept; with ``action="annotate"`` every item is kept — including items that
+        fail mos_threshold or cannot be scored — and only the score is written.
         """
         use_segments = self.mode == "segments" or (self.mode == "auto" and self.segments_key in task.data)
         if use_segments:

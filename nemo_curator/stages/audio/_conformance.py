@@ -89,7 +89,8 @@ def _check_shape(c: StageContract, name: str) -> None:
     assert c.cardinality in _VALID_CARDINALITY, f"{name}: invalid cardinality {c.cardinality!r}"
     for opt in c.cardinality_options:
         # cardinality_options are short flag names (e.g. "fan_out","nested") OR full cardinalities
-        assert isinstance(opt, str) and opt, f"{name}: bad cardinality option {opt!r}"
+        assert isinstance(opt, str), f"{name}: bad cardinality option {opt!r}"
+        assert opt, f"{name}: bad cardinality option {opt!r}"
     if c.iteration_key is not None:
         assert c.cardinality in {"1:1 nested-list", "1:N fan-out", "N:1"}, (
             f"{name}: iteration_key set but cardinality is {c.cardinality!r}"
@@ -117,7 +118,7 @@ def _check_shape(c: StageContract, name: str) -> None:
         assert len(spec.data_keys) == len(set(spec.data_keys)), f"{name}: duplicate {label}.data_keys"
 
 
-def _check_roles(stage_or_cls: Any, c: StageContract, name: str) -> None:  # noqa: ANN401
+def _check_roles(_stage_or_cls: Any, c: StageContract, name: str) -> None:  # noqa: ANN401
     for value, role in c.key_roles.items():
         assert role in _VALID_ROLES, f"{name}: key_roles[{value!r}] has invalid role {role!r}"
     for p in c.params:
@@ -139,7 +140,8 @@ def _check_serialization(c: StageContract, name: str) -> None:
         msg = f"{name}: contract.to_dict() is not JSON-serializable: {e}"
         raise AssertionError(msg) from e
     schema = to_json_schema(c.params)
-    assert schema.get("type") == "object" and "properties" in schema, f"{name}: bad json schema"
+    assert schema.get("type") == "object", f"{name}: bad json schema"
+    assert "properties" in schema, f"{name}: bad json schema"
 
 
 def assert_contract_wellformed(stage_or_cls: Any) -> StageContract:  # noqa: ANN401
@@ -193,7 +195,7 @@ def _data_of(task: Any) -> dict[str, Any]:  # noqa: ANN401
     return data if isinstance(data, dict) else {}
 
 
-def assert_agent_ready(  # noqa: PLR0913
+def assert_agent_ready(  # noqa: C901, PLR0912, PLR0913 (complexity accepted: one linear checklist of independent conformance checks)
     stage: Any,  # noqa: ANN401
     fixture_factory: Callable[[], Any] | None = None,
     *,

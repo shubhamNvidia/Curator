@@ -83,7 +83,7 @@ class ParamSpec:
 
     name: str
     type: str = "Any"
-    default: Any = None  # noqa: ANN401
+    default: Any = None
     required: bool = False
     choices: list[Any] | None = None  # populated for Literal[...] params
     description: str | None = None
@@ -202,7 +202,7 @@ class StageContract:
         }
 
 
-def _jsonable_default(value: Any) -> Any:  # noqa: ANN401
+def _jsonable_default(value: Any) -> Any:  # noqa: ANN401, PLR0911 (complexity accepted: one early return per JSON type family)
     """Coerce an arbitrary param default to a JSON-serializable value.
 
     Non-serializable objects (tensors, models, callables) become a short
@@ -313,14 +313,6 @@ class AgentReady:
         return static_contract(cls)
 
 
-def resolve_contract(stage: AgentReady | type) -> StageContract:
-    """Return a stage's ``StageContract``.
-
-    Accepts an instance (calls ``describe()``) or, for stages whose contract
-    does not depend on instance state, a class (instantiated argument-free only
-    when possible). Prefer passing an instance.
-    """
-    if isinstance(stage, type):
-        msg = "resolve_contract requires a stage instance (describe() may depend on instance flags)"
-        raise TypeError(msg)
-    return stage.describe()
+# (resolve_contract was removed: dead code whose signature promised class
+# acceptance the body rejected. Instances: use stage.describe() / build_contract;
+# classes: use describe_static() / static_contract.)

@@ -176,6 +176,9 @@ class ALMDataBuilderStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         return StageContract(
             reads=IOSpec(data_keys=[self.audio_filepath_key, self.segments_key, self.audio_sample_rate_key]),
             writes=IOSpec(data_keys=[self.windows_key, self.stats_key, self.truncation_events_key]),
+            # process() rebuilds task.data selectively (words/segments stripped;
+            # the min_sample_rate branch keeps only a four-key subset).
+            preserves_upstream_keys=False,
         )
 
     def process(self, task: AudioTask) -> AudioTask:

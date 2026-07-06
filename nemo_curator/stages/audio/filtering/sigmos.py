@@ -68,7 +68,7 @@ _VALID_MODES = {"task", "segments", "auto"}
 _VALID_ACTIONS = {"filter", "annotate"}
 
 
-def _get_audio_numpy_sr(
+def _get_audio_numpy_sr(  # noqa: PLR0913 (complexity accepted: keyword-only residency/key knobs mirror the stage fields)
     item: dict[str, Any],
     task_id: str,
     *,
@@ -144,6 +144,24 @@ class SIGMOSFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         disc_threshold: Minimum discontinuity score (None to disable)
         loud_threshold: Minimum loudness score (None to disable)
         reverb_threshold: Minimum reverb score (None to disable)
+        input_residency: Which input to use — "waveform" (in-memory only), "file"
+            (audio_filepath only), or "auto" (waveform first, file fallback; default).
+        mode: Where to score — "task" (top-level audio), "segments" (nested segments list),
+            or "auto" (segments when segments_key is present, else task; default). Setting
+            "task" or "segments" overrides the auto-detection.
+        action: "filter" drops items below the thresholds; "annotate" keeps every item —
+            including items that fail or cannot be scored — and only writes the score keys.
+        audio_filepath_key: Key in data dict for the input audio file path.
+        waveform_key: Key in data dict for the in-memory waveform tensor.
+        sample_rate_key: Key in data dict for the waveform sample rate.
+        segments_key: Key in data dict holding the nested segments list (segments/auto mode).
+        noise_key: Key where the SIGMOS noise score is written.
+        ovrl_key: Key where the SIGMOS overall score is written.
+        sig_key: Key where the SIGMOS signal score is written.
+        col_key: Key where the SIGMOS coloration score is written.
+        disc_key: Key where the SIGMOS discontinuity score is written.
+        loud_key: Key where the SIGMOS loudness score is written.
+        reverb_key: Key where the SIGMOS reverberation score is written.
 
     Note:
         GPU assignment is handled by the executor via _resources.
@@ -340,10 +358,13 @@ class SIGMOSFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         return passed, fail_reasons
 
     def process(self, task: AudioTask) -> AudioTask | list[AudioTask]:
-        """Process a single AudioTask and filter by SIGMOS quality metrics.
+        """Process a single AudioTask and filter or annotate by SIGMOS quality metrics.
 
-        When ``task.data`` contains a ``"segments"`` key (nested mode from VAD),
-        each segment is evaluated individually and only survivors are kept.
+        Segment mode applies when ``mode="segments"``, or when ``mode="auto"``
+        (default) and ``task.data`` contains the ``segments_key``; each segment is
+        then evaluated individually. With ``action="filter"`` only survivors are
+        kept; with ``action="annotate"`` every item is kept — including items that
+        fail the thresholds or cannot be scored — and only the scores are written.
         """
         use_segments = self.mode == "segments" or (self.mode == "auto" and self.segments_key in task.data)
         if use_segments:

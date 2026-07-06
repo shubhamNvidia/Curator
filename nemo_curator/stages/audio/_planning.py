@@ -136,8 +136,8 @@ def _dangling_read_keys(contract: StageContract, available_keys: set[str]) -> se
     return dangling
 
 
-def validate_pipeline(
-    stages: list[Any],  # noqa: ANN401
+def validate_pipeline(  # noqa: C901 (complexity accepted: sequential per-stage validation checklist)
+    stages: list[Any],
     *,
     initial_roles: set[str] | None = None,
     initial_keys: set[str] | None = None,
@@ -166,6 +166,7 @@ def validate_pipeline(
     available: set[str] = set(initial_roles) if initial_roles is not None else set(_DEFAULT_INITIAL_ROLES)
     available_keys: set[str] = set(initial_keys) if initial_keys is not None else set(_DEFAULT_INITIAL_KEYS)
     tensor_resident = False  # an upstream stage left a non-serializable tensor in task.data
+    past_composite = False  # a composite hides its true writes; downstream reads can't be judged
     issues: list[PipelineIssue] = []
 
     for index, stage in enumerate(stages):
@@ -186,6 +187,24 @@ def validate_pipeline(
                 )
             )
             # A composite hides its true I/O; don't reason about roles past it.
+            past_composite = True
+            continue
+
+        if past_composite:
+            # The composite's (hidden) writes may satisfy anything downstream:
+            # unknown-availability must not produce false HARD errors on
+            # runnable pipelines. Downgrade to an advisory warning.
+            if not reads_satisfied_by_role(contract, available):
+                issues.append(
+                    PipelineIssue(
+                        index, name, "warning", "unsatisfied_reads_after_composite",
+                        f"requires role(s) {sorted(_required_roles(contract) - (available | {'unknown'}))} "
+                        f"not visibly produced — but an upstream composite hides its writes; "
+                        f"decompose it to validate this read",
+                    )
+                )
+            available |= produced_roles(contract)
+            available_keys |= _write_key_values(contract)
             continue
 
         if not reads_satisfied_by_role(contract, available):

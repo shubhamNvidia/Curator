@@ -30,26 +30,29 @@ import shutil
 import sys
 import types
 from dataclasses import dataclass
-from pathlib import Path
 from types import MethodType, SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pytest
 from omegaconf import OmegaConf
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
+
 sf = pytest.importorskip("soundfile")
 torch = pytest.importorskip("torch")
 
 
-def _install_agent_simulation_stubs() -> None:
+def _install_agent_simulation_stubs() -> None:  # noqa: C901, PLR0915 (complexity accepted: one linear stub block per heavy dependency)
     """Install lightweight stand-ins for heavy model/audio dependencies."""
 
     class _IdentityResample:
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
             pass
 
-        def to(self, _device: Any) -> "_IdentityResample":
+        def to(self, _device: Any) -> _IdentityResample:
             return self
 
         def __call__(self, waveform: torch.Tensor) -> torch.Tensor:
@@ -113,7 +116,7 @@ def _install_agent_simulation_stubs() -> None:
 
     class _FakePyAnnotePipeline:
         @classmethod
-        def from_pretrained(cls, *_args: Any, **_kwargs: Any) -> "_FakePyAnnotePipeline":
+        def from_pretrained(cls, *_args: Any, **_kwargs: Any) -> _FakePyAnnotePipeline:
             return cls()
 
         def to(self, _device: Any) -> None:
@@ -124,10 +127,10 @@ def _install_agent_simulation_stubs() -> None:
     pyannote_hook = types.ModuleType("pyannote.audio.pipelines.utils.hook")
 
     class _ProgressHook:
-        def __enter__(self) -> "_ProgressHook":
+        def __enter__(self) -> _ProgressHook:  # noqa: PYI034 - minimal test stub; `Self` typing is unnecessary here
             return self
 
-        def __exit__(self, *_args: Any) -> None:
+        def __exit__(self, *_args: object) -> None:
             return None
 
     pyannote_hook.ProgressHook = _ProgressHook
@@ -148,11 +151,11 @@ def _install_agent_simulation_stubs() -> None:
 
     class _FakeASRModel:
         @classmethod
-        def from_pretrained(cls, *_args: Any, **_kwargs: Any) -> "_FakeASRModel":
+        def from_pretrained(cls, *_args: Any, **_kwargs: Any) -> _FakeASRModel:
             return cls()
 
         @classmethod
-        def restore_from(cls, *_args: Any, **_kwargs: Any) -> "_FakeASRModel":
+        def restore_from(cls, *_args: Any, **_kwargs: Any) -> _FakeASRModel:
             return cls()
 
         def transcribe(self, files: list[str], **_kwargs: Any) -> list[Any]:
@@ -178,7 +181,7 @@ def _install_agent_simulation_stubs() -> None:
     metrics = types.ModuleType("nemo.collections.asr.metrics")
     wer_mod = types.ModuleType("nemo.collections.asr.metrics.wer")
 
-    def _word_error_rate_detail(hypotheses: list[str], references: list[str], use_cer: bool = False) -> tuple:
+    def _word_error_rate_detail(hypotheses: list[str], references: list[str], use_cer: bool = False) -> tuple:  # noqa: ARG001 - stub mirrors nemo's word_error_rate_detail signature
         return (0.0 if hypotheses == references else 1.0, 1, 0.0, 0.0, 0.0)
 
     wer_mod.word_error_rate_detail = _word_error_rate_detail
@@ -401,10 +404,10 @@ class _FakeUTMOSModel:
     def __init__(self, score: float) -> None:
         self.score = score
 
-    def parameters(self):
+    def parameters(self) -> Iterator[torch.Tensor]:
         yield torch.tensor([0.0])
 
-    def __call__(self, _waveform: torch.Tensor, sr: int = 16000) -> torch.Tensor:  # noqa: ARG002
+    def __call__(self, _waveform: torch.Tensor, sr: int = 16000) -> torch.Tensor:
         return torch.tensor([self.score])
 
 
@@ -412,10 +415,10 @@ class _SequentialUTMOSModel:
     def __init__(self, scores: list[float]) -> None:
         self.scores = list(scores)
 
-    def parameters(self):
+    def parameters(self) -> Iterator[torch.Tensor]:
         yield torch.tensor([0.0])
 
-    def __call__(self, _waveform: torch.Tensor, sr: int = 16000) -> torch.Tensor:  # noqa: ARG002
+    def __call__(self, _waveform: torch.Tensor, sr: int = 16000) -> torch.Tensor:
         return torch.tensor([self.scores.pop(0)])
 
 
@@ -423,7 +426,7 @@ class _FakeSIGMOSModel:
     def __init__(self, score: float = 2.0) -> None:
         self.score = score
 
-    def run(self, audio: np.ndarray, sr: int) -> dict[str, float]:  # noqa: ARG002
+    def run(self, audio: np.ndarray, sr: int) -> dict[str, float]:
         return {
             "MOS_NOISE": self.score,
             "MOS_OVRL": self.score,
@@ -439,7 +442,7 @@ class _FakeBandPredictor:
     def __init__(self, prediction: str = "narrow_band") -> None:
         self.prediction = prediction
 
-    def predict_audio(self, waveform: torch.Tensor, sample_rate: int) -> str:  # noqa: ARG002
+    def predict_audio(self, waveform: torch.Tensor, sample_rate: int) -> str:
         return self.prediction
 
 
@@ -447,7 +450,7 @@ class _FakeVADModel:
     def get_vad_segments(self, audio: np.ndarray, merge_max_length: float, sample_rate: int = 16000) -> list[dict]:
         return [{"start": 0.0, "end": min(merge_max_length, 0.4)}]
 
-    def to(self, device: str) -> None:  # noqa: ARG002
+    def to(self, device: str) -> None:
         return None
 
 
@@ -465,10 +468,10 @@ class _FakePyAnnoteDiarization:
     def get_overlap(self) -> SimpleNamespace:
         return SimpleNamespace(segments_list_=[])
 
-    def crop(self, _segment: Any) -> "_FakePyAnnoteDiarization":
+    def crop(self, _segment: Any) -> _FakePyAnnoteDiarization:
         return self
 
-    def itertracks(self, yield_label: bool = True):  # noqa: ANN201, ARG002
+    def itertracks(self, yield_label: bool = True) -> Iterator[tuple[_FakeTurn, None, str]]:
         for start, end, speaker in self._turns:
             yield _FakeTurn(start, end), None, speaker
 
@@ -482,7 +485,7 @@ class _TinyAudioSegment:
         return [0, 500, -500, 0] * 100
 
 
-def _pipeline_from_agent_yaml(spec: dict[str, Any]):
+def _pipeline_from_agent_yaml(spec: dict[str, Any]) -> Any:
     """Create a Pipeline from agent-authored YAML-like config.
 
     The public config runner expects ``stages`` while the ReadSpeech tutorial
@@ -495,7 +498,7 @@ def _pipeline_from_agent_yaml(spec: dict[str, Any]):
     return create_pipeline_from_yaml(OmegaConf.create(normalized), log_config=False)
 
 
-def _flatten_stage_output(result: Any) -> list[Any]:  # noqa: ANN401
+def _flatten_stage_output(result: Any) -> list[Any]:
     if result is None:
         return []
     if isinstance(result, list):
@@ -525,7 +528,7 @@ def _run_inline_agent_pipeline(stages: list[Any], tasks: list[Any]) -> list[Any]
     return current
 
 
-def _patch_common_agent_pipeline_fakes(stages: list[Any]) -> None:
+def _patch_common_agent_pipeline_fakes(stages: list[Any]) -> None:  # noqa: C901 (complexity accepted: one fake-attachment branch per heavy stage type)
     """Attach deterministic fake model outputs to heavy stages in a built pipeline."""
 
     def fake_vad_segments(self: VADSegmentationStage, _waveform: torch.Tensor, _sample_rate: int) -> list[dict[str, float]]:
@@ -611,7 +614,7 @@ def _coverage_cases(tmp_path: Path) -> list[StageCase]:
         StageCase(PretrainMetricsAggregatorStage, lambda: PretrainMetricsAggregatorStage(str(output_dir / "metrics.json")), "alm_pretrain"),
         StageCase(PrepareModuleSegmentsStage, PrepareModuleSegmentsStage, "speech_tagging"),
         StageCase(PreserveByValueStage, lambda: PreserveByValueStage("keep", True), "segmentation_quality"),
-        StageCase(PyAnnoteDiarizationStage, lambda: PyAnnoteDiarizationStage(hf_token="fake"), "speech_tagging"),
+        StageCase(PyAnnoteDiarizationStage, lambda: PyAnnoteDiarizationStage(hf_token="fake"), "speech_tagging"),  # noqa: S106 - not a real credential
         StageCase(ReadLongFormManifestStage, lambda: ReadLongFormManifestStage(str(manifest), str(audio_dir)), "alm_pretrain"),
         StageCase(ResampleAudioStage, lambda: ResampleAudioStage(resampled_audio_dir=str(output_dir)), "ingress_transform"),
         StageCase(SIGMOSFilterStage, SIGMOSFilterStage, "segmentation_quality"),
@@ -1264,12 +1267,16 @@ def test_agent_yaml_audio_data_filter_full_pipeline_dataflow(tmp_path: Path) -> 
     )
 
     assert len(outputs) == 2
+    # Multi-speaker timing: TimestampMapper's clip-relative guard composes the
+    # per-speaker diar segments (concat-time) through the mappings, so each
+    # speaker maps to its OWN original span instead of both speakers being
+    # squeezed into the first clip's [0, 100] (the pre-guard silent-wrong values).
+    speaker_spans = set()
     for task in outputs:
         assert isinstance(task, AudioTask)
         assert task.data["original_file"] == str(audio_path)
-        assert task.data["original_start_ms"] == 0
-        assert task.data["original_end_ms"] == 100
-        assert task.data["duration"] == 0.1
+        speaker_spans.add((task.data["original_start_ms"], task.data["original_end_ms"]))
+        assert task.data["duration"] == pytest.approx(0.2)
         assert task.data["band_prediction"] == "full_band"
         assert task.data["utmos_mos"] == pytest.approx(4.6)
         assert task.data["sigmos_noise"] == 4.6
@@ -1277,6 +1284,7 @@ def test_agent_yaml_audio_data_filter_full_pipeline_dataflow(tmp_path: Path) -> 
         assert task._metadata["trace_id"] == "audio-data-filter"
         assert "segment_mappings" in task._metadata
         assert "seed" in task._stage_perf
+    assert speaker_spans == {(0, 200), (200, 400)}
 
 
 def test_agent_speech_tagging_pipeline_with_fake_inference(tmp_path: Path) -> None:
@@ -1288,7 +1296,7 @@ def test_agent_speech_tagging_pipeline_with_fake_inference(tmp_path: Path) -> No
     task = whisperx.process(task)
     assert task.data["agent_vad_segments"] == [{"start": 0.0, "end": 0.4}]
 
-    pyannote = PyAnnoteDiarizationStage(hf_token="fake", write_rttm=False, segments_key="agent_segments", overlap_segments_key="agent_overlaps")
+    pyannote = PyAnnoteDiarizationStage(hf_token="fake", write_rttm=False, segments_key="agent_segments", overlap_segments_key="agent_overlaps")  # noqa: S106 - not a real credential
     pyannote.process = MethodType(
         lambda self, t: t.data.update(
             {
@@ -1363,7 +1371,7 @@ def test_agent_speech_tagging_pipeline_with_fake_inference(tmp_path: Path) -> No
     assert "agent_segments" in prepared.data
 
 
-def test_agent_optional_fanout_for_vad_and_diarizers_with_custom_keys(tmp_path: Path) -> None:
+def test_agent_optional_fanout_for_vad_and_diarizers_with_custom_keys(tmp_path: Path) -> None:  # noqa: PLR0915 (complexity accepted: end-to-end fan-out scenario across three diarizer stages)
     audio_path = _write_wav(tmp_path / "fanout.wav", duration_sec=1.0)
 
     default_whisperx = WhisperXVADStage(resources=Resources(gpus=0.0))
@@ -1402,12 +1410,12 @@ def test_agent_optional_fanout_for_vad_and_diarizers_with_custom_keys(tmp_path: 
     assert whisperx_children[0]._metadata == {"source": "agent"}
     assert whisperx_children[0]._stage_perf == ["upstream"]
 
-    default_pyannote = PyAnnoteDiarizationStage(hf_token="fake", write_rttm=False)
+    default_pyannote = PyAnnoteDiarizationStage(hf_token="fake", write_rttm=False)  # noqa: S106 - not a real credential
     assert default_pyannote.describe().cardinality == "1:1"
     assert default_pyannote.ray_stage_spec() == {}
 
     pyannote = PyAnnoteDiarizationStage(
-        hf_token="fake",
+        hf_token="fake",  # noqa: S106 - not a real credential
         write_rttm=False,
         min_length=0.1,
         fanout=True,
@@ -1453,7 +1461,7 @@ def test_agent_optional_fanout_for_vad_and_diarizers_with_custom_keys(tmp_path: 
         original_file_key="agent_original_file",
     )
     def fake_sortformer_diarize(
-        self: InferenceSortformerStage,
+        self: InferenceSortformerStage,  # noqa: ARG001 - bound via MethodType; receiver unused by the fake
         paths: list[str],  # noqa: ARG001
     ) -> list[list[dict[str, Any]]]:
         return [[{"speaker": "spk0", "start": 0.0, "end": 0.25}, {"speaker": "spk1", "start": 0.25, "end": 0.75}]]
@@ -1933,7 +1941,8 @@ def test_agent_text_and_validation_noop_edges(tmp_path: Path) -> None:
 
     class _FailingConverter:
         def convert(self, _text: str) -> str:
-            raise RuntimeError("conversion failed")
+            msg = "conversion failed"
+            raise RuntimeError(msg)
 
     chinese = ChineseConversionStage(text_key="agent_text", segments_key="agent_segments")
     chinese._converter = _FailingConverter()
@@ -2262,7 +2271,7 @@ def test_agent_vad_nested_and_fanout_produce_equivalent_segments() -> None:
     assert nested_bounds == fanout_bounds == [(0, 400), (400, 900)]
 
 
-def test_agent_audio_to_document_never_leaks_non_serializable(tmp_path: Path) -> None:
+def test_agent_audio_to_document_never_leaks_non_serializable() -> None:
     """The JSONL/document boundary must never carry tensors or, by default, segments."""
     task = AudioTask(
         dataset_name="agent",

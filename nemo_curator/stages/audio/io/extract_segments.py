@@ -466,7 +466,10 @@ class SegmentExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                     try:
                         audio = _read_segment(original_file, start_ms, end_ms, info.samplerate)
                         sf.write(output_path, audio, info.samplerate, subtype=SOUNDFILE_FORMATS[self.output_format])
-                        entry[self.output_key] = output_path
+                        # collect ALL written paths — a scalar was last-write-wins
+                        # for multi-interval entries (only the final segment's
+                        # path survived, plus a stale path on later failures)
+                        entry.setdefault(self.output_key, []).append(output_path)
                         extracted += 1
                         total_dur += dur
 

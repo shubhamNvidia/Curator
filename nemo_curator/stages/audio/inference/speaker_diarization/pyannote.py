@@ -204,15 +204,22 @@ class PyAnnoteDiarizationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
         end = float(segment.get("end", start))
         child[self.start_key] = start
         child[self.end_key] = end
-        child[self.start_ms_key] = int(round(start * 1000))
-        child[self.end_ms_key] = int(round(end * 1000))
+        child[self.start_ms_key] = round(start * 1000)
+        child[self.end_ms_key] = round(end * 1000)
         child[self.duration_key] = max(0.0, end - start)
         child[self.segment_num_key] = segment_num
         if "speaker" in segment:
             child[self.speaker_key] = segment["speaker"]
+        # provenance chain mirrors whisperx: configured key, then the CANONICAL
+        # audio_filepath, then the legacy resampled key — never skip canonical
+        # (with the default audio_filepath_key='resampled_audio_filepath' the
+        # old chain probed the same key twice and fell to "unknown").
         original_file = item.get(
             self.original_file_key,
-            item.get(self.audio_filepath_key, item.get("resampled_audio_filepath", "unknown")),
+            item.get(
+                self.audio_filepath_key,
+                item.get("audio_filepath", item.get("resampled_audio_filepath", "unknown")),
+            ),
         )
         child.setdefault(self.original_file_key, original_file)
         return child
@@ -351,7 +358,7 @@ class PyAnnoteDiarizationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
         finally:
             cleanup_temp_files(temp_paths)
 
-    def _diarize_file(
+    def _diarize_file(  # noqa: C901 (complexity accepted: single diarize->filter->fanout flow; no refactor pre-PR)
         self,
         task: AudioTask,
         data_entry: dict[str, Any],
@@ -394,6 +401,14 @@ class PyAnnoteDiarizationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
                 speaker_id = data_entry["speaker_id"] + "_" + speaker
             elif self.audio_filepath_key in data_entry:
                 speaker_id = Path(data_entry[self.audio_filepath_key]).stem + "_" + speaker
+            elif "audio_filepath" in data_entry:
+                # the composability fallback resolves canonical audio_filepath
+                # when the configured (resampled) key is absent — derive the
+                # identifier from the same source instead of raising after a
+                # full diarization pass.
+                speaker_id = Path(data_entry["audio_filepath"]).stem + "_" + speaker
+            elif file_path:
+                speaker_id = Path(file_path).stem + "_" + speaker
             else:
                 msg = f"No speaker identifier in {file_path}"
                 raise ValueError(msg)

@@ -72,9 +72,12 @@ class TorchSquimQualityMetricsStage(AgentReady, ProcessingStage[AudioTask, Audio
         return [], [self.metrics_key]
 
     def describe(self) -> StageContract:
+        # process_batch always loads from the audio file; segments only refine
+        # WHERE metrics are attached. The filepath is therefore required in
+        # every read shape (segments alone are NOT sufficient).
         return StageContract(
             reads_one_of=[
-                IOSpec(data_keys=[self.segments_key]),
+                IOSpec(data_keys=[self.audio_filepath_key, self.segments_key], accepts=["file"]),
                 IOSpec(data_keys=[self.audio_filepath_key], accepts=["file"]),
             ],
             writes=IOSpec(data_keys=[self.metrics_key], segment_data_keys=[self.metrics_key]),
@@ -82,15 +85,13 @@ class TorchSquimQualityMetricsStage(AgentReady, ProcessingStage[AudioTask, Audio
         )
 
     def validate_input(self, task: AudioTask) -> bool:
-        """OR-shaped validation: segments OR top-level audio_filepath keys must be present."""
+        """The audio filepath is always required; segments are optional refinement."""
         data = task.data
-        if self.segments_key in data:
-            return True
         if self.audio_filepath_key in data:
             return True
         logger.error(
-            f"Task {task.task_id} missing required attributes: "
-            f"need '{self.segments_key}' OR '{self.audio_filepath_key}'"
+            f"Task {task.task_id} missing required attribute '{self.audio_filepath_key}' "
+            f"(segments alone are not sufficient — SQUIM loads the audio file)"
         )
         return False
 

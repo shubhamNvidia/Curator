@@ -163,6 +163,10 @@ class SegmentConcatenationStage(AgentReady, ProcessingStage[AudioTask, AudioTask
         waveform = seg.get(self.waveform_key)
         sr = seg.get(self.sample_rate_key)
         if waveform is None:
+            logger.warning(
+                f"[SegmentConcat] Skipping segment {seg.get('segment_num', '?')}: no "
+                f"{self.waveform_key!r} (was VAD run with keep_segment_waveform_in_task=False?)"
+            )
             return None
         seg_id = seg.get("segment_num", "?")
         if sr is None:
@@ -253,11 +257,9 @@ class SegmentConcatenationStage(AgentReady, ProcessingStage[AudioTask, AudioTask
 
         logger.info(f"[SegmentConcat] {original_file}: {len(mappings)} segments -> {total_duration_sec:.2f}s combined")
 
-        result_task = AudioTask(
+        return AudioTask(
             data=output_data,
             dataset_name=parent_task.dataset_name,
             _metadata={**(parent_task._metadata or {}), "segment_mappings": mappings},
             _stage_perf=list(parent_task._stage_perf),
         )
-
-        return result_task

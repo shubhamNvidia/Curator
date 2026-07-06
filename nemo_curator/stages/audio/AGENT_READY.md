@@ -56,7 +56,9 @@ class MyStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
 - **`cardinality`** — one of `"1:1"`, `"1:1 nested-list"`, `"1:N fan-out"`, `"N:1"`, `"filter"`.
   (`"filter"` = `process` may return `None`/`[]` to drop items.)
 - **`gates`** — be honest about side effects: `requires_gpu`, `writes_to_disk`,
-  `requires_internet_first_run`, `requires_ffmpeg`.
+  `requires_internet_first_run`, `requires_ffmpeg`. Serializability (both exist on `Gates`): a sink
+  that `json.dumps` `task.data` as-is must set `requires_serializable_input=True`; a converter that
+  strips tensors/audio blobs sets `sanitizes_output=True`.
 
 ## What is AUTO-DERIVED — do NOT hand-write these
 
@@ -74,9 +76,11 @@ You never put `params` in `describe()`.
 
 Declared via one class attribute, `AGENT_STATIC = StaticHints(...)`, or on the contract:
 
-- `error_policy` (`"skip" | "fail" | "annotate"`) — default `"unknown"`; set only if your stage has a
-  clear, uniform policy.
-- `cardinality_options` (e.g. `["fan_out", "nested"]`), `iteration_key`, `size_envelope`.
+- **StaticHints-settable** (instance-free): `cardinality_options` (e.g. `["fan_out", "nested"]`),
+  `gates`, `dispatch`, `error_policy` (`"skip" | "fail" | "annotate"` — default `"unknown"`; set
+  only if your stage has a clear, uniform policy), `description`, `stage_id`.
+- **Contract-only** (return them from `describe()`; StaticHints has no such fields):
+  `iteration_key`, `size_envelope`.
 - `BATCH_ONLY = True` — only if your `process()` raises and just `process_batch` works.
 
 If you're unsure, leave them. The agent treats missing optionals safely.
@@ -102,12 +106,15 @@ resolved automatically from your `*_key` **field name** via `nemo_curator/stages
 
 ## Discovery — how the agent finds your stage
 
-Nothing to do: your stage auto-registers (via `StageMeta`) and appears in the catalog.
+Nothing to do: your stage auto-registers (via `StageMeta`) and appears in the catalog. Consumers
+go through the public entry point — `agent.py` is the sanctioned public surface; don't import the
+private `_catalog` module directly:
 ```python
-from nemo_curator.stages.audio._catalog import list_agent_ready_stages, describe_stage, catalog_as_json
-list_agent_ready_stages()        # -> [... "MyStage" ...]
-describe_stage("MyStage")        # -> StageContract (static, instance-free)
-catalog_as_json()                # -> JSON the agent/UI consumes
+from nemo_curator.stages.audio import agent
+
+agent.list_agent_ready_stages()  # -> [... "MyStage" ...]
+agent.describe_stage("MyStage")  # -> StageContract (static, instance-free)
+agent.catalog_as_json()          # -> JSON the agent/UI consumes
 ```
 
 ---
@@ -138,7 +145,7 @@ memorize the rules — if the test passes, the contract is honest.
 - [ ] `AgentReady` + `describe()` with `reads`, `writes`, `cardinality`, honest `gates`
 - [ ] every read/written `task.data` key is a `*_key` constructor field (no bare literals)
 - [ ] new `*_key` concepts have a `_roles.KEY_ROLES` entry (or `INTERNAL_KEY_FIELDS`)
-- [ ] new `AudioTask`s preserve `_metadata` and `list(_stage_perf)`
+- [ ] new `AudioTask`s preserve `_metadata` and `list(_stage_perf)` (manual — not covered by `assert_agent_ready`)
 - [ ] `assert_agent_ready(...)` test added and green
 - [ ] defaults unchanged → existing pipelines behave exactly as before
 

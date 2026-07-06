@@ -55,7 +55,12 @@ def _ensure_audio_stages_imported() -> None:
         return
     import nemo_curator.stages.audio as audio_pkg
 
-    for modinfo in pkgutil.walk_packages(audio_pkg.__path__, prefix=audio_pkg.__name__ + "."):
+    # onerror: a failing subpackage __init__ (non-ImportError too — OSError /
+    # RuntimeError are realistic for heavy audio deps) must skip, not kill
+    # discovery; the loop body below warns for the same module on import.
+    for modinfo in pkgutil.walk_packages(
+        audio_pkg.__path__, prefix=audio_pkg.__name__ + ".", onerror=lambda _name: None
+    ):
         leaf = modinfo.name.rsplit(".", 1)[-1]
         if leaf.startswith("_"):  # private support modules carry no stages
             continue
@@ -147,7 +152,7 @@ def _consumed_roles(contract: StageContract) -> set[str]:
     return roles - {"unknown"}
 
 
-def _dummy_for_param(type_str: str | None) -> Any:
+def _dummy_for_param(type_str: str | None) -> Any:  # noqa: ANN401 - placeholder is deliberately any primitive shape
     """A harmless placeholder for a required constructor arg, so ``describe()`` can
     run for a required-arg stage. ``*_key`` fields have defaults (never required),
     so these dummies only fill non-semantic args (paths, model names) and never
@@ -175,7 +180,7 @@ def _default_contract(cls: type) -> StageContract | None:
     correct. ``None`` only if every probe fails (e.g. needs a live model object)."""
     try:
         return build_contract(cls())
-    except Exception:  # noqa: BLE001 - fall through to dummy-filled probes
+    except Exception:  # noqa: BLE001, S110 - deliberate fall-through to dummy-filled probes
         pass
     from nemo_curator.stages.audio._agent_registry import stage_params
 
@@ -190,7 +195,7 @@ def _default_contract(cls: type) -> StageContract | None:
             continue
         try:
             return build_contract(cls(**kwargs))
-        except Exception:  # noqa: BLE001 - try the next, broader probe
+        except Exception:  # noqa: BLE001, S112 - deliberately try the next, broader probe
             continue
     return None
 
@@ -199,9 +204,11 @@ def role_index() -> dict[str, Any]:
     """Map each semantic role to the stages that produce/consume it.
 
     Returns ``{"producers": {role: [stage, ...]}, "consumers": {...},
-    "unresolved_stages": [...]}``. Built from each stage's *default* (no-arg)
-    dynamic contract; stages needing required constructor args can't be
-    introspected without config and are listed under ``unresolved_stages``.
+    "unresolved_stages": [...]}``. Built from each stage's no-arg dynamic
+    contract when possible, else from a probe instance with required (and
+    one-of ``None``-default) args filled by harmless dummies — only
+    ``describe()`` runs and ``*_key`` defaults are preserved, so the roles stay
+    correct. ``unresolved_stages`` lists only stages where every probe fails.
 
     This is what turns an ``unsatisfied_reads`` validation error into an
     actionable repair ("insert a stage that produces role X") and lets an agent

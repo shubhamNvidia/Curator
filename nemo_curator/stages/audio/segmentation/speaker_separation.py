@@ -77,8 +77,21 @@ class SpeakerSeparationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         min_duration: Minimum segment duration in seconds
         gap_threshold: Gap threshold for merging speaker segments
         buffer_time: Buffer time around speaker segments
+        audio_filepath_key: Key in data dict for the input audio file path.
+        waveform_key: Key in data dict for the in-memory waveform tensor.
+        sample_rate_key: Key in data dict for the waveform sample rate.
+        speaker_id_key: Key where each child task's speaker id is written.
+        num_speakers_key: Key where the detected speaker count is written.
+        duration_key: Key where each child's speech duration in seconds is written.
+        diar_segments_key: Key where each child's diarization segments are written.
+        input_residency: Which input to use — "waveform" (in-memory only), "file"
+            (audio_filepath only), or "auto" (waveform first, file fallback; default).
 
     Note:
+        Per-speaker child tasks DROP the parent's audio_filepath (it points at the
+        full multi-speaker file) and carry ``original_file`` for provenance instead;
+        downstream stages consume the per-speaker waveform.
+
         GPU assignment is handled by the executor via _resources.
         Use .with_(resources=Resources(gpus=X)) to configure GPU allocation.
     """
@@ -132,9 +145,12 @@ class SpeakerSeparationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                     self.num_speakers_key,
                     self.duration_key,
                     self.diar_segments_key,
+                    "original_file",
                 ],
                 produces=["tensor"],
             ),
+            # children drop the parent's audio_filepath (and blob keys)
+            preserves_upstream_keys=False,
             cardinality="1:N fan-out",
             # One child per detected speaker; speaker_id is the per-child key that
             # identifies which slice of the iteration a child is (role-resolvable).
@@ -238,6 +254,12 @@ class SpeakerSeparationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 self.num_speakers_key: num_speakers,
                 self.duration_key: result.duration,
                 self.diar_segments_key: result.diar_segments,
+                # Source identity must survive the audio_filepath drop above —
+                # TimestampMapper (and any provenance consumer) reads original_file.
+                "original_file": item.get("original_file")
+                or item.get(self.audio_filepath_key)
+                or item.get("audio_filepath")
+                or "unknown",
             }
             spk_task = AudioTask(
                 data=speaker_data,

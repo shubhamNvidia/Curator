@@ -193,11 +193,15 @@ class WhisperXVADStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         child = {k: v for k, v in item.items() if k != self.segments_key}
         start = float(segment.get("start", 0.0))
         end = float(segment.get("end", start))
-        child.update(segment)
+        # copy segment extras but never whisperx's raw internal keys: 'segments'
+        # (a list of (start, end) tuples) collides with the semantic segments
+        # role and crashes dict-shaped consumers; raw start/end are re-emitted
+        # under the configured keys below.
+        child.update({k: v for k, v in segment.items() if k not in {"start", "end", "segments"}})
         child[self.start_key] = start
         child[self.end_key] = end
-        child[self.start_ms_key] = int(round(start * 1000))
-        child[self.end_ms_key] = int(round(end * 1000))
+        child[self.start_ms_key] = round(start * 1000)
+        child[self.end_ms_key] = round(end * 1000)
         child[self.duration_key] = max(0.0, end - start)
         child[self.segment_num_key] = segment_num
         # Resolve source provenance from the configured key, then fall back to the
