@@ -136,6 +136,7 @@ LITERAL_KEY_ROLES: dict[str, Role] = {
     "diar_segments": "diar_segments",
     "vad_segments": "vad_segments",
     "text": "text",
+    "text_ref": "reference_text",  # ComputeWERStage's documented reference default
     "pred_text": "pred_text",
     "words": "words",
     "alignment": "alignment",

@@ -86,9 +86,14 @@ class ComputeWERStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         return [], [self.metrics_key]
 
     def describe(self) -> StageContract:
+        # Mirrors validate_input's OR shape: per-segment WER over ``segments``,
+        # OR top-level WER over hypothesis+reference keys on the row.
         return StageContract(
-            reads=IOSpec(data_keys=[self.segments_key]),
-            writes=IOSpec(segment_data_keys=[self.metrics_key]),
+            reads_one_of=[
+                IOSpec(data_keys=[self.segments_key]),
+                IOSpec(data_keys=[self.hypothesis_text_key, self.reference_text_key]),
+            ],
+            writes=IOSpec(data_keys=[self.metrics_key], segment_data_keys=[self.metrics_key]),
         )
 
     def validate_input(self, task: AudioTask) -> bool:
