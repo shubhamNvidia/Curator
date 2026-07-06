@@ -136,7 +136,9 @@ class SpeakerSeparationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 produces=["tensor"],
             ),
             cardinality="1:N fan-out",
-            iteration_key="speakers",
+            # One child per detected speaker; speaker_id is the per-child key that
+            # identifies which slice of the iteration a child is (role-resolvable).
+            iteration_key=self.speaker_id_key,
             gates=Gates(requires_gpu=self.resources.gpus > 0, requires_internet_first_run=True),
         )
 

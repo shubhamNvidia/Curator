@@ -95,6 +95,7 @@ KEY_ROLES: dict[str, Role] = {
     "disc_key": "score",
     "reverb_key": "score",
     "loud_key": "score",
+    "col_key": "score",  # SIGMOS coloration sub-score — a peer of its 6 siblings
     # windows (ALM snippet planning)
     "windows_key": "windows",
     "filtered_windows_key": "windows",
@@ -115,7 +116,6 @@ INTERNAL_KEY_FIELDS: frozenset[str] = frozenset(
         "input_value_key",  # PreserveByValueStage: compares an arbitrary user key
         "output_key",  # ITN/Chinese: caller-chosen output key
         "original_key",  # preserved prior value
-        "col_key",
         "sort_key",
         "cache_key",
         "oldest_key",

@@ -94,6 +94,19 @@ def _check_shape(c: StageContract, name: str) -> None:
         assert c.cardinality in {"1:1 nested-list", "1:N fan-out", "N:1"}, (
             f"{name}: iteration_key set but cardinality is {c.cardinality!r}"
         )
+        # iteration_key must name something real: either a key the contract
+        # reads/writes, or a role-resolvable key value (fan-out stages iterate a
+        # list that is deliberately NOT re-emitted into children, so it may be
+        # absent from writes — but it must still resolve to a semantic role).
+        # Catches synthetic labels like the former 'speakers' that name nothing.
+        contract_keys: set[str] = set()
+        for spec in [c.reads, c.writes, *c.reads_one_of]:
+            contract_keys.update(spec.data_keys)
+            contract_keys.update(spec.segment_data_keys)
+        assert c.iteration_key in contract_keys or c.iteration_key in c.key_roles, (
+            f"{name}: iteration_key {c.iteration_key!r} is neither a contract read/write "
+            f"key nor a role-resolvable key value — it names nothing an agent can find"
+        )
     for spec, label in [(c.reads, "reads"), (c.writes, "writes"), *[(s, "reads_one_of") for s in c.reads_one_of]]:
         for a in spec.accepts:
             assert a in _VALID_ACCEPTS, f"{name}: {label}.accepts has invalid form {a!r}"

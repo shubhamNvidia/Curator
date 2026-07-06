@@ -33,7 +33,7 @@ import warnings
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
-from nemo_curator.stages.audio._agent_ready import AgentReady
+from nemo_curator.stages.audio._agent_ready import AgentReady, to_json_schema
 from nemo_curator.stages.audio._agent_registry import build_contract, static_contract
 from nemo_curator.stages.audio._conformance import produced_roles
 
@@ -114,7 +114,14 @@ def audio_stage_catalog(*, include_dynamic_defaults: bool = False) -> list[dict[
     entries: list[dict[str, Any]] = []
     for name in list_agent_ready_stages():
         cls = get_agent_ready_stage_class(name)
-        entry: dict[str, Any] = {"name": name, "contract": static_contract(cls).to_dict()}
+        static = static_contract(cls)
+        entry: dict[str, Any] = {
+            "name": name,
+            "contract": static.to_dict(),
+            # A JSON-Schema config form for the stage's params — directly usable
+            # as an agent tool-argument schema (enum/default/x-role included).
+            "params_schema": to_json_schema(static.params),
+        }
         if include_dynamic_defaults:
             try:
                 entry["default_contract"] = build_contract(cls()).to_dict()
