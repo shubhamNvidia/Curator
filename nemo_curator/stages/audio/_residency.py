@@ -17,11 +17,14 @@ from __future__ import annotations
 import contextlib
 import os
 import tempfile
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import soundfile as sf
 
 from nemo_curator.stages.audio.common import ensure_waveform_2d, load_audio_file
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 InputResidency = Literal["file", "waveform", "auto"]
 
@@ -34,12 +37,17 @@ def resolve_audio(  # noqa: PLR0913 (complexity accepted: keyword-only residency
     waveform_key: str = "waveform",
     sample_rate_key: str = "sample_rate",
     mono: bool = True,
+    loader: Callable[..., tuple[Any, int]] | None = None,
 ) -> tuple[Any, int] | None:
     """Return ``(waveform_2d, sample_rate)`` from tensor keys or a file path.
 
     ``auto`` prefers an existing waveform, then falls back to file loading.
     ``waveform`` never falls back to disk. ``file`` always loads from the
     configured path key.
+
+    ``loader`` overrides the file-loading callable (default
+    :func:`~nemo_curator.stages.audio.common.load_audio_file`); stages pass
+    their own module-level symbol so callers can patch it at the stage module.
     """
     waveform = item.get(waveform_key)
     sample_rate = item.get(sample_rate_key)
@@ -50,8 +58,10 @@ def resolve_audio(  # noqa: PLR0913 (complexity accepted: keyword-only residency
         return None
 
     path = item.get(audio_filepath_key)
-    if path and os.path.exists(path):
-        return load_audio_file(path, mono=mono)
+    if path:
+        expanded = os.path.expanduser(str(path))
+        if os.path.exists(expanded):
+            return (loader or load_audio_file)(expanded, mono=mono)
     return None
 
 
@@ -90,9 +100,11 @@ def resolve_audio_path(  # noqa: PLR0913 (complexity accepted: keyword-only resi
     ``register_temp`` the caller is responsible for cleanup itself.
     """
     path = item.get(audio_filepath_key)
+    local_path: str | None = None
     if residency != "waveform" and path:
-        if os.path.exists(path):
-            return path
+        local_path = os.path.expanduser(str(path))
+        if os.path.exists(local_path):
+            return local_path
         # Protocol-prefixed paths (file://, http(s)://, s3://, ...) were handled
         # by the stages' own fsspec machinery before the residency layer existed;
         # keep accepting them when the target exists remotely.
@@ -107,12 +119,15 @@ def resolve_audio_path(  # noqa: PLR0913 (complexity accepted: keyword-only resi
                 pass
 
     if residency == "file":
-        return None
+        # Pre-residency stages handed unverified paths straight to their own
+        # downstream machinery (ffmpeg/NeMo/fsspec) and let it report the
+        # failure; keep that contract instead of gating on os.path.exists.
+        return local_path
 
     waveform = item.get(waveform_key)
     sample_rate = item.get(sample_rate_key)
     if waveform is None or sample_rate is None:
-        return None
+        return local_path
 
     fd, tmp = tempfile.mkstemp(suffix=".wav", dir=temp_dir)
     os.close(fd)

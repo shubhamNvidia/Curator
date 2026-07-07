@@ -24,13 +24,18 @@ sample-rate-from-header behavior (kept as-is for now).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import soundfile as sf
 import torch
 
-from nemo_curator.stages.audio._residency import resolve_audio
+from nemo_curator.stages.audio._residency import cleanup_temp_files, resolve_audio, resolve_audio_path
+
+if TYPE_CHECKING:
+    import pytest
 from nemo_curator.stages.audio.common import resolve_waveform_from_item
 from nemo_curator.stages.audio.filtering.sigmos import _get_audio_numpy_sr
 from nemo_curator.stages.audio.filtering.utmos import _load_waveform_tensor
@@ -147,3 +152,53 @@ def test_common_reads_sr_from_header_without_reloading_waveform(tmp_path: Path):
     assert sr == _SR  # read from the file header
     assert t.shape == (1, 1600)  # kept the provided waveform (not reloaded from file)
     assert item["sample_rate"] == _SR  # written back into the item
+
+
+# --------------------------------------------------------------------------- #
+# resolve_audio_path — tilde expansion + missing-file pass-through
+# (pre-residency stages fed url_to_fs-normalized or raw paths to their own
+# machinery; the residency layer must not be stricter than they were)
+# --------------------------------------------------------------------------- #
+def test_resolve_audio_path_existing_file_returned_verbatim(tmp_path: Path):
+    wav = _wav(tmp_path / "p.wav")
+    assert resolve_audio_path({"audio_filepath": wav}, residency="file") == wav
+
+
+def test_resolve_audio_path_expands_tilde_for_existing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _wav(tmp_path / "home_audio.wav")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    resolved = resolve_audio_path({"audio_filepath": "~/home_audio.wav"}, residency="file")
+    assert resolved == str(tmp_path / "home_audio.wav")
+
+
+def test_resolve_audio_expands_tilde_for_existing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _wav(tmp_path / "home_audio.wav")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    out = resolve_audio({"audio_filepath": "~/home_audio.wav"})
+    assert out is not None
+    _, sr = out
+    assert sr == _SR
+
+
+def test_resolve_audio_path_missing_file_passes_through(tmp_path: Path):
+    missing = str(tmp_path / "not_there.wav")
+    assert resolve_audio_path({"audio_filepath": missing}, residency="file") == missing
+    # auto residency with no waveform fallback also passes the path through
+    assert resolve_audio_path({"audio_filepath": missing}, residency="auto") == missing
+
+
+def test_resolve_audio_path_missing_file_prefers_waveform_fallback(tmp_path: Path):
+    missing = str(tmp_path / "not_there.wav")
+    item = {"audio_filepath": missing, "waveform": torch.zeros(1, 1600), "sample_rate": _SR}
+    temp: list[str] = []
+    resolved = resolve_audio_path(item, residency="auto", register_temp=temp)
+    assert resolved != missing
+    assert temp == [resolved]
+    assert os.path.exists(resolved)
+    cleanup_temp_files(temp)
+    assert not os.path.exists(resolved)
+
+
+def test_resolve_audio_path_no_input_returns_none():
+    assert resolve_audio_path({}, residency="file") is None
+    assert resolve_audio_path({}, residency="auto") is None

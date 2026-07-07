@@ -36,7 +36,7 @@ from loguru import logger
 
 from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, StageContract
 from nemo_curator.stages.audio._residency import produce_audio_filepath, resolve_audio
-from nemo_curator.stages.audio.common import ensure_waveform_2d
+from nemo_curator.stages.audio.common import ensure_waveform_2d, load_audio_file
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.stages.resources import Resources
 from nemo_curator.tasks import AudioTask
@@ -165,6 +165,7 @@ class MonoConversionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 waveform_key=self.waveform_key,
                 sample_rate_key=self.sample_rate_key,
                 mono=False,
+                loader=load_audio_file,  # module-level symbol: patchable at this module, as pre-residency
             )
         except (OSError, RuntimeError) as e:  # corrupt/unreadable audio -> skip the row, don't crash the batch
             logger.error(f"Failed to load audio for {task.data.get(self.audio_filepath_key)!r}: {e}")

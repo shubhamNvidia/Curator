@@ -105,15 +105,21 @@ Interval = tuple[int, int, float]  # (start_ms, end_ms, duration_sec)
 # ------------------------------------------------------------------
 
 
-def _extract_scores(entry: dict) -> dict:
+def _extract_scores(entry: dict, exclude: frozenset[str] = frozenset()) -> dict:
     """Extract quality/filter score fields from a manifest entry.
 
     Returns all keys that are not structural CSV columns (timestamps,
     duration, speaker info), with float values rounded for readability.
     Since TimestampMapper already whitelist-filters the manifest output,
     anything remaining is a quality score or user-defined field.
+    ``exclude`` drops additional keys (the stage's configurable
+    ``output_key`` bookkeeping must never leak into the CSV schema).
     """
-    return {k: round(v, 4) if isinstance(v, float) else v for k, v in entry.items() if k not in _CSV_STRUCTURAL_KEYS}
+    return {
+        k: round(v, 4) if isinstance(v, float) else v
+        for k, v in entry.items()
+        if k not in _CSV_STRUCTURAL_KEYS and k not in exclude
+    }
 
 
 def _get_speaker_label(entry: dict) -> tuple[str, str]:
@@ -155,6 +161,7 @@ def _base_metadata(  # noqa: PLR0913
     start_ms: int,
     end_ms: int,
     dur: float,
+    exclude: frozenset[str] = frozenset(),
 ) -> dict:
     row: dict = {
         "filename": filename,
@@ -170,7 +177,7 @@ def _base_metadata(  # noqa: PLR0913
     num_speakers = entry.get("num_speakers")
     if num_speakers is not None:
         row["num_speakers"] = num_speakers
-    row.update(_extract_scores(entry))
+    row.update(_extract_scores(entry, exclude))
     return row
 
 
@@ -468,8 +475,14 @@ class SegmentExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                         sf.write(output_path, audio, info.samplerate, subtype=SOUNDFILE_FORMATS[self.output_format])
                         # collect ALL written paths — a scalar was last-write-wins
                         # for multi-interval entries (only the final segment's
-                        # path survived, plus a stale path on later failures)
-                        entry.setdefault(self.output_key, []).append(output_path)
+                        # path survived, plus a stale path on later failures);
+                        # a pre-existing scalar (re-run on an augmented manifest)
+                        # is folded into the list instead of crashing .append
+                        written = entry.get(self.output_key)
+                        if not isinstance(written, list):
+                            written = [] if written is None else [written]
+                            entry[self.output_key] = written
+                        written.append(output_path)
                         extracted += 1
                         total_dur += dur
 
@@ -478,7 +491,16 @@ class SegmentExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                             speaker_counts[speaker_id] += 1
 
                         metadata_rows.append(
-                            _base_metadata(out_filename, original_file, entry, seg_idx, start_ms, end_ms, dur)
+                            _base_metadata(
+                                out_filename,
+                                original_file,
+                                entry,
+                                seg_idx,
+                                start_ms,
+                                end_ms,
+                                dur,
+                                exclude=frozenset({self.output_key}),
+                            )
                         )
                         logger.debug(f"  {out_filename} ({start_ms}-{end_ms}ms, {dur:.2f}s)")
                     except Exception as e:  # noqa: BLE001

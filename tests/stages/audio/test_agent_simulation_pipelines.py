@@ -23,6 +23,7 @@ or model downloads.
 
 from __future__ import annotations
 
+import importlib.util
 import inspect
 import json
 import os
@@ -75,15 +76,26 @@ def _install_agent_simulation_stubs() -> None:  # noqa: C901, PLR0915 (complexit
     torchaudio_functional.resample = lambda waveform, _src, _dst: waveform
     torchaudio_pipelines = types.ModuleType("torchaudio.pipelines")
     torchaudio_pipelines.SQUIM_OBJECTIVE = SimpleNamespace(get_model=lambda: lambda batch: (batch, batch, batch))
-    sys.modules["torchaudio"] = torchaudio
-    sys.modules["torchaudio.functional"] = torchaudio_functional
-    sys.modules["torchaudio.pipelines"] = torchaudio_pipelines
+    # Same never-shadow-real rule (see librosa below): a stub torchaudio is not
+    # a package, so any REAL dependent (pyannote.audio, whisperx) importing an
+    # unstubbed torchaudio submodule at runtime would break.
+    if importlib.util.find_spec("torchaudio") is None:
+        sys.modules["torchaudio"] = torchaudio
+        sys.modules["torchaudio.functional"] = torchaudio_functional
+        sys.modules["torchaudio.pipelines"] = torchaudio_pipelines
 
-    librosa = types.ModuleType("librosa")
-    librosa.load = lambda path, sr=None: (sf.read(path, dtype="float32")[0], sf.info(path).samplerate if sr is None else sr)
-    librosa.stft = lambda y, n_fft, hop_length, window: np.zeros((n_fft // 2 + 1, 1), dtype=np.complex64)
-    librosa.power_to_db = lambda power, ref, top_db: np.asarray(power, dtype=np.float32)
-    sys.modules["librosa"] = librosa
+    # Never shadow a REAL librosa: it lazy-imports its own submodules
+    # (librosa.core) through sys.modules, so replacing the entry breaks every
+    # other test module in the session that already bound the real package.
+    if importlib.util.find_spec("librosa") is None:
+        librosa = types.ModuleType("librosa")
+        librosa.load = lambda path, sr=None: (
+            sf.read(path, dtype="float32")[0],
+            sf.info(path).samplerate if sr is None else sr,
+        )
+        librosa.stft = lambda y, n_fft, hop_length, window: np.zeros((n_fft // 2 + 1, 1), dtype=np.complex64)
+        librosa.power_to_db = lambda power, ref, top_db: np.asarray(power, dtype=np.float32)
+        sys.modules["librosa"] = librosa
 
     class _FakeAudioSegment:
         sample_width = 2
@@ -102,17 +114,21 @@ def _install_agent_simulation_stubs() -> None:  # noqa: C901, PLR0915 (complexit
     silero_vad.get_speech_timestamps = lambda *_args, **_kwargs: []
     sys.modules["silero_vad"] = silero_vad
 
-    whisperx = types.ModuleType("whisperx")
-    whisperx_audio = types.ModuleType("whisperx.audio")
-    whisperx_audio.SAMPLE_RATE = 16000
-    whisperx_vads = types.ModuleType("whisperx.vads")
-    whisperx_pyannote = types.ModuleType("whisperx.vads.pyannote")
-    whisperx_pyannote.Pyannote = SimpleNamespace(merge_chunks=lambda segments, *_args, **_kwargs: segments)
-    whisperx_pyannote.load_vad_model = lambda *_args, **_kwargs: lambda _payload: []
-    sys.modules["whisperx"] = whisperx
-    sys.modules["whisperx.audio"] = whisperx_audio
-    sys.modules["whisperx.vads"] = whisperx_vads
-    sys.modules["whisperx.vads.pyannote"] = whisperx_pyannote
+    # Same rule as librosa: never shadow a REAL whisperx — the tests attach
+    # stage-level fakes (stage._vad_model), so the stubs are import-satisfiers
+    # for dep-less CI only; shadowing breaks the gpu-marked whisperx tests.
+    if importlib.util.find_spec("whisperx") is None:
+        whisperx = types.ModuleType("whisperx")
+        whisperx_audio = types.ModuleType("whisperx.audio")
+        whisperx_audio.SAMPLE_RATE = 16000
+        whisperx_vads = types.ModuleType("whisperx.vads")
+        whisperx_pyannote = types.ModuleType("whisperx.vads.pyannote")
+        whisperx_pyannote.Pyannote = SimpleNamespace(merge_chunks=lambda segments, *_args, **_kwargs: segments)
+        whisperx_pyannote.load_vad_model = lambda *_args, **_kwargs: lambda _payload: []
+        sys.modules["whisperx"] = whisperx
+        sys.modules["whisperx.audio"] = whisperx_audio
+        sys.modules["whisperx.vads"] = whisperx_vads
+        sys.modules["whisperx.vads.pyannote"] = whisperx_pyannote
 
     class _FakePyAnnotePipeline:
         @classmethod
@@ -142,12 +158,16 @@ def _install_agent_simulation_stubs() -> None:  # noqa: C901, PLR0915 (complexit
             self.end = end
 
     pyannote_core.Segment = _Segment
-    sys.modules["pyannote"] = types.ModuleType("pyannote")
-    sys.modules["pyannote.audio"] = pyannote_audio
-    sys.modules["pyannote.audio.pipelines"] = types.ModuleType("pyannote.audio.pipelines")
-    sys.modules["pyannote.audio.pipelines.utils"] = types.ModuleType("pyannote.audio.pipelines.utils")
-    sys.modules["pyannote.audio.pipelines.utils.hook"] = pyannote_hook
-    sys.modules["pyannote.core"] = pyannote_core
+    # Same rule: a non-package stand-in for a REAL pyannote.audio breaks its
+    # lazy submodule imports (pyannote.audio.models) in the gpu-marked tests;
+    # the tests here fake at the stage level (pyannote._pipeline) instead.
+    if importlib.util.find_spec("pyannote") is None:
+        sys.modules["pyannote"] = types.ModuleType("pyannote")
+        sys.modules["pyannote.audio"] = pyannote_audio
+        sys.modules["pyannote.audio.pipelines"] = types.ModuleType("pyannote.audio.pipelines")
+        sys.modules["pyannote.audio.pipelines.utils"] = types.ModuleType("pyannote.audio.pipelines.utils")
+        sys.modules["pyannote.audio.pipelines.utils.hook"] = pyannote_hook
+        sys.modules["pyannote.core"] = pyannote_core
 
     class _FakeASRModel:
         @classmethod
@@ -203,30 +223,38 @@ def _install_agent_simulation_stubs() -> None:  # noqa: C901, PLR0915 (complexit
     sys.modules["nemo.collections.asr.parts.submodules.ctc_decoding"] = ctc_mod
     sys.modules["nemo.collections.asr.parts.submodules.rnnt_decoding"] = rnnt_mod
 
-    nmtp = types.ModuleType("nemo_text_processing")
-    tn = types.ModuleType("nemo_text_processing.text_normalization")
-    inv = types.ModuleType("nemo_text_processing.inverse_text_normalization.inverse_normalize")
-    tn.Normalizer = lambda *_args, **_kwargs: _FakeNormalizer()
-    inv.InverseNormalizer = lambda *_args, **_kwargs: _FakeNormalizer()
-    sys.modules["nemo_text_processing"] = nmtp
-    sys.modules["nemo_text_processing.text_normalization"] = tn
-    sys.modules["nemo_text_processing.inverse_text_normalization"] = types.ModuleType(
-        "nemo_text_processing.inverse_text_normalization"
-    )
-    sys.modules["nemo_text_processing.inverse_text_normalization.inverse_normalize"] = inv
+    # Same rule as librosa: an empty stand-in for a REAL nemo_text_processing
+    # breaks tagging/text/test_itn.py's direct submodule import in-session.
+    if importlib.util.find_spec("nemo_text_processing") is None:
+        nmtp = types.ModuleType("nemo_text_processing")
+        tn = types.ModuleType("nemo_text_processing.text_normalization")
+        inv = types.ModuleType("nemo_text_processing.inverse_text_normalization.inverse_normalize")
+        tn.Normalizer = lambda *_args, **_kwargs: _FakeNormalizer()
+        inv.InverseNormalizer = lambda *_args, **_kwargs: _FakeNormalizer()
+        sys.modules["nemo_text_processing"] = nmtp
+        sys.modules["nemo_text_processing.text_normalization"] = tn
+        sys.modules["nemo_text_processing.inverse_text_normalization"] = types.ModuleType(
+            "nemo_text_processing.inverse_text_normalization"
+        )
+        sys.modules["nemo_text_processing.inverse_text_normalization.inverse_normalize"] = inv
 
     opencc = types.ModuleType("opencc")
     opencc.OpenCC = lambda *_args, **_kwargs: _FakeConverter()
     sys.modules["opencc"] = opencc
 
-    transformers = types.ModuleType("transformers")
-    transformers.AutoTokenizer = SimpleNamespace(from_pretrained=lambda *_args, **_kwargs: object())
-    sys.modules.setdefault("transformers", transformers)
+    # setdefault is not enough: in a fresh interpreter the stub occupies the
+    # slot BEFORE real dependents (pyannote.audio -> torchmetrics) import the
+    # real thing. Only stub when the real package is absent.
+    if importlib.util.find_spec("transformers") is None:
+        transformers = types.ModuleType("transformers")
+        transformers.AutoTokenizer = SimpleNamespace(from_pretrained=lambda *_args, **_kwargs: object())
+        sys.modules.setdefault("transformers", transformers)
 
-    hf_hub = types.ModuleType("huggingface_hub")
-    hf_hub.hf_hub_download = lambda *_args, **_kwargs: ""
-    hf_hub.snapshot_download = lambda *_args, **_kwargs: os.getcwd()
-    sys.modules.setdefault("huggingface_hub", hf_hub)
+    if importlib.util.find_spec("huggingface_hub") is None:
+        hf_hub = types.ModuleType("huggingface_hub")
+        hf_hub.hf_hub_download = lambda *_args, **_kwargs: ""
+        hf_hub.snapshot_download = lambda *_args, **_kwargs: os.getcwd()
+        sys.modules.setdefault("huggingface_hub", hf_hub)
 
     sigmos_mod = types.ModuleType("nemo_curator.stages.audio.filtering.sigmos_filter_module.third_party.sigmos.sigmos")
     sigmos_mod.build_sigmos_model = lambda *_args, **_kwargs: _FakeSIGMOSModel()
@@ -1267,16 +1295,22 @@ def test_agent_yaml_audio_data_filter_full_pipeline_dataflow(tmp_path: Path) -> 
     )
 
     assert len(outputs) == 2
-    # Multi-speaker timing: TimestampMapper's clip-relative guard composes the
-    # per-speaker diar segments (concat-time) through the mappings, so each
-    # speaker maps to its OWN original span instead of both speakers being
-    # squeezed into the first clip's [0, 100] (the pre-guard silent-wrong values).
-    speaker_spans = set()
+    # Multi-speaker timing: TimestampMapper maps each per-speaker VAD segment's
+    # start_ms/end_ms through the concat->original mappings as CONCAT-TIME (the
+    # separator emits full-length per-speaker stems, so VAD_Speaker's start/end are
+    # concat-time, not clip-relative). The fake VAD_Speaker returns the same
+    # [0.0, 0.1]s window for every stem, so both speakers map to original [0, 100]ms
+    # here — a fixture limitation, not the mapper. The point verified is that the
+    # mapped start/end is used: an earlier guard instead discarded start/end and
+    # spanned each speaker's diar-segment UNION, which would give (0, 200)/(200, 400)
+    # and duplicate whole-clip rows on real multi-VAD-segment audio. Per-speaker
+    # distinctness is proven directly in
+    # test_timestamp_mapper_multispeaker_maps_distinct_windows below.
     for task in outputs:
         assert isinstance(task, AudioTask)
         assert task.data["original_file"] == str(audio_path)
-        speaker_spans.add((task.data["original_start_ms"], task.data["original_end_ms"]))
-        assert task.data["duration"] == pytest.approx(0.2)
+        assert (task.data["original_start_ms"], task.data["original_end_ms"]) == (0, 100)
+        assert task.data["duration"] == pytest.approx(0.1)
         assert task.data["band_prediction"] == "full_band"
         assert task.data["utmos_mos"] == pytest.approx(4.6)
         assert task.data["sigmos_noise"] == 4.6
@@ -1284,7 +1318,53 @@ def test_agent_yaml_audio_data_filter_full_pipeline_dataflow(tmp_path: Path) -> 
         assert task._metadata["trace_id"] == "audio-data-filter"
         assert "segment_mappings" in task._metadata
         assert "seed" in task._stage_perf
-    assert speaker_spans == {(0, 200), (200, 400)}
+    assert {task.data["speaker_id"] for task in outputs} == {"speaker_0", "speaker_1"}
+
+
+def test_timestamp_mapper_multispeaker_maps_distinct_windows() -> None:
+    """Regression: SpeakerSep->VAD per-speaker segments map to DISTINCT original windows.
+
+    After SpeakerSeparation the separator emits full-length stems (each speaker's
+    audio overlaid on a silent track at its concat-time position), so VAD_Speaker's
+    start_ms/end_ms are concat-time and must be mapped directly through the
+    concat->original mappings. A removed guard used to discard start_ms/end_ms
+    whenever diar_segments were also present and span the diar UNION instead.
+
+    The fixture is DISCRIMINATING: each speaker's VAD start_ms/end_ms is a strict
+    sub-interval of its diar segment, so the two branches produce different output.
+    Direct mapping (the fix) yields the narrow refined window; the removed
+    diar-union guard would yield the wider whole-segment window. Asserting the
+    narrow windows therefore fails on the guarded code and pins the fix.
+    """
+    # Two concat segments; original coords differ from concat so translation is visible.
+    mappings = [
+        {"original_file": "/audio.wav", "original_start_ms": 0, "concat_start_ms": 0, "concat_end_ms": 400},
+        {"original_file": "/audio.wav", "original_start_ms": 1000, "concat_start_ms": 400, "concat_end_ms": 800},
+    ]
+    mapper = TimestampMapperStage(passthrough_keys=["speaker_id"])
+    spans = {}
+    for speaker_id, (start_ms, end_ms), diar in [
+        # VAD window (100,300) sits inside diar seg [0.0,0.4]=concat[0,400] -> fix maps to original (100,300)
+        ("speaker_0", (100, 300), [[0.0, 0.4]]),
+        # VAD window (500,700) sits inside diar seg [0.4,0.8]=concat[400,800] -> fix maps to original (1100,1300)
+        ("speaker_1", (500, 700), [[0.4, 0.8]]),
+    ]:
+        task = AudioTask(
+            dataset_name="multispeaker",
+            data={
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "diar_segments": diar,  # present alongside start/end — must NOT trigger union collapse
+                "speaker_id": speaker_id,
+                "original_file": "/audio.wav",
+            },
+            _metadata={"segment_mappings": mappings},
+        )
+        out = mapper.process(task)
+        assert isinstance(out, AudioTask)  # not dropped
+        spans[speaker_id] = (out.data["original_start_ms"], out.data["original_end_ms"])
+    # narrow refined windows; the removed guard would give (0,400) and (1000,1400)
+    assert spans == {"speaker_0": (100, 300), "speaker_1": (1100, 1300)}
 
 
 def test_agent_speech_tagging_pipeline_with_fake_inference(tmp_path: Path) -> None:
@@ -1520,7 +1600,12 @@ def test_agent_split_join_timestamp_extract_pipeline(tmp_path: Path) -> None:
 
     extraction = SegmentExtractionStage(output_dir=str(tmp_path / "extract"), output_key="agent_extracted_path")
     extracted = extraction.process_batch([task])[0]
-    assert os.path.exists(extracted.data["agent_extracted_path"])
+    # output_key holds the list of ALL written segment paths (a scalar was
+    # last-write-wins for multi-interval entries)
+    extracted_paths = extracted.data["agent_extracted_path"]
+    assert isinstance(extracted_paths, list)
+    assert extracted_paths
+    assert all(os.path.exists(p) for p in extracted_paths)
 
     concat = SegmentConcatenationStage(silence_duration_sec=0.0)
     parent = AudioTask(
@@ -1615,7 +1700,9 @@ def test_agent_validate_input_uses_dict_keys_after_contract_fix(tmp_path: Path) 
     )
 
     assert BandwidthEstimationStage().validate_input(task)
-    assert TorchSquimQualityMetricsStage().validate_input(task)
+    # squim's default filepath key is "resampled_audio_filepath" (tagging
+    # tutorial compat); point it at this task's plain audio_filepath
+    assert TorchSquimQualityMetricsStage(audio_filepath_key="audio_filepath").validate_input(task)
     assert ComputeWERStage().validate_input(task)
 
 
@@ -2360,7 +2447,12 @@ def test_agent_or_shaped_stages_accept_each_declared_input_shape(tmp_path: Path)
     audio_path = _write_wav(tmp_path / "or.wav", sample_rate=16000)
 
     squim = TorchSquimQualityMetricsStage(audio_filepath_key="agent_audio_path", segments_key="agent_segments")
-    assert squim.validate_input(AudioTask(data={"agent_segments": [{"start": 0, "end": 1}]}))
+    # both declared read shapes include the filepath (SQUIM always loads the
+    # audio file; segments alone are NOT a sufficient shape)
+    assert not squim.validate_input(AudioTask(data={"agent_segments": [{"start": 0, "end": 1}]}))
+    assert squim.validate_input(
+        AudioTask(data={"agent_audio_path": str(audio_path), "agent_segments": [{"start": 0, "end": 1}]})
+    )
     assert squim.validate_input(AudioTask(data={"agent_audio_path": str(audio_path)}))
     assert not squim.validate_input(AudioTask(data={}))
 

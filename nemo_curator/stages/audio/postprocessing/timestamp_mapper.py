@@ -189,47 +189,32 @@ class TimestampMapperStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             preserves_upstream_keys=False,
         )
 
-    def process(self, task: AudioTask) -> AudioTask | list[AudioTask]:  # noqa: PLR0911 (complexity accepted: one early return per mapping fallback tier)
+    def process(self, task: AudioTask) -> AudioTask | list[AudioTask]:
         mappings = (task._metadata or {}).get(self.mappings_key)
         item = task.data
 
         if mappings:
-            # Priority: a refined per-segment range (start_ms/end_ms — e.g. from a
-            # single VAD pass) is the most precise timing, so map it through the
-            # concat->original mappings FIRST. Only when it is absent do we fall
-            # back to composing coarser diar segments (concat-time) through the
-            # mappings (e.g. SpeakerSep with no trailing VAD).
+            # start_ms/end_ms (from a VAD pass) is the most precise per-segment
+            # range, so map it through the concat->original mappings FIRST; fall
+            # back to composing coarser diar_segments only when it is absent
+            # (e.g. SpeakerSep with no trailing VAD).
             #
-            # Multi-speaker guard: after SpeakerSeparation, start_ms/end_ms are
-            # 0-based WITHIN each *extracted* speaker clip, so mapping them as if
-            # they were concat-time silently drops the speaker's offset. When
-            # diar_segments (concat-time) are ALSO present — the SpeakerSep->VAD
-            # signature — we compose via diar_segments and warn instead, rather
-            # than emit plausible-but-wrong timestamps. A fully-accurate fix still
-            # needs SpeakerSeparation to emit a clip->concat mapping (tracked
-            # separately). Single-speaker VAD->Concat has start_ms/end_ms but NO
-            # diar_segments, so it keeps the precise refined path unchanged.
+            # Coordinate frame: VAD always runs on a FULL-LENGTH signal — either
+            # the concatenated stream (single-speaker VAD->Concat) or the
+            # separator's full-length per-speaker stem (SpeakerSep->VAD; the
+            # separator overlays each speaker's audio onto a silent track at its
+            # concat-time position, so the stem is concat-length, NOT a compacted
+            # 0-based clip). So start_ms/end_ms are ALWAYS concat-time here and map
+            # directly — same for single- and multi-speaker. (A future separator
+            # that emitted compacted 0-based speaker clips would have to tag its
+            # coordinate frame explicitly so we could add the offset before
+            # mapping; we must NOT infer that from the mere presence of
+            # diar_segments — doing so collapsed every per-speaker VAD sub-segment
+            # onto the diar union and produced duplicate whole-clip rows.)
             start_ms = item.get(self.start_ms_key)
             end_ms = item.get(self.end_ms_key)
             diar_segments = item.get(self.diar_segments_key)
-            if start_ms is not None and end_ms is not None and diar_segments:
-                # Multi-speaker (SpeakerSep -> VAD): start_ms/end_ms are clip-relative,
-                # so composing them as concat-time is silently wrong. diar_segments
-                # ARE concat-time — compose those instead and warn.
-                logger.warning(
-                    f"[TimestampMapper] Task {task.task_id} has clip-relative "
-                    f"start_ms/end_ms alongside diar_segments (multi-speaker); composing "
-                    f"via diar segments and dropping the clip-relative refinement "
-                    f"(needs a clip->concat mapping for full accuracy)."
-                )
-                result = self._build_output_from_diar_and_mappings(item, diar_segments, mappings)
-                if result is None:
-                    logger.warning(
-                        f"[TimestampMapper] No overlapping mappings for diar segments in task "
-                        f"{task.task_id}, dropping"
-                    )
-                    return []
-            elif start_ms is not None and end_ms is not None:
+            if start_ms is not None and end_ms is not None:
                 if end_ms <= start_ms:
                     logger.warning(
                         f"[TimestampMapper] Skipping task with invalid range: start_ms={start_ms}, end_ms={end_ms}"
