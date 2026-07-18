@@ -1,0 +1,21 @@
+stage_id: ResampleAudioStage
+category: preprocess
+summary: "Resample/convert audio to a target sample rate (and format) via ffmpeg."
+tags: [needs_ffmpeg, writes_disk]
+model_id: null
+domain: {language: any, style: any}
+constraints: {}
+resource: {gpu_mem_gb: 0.0, throughput_hint: "CPU + ffmpeg", gpu_optional: false}
+use_cases:
+  good_for: ["normalizing a mixed-sample-rate corpus to a model's expected rate (e.g. 16 kHz for ASR)"]
+  avoid_for: ["data already at the target rate (skip to save I/O)"]
+composition:
+  typical_upstream: [ManifestReader, CreateInitialManifestFleursStage]
+  typical_downstream: [InferenceAsrNemoStage, VADSegmentationStage, InferenceSortformerStage]
+params_of_note:
+  output_sample_rate: "target rate in Hz (e.g. 16000)"
+notes:
+  - "Requires ffmpeg on PATH. Placing resample once, upstream, avoids each model stage re-resampling."
+caveats:
+  - "Writes converted files to disk."
+provenance: {model_card_url: null, card_version: 1, last_validated: "2026-07-12"}

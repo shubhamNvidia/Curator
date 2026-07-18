@@ -1,0 +1,22 @@
+# Runnable recipe template (Recipe IR). Fill inputs.* before running.
+# Referenced by knowledge/blueprints/fleurs.yaml.
+recipe_id: fleurs-asr-wer-filter
+name: fleurs_asr_filter
+intent: "download FLEURS, transcribe, drop rows whose WER exceeds a threshold"
+preset: english_parakeet
+inputs:
+  raw_data_dir: "REQUIRED: staging dir for the FLEURS download"
+  output_manifest: "REQUIRED: output .jsonl path"
+stages:
+  - ref: CreateInitialManifestFleursStage
+    params: {lang: "en_us", split: "dev", raw_data_dir: "REQUIRED_raw_data_dir", batch_size: 4}
+  - ref: InferenceAsrNemoStage
+    params: {model_name: "nvidia/parakeet-tdt-0.6b-v2", batch_size: 16}
+  - ref: GetPairwiseWerStage
+    params: {}
+  - ref: GetAudioDurationStage
+    params: {}
+  - ref: PreserveByValueStage
+    params: {input_value_key: "wer_pct", target_value: 25.0, operator: "le"}
+  - ref: ManifestWriterStage
+    params: {output_path: "REQUIRED_output_manifest"}

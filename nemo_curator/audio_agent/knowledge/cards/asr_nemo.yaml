@@ -1,0 +1,25 @@
+stage_id: InferenceAsrNemoStage
+category: transcribe
+summary: "Batched ASR transcription with a NeMo model; writes pred_text."
+tags: [needs_gpu, needs_internet_first_run]
+model_id: "nvidia/parakeet-tdt-0.6b-v2 (or any NeMo ASR checkpoint, incl. language-specific FastConformer)"
+domain: {language: "model-dependent (e.g. en for parakeet)", style: read+conversational}
+constraints:
+  supported_sample_rates: [16000]
+  input_duration_sweetspot_sec: {min: 0.5, max: 40.0}
+resource: {gpu_mem_gb: 4.0, throughput_hint: "batched GPU; batch_size 16-64 typical", gpu_optional: false}
+use_cases:
+  good_for: ["transcribing speech to text", "producing pred_text for WER/CER filtering"]
+  avoid_for: ["languages the chosen checkpoint was not trained on", "non-16kHz input without an upstream resample"]
+composition:
+  typical_upstream: [ResampleAudioStage, VADSegmentationStage, SplitLongAudioStage]
+  typical_downstream: [GetPairwiseWerStage, ComputeWERStage, InverseTextNormalizationStage]
+params_of_note:
+  model_name: "the ASR checkpoint id (choose per language)"
+  batch_size: "files per GPU call; 16-64 typical"
+notes:
+  - "Language coverage is a checkpoint property (model-card fact), not derivable from source; pick the checkpoint to match the data's language."
+  - "WER/CER filtering requires reference transcripts in the source manifest; if absent, WER is unproducible."
+presets:
+  english_parakeet: {model_name: "nvidia/parakeet-tdt-0.6b-v2", batch_size: 16}
+provenance: {model_card_url: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2", card_version: 1, last_validated: "2026-07-12"}

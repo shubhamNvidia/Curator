@@ -1,0 +1,92 @@
+# Audio-agent eval harness — seed NL queries (P1).
+#
+# The planner is host-driven, so this harness asserts on the DETERMINISTIC oracle
+# the host relies on (validity of the gold recipe, unproducible roles, and
+# capability coverage) rather than on an LLM. Each query carries a gold recipe
+# (a library `recipe_ref` or an inline `recipe`) plus `expect`:
+#   validate_ok: bool        -> aa.validate(recipe).ok must equal this
+#   runnable: bool           -> aa.validate(recipe).runnable must equal this
+#   has_code: str            -> a validate issue with this code must be present
+#   unproducible_role: str   -> the role must be unproducible in the catalog
+#   no_stage_for: [words]    -> discover must contain no stage matching these words
+#                               (deterministic proxy for "the agent must refuse/redirect")
+#
+# Categories: core (happy path), extended (more shapes), negative/guarded.
+
+queries:
+  - id: clean_speech_quality
+    label: core
+    prompt: "I have a folder of WAVs, give me cleaner speech data (I don't know which checks to use)."
+    recipe_ref: readspeech_quality
+    expect: {validate_ok: true, runnable: true}
+
+  - id: asr_wer_filter
+    label: core
+    prompt: "Transcribe FLEURS and drop rows with high WER."
+    recipe_ref: fleurs_asr_filter
+    expect: {validate_ok: true, runnable: true}
+
+  - id: alm_windows
+    label: core
+    prompt: "Build audio-language-model training windows from my diarized manifest."
+    recipe_ref: alm_windowing
+    expect: {validate_ok: true, runnable: true}
+
+  - id: annotate_duration
+    label: extended
+    prompt: "Add audio duration to each row of my manifest and export JSONL."
+    recipe:
+      stages:
+        - {ref: ManifestReader, params: {manifest_path: "REQUIRED"}}
+        - {ref: GetAudioDurationStage, params: {}}
+        - {ref: AudioToDocumentStage, params: {}}
+    expect: {validate_ok: true, runnable: true}
+
+  - id: vad_then_quality
+    label: extended
+    prompt: "Split my audio into speech segments and score each segment's quality."
+    recipe:
+      stages:
+        - {ref: ManifestReader, params: {manifest_path: "REQUIRED"}}
+        - {ref: VADSegmentationStage, params: {nested: false}}
+        - {ref: UTMOSFilterStage, params: {mos_threshold: 3.0, input_residency: "waveform", action: "annotate"}}
+        - {ref: AudioToDocumentStage, params: {}}
+    expect: {validate_ok: true, runnable: true}
+
+  - id: mono_resample
+    label: extended
+    prompt: "Convert my stereo audio to mono at 16 kHz."
+    recipe:
+      stages:
+        - {ref: ManifestReader, params: {manifest_path: "REQUIRED"}}
+        - {ref: MonoConversionStage, params: {output_sample_rate: 16000}}
+        - {ref: AudioToDocumentStage, params: {}}
+    expect: {validate_ok: true, runnable: true}
+
+  - id: diarize_speakers
+    label: extended
+    prompt: "Diarize my meeting recordings (who spoke when)."
+    recipe:
+      stages:
+        - {ref: ManifestReader, params: {manifest_path: "REQUIRED"}}
+        - {ref: InferenceSortformerStage, params: {model_name: "nvidia/diar_sortformer_4spk-v1"}}
+        - {ref: AudioToDocumentStage, params: {}}
+    expect: {validate_ok: true}
+
+  - id: unknown_stage
+    label: negative
+    prompt: "Denoise my audio with the MagicDenoiser stage."
+    recipe:
+      stages:
+        - {ref: MagicDenoiserStage, params: {}}
+    expect: {validate_ok: false, has_code: unknown_stage}
+
+  - id: wer_needs_transcripts
+    label: guarded
+    prompt: "Compute WER, but my manifest has no reference transcripts."
+    expect: {unproducible_role: reference_text}
+
+  - id: refuse_emotion_labeling
+    label: negative
+    prompt: "Label the emotion and accent of each speaker."
+    expect: {no_stage_for: [emotion, accent]}

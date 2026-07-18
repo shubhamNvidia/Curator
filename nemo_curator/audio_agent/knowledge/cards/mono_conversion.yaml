@@ -1,0 +1,18 @@
+stage_id: MonoConversionStage
+category: preprocess
+summary: "Convert to mono and (optionally) verify/resample to a target sample rate."
+tags: [writes_disk]
+model_id: null
+domain: {language: any, style: any}
+constraints: {}
+resource: {gpu_mem_gb: 0.0, throughput_hint: "CPU (scipy/soundfile)", gpu_optional: false}
+use_cases:
+  good_for: ["normalizing stereo/multi-channel input to mono before models", "first step of a quality-filter chain"]
+  avoid_for: ["data already mono at the target rate"]
+composition:
+  typical_upstream: [ManifestReader, CreateInitialManifestReadSpeechStage]
+  typical_downstream: [VADSegmentationStage, BandFilterStage, UTMOSFilterStage, SIGMOSFilterStage]
+params_of_note:
+  output_sample_rate: "target rate (e.g. 48000 or 16000)"
+  strict_sample_rate: "if True, enforce the target rate"
+provenance: {model_card_url: null, card_version: 1, last_validated: "2026-07-12"}

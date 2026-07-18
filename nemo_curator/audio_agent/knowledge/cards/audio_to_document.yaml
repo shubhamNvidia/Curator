@@ -1,0 +1,18 @@
+stage_id: AudioToDocumentStage
+category: export
+summary: "Aggregate AudioTasks into a DocumentBatch DataFrame, stripping tensors/audio blobs."
+tags: [sink, sanitizes_output]
+model_id: null
+domain: {language: any, style: any}
+constraints:
+  batch_size: {fixed: null, reason: "batch-only stage; process() raises, use process_batch"}
+resource: {gpu_mem_gb: 0.0, throughput_hint: "CPU; aggregates a batch into one DataFrame", gpu_optional: false}
+use_cases:
+  good_for: ["the sanctioned bridge before a JSON/JSONL writer", "making task data serialization-safe"]
+  avoid_for: ["mid-pipeline (place it just before the writer)"]
+composition:
+  typical_upstream: [UTMOSFilterStage, SIGMOSFilterStage, GetAudioDurationStage, TimestampMapperStage]
+  typical_downstream: [JsonlWriter, ManifestWriterStage]
+notes:
+  - "Sanitizes output: strips torch tensors / audio arrays / segments, so it is the correct thing to place before a serialize-as-JSON sink when a resident waveform may be present (avoids tensor_into_sink at json.dumps)."
+provenance: {model_card_url: null, card_version: 1, last_validated: "2026-07-12"}

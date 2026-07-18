@@ -1,0 +1,23 @@
+stage_id: InferenceSortformerStage
+category: diarize
+summary: "Speaker diarization (who spoke when) with NVIDIA Sortformer; passthrough or fan-out."
+tags: [needs_gpu, needs_internet_first_run, fanout]
+model_id: "nvidia/diar_sortformer_4spk-v1 (streaming variant: diar_streaming_sortformer_4spk-v2.1)"
+domain: {language: en, style: conversational}
+constraints:
+  max_speakers: 4
+  supported_sample_rates: [16000]
+  batch_size: {fixed: 1, reason: "streaming variant keeps per-clip FIFO state; batch >1 corrupts it"}
+  input_duration_sweetspot_sec: {min: 5.0, max: 3600.0}
+resource: {gpu_mem_gb: 2.0, throughput_hint: "GPU strongly recommended; CPU is very slow", gpu_optional: true}
+use_cases:
+  good_for: ["diarizing meetings/calls/podcasts with up to 4 speakers", "per-speaker segmentation"]
+  avoid_for: [">4 speakers", "music", "non-English (accuracy drops)"]
+composition:
+  typical_upstream: [MonoConversionStage, ResampleAudioStage]
+  typical_downstream: [MergeAlignmentDiarizationStage, VADSegmentationStage, AudioToDocumentStage]
+params_of_note:
+  model_name: "the Sortformer checkpoint id"
+notes:
+  - "Model constraints (4-speaker cap, batch_size=1 FIFO, 16 kHz, English-conversational training) are model-card facts, not in the stage source."
+provenance: {model_card_url: "https://huggingface.co/nvidia/diar_sortformer_4spk-v1", card_version: 1, last_validated: "2026-07-12"}

@@ -1,0 +1,29 @@
+# Capability card: model/semantic facts that a stage's Python source cannot reveal.
+stage_id: UTMOSFilterStage
+category: quality
+summary: "Predict UTMOS mean-opinion-score (MOS) and filter/annotate audio by quality."
+tags: [produces_score, is_filter, needs_internet_first_run]
+model_id: "tarepan/SpeechMOS:utmos22_strong (torch.hub)"
+domain: {language: any, style: speech}
+constraints:
+  supported_sample_rates: [16000]   # audio is internally resampled to 16 kHz for inference
+  input_duration_sweetspot_sec: {min: 1.0, max: 30.0}
+resource: {gpu_mem_gb: 1.5, throughput_hint: "fast on GPU; CPU fallback is slower", gpu_optional: true}
+use_cases:
+  good_for: ["gate speech clips by overall perceptual quality", "TTS/ASR data curation"]
+  avoid_for: ["music or non-speech", "very short (<1s) clips"]
+composition:
+  typical_upstream: [MonoConversionStage, ResampleAudioStage, VADSegmentationStage]
+  typical_downstream: [SIGMOSFilterStage, AudioToDocumentStage]
+params_of_note:
+  mos_threshold: "minimum MOS to keep (0-5). TTS: >=4.0; ASR/general: >=3.4; max retention: >=2.5"
+  action: "'filter' drops below threshold; 'annotate' keeps all and only writes the score"
+  mode: "'task' (whole file), 'segments' (per nested segment), or 'auto'"
+presets:
+  tts_reference: {mos_threshold: 4.0}
+  asr_finetune: {mos_threshold: 3.4}
+  max_retention: {mos_threshold: 2.5}
+caveats:
+  - "Downloads the model from torch.hub on first run (needs network once)."
+  - "Score is a predictor of human MOS, not a ground-truth measurement."
+provenance: {model_card_url: "https://github.com/tarepan/SpeechMOS", card_version: 1, last_validated: "2026-07-12"}

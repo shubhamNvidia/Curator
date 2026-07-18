@@ -1,0 +1,26 @@
+# Runnable recipe template (Recipe IR). Fill inputs.* before running.
+# Referenced by knowledge/blueprints/alm.yaml.
+recipe_id: alm-windowing
+name: alm_windowing
+intent: "build audio-language-model training windows from a diarized manifest, then filter overlaps"
+inputs:
+  manifest_path: "REQUIRED: input JSONL manifest with segments"
+  output_manifest: "REQUIRED: output .jsonl path"
+stages:
+  - ref: ManifestReader
+    params: {manifest_path: "REQUIRED_manifest_path", files_per_partition: 1}
+  - ref: ALMDataBuilderStage
+    params:
+      target_window_duration: 120.0
+      tolerance: 0.1
+      min_sample_rate: 16000
+      min_bandwidth: 8000
+      min_speakers: 2
+      max_speakers: 5
+      truncation: true
+      drop_fields: "words"
+      drop_fields_top_level: "words,segments"
+  - ref: ALMDataOverlapStage
+    params: {overlap_percentage: 50, target_duration: 120.0}
+  - ref: ManifestWriterStage
+    params: {output_path: "REQUIRED_output_manifest"}

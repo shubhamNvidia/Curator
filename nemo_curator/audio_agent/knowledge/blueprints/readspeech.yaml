@@ -1,0 +1,33 @@
+blueprint_id: readspeech-quality-filter
+intent: "curate clean speech from a raw WAV folder by quality; no transcription"
+data_assumptions: {input: "folder of WAV (48kHz, mono or stereo)", transcripts: absent, sr: 48000}
+produces: "JSONL manifest with per-item quality scores + timestamps"
+recipe_ref: recipes/readspeech_quality.yaml
+
+# Intent -> flags -> resulting shape. The AudioDataFilterStage composite auto-wires the topology.
+topology_selection:
+  rule: "output granularity decides which flags to enable"
+  options:
+    - {intent: "whole-file scores", flags: [], shape: "Mono -> Filters -> TimestampMapper"}
+    - {intent: "per-speech-segment scores", flags: [vad], shape: "Mono -> VAD(fanout) -> Filters -> TimestampMapper"}
+    - {intent: "per-speaker scores", flags: [speaker_separation], shape: "Mono -> Filters -> SpeakerSep(fanout) -> Filters -> TimestampMapper"}
+    - {intent: "per-speaker-segment", flags: [vad, speaker_separation], shape: "Mono -> VAD(nested) -> Filters -> SegConcat -> SpeakerSep -> VAD -> Filters -> TimestampMapper"}
+
+stages:
+  - {ref: CreateInitialManifestReadSpeechStage, tag: enforced, why_here: "source: scans the folder and produces audio_filepath"}
+  - {ref: MonoConversionStage, tag: advisory, why_here: "normalize to mono + one SR once, upfront (downstream models assume mono)"}
+  - {ref: VADSegmentationStage, tag: advisory, why_here: "segment speech so scores are per-segment; this is a granularity choice, not a data dependency"}
+  - {ref: BandFilterStage, tag: advisory, why_here: "cheapest filter (CPU) first; cull low-fidelity before GPU work"}
+  - {ref: UTMOSFilterStage, tag: advisory, why_here: "MOS gate"}
+  - {ref: SIGMOSFilterStage, tag: advisory, why_here: "7-dim gate; MOST aggressive -- last = cheap->expensive, first = max early cull (validator does not constrain this order)"}
+  - {ref: ManifestWriterStage, tag: enforced, why_here: "sink; TimestampMapper upstream already stripped non-serializable keys"}
+
+pitfalls:
+  - "no transcripts here -> cannot add ASR/WER; use the fleurs blueprint for that"
+  - "all filters at default ~= 23% pass rate; SIGMOS dominates the drop"
+  - "don't skip resample/mono on 48k stereo data"
+presets:
+  tts_reference: {utmos_mos_threshold: 4.0}
+  asr_finetune: {utmos_mos_threshold: 3.4}
+  max_retention: {utmos_mos_threshold: 2.5}
+provenance: {derived_from: "tutorials/audio/readspeech", version: 1, validated: true}

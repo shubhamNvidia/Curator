@@ -1,0 +1,137 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Typed RunReport — the evidence artifact (full PRD field set).
+
+Carries recipe_id + config_hash, Curator version, dependency mode, data profile,
+per-stage metrics, accepted/rejected + per-filter counts, failure reasons +
+examples, output paths, a logs pointer, and a next-action. Built from the tasks
+a pipeline returns; fixes the fan-out double-count by aggregating one
+StagePerfStats per (stage, source) rather than summing over every child task.
+"""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from typing import Any
+
+from nemo_curator.audio_agent.contracts import _clean
+
+
+@dataclass
+class RunReport:
+    """Evidence-backed record of a run (or smoke)."""
+
+    recipe_id: str | None = None
+    config_hash: str | None = None
+    curator_version: str = ""
+    dependency_mode: str = ""
+    data_profile: dict[str, Any] | None = None
+    input_count: int = 0
+    accepted: int = 0
+    rejected: int = 0
+    per_filter_counts: dict[str, Any] = field(default_factory=dict)
+    per_stage_metrics: dict[str, Any] = field(default_factory=dict)
+    failure_reasons: list[dict[str, Any]] = field(default_factory=list)
+    examples: list[dict[str, Any]] = field(default_factory=list)
+    output_paths: list[str] = field(default_factory=list)
+    logs_pointer: str = ""
+    elapsed_sec: float = 0.0
+    next_action: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return _clean(asdict(self))
+
+
+def _dedup_stage_perf(tasks: list[Any]) -> dict[str, Any]:
+    """Aggregate per-stage metrics WITHOUT the fan-out double-count.
+
+    The backend appends the same StagePerfStats to every child of a fan-out
+    batch, so summing over all output tasks over-counts. We de-duplicate by the
+    identity of each StagePerfStats object before aggregating.
+    """
+    import numpy as np
+
+    seen: set[int] = set()
+    by_stage: dict[str, dict[str, list[float]]] = {}
+    for task in tasks or []:
+        for perf in getattr(task, "_stage_perf", None) or []:
+            if id(perf) in seen:
+                continue
+            seen.add(id(perf))
+            metrics = by_stage.setdefault(perf.stage_name, {})
+            for name, value in perf.items():
+                metrics.setdefault(name, []).append(float(value))
+    out: dict[str, Any] = {}
+    for stage, metrics in by_stage.items():
+        out[stage] = {}
+        for name, vals in metrics.items():
+            arr = np.asarray(vals, dtype=float)
+            out[stage][name] = {"sum": float(arr.sum()), "mean": float(arr.mean()), "count": int(arr.size)}
+    return out
+
+
+def _filter_counts(per_stage: dict[str, Any]) -> dict[str, Any]:
+    """Extract accept/reject accounting from stages that log it (custom.* metrics)."""
+    counts: dict[str, Any] = {}
+    for stage, metrics in per_stage.items():
+        entry = {}
+        for key in ("custom.input_count", "custom.output_count", "custom.filtered_count"):
+            if key in metrics:
+                entry[key.replace("custom.", "")] = metrics[key]["sum"]
+        if entry:
+            counts[stage] = entry
+    return counts
+
+
+def build_run_report(  # noqa: PLR0913 - a report intentionally gathers many fields
+    *,
+    recipe: Any,  # noqa: ANN401
+    result_tasks: list[Any] | None,
+    data_profile: dict[str, Any] | None = None,
+    env_profile: dict[str, Any] | None = None,
+    output_paths: list[str] | None = None,
+    elapsed_sec: float = 0.0,
+    failures: list[dict[str, Any]] | None = None,
+    logs_pointer: str = "",
+    next_action: str = "",
+    examples: list[dict[str, Any]] | None = None,
+) -> RunReport:
+    """Assemble a RunReport from a pipeline's returned tasks and the run context."""
+    result_tasks = result_tasks or []
+    per_stage = _dedup_stage_perf(result_tasks)
+    accepted = len(result_tasks)
+    input_count = int((data_profile or {}).get("num_files", 0)) or accepted
+    dep_mode = ""
+    if env_profile:
+        dep_mode = "cuda12" if env_profile.get("has_gpu") else "cpu"
+
+    return RunReport(
+        recipe_id=getattr(recipe, "recipe_id", None),
+        config_hash=getattr(recipe, "config_hash", None),
+        curator_version=(env_profile or {}).get("curator_version", ""),
+        dependency_mode=dep_mode,
+        data_profile=data_profile,
+        input_count=input_count,
+        accepted=accepted,
+        rejected=max(0, input_count - accepted),
+        per_filter_counts=_filter_counts(per_stage),
+        per_stage_metrics=per_stage,
+        failure_reasons=failures or [],
+        examples=examples or [],
+        output_paths=output_paths or [],
+        logs_pointer=logs_pointer,
+        elapsed_sec=round(elapsed_sec, 3),
+        next_action=next_action,
+    )

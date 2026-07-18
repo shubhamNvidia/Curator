@@ -1,0 +1,70 @@
+---
+description: Build and run NeMo Curator audio curation pipelines from a natural-language goal using the host-driven audio_agent tool core (route -> validate -> smoke -> confirm -> run -> report). Use for any audio data curation / quality-filter / ASR / diarization / ALM request.
+globs: nemo_curator/audio_agent/**,nemo_curator/stages/audio/**,eval/audio/**
+alwaysApply: false
+---
+
+# Audio Curation Agent (P1) — Cursor rule
+
+You (the Cursor model) are the planner and critic. `nemo_curator.audio_agent` is the
+deterministic tool core that grounds every decision. Full instructions:
+[SKILL.md](mdc:.claude/skills/audio-curation/SKILL.md) and
+[AGENTS.md](mdc:nemo_curator/audio_agent/AGENTS.md).
+
+All verbs print JSON. IMPORTANT: run them with the repo virtualenv interpreter
+(base `python` lacks Curator's deps) — use
+`/localhome/local-shbhawsar/ADV/Curator/.venv/bin/python -m nemo_curator.audio_agent ...`
+(or `source .venv/bin/activate` first). Add `2>/dev/null` to see just the JSON.
+
+```bash
+python -m nemo_curator.audio_agent discover            # stages (name, category, one-liner)
+python -m nemo_curator.audio_agent catalog-tree        # L0 category tree (route over this)
+python -m nemo_curator.audio_agent cards --category quality          # L1 one-liners
+python -m nemo_curator.audio_agent cards --names UTMOSFilterStage    # L2 full cards
+python -m nemo_curator.audio_agent context --goal '{...}' --data DATA
+python -m nemo_curator.audio_agent validate --recipe R.yaml --data DATA
+python -m nemo_curator.audio_agent smoke --recipe R.yaml --sample 10 --data DATA
+python -m nemo_curator.audio_agent run --recipe R.yaml --confirm <hash> --data DATA
+python -m nemo_curator.audio_agent report --output OUT --data DATA
+```
+
+## Golden rules
+
+- Never invent stage/param names — only use what `discover`/`cards`/`describe` return.
+- 0 silent full-scale runs: never `run --confirm` until the user approves after seeing a
+  smoke result + scale estimate. Pass the recipe `config_hash` to `--confirm` (integrity).
+- Evidence only: no lift claims without before/after numbers from `report`.
+- Refuse/redirect: subjective labeling (gender/accent/emotion), model training/eval/deploy,
+  large runs without confirmation. Offer a safe alternative.
+- User-facing questions only: never ask about internal params (thresholds, keys, residency,
+  batch size, model IDs). Ask outcome-level ("studio/broadcast/general?", language, format) and
+  resolve via card `anchors`/`presets`. Module choice: compare on card facts, then auto/recommend/ask
+  (ask only if material + preference-dependent + not inferable).
+
+## Loop
+
+1. Interpret + clarify the goal (task, domain, quality bar, output). Refuse if out of scope.
+2. Inspect: `context --data DATA` (data profile + env + matched blueprints). Report findings.
+3. Route coarse-to-fine: `catalog-tree` -> prune categories -> `cards --category` ->
+   `cards --names` -> select stages. Prefer adapting a matched blueprint (adapt, don't copy).
+   Overlapping stages: compare on card facts -> auto/recommend/ask.
+4. Plan -> `validate` -> fix issues -> re-validate (<= 3). A gap (unproduced role) means the
+   card set was incomplete -> targeted re-retrieve (that role's category / role graph), don't
+   stop at the first set. This is the retrieve<->plan loop.
+5. `smoke --sample N` -> show retained/rejected + examples; adjust if goals unmet (<= 2).
+6. Present plan + smoke + estimate, get user approval, then `run --confirm <hash>`.
+7. Summarize the `report`; propose a next action.
+
+## Execution note
+
+`smoke`/`run` need a Ray cluster. Pass `--bootstrap-ray` and the agent starts a
+correctly-configured local head itself (free port, plasma on /tmp, API limit) —
+no manual setup:
+
+```bash
+python -m nemo_curator.audio_agent smoke --recipe R.yaml --sample 10 --data DATA --bootstrap-ray
+python -m nemo_curator.audio_agent run   --recipe R.yaml --confirm <hash> --data DATA --bootstrap-ray
+```
+
+If a cluster already exists, set `RAY_ADDRESS` and omit `--bootstrap-ray` (it is
+respected and never clobbered).

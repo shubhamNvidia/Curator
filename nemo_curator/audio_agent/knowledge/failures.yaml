@@ -1,0 +1,68 @@
+# Failure taxonomy (symptom -> cause -> fix). The classifier (failures.py) matches
+# a raw error string against `symptom_signature` (substring or regex, lowercased)
+# and returns the entry. Feeds both the Critic (structured re-plan directive) and
+# the run report (triage). `auto_fix` is a machine-actionable hint when available.
+
+failures:
+  - code: unreadable_file
+    symptom_signature: ["error opening", "format not recognised", "soundfileerror", "failed to load audio", "unable to open"]
+    likely_cause: "corrupt/truncated/unsupported audio file"
+    layer: data
+    auto_fix: null
+    user_guidance: "drop or re-encode the offending files; check the manifest paths point to valid audio"
+
+  - code: sample_rate_mismatch
+    symptom_signature: ["sample rate", "sampling rate", "expected .* hz", "resample"]
+    likely_cause: "input sample rate not supported by a model stage"
+    layer: data
+    auto_fix: "insert ResampleAudioStage/MonoConversionStage(output_sample_rate=<supported>) upstream"
+    user_guidance: "resample the corpus to the model's supported rate (see the stage card)"
+
+  - code: missing_dependency
+    symptom_signature: ["modulenotfounderror", "no module named", "importerror", "cannot import name"]
+    likely_cause: "an optional audio dependency for this stage is not installed"
+    layer: env
+    auto_fix: "install the audio extra (audio_cpu or audio_cuda12)"
+    user_guidance: "uv sync --extra audio_cuda12 (GPU) or audio_cpu (CPU)"
+
+  - code: model_auth_or_download
+    symptom_signature: ["401", "403", "unauthorized", "gated", "huggingface", "hf_token", "connection error", "failed to download", "could not reach"]
+    likely_cause: "model download blocked (no network on first run, or a gated/authenticated checkpoint)"
+    layer: model
+    auto_fix: null
+    user_guidance: "ensure network on first run and set HF_TOKEN for gated models; models cache after first download"
+
+  - code: out_of_memory
+    symptom_signature: ["out of memory", "cuda out of memory", "oom", "cublas_status_alloc_failed"]
+    likely_cause: "GPU/host memory exhausted for the batch or model"
+    layer: exec
+    auto_fix: "lower batch_size (or reduce sample/max_samples), or use a smaller model"
+    user_guidance: "reduce batch_size, process fewer files at once, or move to a larger-VRAM GPU"
+
+  - code: executor_error
+    symptom_signature: ["ray", "actor", "xenna", "worker died", "af_unix path length", "raylet"]
+    likely_cause: "Ray/Xenna executor or worker failure"
+    layer: exec
+    auto_fix: "export RAY_TMPDIR=/tmp (for AF_UNIX path length); retry"
+    user_guidance: "check the Ray dashboard/logs; set RAY_TMPDIR=/tmp; ensure enough resources for all concurrent stages"
+
+  - code: bad_path
+    symptom_signature: ["no such file", "filenotfounderror", "does not exist", "path .* not found", "no audio files found"]
+    likely_cause: "an input/output path is wrong or empty"
+    layer: data
+    auto_fix: null
+    user_guidance: "verify raw_data_dir / manifest_path / output_path; enable auto_download or point at existing data"
+
+  - code: empty_vad_output
+    symptom_signature: ["no speech segments", "empty vad", "no segments detected", "0 segments"]
+    likely_cause: "VAD found no speech (threshold too strict, or non-speech/silent audio)"
+    layer: data
+    auto_fix: "lower vad threshold or min_duration_sec"
+    user_guidance: "lower --vad-threshold / min_duration_sec, or verify the audio actually contains speech"
+
+  - code: zero_rows_retained
+    symptom_signature: ["0 rows", "zero retained", "empty output", "all filtered"]
+    likely_cause: "filters too aggressive -- everything was dropped"
+    layer: data
+    auto_fix: "relax the most aggressive threshold (often SIGMOS ovrl/noise or UTMOS mos)"
+    user_guidance: "loosen thresholds (SIGMOS is usually the most aggressive) and re-smoke"
