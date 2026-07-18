@@ -113,6 +113,22 @@ def _required_roles(contract: StageContract) -> set[str]:
     return {contract.key_roles.get(k, "unknown") for k in keys}
 
 
+def _requirement_str(contract: StageContract, available: set[str]) -> str:
+    """Human-readable "what this stage needs" for an unsatisfied-reads message.
+
+    Renders top-level ``reads`` (all required) and ``reads_one_of`` (any one), so a
+    stage whose reads live entirely in ``reads_one_of`` (e.g. a residency-derived
+    contract) no longer renders a misleading empty ``role(s) []``.
+    """
+    missing = _required_roles(contract) - (available | {"unknown"})
+    reqs: list[str] = []
+    if missing:
+        reqs.append(f"role(s) {sorted(missing)}")
+    if contract.reads_one_of:
+        reqs.append(f"one of {[sorted(_roles_of(o, contract)) for o in contract.reads_one_of]}")
+    return "; ".join(reqs) or f"role(s) {sorted(_required_roles(contract))}"
+
+
 def _write_key_values(contract: StageContract) -> set[str]:
     """The literal key VALUES a stage writes (top-level + segment-level)."""
     return {*contract.writes.data_keys, *contract.writes.segment_data_keys}
@@ -198,7 +214,7 @@ def validate_pipeline(  # noqa: C901 (complexity accepted: sequential per-stage 
                 issues.append(
                     PipelineIssue(
                         index, name, "warning", "unsatisfied_reads_after_composite",
-                        f"requires role(s) {sorted(_required_roles(contract) - (available | {'unknown'}))} "
+                        f"requires {_requirement_str(contract, available)} "
                         f"not visibly produced — but an upstream composite hides its writes; "
                         f"decompose it to validate this read",
                     )
@@ -208,17 +224,11 @@ def validate_pipeline(  # noqa: C901 (complexity accepted: sequential per-stage 
             continue
 
         if not reads_satisfied_by_role(contract, available):
-            missing = _required_roles(contract) - (available | {"unknown"})
-            alt = (
-                f" (or one of: {[sorted(_roles_of(o, contract)) for o in contract.reads_one_of]})"
-                if contract.reads_one_of
-                else ""
-            )
             issues.append(
                 PipelineIssue(
                     index, name, "error", "unsatisfied_reads",
-                    f"requires role(s) {sorted(missing) or sorted(_required_roles(contract))} "
-                    f"not produced upstream; available so far: {sorted(available)}{alt}",
+                    f"requires {_requirement_str(contract, available)} "
+                    f"not produced upstream; available so far: {sorted(available)}",
                 )
             )
         else:

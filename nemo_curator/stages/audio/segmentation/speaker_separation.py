@@ -46,7 +46,7 @@ except ImportError:
 from nemo_curator.backends.base import WorkerMetadata
 from nemo_curator.backends.utils import RayStageSpecKeys
 from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, StageContract
-from nemo_curator.stages.audio._residency import resolve_audio
+from nemo_curator.stages.audio._residency import InputResidency, accepts_for_residency, resolve_audio
 from nemo_curator.stages.audio.segmentation.speaker_separation_module.speaker_sep import SpeakerSeparator
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.stages.resources import Resources
@@ -108,7 +108,7 @@ class SpeakerSeparationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     num_speakers_key: str = "num_speakers"
     duration_key: str = "duration"
     diar_segments_key: str = "diar_segments"
-    input_residency: str = "auto"
+    input_residency: InputResidency = "auto"
 
     name: str = "SpeakerSeparation"
     batch_size: int = 1
@@ -132,11 +132,14 @@ class SpeakerSeparationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         ]
 
     def describe(self) -> StageContract:
+        forms = accepts_for_residency(self.input_residency)
+        reads_one_of = []
+        if "waveform" in forms:
+            reads_one_of.append(IOSpec(data_keys=[self.waveform_key, self.sample_rate_key], accepts=["waveform"]))
+        if "file" in forms:
+            reads_one_of.append(IOSpec(data_keys=[self.audio_filepath_key], accepts=["file"]))
         return StageContract(
-            reads_one_of=[
-                IOSpec(data_keys=[self.waveform_key, self.sample_rate_key], accepts=["waveform"]),
-                IOSpec(data_keys=[self.audio_filepath_key], accepts=["file"]),
-            ],
+            reads_one_of=reads_one_of,
             writes=IOSpec(
                 data_keys=[
                     self.waveform_key,

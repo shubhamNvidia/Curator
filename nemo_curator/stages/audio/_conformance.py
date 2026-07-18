@@ -39,6 +39,7 @@ from nemo_curator.stages.audio._agent_ready import (
     to_json_schema,
 )
 from nemo_curator.stages.audio._agent_registry import build_contract, static_contract
+from nemo_curator.stages.audio._residency import accepts_for_residency
 from nemo_curator.stages.audio._roles import field_has_declared_role
 
 if TYPE_CHECKING:
@@ -144,6 +145,28 @@ def _check_serialization(c: StageContract, name: str) -> None:
     assert "properties" in schema, f"{name}: bad json schema"
 
 
+def _check_residency_accepts(stage: Any, c: StageContract, name: str) -> None:  # noqa: ANN401
+    """A residency-configurable stage must advertise exactly the forms it consumes.
+
+    Derives the expected audio forms from the instance's ``input_residency`` and
+    asserts the contract's declared ``accepts`` (across ``reads`` + ``reads_one_of``)
+    match — catching the hand-typed "lying accepts" drift (a ``file``-mode instance
+    that still advertises ``waveform``). Skips when the contract carries no audio
+    ``accepts`` (e.g. an instance-free static contract with unresolved reads).
+    """
+    residency = getattr(stage, "input_residency", None)
+    if residency is None:
+        return
+    declared = set(c.reads.accepts) | {a for opt in c.reads_one_of for a in opt.accepts}
+    if not declared:
+        return
+    expected = set(accepts_for_residency(residency))
+    assert declared == expected, (
+        f"{name}: declared accepts {sorted(declared)} != residency-derived {sorted(expected)} "
+        f"for input_residency={residency!r} — derive accepts from input_residency (lying/drifted accepts)"
+    )
+
+
 def assert_contract_wellformed(stage_or_cls: Any) -> StageContract:  # noqa: ANN401
     """Static-only conformance: shape, roles, serialization. No execution.
 
@@ -160,6 +183,7 @@ def assert_contract_wellformed(stage_or_cls: Any) -> StageContract:  # noqa: ANN
     _check_shape(c, name)
     _check_roles(stage_or_cls, c, name)
     _check_serialization(c, name)
+    _check_residency_accepts(stage_or_cls, c, name)
     return c
 
 
@@ -231,6 +255,7 @@ def assert_agent_ready(  # noqa: C901, PLR0912, PLR0913 (complexity accepted: on
     _check_shape(c, name)
     _check_roles(stage, c, name)
     _check_serialization(c, name)
+    _check_residency_accepts(stage, c, name)
 
     if expected_cardinality is not None:
         assert c.cardinality == expected_cardinality, (
@@ -287,3 +312,45 @@ def assert_agent_ready(  # noqa: C901, PLR0912, PLR0913 (complexity accepted: on
                 for key in c.writes.segment_data_keys:
                     assert key in seg0, f"{name}: declared segment write {key!r} missing from segment dict"
     return c
+
+
+def assert_residency_consumption(
+    stage_factory: Callable[[str], Any],
+    *,
+    file_fixture: Callable[[], Any],
+    waveform_fixture: Callable[[], Any],
+    setup: bool = False,
+) -> None:
+    """Prove a residency-configurable stage actually consumes each residency it advertises.
+
+    Runs the stage in ``file`` and ``waveform`` modes on matching fixtures and
+    asserts it produced output — so a stage that declares an ``input_residency``
+    choice its ``process()`` cannot actually consume fails CI. This is the
+    *dynamic* complement to the *static* :func:`_check_residency_accepts` drift
+    guard: the static check ties ``accepts`` to ``input_residency`` in the
+    contract; this one proves the code honors it.
+
+    Intended for 1:1 / annotate stages (valid input -> non-empty output). Fan-out
+    stages that may legitimately return no items on a given fixture should assert
+    consumption differently.
+
+    Args:
+        stage_factory: ``residency -> constructed stage`` (e.g. ``lambda r: MyStage(input_residency=r)``).
+        file_fixture: returns a task carrying only a file path.
+        waveform_fixture: returns a task carrying only an in-memory waveform + sample rate.
+        setup: call ``stage.setup()`` before processing (default False).
+    """
+    for residency, fixture in (("file", file_fixture), ("waveform", waveform_fixture)):
+        stage = stage_factory(residency)
+        if setup and hasattr(stage, "setup"):
+            stage.setup()
+        task = fixture()
+        if _supports_batch(stage) or getattr(stage, "BATCH_ONLY", False):
+            out = stage.process_batch([task])
+        else:
+            out = stage.process(task)
+        results = _normalize_results(out)
+        assert results, (
+            f"{type(stage).__name__}: produced no output for input_residency={residency!r} — "
+            f"it advertises this residency but process() did not consume the matching input"
+        )

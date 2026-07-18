@@ -35,8 +35,9 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
+import torch
 
-from nemo_curator.stages.audio._conformance import assert_agent_ready
+from nemo_curator.stages.audio._conformance import assert_agent_ready, assert_residency_consumption
 from nemo_curator.stages.audio.common import GetAudioDurationStage, PreserveByValueStage
 from nemo_curator.stages.audio.preprocessing.mono_conversion import MonoConversionStage
 from nemo_curator.tasks import AudioTask
@@ -75,6 +76,24 @@ def test_example_metric_stage_conformance(tmp_path: Path) -> None:
         fixture,
         expected_cardinality="1:1",
         available_keys={"audio_filepath"},
+    )
+
+
+# --- TEMPLATE 4: per-residency consumption (advertised residency == code) --- #
+def test_example_residency_consumption(tmp_path: Path) -> None:
+    """A residency-configurable stage must actually consume each residency it advertises."""
+    wav = _write_wav(tmp_path / "r.wav", sample_rate=48000)
+
+    def file_fixture() -> AudioTask:
+        return AudioTask(dataset_name="t", data={"audio_filepath": wav})
+
+    def waveform_fixture() -> AudioTask:
+        return AudioTask(dataset_name="t", data={"waveform": torch.zeros(2, 48000), "sample_rate": 48000})
+
+    assert_residency_consumption(
+        lambda r: MonoConversionStage(input_residency=r),
+        file_fixture=file_fixture,
+        waveform_fixture=waveform_fixture,
     )
 
 
