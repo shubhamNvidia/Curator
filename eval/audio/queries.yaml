@@ -236,3 +236,59 @@ queries:
       - {id: quality, type: quality_standard, kind: absolute, severity: must, check: {field: utmos_mos, op: ">=", value: 4.0}}
     verify_evidence: {metrics: {utmos_mos: 4.3}, retained: 5, input_count: 10}
     expect: {acceptance_overall: met, honesty_flagged: false}
+
+  # --- incremental continuation (Run Records): reuse prior work for a follow-up ---
+  - id: continuation_extend
+    label: continuation
+    prompt: "Curated with mono+UTMOS; follow-up 'also add transcripts' -> reuse, run only ASR."
+    continuation:
+      parent:
+        run_id: run-parent
+        data_fingerprint: fp1
+        output_paths: [curated.jsonl]
+        recipe:
+          stages:
+            - {ref: MonoConversionStage, params: {}}
+            - {ref: UTMOSFilterStage, params: {mos_threshold: 4.0}}
+      recipe:
+        stages:
+          - {ref: MonoConversionStage, params: {}}
+          - {ref: UTMOSFilterStage, params: {mos_threshold: 4.0}}
+          - {ref: InferenceAsrNemoStage, params: {model_name: x}}
+      data_fingerprint: fp1
+    expect: {mode: incremental, run_stages: [InferenceAsrNemoStage]}
+
+  - id: continuation_param_change
+    label: continuation
+    prompt: "Follow-up changes an upstream threshold -> full rerun (no reusable intermediate)."
+    continuation:
+      parent:
+        run_id: run-parent
+        data_fingerprint: fp1
+        recipe:
+          stages:
+            - {ref: MonoConversionStage, params: {}}
+            - {ref: UTMOSFilterStage, params: {mos_threshold: 4.0}}
+      recipe:
+        stages:
+          - {ref: MonoConversionStage, params: {}}
+          - {ref: UTMOSFilterStage, params: {mos_threshold: 3.0}}
+      data_fingerprint: fp1
+    expect: {mode: full_rerun}
+
+  - id: continuation_data_changed
+    label: continuation
+    prompt: "Same recipe extension but a DIFFERENT dataset -> full rerun (fingerprint mismatch)."
+    continuation:
+      parent:
+        run_id: run-parent
+        data_fingerprint: fp1
+        recipe:
+          stages:
+            - {ref: MonoConversionStage, params: {}}
+      recipe:
+        stages:
+          - {ref: MonoConversionStage, params: {}}
+          - {ref: UTMOSFilterStage, params: {mos_threshold: 4.0}}
+      data_fingerprint: fp2
+    expect: {mode: full_rerun}

@@ -316,7 +316,9 @@ def run(
     from nemo_curator.audio_agent.failures import classify
 
     rec = _as_recipe(recipe).freeze()
-    data_profile = profile_data(data).to_dict() if data else None
+    dp_obj = profile_data(data) if data else None
+    data_profile = dp_obj.to_dict() if dp_obj else None
+    data_fp = dp_obj.fingerprint() if dp_obj else None
     env_obj = probe_env()
     env = env_obj.to_dict()
 
@@ -392,7 +394,38 @@ def run(
         if not failures
         else "triage the failure_reasons and re-validate",
     )
-    return _safety.redact({"status": "completed" if not failures else "failed", "report": report_obj.to_dict()})
+    run_id = _record_run(rec, data=data, data_fp=data_fp, report=report_obj, failed=bool(failures))
+    return _safety.redact(
+        {"status": "completed" if not failures else "failed", "run_id": run_id, "report": report_obj.to_dict()}
+    )
+
+
+def _record_run(rec: Recipe, *, data: str | None, data_fp: str | None, report: Any, failed: bool) -> str | None:  # noqa: ANN401
+    """Persist a local RunRecord (provenance for tracing + continuation). Best-effort."""
+    import time
+
+    from nemo_curator.audio_agent import run_store
+    from nemo_curator.audio_agent.contracts import RunRecord
+
+    record = RunRecord(
+        run_id=run_store.new_run_id(rec.config_hash),
+        recipe=rec.to_dict(),
+        config_hash=rec.config_hash,
+        parent_run_id=rec.parent_run_id,
+        data_source=data,
+        data_fingerprint=data_fp,
+        acceptance_criteria=list(rec.acceptance_criteria),
+        status="failed" if failed else "completed",
+        accepted=int(getattr(report, "accepted", 0)),
+        input_count=int(getattr(report, "input_count", 0)),
+        output_paths=list(getattr(report, "output_paths", []) or []),
+        created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    )
+    try:
+        run_store.save(record)
+    except Exception:  # noqa: BLE001 - provenance is best-effort; never fail the run over it
+        return record.run_id
+    return record.run_id
 
 
 def report(output: str, *, recipe: Recipe | dict[str, Any] | None = None, data: str | None = None) -> dict[str, Any]:
@@ -448,6 +481,47 @@ def verify(
         frozen = parse_criteria(frozen_criteria)
     report_obj = _verify(parse_criteria(acceptance_criteria), evidence or {}, frozen_criteria=frozen)
     return _safety.redact(report_obj.to_dict())
+
+
+def runs(run_id: str | None = None) -> dict[str, Any]:
+    """List local run records, or load one by ``run_id`` (provenance for tracing).
+
+    Local history only — NOT shared memory / cross-user learning. Use it to trace a
+    prior run or to feed ``plan_continuation`` for a follow-up request.
+    """
+    from nemo_curator.audio_agent import run_store
+
+    if run_id:
+        rec = run_store.load(run_id)
+        return _safety.redact(rec.to_dict()) if rec else {"error": f"no run record {run_id!r}"}
+    return {"runs": run_store.list_runs()}
+
+
+def plan_continuation(
+    recipe: Recipe | dict[str, Any],
+    parent_run_id: str,
+    *,
+    data: str | None = None,
+) -> dict[str, Any]:
+    """Plan a follow-up run incrementally against a prior run (reuse where safe).
+
+    Loads the parent :class:`RunRecord`, diffs the recipes, and returns the mode
+    (``already_done`` / ``incremental`` / ``full_rerun``) with which stages to reuse
+    vs run and where to reuse from. Reuse requires the same source data
+    (``data`` -> fingerprint match).
+    """
+    from nemo_curator.audio_agent import continuation, run_store
+
+    rec = _as_recipe(recipe)
+    parent = run_store.load(parent_run_id)
+    if parent is None:
+        return {
+            "mode": "full_rerun",
+            "reason": f"no parent run record {parent_run_id!r}; run fresh",
+            "run_stages": [s.ref for s in rec.stages],
+        }
+    data_fp = profile_data(data).fingerprint() if data else None
+    return continuation.plan_continuation(rec, parent, data_fingerprint=data_fp)
 
 
 # --------------------------------------------------------------------------- #

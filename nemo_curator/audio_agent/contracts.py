@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
 
 Severity = Literal["error", "warning", "info"]
@@ -399,6 +399,42 @@ class ConfigStrategyEntry:
     source: dict[str, Any] = field(default_factory=dict)  # {from: user_explicit|card_anchor|card_preset|..., ref: ...}
     recompute_on: str = "none"  # none | data_change | machine_change
     rationale: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return _clean(asdict(self))
+
+
+@dataclass
+class RunRecord:
+    """Local, per-run provenance for tracing + incremental continuation.
+
+    A durable trace of one run — the frozen recipe + ``config_hash``, the success
+    contract, evidence counts, output paths, the data fingerprint, and the parent
+    link — so a follow-up request can reuse prior work and every result is
+    traceable. This is **local** history, **not** shared cross-user memory or
+    learning (a permanent non-goal): records are never read back to "teach" the
+    agent across sessions; they only support provenance and continuation.
+    """
+
+    run_id: str
+    recipe: dict[str, Any] = field(default_factory=dict)  # frozen Recipe.to_dict()
+    config_hash: str | None = None
+    parent_run_id: str | None = None
+    goal: dict[str, Any] = field(default_factory=dict)
+    data_source: str | None = None
+    data_fingerprint: str | None = None
+    acceptance_criteria: list[dict[str, Any]] = field(default_factory=list)
+    status: str = ""
+    accepted: int = 0
+    input_count: int = 0
+    output_paths: list[str] = field(default_factory=list)
+    created_at: str = ""
+    notes: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> RunRecord:
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in (d or {}).items() if k in known})
 
     def to_dict(self) -> dict[str, Any]:
         return _clean(asdict(self))

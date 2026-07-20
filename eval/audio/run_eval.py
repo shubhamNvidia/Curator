@@ -89,6 +89,22 @@ def _check(query: dict) -> tuple[bool, str]:  # noqa: C901 - one linear checklis
                 return False, f"honesty codes={sorted(codes)} expected {expect['honesty_code']!r}"
         return True, f"acceptance overall={rep['overall']} honesty={[h['code'] for h in rep['honesty']]}"
 
+    if "continuation" in query:  # incremental continuation (Run Records): parent + new recipe -> plan
+        from nemo_curator.audio_agent import continuation as cont
+        from nemo_curator.audio_agent.contracts import RunRecord
+        from nemo_curator.audio_agent.recipe import Recipe
+
+        spec = query["continuation"]
+        plan = cont.plan_continuation(
+            Recipe.from_dict(spec["recipe"]), RunRecord.from_dict(spec["parent"]),
+            data_fingerprint=spec.get("data_fingerprint"),
+        )
+        if "mode" in expect and plan["mode"] != expect["mode"]:
+            return False, f"continuation mode={plan['mode']} expected={expect['mode']}"
+        if "run_stages" in expect and plan.get("run_stages") != expect["run_stages"]:
+            return False, f"continuation run_stages={plan.get('run_stages')} expected={expect['run_stages']}"
+        return True, f"continuation mode={plan['mode']} run={plan.get('run_stages')}"
+
     if "resolve" in query:  # config-strategy resolver (1A.2): outcome -> concrete config
         spec = query["resolve"]
         r = aa.resolve(spec["stage"], label=spec.get("label"), use_case=spec.get("use_case"),

@@ -135,6 +135,14 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument("--use-case", help="named card preset, e.g. tts_reference")
     rs.add_argument("--explicit", help="JSON object of {param: value}")
     rs.add_argument("--data-driven", action="store_true", help="enable Path B (deferred; affects relative-objective asks)")
+
+    ru = sub.add_parser("runs", help="list local run records (provenance) or show one by id")
+    ru.add_argument("--run-id", help="show a single run record")
+
+    cont = sub.add_parser("continue", help="plan a follow-up run incrementally against a prior run (reuse where safe)")
+    cont.add_argument("--recipe", required=True, help="the follow-up recipe (or - for stdin)")
+    cont.add_argument("--parent-run-id", required=True, help="the prior run to continue from")
+    cont.add_argument("--data", help="the source dataset (for the same-data fingerprint guard)")
     return p
 
 
@@ -178,6 +186,10 @@ def main(argv: list[str] | None = None) -> int:
         explicit = json.loads(args.explicit) if args.explicit else None
         _emit(aa.resolve(args.stage, label=args.label, use_case=args.use_case,
                          explicit=explicit, data_driven=args.data_driven))
+    elif cmd == "runs":
+        _emit(aa.runs(run_id=args.run_id))
+    elif cmd == "continue":
+        _emit(aa.plan_continuation(_load_recipe(args.recipe), args.parent_run_id, data=args.data))
     else:  # pragma: no cover - argparse enforces the choices
         return 2
     return 0

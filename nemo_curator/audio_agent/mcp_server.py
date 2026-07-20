@@ -127,6 +127,19 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
         exposes or invents internal thresholds."""
         return aa.resolve(stage, label=label, use_case=use_case, explicit=explicit, data_driven=data_driven)
 
+    @server.tool()
+    def runs(run_id: str | None = None) -> dict[str, Any]:
+        """List local run records (provenance), or load one by run_id. Local history,
+        not shared memory/learning."""
+        return aa.runs(run_id=run_id)
+
+    @server.tool()
+    def plan_continuation(recipe: dict[str, Any], parent_run_id: str, data: str | None = None) -> dict[str, Any]:
+        """Plan a follow-up run incrementally against a prior run: reuse the parent's
+        output where the new recipe safely extends it (else full_rerun with the
+        divergence point). Reuse requires the same source data."""
+        return aa.plan_continuation(recipe, parent_run_id, data=data)
+
     return server
 
 

@@ -212,6 +212,26 @@ verify:
 3. You may surface semantic concerns but **may not override the deterministic
    verdict** — if unresolved, escalate to the user.
 
+### 8. Follow-up requests (reuse prior work)
+
+Every `run` writes a local **Run Record** (provenance for tracing + continuation —
+local history, not shared memory). For a follow-up on the **same data** (e.g. "also
+add transcripts to what we just curated"), build the new recipe, set its
+`parent_run_id` to the prior run, and ask for the incremental plan:
+
+```bash
+python -m nemo_curator.audio_agent runs                       # list prior runs
+python -m nemo_curator.audio_agent continue --recipe new.yaml --parent-run-id <id> --data /path/to/data
+```
+
+- **incremental** — the new recipe extends the parent: reuse the parent output
+  (`reuse_from`) and run only `run_stages` (point the appended stage(s) at the reused
+  manifest instead of re-curating).
+- **already_done** — identical recipe/data: reuse the parent output, run nothing.
+- **full_rerun** — an upstream param/stage changed, or the dataset differs
+  (fingerprint mismatch): there is no safe reusable intermediate, so rerun. The
+  `reason` / `diverged_at` explains why. Never silently reuse across a change.
+
 ## Control conditions
 
 - **Success**: `runnable` + smoke goals met -> confirm -> run -> report.
