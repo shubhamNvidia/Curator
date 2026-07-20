@@ -1,0 +1,27 @@
+stage_id: InverseTextNormalizationStage
+category: text_norm
+summary: "Inverse text normalization: spoken form -> written form (e.g. 'forty two' -> '42')."
+tags: []
+model_id: null
+domain: {language: "configurable (default en)", style: any}
+constraints: {}
+resource:
+  cpus: 1.0
+  gpu_mem_gb: 0.0
+  gpu_optional: false
+  bound: cpu
+  throughput_hint: "CPU; rule-based text normalization"
+use_cases:
+  good_for: ["producing written-form transcripts (numbers, dates, currency) from spoken-form ASR output"]
+  avoid_for: ["languages not supported by the ITN grammar"]
+composition:
+  typical_upstream: [InferenceAsrNemoStage, NeMoASRAlignerStage]
+  typical_downstream: [ComputeWERStage, AudioToDocumentStage]
+params_of_note:
+  language: "language code for the ITN grammar (default en)"
+  text_key: "key holding the text to normalize (default text)"
+  output_suffix: "suffix for the written key (default _ITN)"
+notes:
+  - "Writes normalized text to {text_key}{output_suffix}."
+verified: {params: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess}
+provenance: {model_card_url: null, card_version: 1, last_validated: "2026-07-20"}

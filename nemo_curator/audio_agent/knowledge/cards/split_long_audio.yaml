@@ -1,0 +1,28 @@
+stage_id: SplitLongAudioStage
+category: segment
+summary: "Split long audio files into smaller pieces at natural pauses to keep speech coherent."
+tags: [writes_disk]
+model_id: null
+domain: {language: any, style: any}
+constraints:
+  input_duration_sweetspot_sec: {min: 1.0, max: 3600.0}   # min_len / suggested_max_len defaults
+resource:
+  cpus: 1.0
+  gpu_mem_gb: 0.0
+  gpu_optional: false
+  bound: cpu
+  throughput_hint: "CPU; splits at pauses"
+use_cases:
+  good_for: ["breaking very long recordings before ASR/alignment (memory + accuracy)"]
+  avoid_for: ["already-short clips"]
+composition:
+  typical_upstream: [ResampleAudioStage, ManifestReader]
+  typical_downstream: [NeMoASRAlignerStage, JoinSplitAudioMetadataStage]
+params_of_note:
+  suggested_max_len: "target maximum chunk length in seconds (default 3600)"
+  min_len: "minimum length for any split segment (s)"
+  audio_filepath_key: "input audio path key (default resampled_audio_filepath)"
+notes:
+  - "Emits split file paths/metadata under split_* keys, later recombined by JoinSplitAudioMetadataStage. Used inside SplitASRAlignJoinStage."
+verified: {params: mechanical, tags: best_guess, resource: best_guess, constraints: best_guess, use_cases: best_guess, domain: best_guess}
+provenance: {model_card_url: null, card_version: 1, last_validated: "2026-07-20"}

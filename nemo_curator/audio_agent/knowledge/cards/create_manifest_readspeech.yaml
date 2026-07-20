@@ -1,0 +1,29 @@
+stage_id: CreateInitialManifestReadSpeechStage
+category: ingest
+summary: "Download the DNS Challenge 5 Read Speech set and emit one AudioTask per file."
+tags: [needs_internet_first_run, writes_disk]
+model_id: null
+domain: {language: en, style: read}   # DNS Challenge 5 Read Speech (Track 1 Headset)
+constraints: {}
+resource:
+  cpus: 1.0
+  gpu_mem_gb: 0.0
+  gpu_optional: false
+  bound: io
+  throughput_hint: "download + extract (network- and disk-bound on first run)"
+use_cases:
+  good_for: ["bootstrapping a manifest from the DNS-Challenge read-speech corpus (48 kHz)"]
+  avoid_for: ["data not in this dataset (use ManifestReader on your own manifest)"]
+composition:
+  typical_upstream: []
+  typical_downstream: [MonoConversionStage, ResampleAudioStage, VADSegmentationStage]
+params_of_note:
+  raw_data_dir: "directory for the downloaded/extracted archive"
+  max_samples: "cap the number of emitted samples (default 5000)"
+  auto_download: "download+extract automatically (default True)"
+caveats:
+  - "Downloads a single ~4.88 GB archive on first run (14,279 WAV files @ 48 kHz, ~19.3 h)."
+notes:
+  - "Source: Microsoft DNS-Challenge (https://github.com/microsoft/DNS-Challenge). Emits EmptyTask -> AudioTask."
+verified: {params: mechanical, tags: best_guess, resource: best_guess, domain: best_guess, use_cases: best_guess}
+provenance: {model_card_url: "https://github.com/microsoft/DNS-Challenge", card_version: 1, last_validated: "2026-07-20"}

@@ -1,0 +1,33 @@
+stage_id: BandwidthEstimationStage
+category: quality
+summary: "Estimate effective audio bandwidth from the power spectrum; write to metrics."
+tags: [produces_score]
+model_id: null
+domain: {language: any, style: any}
+constraints: {}
+resource:
+  cpus: 1.0
+  gpu_mem_gb: 0.0
+  gpu_optional: false
+  bound: cpu
+  throughput_hint: "CPU FFT; cheap"
+use_cases:
+  good_for: ["estimating a continuous bandwidth (Hz) to detect narrowband/telephony audio", "cheap spectral quality signal"]
+  avoid_for: ["when you only need a full/narrow band decision (use BandFilterStage)"]
+composition:
+  typical_upstream: [MonoConversionStage, ResampleAudioStage, VADSegmentationStage]
+  typical_downstream: [PreserveByValueStage, AudioToDocumentStage]
+params_of_note:
+  n_fft: "FFT window size (default 512)"
+  stride_seconds: "time between FFT windows (default 0.01)"
+  top_db: "dynamic-range clip for the spectrum (dB)"
+  frequency_threshold: "energy threshold (dB) for the highest significant frequency"
+comparison:
+  accuracy_hint: "continuous bandwidth estimate (Hz), not a learned class"
+  latency_hint: "cheap CPU FFT"
+  config_complexity: "low-medium (FFT knobs)"
+  known_limitations: "spectral heuristic; not a perceptual-quality score"
+notes:
+  - "Writes results under metrics_key."
+verified: {params: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess, comparison: best_guess}
+provenance: {model_card_url: null, card_version: 1, last_validated: "2026-07-20"}

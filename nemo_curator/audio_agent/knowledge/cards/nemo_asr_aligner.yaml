@@ -1,0 +1,38 @@
+stage_id: NeMoASRAlignerStage
+category: transcribe
+summary: "Transcribe and word-align audio with a NeMo ASR model (CTC/RNNT), producing word timestamps."
+tags: [needs_gpu, needs_internet_first_run]
+model_id: "nvidia/parakeet-tdt_ctc-1.1b (or another NeMo ASR checkpoint)"
+model_version: "nvidia/parakeet-tdt_ctc-1.1b"   # stage default model_name
+domain: {language: "model-dependent (parakeet: en)", style: read+conversational}
+constraints:
+  supported_sample_rates: [16000]
+  input_duration_sweetspot_sec: {min: 1.0, max: 40.0}   # min_len / max_len defaults
+resource:
+  cpus: 1.0
+  gpu_mem_gb: null   # TODO(fill): measured; checkpoint-dependent (~1.1b model)
+  gpu_optional: false
+  bound: gpu
+  throughput_hint: "batched GPU inference + alignment"
+use_cases:
+  good_for: ["word-level alignments/timestamps alongside transcripts", "feeding MergeAlignmentDiarizationStage for who-said-what"]
+  avoid_for: ["plain transcription with no alignment (use InferenceAsrNemoStage, lighter)", "languages the checkpoint was not trained on"]
+composition:
+  typical_upstream: [SplitLongAudioStage, ResampleAudioStage]
+  typical_downstream: [JoinSplitAudioMetadataStage, MergeAlignmentDiarizationStage]
+params_of_note:
+  model_name: "the NeMo ASR checkpoint id"
+  decoder_type: "'rnnt' (default) or 'ctc'"
+  timestamp_type: "alignment granularity, e.g. 'word'"
+  is_fastconformer: "True if the checkpoint is a FastConformer"
+  infer_segment_only: "align only provided segments instead of the whole file"
+  transcribe_batch_size: "files per GPU inference batch"
+comparison:
+  language_support: "checkpoint-dependent (parakeet: en)"
+  accuracy_hint: "produces word alignments/timestamps (richer than plain ASR)"
+  config_complexity: "medium (decoder/timestamp/segment options)"
+  known_limitations: "heavier than plain transcription; needs 16 kHz input"
+notes:
+  - "Used inside SplitASRAlignJoinStage. Language coverage is a checkpoint (model-card) fact, not in source."
+verified: {params: mechanical, tags: best_guess, model_version: mechanical, resource: best_guess, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess}
+provenance: {model_card_url: "https://huggingface.co/nvidia/parakeet-tdt_ctc-1.1b", card_version: 1, last_validated: "2026-07-20"}

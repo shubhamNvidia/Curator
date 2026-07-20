@@ -112,6 +112,10 @@ class KnowledgeIndex:
     def card(self, stage: str) -> dict[str, Any] | None:
         return self._cards_by_stage.get(stage)
 
+    def all_cards(self) -> dict[str, dict[str, Any]]:
+        """Every loaded card keyed by ``stage_id`` (used by the card conformance gate)."""
+        return dict(self._cards_by_stage)
+
     def category_of(self, stage: str) -> str:
         card = self.card(stage)
         if card and card.get("category"):

@@ -3,10 +3,16 @@ category: quality
 summary: "SIGMOS (ITU-T P.804) neural MOS across 7 quality dimensions; filter/annotate."
 tags: [produces_score, is_filter, needs_internet_first_run]
 model_id: "microsoft SIGMOS (ONNX, P.804)"
+model_version: "P.804-ONNX"   # TODO(fill): pin the exact SIGMOS ONNX release/revision
 domain: {language: any, style: speech}
 constraints:
   supported_sample_rates: [16000, 48000]
-resource: {gpu_mem_gb: 1.5, throughput_hint: "ONNX; uses GPU if available, CPU fallback", gpu_optional: true}
+resource:
+  cpus: 1.0
+  gpu_mem_gb: 1.5   # TODO(fill): measured value
+  gpu_optional: true
+  bound: gpu
+  throughput_hint: "ONNX; uses GPU if available, CPU fallback"
 use_cases:
   good_for: ["fine-grained quality gating (noise, reverb, discontinuity, loudness, coloration)", "TTS data curation"]
   avoid_for: ["non-speech audio"]
@@ -16,13 +22,25 @@ composition:
 params_of_note:
   noise_threshold: "min NOISE score to keep (0-5); 4.0 keeps only very-low-noise clips"
   ovrl_threshold: "min OVRL (overall) score to keep (0-5); single best general-purpose gate"
-  sig_threshold / col_threshold / disc_threshold / loud_threshold / reverb_threshold: "optional per-dimension gates"
-notes:
-  - "Writes all 7 scores (sigmos_noise, sigmos_ovrl, sigmos_sig, sigmos_col, sigmos_disc, sigmos_loud, sigmos_reverb) regardless of active thresholds, so you can post-filter."
-  - "Empirically the most aggressive quality filter -- it tends to drop the most rows; place last in a cheap->expensive filter chain, or first if you want maximum early cull."
+  sig_threshold: "optional min SIG (signal) score to keep (0-5)"
+  col_threshold: "optional min COL (coloration) score to keep (0-5)"
+  disc_threshold: "optional min DISC (discontinuity) score to keep (0-5)"
+  loud_threshold: "optional min LOUD (loudness) score to keep (0-5)"
+  reverb_threshold: "optional min REVERB score to keep (0-5)"
+  action: "'filter' drops below threshold(s); 'annotate' keeps all and writes scores"
+  mode: "'task' (whole file), 'segments' (per nested segment), or 'auto'"
 presets:
   studio_tts: {noise_threshold: 4.0, ovrl_threshold: 3.5}
   general: {ovrl_threshold: 3.0}
+comparison:
+  accuracy_hint: "7-dimension P.804 MOS; finer-grained than UTMOS's single score"
+  latency_hint: "heavier than UTMOS / BandFilter"
+  config_complexity: "medium-high (up to 7 per-dimension thresholds)"
+  known_limitations: "speech-only; empirically the most aggressive filter (drops the most rows)"
+notes:
+  - "Writes all 7 scores (sigmos_noise, sigmos_ovrl, sigmos_sig, sigmos_col, sigmos_disc, sigmos_loud, sigmos_reverb) regardless of active thresholds, so you can post-filter."
+  - "Empirically the most aggressive quality filter -- place last in a cheap->expensive filter chain, or first for maximum early cull."
 caveats:
   - "Downloads the ONNX model on first run (needs network once)."
-provenance: {model_card_url: "https://github.com/microsoft/SIG-Challenge", card_version: 1, last_validated: "2026-07-12"}
+verified: {params: mechanical, tags: mechanical, model_version: best_guess, resource: best_guess, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess}
+provenance: {model_card_url: "https://github.com/microsoft/SIG-Challenge", card_version: 2, last_validated: "2026-07-20"}

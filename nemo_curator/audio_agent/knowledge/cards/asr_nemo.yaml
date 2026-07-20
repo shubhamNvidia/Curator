@@ -3,11 +3,17 @@ category: transcribe
 summary: "Batched ASR transcription with a NeMo model; writes pred_text."
 tags: [needs_gpu, needs_internet_first_run]
 model_id: "nvidia/parakeet-tdt-0.6b-v2 (or any NeMo ASR checkpoint, incl. language-specific FastConformer)"
+model_version: "user-specified via model_name (default preset: nvidia/parakeet-tdt-0.6b-v2)"
 domain: {language: "model-dependent (e.g. en for parakeet)", style: read+conversational}
 constraints:
   supported_sample_rates: [16000]
   input_duration_sweetspot_sec: {min: 0.5, max: 40.0}
-resource: {gpu_mem_gb: 4.0, throughput_hint: "batched GPU; batch_size 16-64 typical", gpu_optional: false}
+resource:
+  cpus: 1.0
+  gpu_mem_gb: 4.0   # TODO(fill): measured value is checkpoint-dependent
+  gpu_optional: false
+  bound: gpu
+  throughput_hint: "batched GPU inference"
 use_cases:
   good_for: ["transcribing speech to text", "producing pred_text for WER/CER filtering"]
   avoid_for: ["languages the chosen checkpoint was not trained on", "non-16kHz input without an upstream resample"]
@@ -16,10 +22,16 @@ composition:
   typical_downstream: [GetPairwiseWerStage, ComputeWERStage, InverseTextNormalizationStage]
 params_of_note:
   model_name: "the ASR checkpoint id (choose per language)"
-  batch_size: "files per GPU call; 16-64 typical"
+comparison:
+  language_support: "checkpoint-dependent (parakeet: en); pick model_name to match data language"
+  accuracy_hint: "checkpoint-dependent (model-card fact)"
+  config_complexity: "low (pick model_name)"
+  known_limitations: "no batch_size stage param (batching is an executor knob); needs 16 kHz input"
 notes:
   - "Language coverage is a checkpoint property (model-card fact), not derivable from source; pick the checkpoint to match the data's language."
   - "WER/CER filtering requires reference transcripts in the source manifest; if absent, WER is unproducible."
+  - "batch_size is an executor/runtime knob, not a stage constructor param."
 presets:
-  english_parakeet: {model_name: "nvidia/parakeet-tdt-0.6b-v2", batch_size: 16}
-provenance: {model_card_url: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2", card_version: 1, last_validated: "2026-07-12"}
+  english_parakeet: {model_name: "nvidia/parakeet-tdt-0.6b-v2"}
+verified: {params: mechanical, tags: mechanical, model_version: best_guess, resource: best_guess, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess}
+provenance: {model_card_url: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2", card_version: 2, last_validated: "2026-07-20"}

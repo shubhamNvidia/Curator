@@ -1,0 +1,38 @@
+stage_id: SpeakerSeparationStage
+category: diarize
+summary: "Separate audio by speaker (NeMo SortFormer diarization) into per-speaker AudioTasks."
+tags: [needs_gpu, needs_internet_first_run, fanout]
+model_id: "nvidia/diar_sortformer_4spk-v1"
+model_version: "nvidia/diar_sortformer_4spk-v1"   # stage default model_path
+domain: {language: en, style: conversational}
+constraints:
+  max_speakers: 4   # SortFormer 4-speaker model
+  supported_sample_rates: [16000]
+resource:
+  cpus: 1.0
+  gpu_mem_gb: null   # TODO(fill): measured
+  gpu_optional: false
+  bound: gpu
+  throughput_hint: "GPU inference; fans out per speaker"
+use_cases:
+  good_for: ["producing one audio stream/task per speaker", "single-speaker downstream (e.g. TTS) from multi-speaker audio"]
+  avoid_for: [">4 speakers", "when you only need who-spoke-when labels (use InferenceSortformerStage)"]
+composition:
+  typical_upstream: [MonoConversionStage, ResampleAudioStage]
+  typical_downstream: [PrepareModuleSegmentsStage, AudioToDocumentStage]
+params_of_note:
+  model_path: "HF model id or path to the NeMo diarization model"
+  exclude_overlaps: "drop overlapping-speaker regions (default True)"
+  min_duration: "minimum per-speaker segment duration (s)"
+  gap_threshold: "merge gap threshold (s)"
+  buffer_time: "context buffer around segments (s)"
+comparison:
+  language_support: "English (SortFormer training domain)"
+  accuracy_hint: "up to 4 speakers; separates streams (vs labels-only diarizers)"
+  config_complexity: "medium"
+  known_limitations: "4-speaker cap; 16 kHz; English-conversational"
+conflicts_with: [InferenceSortformerStage, PyAnnoteDiarizationStage]   # related diarizers
+notes:
+  - "Downloads the NeMo model from HuggingFace Hub on first run."
+verified: {params: mechanical, tags: best_guess, model_version: mechanical, resource: best_guess, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess}
+provenance: {model_card_url: "https://huggingface.co/nvidia/diar_sortformer_4spk-v1", card_version: 1, last_validated: "2026-07-20"}

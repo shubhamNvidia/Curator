@@ -3,10 +3,16 @@ category: quality
 summary: "Classify audio as full_band vs narrow_band (spectral RF) and filter/annotate."
 tags: [produces_score, is_filter, needs_internet_first_run]
 model_id: "nvidia/nemocurator-speech-bandwidth-filter (scikit-learn Random Forest)"
+model_version: "nemocurator-speech-bandwidth-filter"   # TODO(fill): pin exact HF revision
 domain: {language: any, style: speech}
 constraints:
   supported_sample_rates: [16000, 48000]
-resource: {gpu_mem_gb: 0.0, throughput_hint: "CPU-only, cheap", gpu_optional: false}
+resource:
+  cpus: 1.0
+  gpu_mem_gb: 0.0
+  gpu_optional: false
+  bound: cpu
+  throughput_hint: "CPU-only, cheap"
 use_cases:
   good_for: ["keep high-fidelity wideband recordings (full_band)", "cheap early cull before GPU quality stages"]
   avoid_for: ["telephony data you want to KEEP (then use band_value=narrow_band)"]
@@ -15,6 +21,12 @@ composition:
   typical_downstream: [UTMOSFilterStage, SIGMOSFilterStage]
 params_of_note:
   band_value: "'full_band' (keep hi-fi, default) or 'narrow_band' (keep telephony-style)"
+comparison:
+  accuracy_hint: "binary full/narrow band classifier (not a MOS)"
+  latency_hint: "cheapest quality filter (CPU RandomForest)"
+  config_complexity: "low (one choice: full_band / narrow_band)"
+  known_limitations: "bandwidth only; not a perceptual-quality score"
 notes:
   - "Cheapest quality filter (CPU) -- a good first filter to reduce load on downstream GPU stages."
-provenance: {model_card_url: "https://huggingface.co/nvidia/nemocurator-speech-bandwidth-filter", card_version: 1, last_validated: "2026-07-12"}
+verified: {params: mechanical, tags: mechanical, model_version: best_guess, resource: best_guess, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess}
+provenance: {model_card_url: "https://huggingface.co/nvidia/nemocurator-speech-bandwidth-filter", card_version: 2, last_validated: "2026-07-20"}

@@ -1,0 +1,24 @@
+stage_id: GetAudioDurationStage
+category: export
+summary: "Compute audio duration from the file and store it under duration_key."
+tags: []
+model_id: null
+domain: {language: any, style: any}
+constraints: {}
+resource:
+  cpus: 1.0
+  gpu_mem_gb: 0.0
+  gpu_optional: false
+  bound: io
+  throughput_hint: "reads each file's header/metadata; cheap"
+use_cases:
+  good_for: ["adding a duration field for length filtering (PreserveByValue) or export"]
+  avoid_for: ["when duration already exists in the manifest"]
+composition:
+  typical_upstream: [ManifestReader, ResampleAudioStage, MonoConversionStage]
+  typical_downstream: [PreserveByValueStage, AudioToDocumentStage, ManifestWriterStage]
+params_of_note:
+  audio_filepath_key: "key holding the audio file path (default audio_filepath)"
+  duration_key: "output key for the duration (default duration)"
+verified: {params: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess}
+provenance: {model_card_url: null, card_version: 1, last_validated: "2026-07-20"}

@@ -1,0 +1,38 @@
+stage_id: WhisperXVADStage
+category: segment
+summary: "Voice Activity Detection with WhisperX's VAD model; emit speech segments."
+tags: [needs_internet_first_run, fanout]
+model_id: "WhisperX VAD (pyannote-based segmentation)"
+model_version: "whisperx-vad"   # TODO(fill): pin the WhisperX VAD model revision
+domain: {language: any, style: speech}
+constraints:
+  input_duration_sweetspot_sec: {min: 0.5, max: 40.0}   # min_length / max_length defaults
+resource:
+  cpus: 1.0
+  gpu_mem_gb: null   # TODO(fill): measured
+  gpu_optional: true
+  bound: gpu
+  throughput_hint: "model-based VAD; GPU optional"
+use_cases:
+  good_for: ["VAD within a WhisperX-style pipeline", "onset/offset-tunable speech detection"]
+  avoid_for: ["lightweight silence removal (Silero VADSegmentationStage is cheaper)"]
+composition:
+  typical_upstream: [MonoConversionStage, ResampleAudioStage]
+  typical_downstream: [BandFilterStage, UTMOSFilterStage, SegmentExtractionStage]
+params_of_note:
+  min_length: "minimum segment length (s); shorter entries are skipped"
+  max_length: "maximum segment length (s)"
+  vad_onset: "speech onset threshold"
+  vad_offset: "speech offset threshold"
+  fanout: "emit one task per segment (default False)"
+  segments_key: "output key for segments (default vad_segments)"
+comparison:
+  language_support: "language-agnostic"
+  latency_hint: "heavier than Silero VAD (model-based)"
+  config_complexity: "medium (onset/offset thresholds)"
+  known_limitations: "downloads a model; heavier than Silero VAD"
+conflicts_with: [VADSegmentationStage]   # alternative VAD
+notes:
+  - "Downloads the WhisperX VAD model on first run."
+verified: {params: mechanical, tags: best_guess, model_version: best_guess, resource: best_guess, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess}
+provenance: {model_card_url: "https://github.com/m-bain/whisperX", card_version: 1, last_validated: "2026-07-20"}

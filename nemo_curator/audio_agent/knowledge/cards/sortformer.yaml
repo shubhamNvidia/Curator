@@ -3,13 +3,19 @@ category: diarize
 summary: "Speaker diarization (who spoke when) with NVIDIA Sortformer; passthrough or fan-out."
 tags: [needs_gpu, needs_internet_first_run, fanout]
 model_id: "nvidia/diar_sortformer_4spk-v1 (streaming variant: diar_streaming_sortformer_4spk-v2.1)"
+model_version: "nvidia/diar_streaming_sortformer_4spk-v2.1"   # stage default model_name
 domain: {language: en, style: conversational}
 constraints:
   max_speakers: 4
   supported_sample_rates: [16000]
   batch_size: {fixed: 1, reason: "streaming variant keeps per-clip FIFO state; batch >1 corrupts it"}
   input_duration_sweetspot_sec: {min: 5.0, max: 3600.0}
-resource: {gpu_mem_gb: 2.0, throughput_hint: "GPU strongly recommended; CPU is very slow", gpu_optional: true}
+resource:
+  cpus: 1.0
+  gpu_mem_gb: 2.0   # TODO(fill): measured value
+  gpu_optional: true
+  bound: gpu
+  throughput_hint: "GPU strongly recommended; CPU is very slow"
 use_cases:
   good_for: ["diarizing meetings/calls/podcasts with up to 4 speakers", "per-speaker segmentation"]
   avoid_for: [">4 speakers", "music", "non-English (accuracy drops)"]
@@ -18,6 +24,14 @@ composition:
   typical_downstream: [MergeAlignmentDiarizationStage, VADSegmentationStage, AudioToDocumentStage]
 params_of_note:
   model_name: "the Sortformer checkpoint id"
+  inference_batch_size: "internal inference batch size (streaming state is per-clip)"
+comparison:
+  language_support: "English (training domain)"
+  accuracy_hint: "up to 4 speakers; degrades on >4 or non-English"
+  config_complexity: "medium (streaming chunk/context params)"
+  known_limitations: "4-speaker cap; batch_size=1 FIFO; 16 kHz; English-conversational"
+conflicts_with: [PyAnnoteDiarizationStage]   # alternative diarizer
 notes:
   - "Model constraints (4-speaker cap, batch_size=1 FIFO, 16 kHz, English-conversational training) are model-card facts, not in the stage source."
-provenance: {model_card_url: "https://huggingface.co/nvidia/diar_sortformer_4spk-v1", card_version: 1, last_validated: "2026-07-12"}
+verified: {params: mechanical, tags: mechanical, model_version: mechanical, resource: best_guess, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess}
+provenance: {model_card_url: "https://huggingface.co/nvidia/diar_sortformer_4spk-v1", card_version: 2, last_validated: "2026-07-20"}

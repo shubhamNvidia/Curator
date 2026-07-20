@@ -1,0 +1,41 @@
+stage_id: PyAnnoteDiarizationStage
+category: diarize
+summary: "Speaker diarization + overlap detection with PyAnnote 3.1."
+tags: [needs_gpu, needs_internet_first_run, needs_hf_token, writes_disk, fanout]
+model_id: "pyannote/speaker-diarization-3.1"
+model_version: "pyannote/speaker-diarization-3.1"   # stage default model_name
+domain: {language: any, style: conversational}   # pyannote is largely language-agnostic
+constraints:
+  input_duration_sweetspot_sec: {min: 0.5, max: 40.0}   # min_length / max_length defaults
+resource:
+  cpus: 1.0
+  gpu_mem_gb: null   # TODO(fill): measured
+  gpu_optional: true
+  bound: gpu
+  throughput_hint: "GPU recommended; batched segmentation + embeddings"
+use_cases:
+  good_for: ["diarization with overlapping-speech detection", "no fixed speaker cap", "non-English audio"]
+  avoid_for: ["environments without an accepted HF license / token for pyannote"]
+composition:
+  typical_upstream: [MonoConversionStage, ResampleAudioStage]
+  typical_downstream: [MergeAlignmentDiarizationStage, TimestampMapperStage, AudioToDocumentStage]
+params_of_note:
+  hf_token: "HuggingFace token; REQUIRED (pyannote 3.1 is a gated model)"
+  model_name: "the pyannote pipeline id"
+  min_length: "minimum segment length (s)"
+  max_length: "maximum segment length (s)"
+  segmentation_batch_size: "batch size for the segmentation model"
+  embedding_batch_size: "batch size for speaker embeddings"
+  write_rttm: "also write RTTM files to disk (default True)"
+  fanout: "emit one task per segment (default False)"
+comparison:
+  language_support: "language-agnostic"
+  accuracy_hint: "detects overlapping speech; no fixed speaker cap"
+  config_complexity: "medium-high (needs token; onset/offset/batch knobs)"
+  known_limitations: "requires an HF token and accepting the pyannote license"
+conflicts_with: [InferenceSortformerStage]   # alternative diarizer
+caveats:
+  - "Requires a HuggingFace token and acceptance of the pyannote model license."
+  - "Writes RTTM files to disk when write_rttm=True."
+verified: {params: mechanical, tags: best_guess, model_version: mechanical, resource: best_guess, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess}
+provenance: {model_card_url: "https://huggingface.co/pyannote/speaker-diarization-3.1", card_version: 1, last_validated: "2026-07-20"}

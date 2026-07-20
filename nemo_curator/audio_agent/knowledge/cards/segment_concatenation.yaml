@@ -1,0 +1,28 @@
+stage_id: SegmentConcatenationStage
+category: segment
+summary: "Concatenate nested VAD segments into a single combined waveform (with silence gaps)."
+tags: []
+model_id: null
+domain: {language: any, style: speech}
+constraints: {}
+resource:
+  cpus: 1.0
+  gpu_mem_gb: 0.0
+  gpu_optional: false
+  bound: cpu
+  throughput_hint: "CPU; waveform concatenation"
+use_cases:
+  good_for: ["rejoining speech-only segments after nested VAD (silence removed)", "one clean waveform per file for downstream scoring/export"]
+  avoid_for: ["fan-out (non-nested) VAD output", "when per-segment granularity should be kept"]
+composition:
+  typical_upstream: [VADSegmentationStage]   # nested=True
+  typical_downstream: [UTMOSFilterStage, SIGMOSFilterStage, AudioToDocumentStage]
+params_of_note:
+  silence_duration_sec: "silence gap inserted between segments (default 0.5)"
+  segments_key: "key holding the nested segments (default segments)"
+param_dependencies:
+  segments_key: "requires nested segments from VADSegmentationStage(nested=True)"
+notes:
+  - "Expects one task per file carrying a task.data['segments'] list; sorts by segment_num and emits a single AudioTask with the combined waveform."
+verified: {params: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess}
+provenance: {model_card_url: null, card_version: 1, last_validated: "2026-07-20"}

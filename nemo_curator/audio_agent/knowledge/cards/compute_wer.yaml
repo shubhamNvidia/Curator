@@ -1,0 +1,37 @@
+stage_id: ComputeWERStage
+category: quality
+summary: "Compute WER/CER (plus edge-CER and optional PNC WER/CER) between hypothesis and reference text."
+tags: [produces_score]
+model_id: null
+domain: {language: "configurable (default en)", style: any}
+constraints: {}
+resource:
+  cpus: 1.0
+  gpu_mem_gb: 0.0
+  gpu_optional: false
+  bound: cpu
+  throughput_hint: "CPU; text cleaning + normalization (NeMo text processing)"
+use_cases:
+  good_for: ["measuring ASR accuracy (normalized WER/CER, edge-CER, PNC) for filtering", "per-segment scoring"]
+  avoid_for: ["data with no reference transcripts (WER is unproducible)"]
+composition:
+  typical_upstream: [InferenceAsrNemoStage, NeMoASRAlignerStage]
+  typical_downstream: [PreserveByValueStage, AudioToDocumentStage]
+params_of_note:
+  language: "language for text normalization (default en)"
+  hypothesis_text_key: "ASR prediction key (default text)"
+  reference_text_key: "reference transcript key (default text_ref)"
+  compute_pnc_wer: "also compute punctuation-and-capitalization WER/CER"
+  edge_length: "characters at each edge for edge-CER"
+param_dependencies:
+  hypothesis_text_key: "requires an upstream ASR prediction"
+  reference_text_key: "requires reference transcripts in the source manifest"
+comparison:
+  accuracy_hint: "normalized, multi-metric (WER/CER/edge/PNC), operates on segments"
+  config_complexity: "medium (language + PNC + thresholds)"
+  known_limitations: "requires references; normalization is language-dependent"
+conflicts_with: [GetPairwiseWerStage]   # overlapping WER computation
+notes:
+  - "Cleans/normalizes text via NeMo text processing before scoring. Writes results under metrics_key."
+verified: {params: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess, comparison: best_guess}
+provenance: {model_card_url: null, card_version: 1, last_validated: "2026-07-20"}

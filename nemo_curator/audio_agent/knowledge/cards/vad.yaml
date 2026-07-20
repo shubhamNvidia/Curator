@@ -3,10 +3,16 @@ category: segment
 summary: "Silero VAD: detect speech and emit one segment per speech chunk (fan-out or nested)."
 tags: [fanout, produces_score]
 model_id: "silero-vad (bundled, no download)"
+model_version: "silero-vad"   # TODO(fill): pin exact bundled silero-vad version
 domain: {language: any, style: speech}
 constraints:
   supported_sample_rates: [8000, 16000, 32000, 48000, 64000, 96000]  # others are internally resampled to 16 kHz
-resource: {gpu_mem_gb: 0.1, throughput_hint: "lightweight; runs well on CPU", gpu_optional: true}
+resource:
+  cpus: 1.0
+  gpu_mem_gb: 0.1   # TODO(fill): measured value
+  gpu_optional: true
+  bound: cpu
+  throughput_hint: "lightweight; runs well on CPU"
 use_cases:
   good_for: ["removing silence", "chunking long audio into utterances", "per-segment quality scoring"]
   avoid_for: ["when you want whole-file scores (skip VAD entirely)"]
@@ -18,9 +24,14 @@ params_of_note:
   min_duration_sec: "drop speech shorter than this"
   max_duration_sec: "force a split beyond this"
   nested: "True = one task with all segments under segments_key; False = fan-out one task per segment"
-notes:
-  - "Enabling VAD changes output granularity from per-file to per-segment; this is a topology decision, not a data dependency."
 presets:
   conversational: {threshold: 0.5, min_duration_sec: 1.0, max_duration_sec: 30.0}
   read_speech: {threshold: 0.5, min_duration_sec: 2.0, max_duration_sec: 60.0}
-provenance: {model_card_url: "https://github.com/snakers4/silero-vad", card_version: 1, last_validated: "2026-07-12"}
+comparison:
+  language_support: "language-agnostic (speech-probability based)"
+  latency_hint: "very light; CPU-friendly"
+  config_complexity: "low-medium (threshold + duration bounds)"
+  known_limitations: "VAD only (no speaker labels); changes granularity to per-segment"
+conflicts_with: [WhisperXVADStage]   # alternative VAD
+verified: {params: mechanical, tags: mechanical, model_version: best_guess, resource: best_guess, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess}
+provenance: {model_card_url: "https://github.com/snakers4/silero-vad", card_version: 2, last_validated: "2026-07-20"}

@@ -1,0 +1,31 @@
+stage_id: ALMDataBuilderStage
+category: alm
+summary: "Build ALM training windows from audio segments, filtered by rate/bandwidth/speaker-count/duration."
+tags: []
+model_id: null
+domain: {language: any, style: any}
+constraints: {}
+resource:
+  cpus: 1.0
+  gpu_mem_gb: 0.0
+  gpu_optional: false
+  bound: cpu
+  throughput_hint: "CPU; windowing over segments"
+use_cases:
+  good_for: ["assembling fixed-duration audio-language-model training windows from segmented audio"]
+  avoid_for: ["non-ALM curation"]
+composition:
+  typical_upstream: [MergeAlignmentDiarizationStage, PrepareModuleSegmentsStage]
+  typical_downstream: [ALMDataOverlapStage]
+params_of_note:
+  target_window_duration: "target ALM window length in seconds (default 120)"
+  tolerance: "allowed deviation from target duration (fraction)"
+  min_bandwidth: "minimum bandwidth (Hz) to keep a segment"
+  min_sample_rate: "minimum sample rate to keep a segment"
+  min_speakers: "minimum speaker count to keep a window"
+  max_speakers: "maximum speaker count to keep a window"
+  truncation: "allow truncating windows to fit the target duration"
+notes:
+  - "Mutates each entry in-place, adding 'windows', 'stats', and 'truncation_events'."
+verified: {params: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess}
+provenance: {model_card_url: null, card_version: 1, last_validated: "2026-07-20"}

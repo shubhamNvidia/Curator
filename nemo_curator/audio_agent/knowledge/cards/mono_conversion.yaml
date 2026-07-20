@@ -5,7 +5,12 @@ tags: [writes_disk]
 model_id: null
 domain: {language: any, style: any}
 constraints: {}
-resource: {gpu_mem_gb: 0.0, throughput_hint: "CPU (scipy/soundfile)", gpu_optional: false}
+resource:
+  cpus: 1.0
+  gpu_mem_gb: 0.0
+  gpu_optional: false
+  bound: cpu
+  throughput_hint: "CPU (scipy/soundfile)"
 use_cases:
   good_for: ["normalizing stereo/multi-channel input to mono before models", "first step of a quality-filter chain"]
   avoid_for: ["data already mono at the target rate"]
@@ -15,4 +20,5 @@ composition:
 params_of_note:
   output_sample_rate: "target rate (e.g. 48000 or 16000)"
   strict_sample_rate: "if True, enforce the target rate"
-provenance: {model_card_url: null, card_version: 1, last_validated: "2026-07-12"}
+verified: {params: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess}
+provenance: {model_card_url: null, card_version: 2, last_validated: "2026-07-20"}

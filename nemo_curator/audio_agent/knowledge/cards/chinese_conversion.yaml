@@ -1,0 +1,27 @@
+stage_id: ChineseConversionStage
+category: text_norm
+summary: "Convert Traditional Chinese to Simplified (or other OpenCC conversions), per segment."
+tags: []
+model_id: null
+domain: {language: zh, style: any}
+constraints: {}
+resource:
+  cpus: 1.0
+  gpu_mem_gb: 0.0
+  gpu_optional: false
+  bound: cpu
+  throughput_hint: "CPU; OpenCC text conversion"
+use_cases:
+  good_for: ["normalizing Chinese script variants (e.g. t2s) before training/eval"]
+  avoid_for: ["non-Chinese text"]
+composition:
+  typical_upstream: [InferenceAsrNemoStage, NeMoASRAlignerStage]
+  typical_downstream: [ComputeWERStage, AudioToDocumentStage]
+params_of_note:
+  text_key: "manifest key holding the text to convert (default text)"
+  convert_type: "OpenCC conversion type (e.g. 't2s', 's2t'); default t2s"
+  output_suffix: "suffix for the written key (default _simplified)"
+notes:
+  - "Writes converted text to {text_key}{output_suffix}; keeps the original on conversion failure."
+verified: {params: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess}
+provenance: {model_card_url: null, card_version: 1, last_validated: "2026-07-20"}

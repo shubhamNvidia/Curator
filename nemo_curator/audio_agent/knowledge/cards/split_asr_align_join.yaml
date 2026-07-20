@@ -1,0 +1,31 @@
+stage_id: SplitASRAlignJoinStage
+category: segment
+summary: "Composite: split long audio -> NeMo ASR align -> join transcripts/alignments back to originals."
+tags: [needs_gpu, needs_internet_first_run]
+model_id: "nvidia/parakeet-tdt_ctc-1.1b (or another NeMo ASR checkpoint)"
+model_version: "nvidia/parakeet-tdt_ctc-1.1b"   # stage default model_name
+domain: {language: "model-dependent (parakeet: en)", style: read+conversational}
+constraints:
+  supported_sample_rates: [16000]
+resource:
+  cpus: 1.0
+  gpu_mem_gb: null   # TODO(fill): measured; dominated by the ASR aligner (~1.1b)
+  gpu_optional: false
+  bound: gpu
+  throughput_hint: "GPU ASR inference dominates; splits/joins are CPU"
+use_cases:
+  good_for: ["end-to-end transcribe + word-align very long recordings in one stage"]
+  avoid_for: ["short clips (use InferenceAsrNemoStage / NeMoASRAlignerStage directly)"]
+composition:
+  typical_upstream: [ResampleAudioStage, ManifestReader]
+  typical_downstream: [MergeAlignmentDiarizationStage, TimestampMapperStage, AudioToDocumentStage]
+params_of_note:
+  suggested_max_len: "chunk length for the internal split (s)"
+  model_name: "the NeMo ASR checkpoint id"
+  decoder_type: "'rnnt' (default) or 'ctc'"
+  max_len: "max aligned segment length (s)"
+  transcribe_batch_size: "files per GPU inference batch"
+notes:
+  - "Composite of SplitLongAudioStage + NeMoASRAlignerStage + JoinSplitAudioMetadataStage (they always run together)."
+verified: {params: mechanical, tags: best_guess, model_version: mechanical, resource: best_guess, constraints: best_guess, domain: best_guess, use_cases: best_guess}
+provenance: {model_card_url: "https://huggingface.co/nvidia/parakeet-tdt_ctc-1.1b", card_version: 1, last_validated: "2026-07-20"}
