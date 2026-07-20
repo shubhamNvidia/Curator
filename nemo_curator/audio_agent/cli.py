@@ -61,6 +61,14 @@ def _criteria_list(doc: Any) -> list[dict[str, Any]] | None:  # noqa: ANN401
     return doc
 
 
+def _calibration_arg(path: str | None) -> dict[str, Any] | None:
+    """Accept a bare ``{stage: {...}}`` calibration or the ``{calibration: {...}}`` wrapper."""
+    doc = _load_doc(path)
+    if isinstance(doc, dict) and "calibration" in doc:
+        return doc["calibration"]
+    return doc
+
+
 def _emit(obj: Any) -> None:  # noqa: ANN401
     print(json.dumps(obj, indent=2, ensure_ascii=False, default=str))
 
@@ -107,6 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--data")
     s.add_argument("--output-dir")
     s.add_argument("--bootstrap-ray", action="store_true", help="auto-start a local Ray head if none is reachable")
+    s.add_argument("--calibration", help="path to a calibration JSON from a prior smoke (1C.2)")
 
     r = sub.add_parser("run", help="confirm-gated full run (0 silent runs)")
     r.add_argument("--recipe", required=True)
@@ -117,6 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--checkpoint-path")
     r.add_argument("--bootstrap-ray", action="store_true", help="auto-start a local Ray head if none is reachable")
     r.add_argument("--smoke-token", help="smoke-evidence token from a prior smoke (required if AUDIO_AGENT_REQUIRE_SMOKE is set)")
+    r.add_argument("--calibration", help="path to a calibration JSON from a prior smoke (1C.2)")
 
     rp = sub.add_parser("report", help="post-hoc report from an output manifest/dir")
     rp.add_argument("--output", required=True)
@@ -143,6 +153,9 @@ def build_parser() -> argparse.ArgumentParser:
     cont.add_argument("--recipe", required=True, help="the follow-up recipe (or - for stdin)")
     cont.add_argument("--parent-run-id", required=True, help="the prior run to continue from")
     cont.add_argument("--data", help="the source dataset (for the same-data fingerprint guard)")
+
+    cal = sub.add_parser("calibrate", help="extract measured per-stage resources from a smoke report (1C.2)")
+    cal.add_argument("--smoke", required=True, help="path to a smoke-result JSON (or - for stdin)")
     return p
 
 
@@ -169,11 +182,13 @@ def main(argv: list[str] | None = None) -> int:
         ))
     elif cmd == "smoke":
         _emit(aa.smoke(_load_recipe(args.recipe), sample=args.sample, data=args.data,
-                       output_dir=args.output_dir, bootstrap_ray=args.bootstrap_ray))
+                       output_dir=args.output_dir, bootstrap_ray=args.bootstrap_ray,
+                       calibration=_calibration_arg(args.calibration)))
     elif cmd == "run":
         _emit(aa.run(_load_recipe(args.recipe), confirm=args.confirm, data=args.data,
                      output_dir=args.output_dir, checkpoint_path=args.checkpoint_path,
-                     bootstrap_ray=args.bootstrap_ray, smoke_token=args.smoke_token))
+                     bootstrap_ray=args.bootstrap_ray, smoke_token=args.smoke_token,
+                     calibration=_calibration_arg(args.calibration)))
     elif cmd == "report":
         recipe = _load_recipe(args.recipe) if args.recipe else None
         _emit(aa.report(args.output, recipe=recipe, data=args.data))
@@ -190,6 +205,8 @@ def main(argv: list[str] | None = None) -> int:
         _emit(aa.runs(run_id=args.run_id))
     elif cmd == "continue":
         _emit(aa.plan_continuation(_load_recipe(args.recipe), args.parent_run_id, data=args.data))
+    elif cmd == "calibrate":
+        _emit(aa.calibrate(_load_doc(args.smoke) or {}))
     else:  # pragma: no cover - argparse enforces the choices
         return 2
     return 0

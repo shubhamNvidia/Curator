@@ -54,6 +54,7 @@ class StageNeed:
     gpu_mem_gb: float
     host_mem_gb: float
     gpu_optional: bool = True
+    source: str = "default"  # measured (calibration) | card | default
 
 
 @dataclass
@@ -89,18 +90,31 @@ def _gpu_fraction(gpu_mem_gb: float, machine_gpu_mem_gb: float) -> float:
     return 1.0  # GPU needed but machine VRAM unknown -> assume a whole GPU (conservative)
 
 
-def _stage_need(index: int, stage: Any, contract: Any, card: dict[str, Any] | None) -> StageNeed:  # noqa: ANN401
-    """Derive a stage's absolute needs from its card ``resource`` block, else defaults."""
+def _stage_need(
+    index: int, stage: Any, contract: Any, card: dict[str, Any] | None, calib: dict[str, Any] | None = None  # noqa: ANN401
+) -> StageNeed:
+    """Derive a stage's absolute needs, preferring measured calibration > card > default.
+
+    ``calib`` (from a prior smoke, 1C.2) overrides card ``resource`` facts field by
+    field, so a stage whose real VRAM was measured plans against the measured number
+    instead of the card's ``best_guess``.
+    """
     name = type(stage).__name__
     res = (card or {}).get("resource", {}) or {}
-    cpus = float(res.get("cpus", 1.0))
+    calib = calib or {}
     requires_gpu = bool(getattr(getattr(contract, "gates", None), "requires_gpu", False))
-    gpu_mem = res.get("gpu_mem_gb")
-    if gpu_mem is None:
-        gpu_mem = _DEFAULT_GPU_MEM_GB if requires_gpu else 0.0
-    host_mem = float(res.get("host_mem_gb", _DEFAULT_HOST_MEM_GB))
+
+    def pick(key: str, card_default: Any) -> Any:  # measured > card > default  # noqa: ANN401
+        if key in calib and calib[key] is not None:
+            return calib[key]
+        return res.get(key, card_default)
+
+    cpus = float(pick("cpus", 1.0))
+    gpu_mem = pick("gpu_mem_gb", _DEFAULT_GPU_MEM_GB if requires_gpu else 0.0)
+    host_mem = float(pick("host_mem_gb", _DEFAULT_HOST_MEM_GB))
     gpu_optional = bool(res.get("gpu_optional", True))
-    return StageNeed(index, name, cpus, float(gpu_mem or 0.0), host_mem, gpu_optional)
+    source = "measured" if calib.get("source") == "measured" and any(k in calib for k in ("cpus", "gpu_mem_gb", "host_mem_gb")) else ("card" if res else "default")
+    return StageNeed(index, name, cpus, float(gpu_mem or 0.0), host_mem, gpu_optional, source=source)
 
 
 def plan(
@@ -110,18 +124,28 @@ def plan(
     data_profile: dict[str, Any] | None = None,
     *,
     index: Any = None,  # noqa: ANN401
+    calibration: dict[str, Any] | None = None,
 ) -> ResourcePlan:
     """Choose execution mode + report feasibility for ``stages`` on ``env``.
 
     Default streaming; fall back to batch when the concurrent sum doesn't fit; if
     even the largest single stage doesn't fit (or a GPU-only stage has no GPU),
-    mark ``feasible=False`` with escalations. Per-stage needs come from card
-    ``resource`` facts when present, else conservative defaults.
+    mark ``feasible=False`` with escalations. Per-stage needs prefer measured
+    ``calibration`` (1C.2, from a prior smoke) over card ``resource`` facts over
+    conservative defaults.
     """
     from nemo_curator.audio_agent.index import get_index
 
     idx = index or get_index()
-    needs = [_stage_need(i, st, contracts[i], idx.card(type(st).__name__)) for i, st in enumerate(stages)]
+    calibration = calibration or {}
+    needs = [
+        _stage_need(i, st, contracts[i], idx.card(type(st).__name__), calibration.get(type(st).__name__))
+        for i, st in enumerate(stages)
+    ]
+    if any(n.source == "measured" for n in needs):
+        rp_note = f"using measured calibration for {sum(1 for n in needs if n.source == 'measured')} stage(s)"
+    else:
+        rp_note = ""
 
     total_cpus = float(env.total_cpus or 1)
     num_gpus = int(env.gpu_count or 0)
@@ -136,6 +160,8 @@ def plan(
     max_ram = max((n.host_mem_gb for n in needs), default=0.0)
 
     rp = ResourcePlan(machine_fingerprint=env.fingerprint())
+    if rp_note:
+        rp.notes.append(rp_note)
 
     cpu_ok = sum_cpus <= total_cpus * CPU_ALLOC
     gpu_ok = sum_gpu <= num_gpus
@@ -170,7 +196,8 @@ def plan(
         rp.notes.append(f"low free disk ({env.free_disk_gb} GB) - outputs may not fit")
 
     rp.per_stage = [
-        {"stage_index": n.index, "stage": n.name, "cpus": n.cpus, "gpu_mem_gb": n.gpu_mem_gb, "host_mem_gb": n.host_mem_gb}
+        {"stage_index": n.index, "stage": n.name, "cpus": n.cpus, "gpu_mem_gb": n.gpu_mem_gb,
+         "host_mem_gb": n.host_mem_gb, "source": n.source}
         for n in needs
     ]
     rp.estimate = {

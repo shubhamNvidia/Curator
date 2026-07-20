@@ -241,11 +241,15 @@ def smoke(
     executor: Any = None,  # noqa: ANN401
     output_dir: str | None = None,
     bootstrap_ray: bool = False,
+    calibration: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run the recipe on a bounded sample and return structured evidence.
 
     ``bootstrap_ray`` opts into auto-starting a correctly-configured local Ray
-    head when none is reachable (see ``_ray.ensure_cluster``).
+    head when none is reachable (see ``_ray.ensure_cluster``). The result carries a
+    ``calibration`` block — measured per-stage resources extracted from this run
+    (1C.2) — to feed the next ``run``/``smoke`` planner; an optional ``calibration``
+    input seeds mode selection from a prior smoke.
     """
     from nemo_curator.audio_agent.failures import classify
 
@@ -264,7 +268,7 @@ def smoke(
 
     data_profile = profile_data(data).to_dict() if data else None
     rpt.input_count = int((data_profile or {}).get("num_files", 0)) or sample
-    rplan = _plan_resources(stages, probe_env(), data_profile)
+    rplan = _plan_resources(stages, probe_env(), data_profile, calibration=calibration)
     rpt.notes.append(f"resource_plan_mode={rplan.mode}")
     if rplan.escalations:
         rpt.notes.append("resource_escalations=" + "; ".join(rplan.escalations))
@@ -291,6 +295,9 @@ def smoke(
     out = rpt.to_dict()
     out["config_hash"] = rec.config_hash
     out["smoke_token"] = _safety.smoke_token(rec.config_hash)
+    from nemo_curator.audio_agent import calibration as _cal
+
+    out["calibration"] = _cal.from_smoke(out, machine_fingerprint=rplan.machine_fingerprint)
     return _safety.redact(out)
 
 
@@ -304,6 +311,7 @@ def run(
     checkpoint_path: str | None = None,
     bootstrap_ray: bool = False,
     smoke_token: str | None = None,
+    calibration: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Confirm-gated full run. Refuses without explicit confirmation (0 silent runs).
 
@@ -354,7 +362,7 @@ def run(
     if stages is None:
         return {"status": "error", "recipe_id": rec.recipe_id, "issues": issues}
 
-    rplan = _plan_resources(stages, env_obj, data_profile)
+    rplan = _plan_resources(stages, env_obj, data_profile, calibration=calibration)
     rec.with_machine_plan(rplan.to_dict(), machine_fingerprint=rplan.machine_fingerprint)
     if not rplan.feasible:
         return {
@@ -524,6 +532,19 @@ def plan_continuation(
     return continuation.plan_continuation(rec, parent, data_fingerprint=data_fp)
 
 
+def calibrate(smoke_report: dict[str, Any]) -> dict[str, Any]:
+    """Extract measured per-stage resources from a smoke report (1C.2).
+
+    Returns ``{calibration: {stage: {gpu_mem_gb?, host_mem_gb?, ...}}}`` to pass to
+    ``run(..., calibration=...)`` so the planner uses measured numbers over card
+    ``best_guess`` facts. Empty on a CPU smoke (no VRAM to read) — the numbers come
+    from a real GPU smoke.
+    """
+    from nemo_curator.audio_agent import calibration as _cal
+
+    return {"calibration": _cal.from_smoke(smoke_report)}
+
+
 # --------------------------------------------------------------------------- #
 # execution + bounding helpers
 # --------------------------------------------------------------------------- #
@@ -541,8 +562,8 @@ def _run_pipeline(stages: list[Any], executor: Any, *, checkpoint_path: str | No
     return pipeline.run(executor, checkpoint_path=checkpoint_path)
 
 
-def _plan_resources(stages: list[Any], env_obj: Any, data_profile: dict[str, Any] | None):  # noqa: ANN401
-    """Run the deterministic resource planner over the built stages (1C.1)."""
+def _plan_resources(stages: list[Any], env_obj: Any, data_profile: dict[str, Any] | None, calibration: dict[str, Any] | None = None):  # noqa: ANN401
+    """Run the deterministic resource planner over the built stages (1C.1 + 1C.2 calibration)."""
     from nemo_curator.audio_agent import planner
     from nemo_curator.stages.audio import agent as foundation
 
@@ -552,7 +573,7 @@ def _plan_resources(stages: list[Any], env_obj: Any, data_profile: dict[str, Any
             contracts.append(foundation.build_contract(st))
         except Exception:  # noqa: BLE001 - a stage that can't describe itself gets conservative defaults
             contracts.append(None)
-    return planner.plan(stages, contracts, env_obj, data_profile)
+    return planner.plan(stages, contracts, env_obj, data_profile, calibration=calibration)
 
 
 def _make_executor(mode: str) -> Any:  # noqa: ANN401

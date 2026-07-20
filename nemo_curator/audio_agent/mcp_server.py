@@ -140,6 +140,12 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
         divergence point). Reuse requires the same source data."""
         return aa.plan_continuation(recipe, parent_run_id, data=data)
 
+    @server.tool()
+    def calibrate(smoke_report: dict[str, Any]) -> dict[str, Any]:
+        """Extract measured per-stage resources from a smoke report (1C.2), to pass to
+        run(calibration=...) so the planner uses measured over card best-guess numbers."""
+        return aa.calibrate(smoke_report)
+
     return server
 
 

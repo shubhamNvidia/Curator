@@ -292,3 +292,33 @@ queries:
           - {ref: UTMOSFilterStage, params: {mos_threshold: 4.0}}
       data_fingerprint: fp2
     expect: {mode: full_rerun}
+
+  # --- 1C.2 resource calibration (measured resources refine the plan) ---
+  - id: calibrate_extract
+    label: calibrate
+    prompt: "Extract measured VRAM from a smoke report's per-stage metrics."
+    calibrate_smoke:
+      per_stage_metrics:
+        UTMOSFilterStage: {peak_vram_gb: {sum: 3.4, mean: 3.4, count: 1}}
+        MonoConversionStage: {cpu_time: {sum: 0.2, mean: 0.2, count: 1}}
+    expect: {calibration: {UTMOSFilterStage: {gpu_mem_gb: 3.4}}}
+
+  - id: calibrate_planner_prefers
+    label: calibrate
+    prompt: "The planner uses measured VRAM (3.4) over the card best_guess (1.5)."
+    calibrate_plan:
+      stage: UTMOSFilterStage
+      params: {mos_threshold: 4.0}
+      env: {has_gpu: true, gpu_count: 1, gpu_mem_gb: 16.0, total_cpus: 8, total_ram_gb: 32.0}
+      calibration: {UTMOSFilterStage: {gpu_mem_gb: 3.4, source: measured}}
+    expect: {expect_gpu_mem_gb: 3.4, expect_source: measured}
+
+  - id: calibrate_infeasible
+    label: calibrate
+    prompt: "Measured VRAM that exceeds the GPU flips feasibility to infeasible."
+    calibrate_plan:
+      stage: UTMOSFilterStage
+      params: {mos_threshold: 4.0}
+      env: {has_gpu: true, gpu_count: 1, gpu_mem_gb: 4.0, total_cpus: 8, total_ram_gb: 32.0}
+      calibration: {UTMOSFilterStage: {gpu_mem_gb: 40.0, source: measured}}
+    expect: {expect_feasible: false}

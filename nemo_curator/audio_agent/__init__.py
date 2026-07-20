@@ -50,6 +50,7 @@ from nemo_curator.audio_agent.contracts import (
 from nemo_curator.audio_agent.recipe import Recipe, StageRef
 from nemo_curator.audio_agent.report import RunReport
 from nemo_curator.audio_agent.verbs import (
+    calibrate,
     cards,
     catalog_tree,
     context,
@@ -80,6 +81,7 @@ __all__ = [
     "SmokeReport",
     "StageRef",
     "Verdict",
+    "calibrate",
     "cards",
     "catalog_tree",
     "context",

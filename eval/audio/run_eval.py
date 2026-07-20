@@ -89,6 +89,34 @@ def _check(query: dict) -> tuple[bool, str]:  # noqa: C901 - one linear checklis
                 return False, f"honesty codes={sorted(codes)} expected {expect['honesty_code']!r}"
         return True, f"acceptance overall={rep['overall']} honesty={[h['code'] for h in rep['honesty']]}"
 
+    if "calibrate_smoke" in query:  # 1C.2: extract measured resources from a smoke report
+        cal = aa.calibrate(query["calibrate_smoke"])["calibration"]
+        for stage, want in (expect.get("calibration") or {}).items():
+            got = cal.get(stage, {})
+            for k, v in want.items():
+                if got.get(k) != v:
+                    return False, f"calibration[{stage}].{k}={got.get(k)} expected {v}"
+        return True, f"calibration={cal}"
+
+    if "calibrate_plan" in query:  # 1C.2: planner prefers measured calibration over card facts
+        from nemo_curator.audio_agent import planner
+        from nemo_curator.audio_agent._resolve import resolve_stage_class
+        from nemo_curator.audio_agent.contracts import EnvProfile
+        from nemo_curator.stages.audio import agent as foundation
+
+        spec = query["calibrate_plan"]
+        st = resolve_stage_class(spec["stage"])(**(spec.get("params") or {}))
+        p = planner.plan([st], [foundation.build_contract(st)], EnvProfile(**spec["env"]),
+                         calibration=spec.get("calibration"))
+        ps = p.per_stage[0]
+        if "expect_gpu_mem_gb" in expect and ps["gpu_mem_gb"] != expect["expect_gpu_mem_gb"]:
+            return False, f"gpu_mem_gb={ps['gpu_mem_gb']} expected={expect['expect_gpu_mem_gb']}"
+        if "expect_source" in expect and ps["source"] != expect["expect_source"]:
+            return False, f"source={ps['source']} expected={expect['expect_source']}"
+        if "expect_feasible" in expect and p.feasible != expect["expect_feasible"]:
+            return False, f"feasible={p.feasible} expected={expect['expect_feasible']}"
+        return True, f"plan gpu_mem={ps['gpu_mem_gb']} source={ps['source']} feasible={p.feasible}"
+
     if "continuation" in query:  # incremental continuation (Run Records): parent + new recipe -> plan
         from nemo_curator.audio_agent import continuation as cont
         from nemo_curator.audio_agent.contracts import RunRecord

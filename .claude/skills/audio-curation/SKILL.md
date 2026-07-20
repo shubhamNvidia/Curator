@@ -157,6 +157,12 @@ Show the user `retained` / `rejected` + examples. If `goals_met` is false (0
 retained, errors), read the `notes` (they include a failure classification),
 adjust thresholds, and re-plan.
 
+On a GPU smoke the result also carries a `calibration` block (measured per-stage
+VRAM/throughput). Pass it to the full run so the resource planner uses **measured**
+numbers over card estimates: `run ... --calibration calib.json` (extract it with
+`calibrate --smoke smoke.json`). On a CPU smoke there's no VRAM to measure, so the
+planner keeps using the card facts.
+
 ### 6. Confirm gate -> run
 
 Present the plan, the smoke evidence, the scale/time estimate, **and the
