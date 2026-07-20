@@ -410,14 +410,13 @@ def run(
 
 def _record_run(rec: Recipe, *, data: str | None, data_fp: str | None, report: Any, failed: bool) -> str | None:  # noqa: ANN401
     """Persist a local RunRecord (provenance for tracing + continuation). Best-effort."""
-    import time
-
     from nemo_curator.audio_agent import run_store
     from nemo_curator.audio_agent.contracts import RunRecord
 
     record = RunRecord(
         run_id=run_store.new_run_id(rec.config_hash),
-        recipe=rec.to_dict(),
+        # Redact secret-valued params (e.g. hf_token) so they never land in the on-disk record.
+        recipe=_safety.redact(rec.to_dict(), redact_transcripts=False),
         config_hash=rec.config_hash,
         parent_run_id=rec.parent_run_id,
         data_source=data,

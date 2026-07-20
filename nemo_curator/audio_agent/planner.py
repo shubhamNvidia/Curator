@@ -138,8 +138,14 @@ def plan(
 
     idx = index or get_index()
     calibration = calibration or {}
+
+    def _calib_for(st: Any) -> dict[str, Any] | None:  # noqa: ANN401
+        # Match by class name (manual calibration dicts) OR stage.name (what a smoke's
+        # per_stage_metrics / from_smoke key by, e.g. "UTMOSFilter" vs "UTMOSFilterStage").
+        return calibration.get(type(st).__name__) or calibration.get(getattr(st, "name", "") or "\0")
+
     needs = [
-        _stage_need(i, st, contracts[i], idx.card(type(st).__name__), calibration.get(type(st).__name__))
+        _stage_need(i, st, contracts[i], idx.card(type(st).__name__), _calib_for(st))
         for i, st in enumerate(stages)
     ]
     if any(n.source == "measured" for n in needs):

@@ -299,9 +299,9 @@ queries:
     prompt: "Extract measured VRAM from a smoke report's per-stage metrics."
     calibrate_smoke:
       per_stage_metrics:
-        UTMOSFilterStage: {peak_vram_gb: {sum: 3.4, mean: 3.4, count: 1}}
-        MonoConversionStage: {cpu_time: {sum: 0.2, mean: 0.2, count: 1}}
-    expect: {calibration: {UTMOSFilterStage: {gpu_mem_gb: 3.4}}}
+        UTMOSFilter: {peak_vram_gb: {sum: 3.4, mean: 3.4, count: 1}}   # stage.name, as a real smoke keys it
+        MonoConversion: {cpu_time: {sum: 0.2, mean: 0.2, count: 1}}
+    expect: {calibration: {UTMOSFilter: {gpu_mem_gb: 3.4}}}
 
   - id: calibrate_planner_prefers
     label: calibrate
@@ -310,7 +310,7 @@ queries:
       stage: UTMOSFilterStage
       params: {mos_threshold: 4.0}
       env: {has_gpu: true, gpu_count: 1, gpu_mem_gb: 16.0, total_cpus: 8, total_ram_gb: 32.0}
-      calibration: {UTMOSFilterStage: {gpu_mem_gb: 3.4, source: measured}}
+      calibration: {UTMOSFilter: {gpu_mem_gb: 3.4, source: measured}}   # keyed by stage.name (from a real smoke)
     expect: {expect_gpu_mem_gb: 3.4, expect_source: measured}
 
   - id: calibrate_infeasible
@@ -320,5 +320,5 @@ queries:
       stage: UTMOSFilterStage
       params: {mos_threshold: 4.0}
       env: {has_gpu: true, gpu_count: 1, gpu_mem_gb: 4.0, total_cpus: 8, total_ram_gb: 32.0}
-      calibration: {UTMOSFilterStage: {gpu_mem_gb: 40.0, source: measured}}
+      calibration: {UTMOSFilter: {gpu_mem_gb: 40.0, source: measured}}   # keyed by stage.name
     expect: {expect_feasible: false}
