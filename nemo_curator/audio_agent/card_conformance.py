@@ -40,6 +40,7 @@ _KNOWN_RESOURCE_KEYS = frozenset(
 _NUMERIC_RESOURCE_KEYS = frozenset({"cpus", "gpu_mem_gb", "host_mem_gb", "disk_expansion"})
 _KNOWN_BOUND = frozenset({"cpu", "gpu", "io"})
 _VERIFIED_TIERS = frozenset({"mechanical", "measured", "best_guess"})
+_DIRECTIONS = frozenset({"higher_better", "lower_better"})
 
 
 def _stage_param_names(stage_id: str) -> set[str] | None:
@@ -109,6 +110,29 @@ def check_card(stage_id: str, card: Any) -> list[str]:  # noqa: ANN401
     # a model stage must pin a model_version (so an upgrade can't silently change facts).
     if card.get("model_id") and not _model_version(card):
         v.append(f"{stage_id}: model_id is set but no model_version pin (add model_version)")
+
+    # metrics block (1A.2): the deterministic source of absolute targets. Validate its
+    # shape so the config-strategy resolver can trust it (drift-proof anchors/presets).
+    metrics = card.get("metrics") or {}
+    if isinstance(metrics, dict):
+        for mkey, mblock in metrics.items():
+            if not isinstance(mblock, dict):
+                v.append(f"{stage_id}: metrics[{mkey!r}] must be a mapping")
+                continue
+            scale = mblock.get("scale")
+            if scale is not None and (not isinstance(scale, dict) or scale.get("direction") not in _DIRECTIONS):
+                v.append(f"{stage_id}: metrics[{mkey!r}].scale needs direction in {sorted(_DIRECTIONS)} (+ min/max)")
+            tp = mblock.get("threshold_param")
+            if tp and tp not in params:
+                v.append(f"{stage_id}: metrics[{mkey!r}].threshold_param {tp!r} is not a constructor param")
+            for pname, pvals in (mblock.get("presets") or {}).items():
+                if isinstance(pvals, dict):
+                    for k in pvals:
+                        if k not in params:
+                            v.append(f"{stage_id}: metrics[{mkey!r}] preset {pname!r} sets non-param {k!r}")
+            vr = mblock.get("valid_range")
+            if vr is not None and not (isinstance(vr, list) and len(vr) == 2):  # noqa: PLR2004 - [lo, hi]
+                v.append(f"{stage_id}: metrics[{mkey!r}].valid_range must be [lo, hi]")
 
     # verified tiers, when present, must use the known vocabulary.
     verified = card.get("verified") or {}

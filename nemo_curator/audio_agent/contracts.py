@@ -375,3 +375,25 @@ class AcceptanceReport:
             "criteria": [c.to_dict() for c in self.criteria],
             "verdict": self.verdict,
         }
+
+
+@dataclass
+class ConfigStrategyEntry:
+    """How one parameter's value was chosen (1A §6.4) — the auditable record.
+
+    ``recompute_on`` drives layered save: ``none`` (absolute/explicit) is portable
+    and travels with the recipe; ``data_change`` (relative/data-derived) and
+    ``machine_change`` (operational) are recomputed on re-run rather than reused.
+    """
+
+    param: str
+    value: Any = None
+    metric: str | None = None
+    kind: str = "absolute"  # absolute | relative | operational
+    mode: str = "knowledge_driven"  # knowledge_driven | data_informed
+    source: dict[str, Any] = field(default_factory=dict)  # {from: user_explicit|card_anchor|card_preset|..., ref: ...}
+    recompute_on: str = "none"  # none | data_change | machine_change
+    rationale: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return _clean(asdict(self))

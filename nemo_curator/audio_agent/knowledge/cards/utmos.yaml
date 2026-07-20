@@ -25,6 +25,15 @@ params_of_note:
   mos_threshold: "minimum MOS to keep (0-5). TTS: >=4.0; ASR/general: >=3.4; max retention: >=2.5"
   action: "'filter' drops below threshold; 'annotate' keeps all and only writes the score"
   mode: "'task' (whole file), 'segments' (per nested segment), or 'auto'"
+metrics:
+  utmos_mos:                                    # the score_key this stage writes
+    scale: {min: 0.0, max: 5.0, direction: higher_better}
+    threshold_param: mos_threshold              # this stage gates on the metric itself
+    anchors:                                    # value range -> outcome label (best_guess)
+      "4.0-5.0": studio                         # TTS-reference quality
+      "3.4-4.0": general                        # ASR / general-purpose
+      "2.5-3.4": lenient                        # maximum retention
+    valid_range: [0.0, 5.0]
 presets:
   tts_reference: {mos_threshold: 4.0}
   asr_finetune: {mos_threshold: 3.4}
@@ -37,5 +46,5 @@ comparison:
 caveats:
   - "Downloads the model from torch.hub on first run (needs network once)."
   - "Score is a predictor of human MOS, not a ground-truth measurement."
-verified: {params: mechanical, tags: mechanical, model_version: mechanical, resource: best_guess, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess}
+verified: {params: mechanical, tags: mechanical, model_version: mechanical, resource: best_guess, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess, metrics: best_guess}
 provenance: {model_card_url: "https://github.com/tarepan/SpeechMOS", card_version: 2, last_validated: "2026-07-20"}

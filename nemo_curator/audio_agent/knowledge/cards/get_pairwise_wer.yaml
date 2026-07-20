@@ -21,6 +21,14 @@ params_of_note:
   text_key: "reference transcript key (default text)"
   pred_text_key: "ASR prediction key (default pred_text)"
   wer_key: "output key for the WER percentage (default wer_pct)"
+metrics:
+  wer_pct:                                      # the wer_key this stage writes (a percentage)
+    scale: {min: 0.0, max: 100.0, direction: lower_better}
+    # no threshold_param: this stage annotates; filter downstream with PreserveByValueStage
+    anchors:                                    # best_guess
+      "0-10": transcription_grade               # <= 10% WER
+      "10-25": usable                           # <= 25% WER
+    valid_range: [0.0, 100.0]
 param_dependencies:
   pred_text_key: "requires an upstream ASR prediction (e.g. InferenceAsrNemoStage)"
   text_key: "requires reference transcripts in the source manifest"
@@ -32,5 +40,5 @@ comparison:
 conflicts_with: [ComputeWERStage]   # overlapping WER computation
 notes:
   - "WER is a percentage (5.0 == 5%)."
-verified: {params: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess, comparison: best_guess}
+verified: {params: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess, comparison: best_guess, metrics: best_guess}
 provenance: {model_card_url: null, card_version: 1, last_validated: "2026-07-20"}

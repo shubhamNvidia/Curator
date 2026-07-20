@@ -126,6 +126,13 @@ def build_parser() -> argparse.ArgumentParser:
     vf = sub.add_parser("verify", help="verify acceptance criteria against evidence -> AcceptanceReport")
     vf.add_argument("--criteria", required=True, help="acceptance criteria YAML/JSON (list or {acceptance_criteria: [...]}; - for stdin)")
     vf.add_argument("--evidence", help="evidence YAML/JSON (produced_roles/metrics/retained/...); - for stdin")
+
+    rs = sub.add_parser("resolve", help="resolve an outcome (label/use_case/explicit) to concrete stage config (1A.2)")
+    rs.add_argument("--stage", required=True)
+    rs.add_argument("--label", help="outcome label, e.g. studio / transcription_grade")
+    rs.add_argument("--use-case", help="named card preset, e.g. tts_reference")
+    rs.add_argument("--explicit", help="JSON object of {param: value}")
+    rs.add_argument("--data-driven", action="store_true", help="enable Path B (deferred; affects relative-objective asks)")
     return p
 
 
@@ -162,6 +169,10 @@ def main(argv: list[str] | None = None) -> int:
         _emit(aa.report(args.output, recipe=recipe, data=args.data))
     elif cmd == "verify":
         _emit(aa.verify(_criteria_list(_load_doc(args.criteria)) or [], evidence=_load_doc(args.evidence)))
+    elif cmd == "resolve":
+        explicit = json.loads(args.explicit) if args.explicit else None
+        _emit(aa.resolve(args.stage, label=args.label, use_case=args.use_case,
+                         explicit=explicit, data_driven=args.data_driven))
     else:  # pragma: no cover - argparse enforces the choices
         return 2
     return 0

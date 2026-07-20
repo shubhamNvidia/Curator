@@ -105,6 +105,21 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
         met / not_met / unverifiable / unachievable (never silently relaxed)."""
         return aa.verify(acceptance_criteria, evidence=evidence)
 
+    @server.tool()
+    def resolve(
+        stage: str,
+        label: str | None = None,
+        use_case: str | None = None,
+        explicit: dict[str, Any] | None = None,
+        data_driven: bool = False,
+    ) -> dict[str, Any]:
+        """Resolve an outcome (label/use_case/explicit) to concrete stage config (1A.2).
+
+        Maps a user-facing outcome to params (or a PreserveByValueStage filter) via
+        the card's metrics anchors/presets, with an auditable strategy trail. Never
+        exposes or invents internal thresholds."""
+        return aa.resolve(stage, label=label, use_case=use_case, explicit=explicit, data_driven=data_driven)
+
     return server
 
 

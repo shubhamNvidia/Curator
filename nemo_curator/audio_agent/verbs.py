@@ -120,6 +120,30 @@ def context(
     return _context.assemble(goal, data=data, selected_stages=stages, roles=roles).to_dict()
 
 
+def resolve(
+    stage: str,
+    *,
+    label: str | None = None,
+    use_case: str | None = None,
+    explicit: dict[str, Any] | None = None,
+    data_driven: bool = False,
+) -> dict[str, Any]:
+    """Resolve an outcome to concrete stage config via the card (1A.2, Path A).
+
+    Maps a user-facing outcome — a quality ``label`` ("studio"), a named
+    ``use_case`` preset, or an ``explicit`` ``{param: value}`` — to concrete
+    params (or, for an annotator, a ``PreserveByValueStage`` filter), plus an
+    auditable ``strategy`` trail. Keeps internal thresholds out of user questions
+    and never invents a number. Relative objectives need Path B (``data_driven``,
+    deferred): with it off they return an ``ask`` for an explicit bar.
+    """
+    from nemo_curator.audio_agent import config_strategy
+
+    return config_strategy.resolve(
+        stage, label=label, use_case=use_case, explicit=explicit, data_driven=data_driven
+    )
+
+
 # --------------------------------------------------------------------------- #
 # validate (structural + semantic + card + preflight)
 # --------------------------------------------------------------------------- #

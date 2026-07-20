@@ -21,6 +21,15 @@ composition:
   typical_downstream: [UTMOSFilterStage, SIGMOSFilterStage]
 params_of_note:
   band_value: "'full_band' (keep hi-fi, default) or 'narrow_band' (keep telephony-style)"
+metrics:
+  band_prediction:                              # categorical (no numeric scale)
+    threshold_param: band_value
+    anchors:                                    # outcome label -> the band_value to keep
+      full_band: wideband                       # keep hi-fi / wideband recordings
+      narrow_band: telephony                    # keep telephony-style recordings
+presets:
+  wideband: {band_value: full_band}
+  telephony: {band_value: narrow_band}
 comparison:
   accuracy_hint: "binary full/narrow band classifier (not a MOS)"
   latency_hint: "cheapest quality filter (CPU RandomForest)"
@@ -28,5 +37,5 @@ comparison:
   known_limitations: "bandwidth only; not a perceptual-quality score"
 notes:
   - "Cheapest quality filter (CPU) -- a good first filter to reduce load on downstream GPU stages."
-verified: {params: mechanical, tags: mechanical, model_version: best_guess, resource: best_guess, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess}
+verified: {params: mechanical, tags: mechanical, model_version: best_guess, resource: best_guess, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess, metrics: best_guess}
 provenance: {model_card_url: "https://huggingface.co/nvidia/nemocurator-speech-bandwidth-filter", card_version: 2, last_validated: "2026-07-20"}

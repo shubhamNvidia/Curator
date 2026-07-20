@@ -82,6 +82,21 @@ def _check(query: dict) -> tuple[bool, str]:  # noqa: C901 - one linear checklis
                 return False, f"criterion {cid} status={statuses.get(cid)} expected={want}"
         return True, f"acceptance overall={rep['overall']}"
 
+    if "resolve" in query:  # config-strategy resolver (1A.2): outcome -> concrete config
+        spec = query["resolve"]
+        r = aa.resolve(spec["stage"], label=spec.get("label"), use_case=spec.get("use_case"),
+                       explicit=spec.get("explicit"))
+        for param, want in (expect.get("resolve_params") or {}).items():
+            if r["params"].get(param) != want:
+                return False, f"resolve {param}={r['params'].get(param)} expected={want}"
+        if "resolve_filter_ref" in expect:
+            got = (r["filter_stage"] or {}).get("ref")
+            if got != expect["resolve_filter_ref"]:
+                return False, f"resolve filter_ref={got} expected={expect['resolve_filter_ref']}"
+        if "resolve_ask" in expect and bool(r["asks"]) != expect["resolve_ask"]:
+            return False, f"resolve asks={r['asks']} expected_ask={expect['resolve_ask']}"
+        return True, f"resolve params={r['params']} filter={(r['filter_stage'] or {}).get('ref')}"
+
     recipe = _resolve_recipe(query)
     if recipe is None:
         return False, "query has neither recipe, recipe_ref, nor a role/capability expectation"

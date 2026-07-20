@@ -37,6 +37,7 @@ from __future__ import annotations
 from nemo_curator.audio_agent.contracts import (
     AcceptanceCriterion,
     AcceptanceReport,
+    ConfigStrategyEntry,
     CriterionResult,
     DataProfile,
     EnvProfile,
@@ -54,6 +55,7 @@ from nemo_curator.audio_agent.verbs import (
     describe,
     discover,
     report,
+    resolve,
     run,
     smoke,
     validate,
@@ -63,6 +65,7 @@ from nemo_curator.audio_agent.verbs import (
 __all__ = [
     "AcceptanceCriterion",
     "AcceptanceReport",
+    "ConfigStrategyEntry",
     "CriterionResult",
     "DataProfile",
     "EnvProfile",
@@ -79,6 +82,7 @@ __all__ = [
     "describe",
     "discover",
     "report",
+    "resolve",
     "run",
     "smoke",
     "validate",

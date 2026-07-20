@@ -93,6 +93,28 @@ Prefer adapting a `matched_blueprint` (it encodes idiomatic ordering with
 `enforced`/`advisory` tags and `topology_selection`) over composing from scratch.
 Adapt, do not blindly copy.
 
+### 3b. Resolve outcomes to parameters (never expose internal numbers)
+
+Do not hand-pick thresholds. Map the user's **outcome** to a concrete param with
+`resolve`, which reads the card's `metrics` anchors/presets:
+
+```bash
+python -m nemo_curator.audio_agent resolve --stage UTMOSFilterStage --label studio
+# -> params {mos_threshold: 4.0}   (+ an auditable strategy trail)
+```
+
+- `--label <outcome>` (e.g. `studio`, `wideband`, `transcription_grade`) maps via
+  the card anchors to the stage's own threshold param, or — for an annotator like
+  WER — to a `PreserveByValueStage` filter (`filter_stage` in the result).
+- `--use-case <preset>` applies a named card preset; `--explicit '{"p": v}'` uses a
+  value the user gave.
+- If it returns `asks` (unknown label, or a **relative** objective like "best 20%"
+  which needs data / Path B), ask the user a plain-language question or get an
+  explicit bar — never invent the number.
+
+Apply the returned `params` to the stage (and insert any `filter_stage`), and keep
+the `strategy` trail for the plan/report (it records *why* each value was chosen).
+
 ### 4. Plan -> validate -> critique (static loop, <= 3 iterations)
 
 Emit a Recipe (YAML): `{stages: [{ref, params}], inputs, preset}`. Save it and:

@@ -76,6 +76,7 @@ class Recipe:
     # than reusing stale, machine-/data-specific numbers.
     machine_plan: dict[str, Any] | None = None  # mode + per-stage resources (per machine)
     data_derived: dict[str, Any] | None = None  # data-derived values, e.g. relative thresholds (per dataset)
+    config_strategy: list[dict[str, Any]] | None = None  # how each param was chosen (1A.2 audit trail)
     knowledge_version: str | None = None  # knowledge/cards version the plan was approved against
     parent_run_id: str | None = None  # provenance chain for incremental continuation
 
@@ -98,6 +99,7 @@ class Recipe:
             config_hash=d.get("config_hash"),
             machine_plan=d.get("machine_plan"),
             data_derived=d.get("data_derived"),
+            config_strategy=d.get("config_strategy"),
             knowledge_version=d.get("knowledge_version"),
             parent_run_id=d.get("parent_run_id"),
         )
@@ -111,9 +113,11 @@ class Recipe:
         """Stable JSON of the PORTABLE semantic content only (stages + inputs + preset).
 
         Deliberately excludes id/hash/rationale AND the recomputable layered-save
-        annotations (``machine_plan`` / ``data_derived`` / ``knowledge_version`` /
-        ``parent_run_id``), so ``config_hash`` stays portable: the same intent on a
-        different machine or dataset hashes identically.
+        annotations (``machine_plan`` / ``data_derived`` / ``config_strategy`` /
+        ``knowledge_version`` / ``parent_run_id``), so ``config_hash`` stays portable:
+        the same intent on a different machine or dataset hashes identically. (The
+        *resolved* param values live in ``stages`` and so are hashed; the
+        ``config_strategy`` audit trail explaining them is not.)
         """
         payload = {
             "stages": [s.to_dict() for s in self.stages],
@@ -149,6 +153,15 @@ class Recipe:
         """Attach data-derived values (e.g. relative thresholds), stamped with the
         dataset they were computed from. Does not change ``config_hash``."""
         self.data_derived = {**values, "data_fingerprint": data_fingerprint}
+        return self
+
+    def with_config_strategy(self, entries: list[dict[str, Any]]) -> Recipe:
+        """Attach the config-strategy audit trail (how each param was chosen, 1A.2).
+
+        The *resolved values* already live in ``stages`` (and so are hashed); this
+        is the explanation + provenance (source/kind/recompute_on) that rides
+        alongside as a recomputable annotation. Does not change ``config_hash``."""
+        self.config_strategy = list(entries)
         return self
 
     def stale_layers(self, *, machine_fingerprint: str | None = None, data_fingerprint: str | None = None) -> list[str]:

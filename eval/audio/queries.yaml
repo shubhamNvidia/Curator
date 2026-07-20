@@ -175,3 +175,34 @@ queries:
       - {id: semantic, type: semantic_fit, severity: nice, check: {method: reviewer_judgment}}
     verify_evidence: {retained: 10, input_count: 10}
     expect: {acceptance_overall: met, criterion_status: {accuracy: unverifiable, semantic: unverifiable}}
+
+  # --- 1A.2 config-strategy resolver (outcome label/preset -> concrete param) ---
+  - id: resolve_studio_utmos
+    label: resolve
+    prompt: "Studio quality -> UTMOS threshold, without exposing the number to the user."
+    resolve: {stage: UTMOSFilterStage, label: studio}
+    expect: {resolve_params: {mos_threshold: 4.0}}
+
+  - id: resolve_preset_utmos
+    label: resolve
+    prompt: "TTS-reference preset -> the card's bundled threshold."
+    resolve: {stage: UTMOSFilterStage, use_case: tts_reference}
+    expect: {resolve_params: {mos_threshold: 4.0}}
+
+  - id: resolve_categorical_band
+    label: resolve
+    prompt: "Wideband outcome -> band_value (categorical anchor)."
+    resolve: {stage: BandFilterStage, label: wideband}
+    expect: {resolve_params: {band_value: full_band}}
+
+  - id: resolve_annotator_wer
+    label: resolve
+    prompt: "Transcription-grade WER -> a PreserveByValue filter (annotator, no self-threshold)."
+    resolve: {stage: GetPairwiseWerStage, label: transcription_grade}
+    expect: {resolve_filter_ref: PreserveByValueStage}
+
+  - id: resolve_unknown_label
+    label: resolve
+    prompt: "An unknown outcome label -> the resolver asks instead of guessing."
+    resolve: {stage: UTMOSFilterStage, label: bogus}
+    expect: {resolve_ask: true}
