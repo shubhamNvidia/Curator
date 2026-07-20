@@ -10,7 +10,7 @@ constraints:
   input_duration_sweetspot_sec: {min: 1.0, max: 40.0}   # min_len / max_len defaults
 resource:
   cpus: 1.0
-  gpu_mem_gb: null   # TODO(fill): measured; checkpoint-dependent (~1.1b model)
+  gpu_mem_gb: 8.6   # measured on RTX 4090 (parakeet-tdt_ctc-1.1b, CTC decode, batch 4, ~8.6 GB reserved); checkpoint-dependent
   gpu_optional: false
   bound: gpu
   throughput_hint: "batched GPU inference + alignment"

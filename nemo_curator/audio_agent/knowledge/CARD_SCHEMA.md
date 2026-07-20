@@ -55,6 +55,19 @@ verified: {params: mechanical, resource: best_guess, model_version: measured, us
 | `notes` / `caveats` | opt. | free text. |
 | `provenance` | rec. | `{model_card_url, card_version, last_validated}`. |
 
+## `resource.gpu_mem_gb` is a reference, not a per-GPU constant
+
+A stage's VRAM tracks the *workload* (model weights + activations for a given precision,
+batch size, and input length), **not** the GPU model — a 5 GB stage needs ~5 GB on any
+card; the GPU's total VRAM only decides whether it *fits*. So `gpu_mem_gb` is a **reference
+estimate**, and each measured value records its conditions in the comment
+(e.g. `# measured on RTX 4090, fp32, batch 4, 6 s clip`). It shifts with **precision**
+(fp16/bf16 ≈ half), **batch size / audio length**, and (minor) framework/arch. The planner
+probes the *actual* machine's VRAM per run and checks each need against it; the **1C.2
+calibration** path (`smoke` → `calibrate` → `run --calibration`) re-measures on the real
+box and **overrides** the card per machine (measured > card), so the card value is a sane
+default, not a hard truth.
+
 ## Gate (what is enforced)
 
 `python -m nemo_curator.audio_agent.card_conformance` fails if any card:

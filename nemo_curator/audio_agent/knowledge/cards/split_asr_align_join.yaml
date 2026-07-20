@@ -9,7 +9,7 @@ constraints:
   supported_sample_rates: [16000]
 resource:
   cpus: 1.0
-  gpu_mem_gb: null   # TODO(fill): measured; dominated by the ASR aligner (~1.1b)
+  gpu_mem_gb: 8.6   # measured on RTX 4090 (parakeet-tdt_ctc-1.1b, CTC decode, batch 4, ~8.6 GB reserved); dominated by the ASR aligner
   gpu_optional: false
   bound: gpu
   throughput_hint: "GPU ASR inference dominates; splits/joins are CPU"
