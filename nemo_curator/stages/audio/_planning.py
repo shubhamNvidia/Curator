@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from nemo_curator.stages.audio._agent_registry import build_contract
 from nemo_curator.stages.audio._conformance import produced_roles, reads_satisfied_by_role
+from nemo_curator.stages.audio._roles import role_for_value
 
 if TYPE_CHECKING:
     from nemo_curator.stages.audio._agent_ready import StageContract
@@ -183,6 +184,7 @@ def validate_pipeline(  # noqa: C901 (complexity accepted: sequential per-stage 
     available_keys: set[str] = set(initial_keys) if initial_keys is not None else set(_DEFAULT_INITIAL_KEYS)
     tensor_resident = False  # an upstream stage left a non-serializable tensor in task.data
     past_composite = False  # a composite hides its true writes; downstream reads can't be judged
+    removed_roles: set[str] = set()  # roles whose carrier key an upstream stage deleted (removes_keys)
     issues: list[PipelineIssue] = []
 
     for index, stage in enumerate(stages):
@@ -224,13 +226,24 @@ def validate_pipeline(  # noqa: C901 (complexity accepted: sequential per-stage 
             continue
 
         if not reads_satisfied_by_role(contract, available):
-            issues.append(
-                PipelineIssue(
-                    index, name, "error", "unsatisfied_reads",
-                    f"requires {_requirement_str(contract, available)} "
-                    f"not produced upstream; available so far: {sorted(available)}",
+            needed = _required_roles(contract) | {r for o in contract.reads_one_of for r in _roles_of(o, contract)}
+            removed_hit = (needed & removed_roles) - available
+            if removed_hit:
+                issues.append(
+                    PipelineIssue(
+                        index, name, "error", "key_removed_upstream",
+                        f"reads role(s) {sorted(removed_hit)} that an upstream stage removed "
+                        f"(removes_keys) and no stage re-produced; available so far: {sorted(available)}",
+                    )
                 )
-            )
+            else:
+                issues.append(
+                    PipelineIssue(
+                        index, name, "error", "unsatisfied_reads",
+                        f"requires {_requirement_str(contract, available)} "
+                        f"not produced upstream; available so far: {sorted(available)}",
+                    )
+                )
         else:
             # Role-satisfied: check literal-key identity. A read whose role is
             # available but whose exact key VALUE was not produced/seeded means a
@@ -269,8 +282,16 @@ def validate_pipeline(  # noqa: C901 (complexity accepted: sequential per-stage 
                 )
             )
 
-        available |= produced_roles(contract)
+        produced = produced_roles(contract)
+        available |= produced
+        removed_roles -= produced  # a re-produced role is no longer "removed"
         available_keys |= _write_key_values(contract)
+        for rk in contract.removes_keys:
+            available_keys.discard(rk)
+            role = role_for_value(rk)
+            if role != "unknown" and role not in produced and not any(role_for_value(k) == role for k in available_keys):
+                available.discard(role)
+                removed_roles.add(role)
         if "tensor" in contract.writes.produces:
             tensor_resident = True
         if contract.gates.sanitizes_output:

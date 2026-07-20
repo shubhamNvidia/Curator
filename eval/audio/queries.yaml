@@ -90,3 +90,35 @@ queries:
     label: negative
     prompt: "Label the emotion and accent of each speaker."
     expect: {no_stage_for: [emotion, accent]}
+
+  # --- 1.1 correctness-registry checks (task-type / key-flow / output-completeness) ---
+  - id: task_type_mismatch
+    label: negative
+    prompt: "Aggregate to a DocumentBatch, then run an AudioTask stage on it (wrong order)."
+    recipe:
+      stages:
+        - {ref: ManifestReader, params: {manifest_path: "REQUIRED"}}
+        - {ref: AudioToDocumentStage, params: {}}
+        - {ref: GetAudioDurationStage, params: {}}
+    expect: {runnable: false, status: fail, has_code: task_type_mismatch}
+
+  - id: key_removed_upstream
+    label: negative
+    prompt: "Nested VAD drops the top-level waveform, then transcribe from that waveform."
+    recipe:
+      stages:
+        - {ref: MonoConversionStage, params: {}}
+        - {ref: VADSegmentationStage, params: {nested: true}}
+        - {ref: InferenceAsrNemoStage, params: {model_name: "stt_en_conformer", input_residency: "waveform"}}
+    expect: {runnable: false, has_code: key_removed_upstream}
+
+  - id: missing_output_transcripts
+    label: negative
+    prompt: "I want transcripts, but the recipe has no ASR stage."
+    recipe:
+      stages:
+        - {ref: ManifestReader, params: {manifest_path: "REQUIRED"}}
+        - {ref: GetAudioDurationStage, params: {}}
+        - {ref: AudioToDocumentStage, params: {}}
+    expected_outputs: [pred_text]
+    expect: {has_code: missing_output_producer}

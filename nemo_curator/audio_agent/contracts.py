@@ -29,10 +29,18 @@ this module are the ones our verbs return.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 Severity = Literal["error", "warning", "info"]
+
+
+def _fingerprint(payload: dict[str, Any]) -> str:
+    """Stable short hash of a payload (for machine/data fingerprints, layered save)."""
+    blob = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
 def _clean(value: Any) -> Any:  # noqa: ANN401
@@ -68,6 +76,26 @@ class DataProfile:
     def to_dict(self) -> dict[str, Any]:
         return _clean(asdict(self))
 
+    def fingerprint(self) -> str:
+        """Stable id of the dataset's identifying shape (not its contents).
+
+        Used to stamp data-derived recipe annotations (layered save): a change to
+        this fingerprint means data-derived values (e.g. relative thresholds) must
+        be recomputed rather than silently reused.
+        """
+        return _fingerprint(
+            {
+                "source": self.source,
+                "kind": self.kind,
+                "num_files": self.num_files,
+                "sample_rates": {str(k): v for k, v in self.sample_rates.items()},
+                "channels": {str(k): v for k, v in self.channels.items()},
+                "mean_duration_sec": round(self.mean_duration_sec, 3),
+                "has_transcripts": self.has_transcripts,
+                "manifest_keys": sorted(self.manifest_keys),
+            }
+        )
+
 
 @dataclass
 class EnvProfile:
@@ -76,6 +104,10 @@ class EnvProfile:
     has_gpu: bool = False
     gpu_count: int = 0
     gpu_names: list[str] = field(default_factory=list)
+    gpu_mem_gb: float = 0.0  # VRAM per GPU (GB); for the resource planner's GPU-fit math
+    total_cpus: int = 0
+    total_ram_gb: float = 0.0
+    free_disk_gb: float = 0.0
     has_ffmpeg: bool = False
     installed_extras: list[str] = field(default_factory=list)
     missing_packages: list[str] = field(default_factory=list)
@@ -85,6 +117,25 @@ class EnvProfile:
 
     def to_dict(self) -> dict[str, Any]:
         return _clean(asdict(self))
+
+    def fingerprint(self) -> str:
+        """Stable id of the machine's resource shape (layered save).
+
+        A change means the machine plan (mode + per-stage resources) must be
+        recomputed for the new hardware rather than reused from another machine.
+        """
+        return _fingerprint(
+            {
+                "gpu_count": self.gpu_count,
+                "gpu_names": sorted(self.gpu_names),
+                "gpu_mem_gb": round(self.gpu_mem_gb, 1),
+                "total_cpus": self.total_cpus,
+                "has_gpu": self.has_gpu,
+                "has_ffmpeg": self.has_ffmpeg,
+                "installed_extras": sorted(self.installed_extras),
+                "curator_version": self.curator_version,
+            }
+        )
 
 
 @dataclass
@@ -121,6 +172,9 @@ class Issue:
     stage_index: int | None = None
     stage: str | None = None
     fix: str | None = None
+    # Set by a check that cannot decide (missing fact / ambiguous case) instead of
+    # guessing pass or false-failing: hand off to "smoke" / "reviewer" / "user".
+    escalate_to: Literal["smoke", "reviewer", "user"] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return _clean(asdict(self))
@@ -150,6 +204,20 @@ class Verdict:
         pools = [self.issues, self.card_violations, self.gate_flags]
         return not any(i.severity == "error" for pool in pools for i in pool)
 
+    @property
+    def status(self) -> Literal["pass", "fail", "uncertain"]:
+        """Tri-state: ``fail`` if any error; else ``uncertain`` if any check
+        escalated (couldn't decide); else ``pass``. ``runnable`` remains the
+        no-error boolean; ``status`` distinguishes "clean pass" from "needs a
+        human/smoke/reviewer to resolve an unknown."
+        """
+        pools = [self.issues, self.card_violations, self.gate_flags]
+        if any(i.severity == "error" for pool in pools for i in pool):
+            return "fail"
+        if any(i.escalate_to for pool in pools for i in pool):
+            return "uncertain"
+        return "pass"
+
     def summary(self) -> str:
         all_issues = [*self.issues, *self.card_violations, *self.gate_flags]
         errs = [i for i in all_issues if i.severity == "error"]
@@ -168,6 +236,7 @@ class Verdict:
             "ok": self.ok,
             "keys_ok": self.keys_ok,
             "runnable": self.runnable,
+            "status": self.status,
             "issues": [i.to_dict() for i in self.issues],
             "card_violations": [i.to_dict() for i in self.card_violations],
             "gate_flags": [i.to_dict() for i in self.gate_flags],

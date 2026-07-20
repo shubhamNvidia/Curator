@@ -132,6 +132,12 @@ Passing the `config_hash` (from the refusal output) enforces plan-execution
 integrity: what was approved is exactly what runs. `--bootstrap-ray` starts the
 Ray head if needed (same as smoke).
 
+Guardrails enforced in the tool: paths are restricted to `AUDIO_AGENT_WORKSPACE`
+(when set); secrets/transcripts are stripped from tool output; and if
+`AUDIO_AGENT_REQUIRE_SMOKE` is set, also pass `--smoke-token <token>` (from the
+`smoke` output) or `run` refuses. The resource planner auto-picks streaming/batch
+and refuses if the recipe can't fit the machine.
+
 ### 7. Report
 
 Summarize the returned `report` (retained/rejected, per-filter counts, failure

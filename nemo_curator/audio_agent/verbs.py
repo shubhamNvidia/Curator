@@ -32,6 +32,7 @@ import tempfile
 import time
 from typing import Any
 
+from nemo_curator.audio_agent import _safety
 from nemo_curator.audio_agent import context as _context
 from nemo_curator.audio_agent.contracts import Issue, SmokeReport, Verdict
 from nemo_curator.audio_agent.index import get_index
@@ -41,7 +42,6 @@ from nemo_curator.audio_agent.report import build_run_report
 
 # Keys in a recipe's source stage that name the input dataset (for smoke bounding).
 _SOURCE_INPUT_KEYS = ("manifest_path", "input_manifest", "manifest", "raw_data_dir", "file_paths")
-_MAX_SPEAKERS_KEYS = ("max_speakers", "num_speakers")
 
 
 # --------------------------------------------------------------------------- #
@@ -129,13 +129,18 @@ def validate(
     data: str | None = None,
     initial_keys: list[str] | None = None,
     initial_roles: list[str] | None = None,
+    expected_outputs: list[str] | None = None,
 ) -> dict[str, Any]:
     """Validate a recipe: does it compose, and can it run in this environment?
 
-    Structural (IR + known stages) + semantic (role/key composition via the
-    foundation ``validate_pipeline``) + card constraints + pre-flight gates.
+    Well-formedness is checked here (real stages, constructible params); the rest
+    runs through the pluggable check registry (``audio_agent.checks``): data-flow
+    (role/key/residency/serialization), card constraints, environment gates, and
+    unproducible roles — plus key-flow / task-type / output-completeness as they
+    land. ``expected_outputs`` (semantic roles) enables the output-completeness
+    check.
     """
-    from nemo_curator.stages.audio import agent as foundation
+    from nemo_curator.audio_agent.checks import CheckContext, run_checks
 
     rec = _as_recipe(recipe)
     verdict = Verdict()
@@ -158,22 +163,25 @@ def validate(
     if initial_keys is not None:
         keys0 = set(initial_keys)
 
-    available_gpus = float(env.gpu_count) if env.has_gpu else 0.0
-    report = foundation.validate_pipeline(
-        stages, initial_roles=roles0, initial_keys=keys0, available_gpus=available_gpus
+    ctx = CheckContext(
+        recipe=rec,
+        stages=stages,
+        data_profile=data_profile,
+        env=env,
+        initial_roles=roles0,
+        initial_keys=keys0,
+        available_gpus=float(env.gpu_count) if env.has_gpu else 0.0,
+        expected_outputs=list(expected_outputs or []),
     )
-    verdict.ok = report.ok
-    verdict.keys_ok = report.keys_ok
-    verdict.produced_roles = sorted(report.produced_roles)
-    verdict.produced_keys = sorted(report.produced_keys)
-    for pi in report.issues:
-        verdict.issues.append(
-            Issue(pi.code, pi.severity, pi.message, stage_index=pi.stage_index, stage=pi.stage_name, fix=_fix_for(pi.code))
-        )
-
-    verdict.card_violations.extend(_card_constraint_issues(rec, data_profile))
-    verdict.gate_flags.extend(_gate_issues(stages, env))
-    verdict.unproducible_roles = _unproducible_roles(stages)
+    result = run_checks(ctx)
+    verdict.ok = bool(result.ok)
+    verdict.keys_ok = bool(result.keys_ok)
+    verdict.produced_roles = result.produced_roles
+    verdict.produced_keys = result.produced_keys
+    verdict.issues.extend(result.issues)
+    verdict.card_violations.extend(result.card_violations)
+    verdict.gate_flags.extend(result.gate_flags)
+    verdict.unproducible_roles = result.unproducible_roles
     return verdict.to_dict()
 
 
@@ -186,103 +194,6 @@ def _issue_from_dict(d: dict[str, Any]) -> Issue:
         stage=d.get("stage"),
         fix=d.get("fix"),
     )
-
-
-def _fix_for(code: str) -> str | None:
-    return {
-        "unsatisfied_reads": "insert an upstream stage that produces the missing role (see find_producers)",
-        "dangling_key": "align the producer's *_key value with what this stage reads, or seed it from the source manifest",
-        "tensor_into_sink": "route through AudioToDocumentStage before the JSON writer",
-        "gpu_unavailable": "run on a GPU host or set the stage to CPU resources",
-        "composite": "decompose the composite (it hides its true I/O) before validating downstream",
-    }.get(code)
-
-
-def _card_constraint_issues(recipe: Recipe, data_profile: dict[str, Any] | None) -> list[Issue]:
-    """Check model-card constraints (batch, sample-rate, duration) that source can't reveal."""
-    idx = get_index()
-    out: list[Issue] = []
-    data_srs = set((data_profile or {}).get("sample_rates", {}).keys()) if data_profile else set()
-    mean_dur = float((data_profile or {}).get("mean_duration_sec", 0.0)) if data_profile else 0.0
-    for i, s in enumerate(recipe.stages):
-        card = idx.card(s.ref)
-        if not card:
-            continue
-        cons = card.get("constraints", {}) or {}
-        bs = cons.get("batch_size")
-        if isinstance(bs, dict) and "fixed" in bs and s.params.get("batch_size") not in (None, bs["fixed"]):
-            out.append(
-                Issue(
-                    "card_batch_size", "error",
-                    f"{s.ref}: batch_size must be {bs['fixed']} ({bs.get('reason', 'model constraint')})",
-                    stage_index=i, stage=s.ref, fix=f"set batch_size={bs['fixed']}",
-                )
-            )
-        supported = cons.get("supported_sample_rates")
-        if supported and data_srs and not data_srs.issubset(set(supported)):
-            out.append(
-                Issue(
-                    "card_sample_rate", "warning",
-                    f"{s.ref}: input sample rates {sorted(data_srs)} not all in supported {supported}",
-                    stage_index=i, stage=s.ref, fix="insert a resample/mono stage upstream to the supported rate",
-                )
-            )
-        sweet = cons.get("input_duration_sweetspot_sec")
-        if isinstance(sweet, dict) and sweet.get("max") and mean_dur and mean_dur > float(sweet["max"]):
-            out.append(
-                Issue(
-                    "card_duration", "warning",
-                    f"{s.ref}: mean input duration {mean_dur}s exceeds sweet-spot max {sweet['max']}s",
-                    stage_index=i, stage=s.ref, fix="segment/split long audio upstream",
-                )
-            )
-        for key in _MAX_SPEAKERS_KEYS:
-            mx = cons.get("max_speakers")
-            if mx and s.params.get(key) and int(s.params[key]) > int(mx):
-                out.append(
-                    Issue(
-                        "card_max_speakers", "error",
-                        f"{s.ref}: {key}={s.params[key]} exceeds model max_speakers={mx}",
-                        stage_index=i, stage=s.ref, fix=f"set {key}<={mx}",
-                    )
-                )
-    return out
-
-
-def _gate_issues(stages: list[Any], env: Any) -> list[Issue]:  # noqa: ANN401
-    from nemo_curator.stages.audio import agent as foundation
-
-    out: list[Issue] = []
-    for idx, st in enumerate(stages):
-        try:
-            gates = foundation.build_contract(st).gates
-        except Exception:  # noqa: BLE001
-            continue
-        name = type(st).__name__
-        if getattr(gates, "requires_ffmpeg", False) and not env.has_ffmpeg:
-            out.append(Issue("ffmpeg_missing", "error", f"{name} needs ffmpeg but it is not on PATH", stage_index=idx, stage=name, fix="install ffmpeg"))
-        if getattr(gates, "requires_gpu", False) and not env.has_gpu:
-            out.append(Issue("gpu_unavailable", "warning", f"{name} declares requires_gpu but no GPU was detected", stage_index=idx, stage=name, fix="run on a GPU host or lower resources"))
-        if getattr(gates, "requires_internet_first_run", False):
-            out.append(Issue("internet_first_run", "info", f"{name} downloads a model on first run", stage_index=idx, stage=name))
-        for secret in getattr(gates, "runtime_secrets", []) or []:
-            if secret not in env.available_secrets:
-                out.append(Issue("missing_secret", "warning", f"{name} needs secret {secret!r} which is not set", stage_index=idx, stage=name, fix=f"export {secret}"))
-    return out
-
-
-def _unproducible_roles(stages: list[Any]) -> list[str]:  # noqa: ANN401
-    from nemo_curator.stages.audio import agent as foundation
-
-    required: set[str] = set()
-    for st in stages:
-        try:
-            c = foundation.build_contract(st)
-        except Exception:  # noqa: BLE001
-            continue
-        for key in [*c.reads.data_keys, *c.reads.segment_data_keys]:
-            required.add(c.key_roles.get(key, "unknown"))
-    return get_index().unproducible(sorted(required - {"unknown"}))
 
 
 # --------------------------------------------------------------------------- #
@@ -304,7 +215,10 @@ def smoke(
     """
     from nemo_curator.audio_agent.failures import classify
 
-    rec = _as_recipe(recipe)
+    rec = _as_recipe(recipe).freeze()
+    pviol = _safety.path_violations([data, output_dir, *_safety.recipe_path_params(rec)])
+    if pviol:
+        return {"status": "refused", "reason": "path(s) resolve outside the allowed workspace", "violations": pviol}
     rpt = SmokeReport(sample=sample)
     bounded, tmp_paths = _bound_recipe(rec, sample, rpt)
 
@@ -312,14 +226,21 @@ def smoke(
     if stages is None:
         rpt.errors.extend(i.get("message", "") for i in issues)
         _cleanup(tmp_paths)
-        return rpt.to_dict()
+        return _safety.redact(rpt.to_dict())
 
     data_profile = profile_data(data).to_dict() if data else None
     rpt.input_count = int((data_profile or {}).get("num_files", 0)) or sample
+    rplan = _plan_resources(stages, probe_env(), data_profile)
+    rpt.notes.append(f"resource_plan_mode={rplan.mode}")
+    if rplan.escalations:
+        rpt.notes.append("resource_escalations=" + "; ".join(rplan.escalations))
+    caller_executor = executor
     t0 = time.perf_counter()
     try:
-        if bootstrap_ray and executor is None:
+        if bootstrap_ray and caller_executor is None:
             rpt.notes.append("ray_head=" + _bootstrap_ray())
+        if caller_executor is None:
+            executor = _make_executor(rplan.mode)
         results = _run_pipeline(stages, executor)
         rpt.ran = True
         rpt.retained = len(results or [])
@@ -333,7 +254,10 @@ def smoke(
     finally:
         rpt.notes.append(f"elapsed_sec={round(time.perf_counter() - t0, 3)}")
         _cleanup(tmp_paths)
-    return rpt.to_dict()
+    out = rpt.to_dict()
+    out["config_hash"] = rec.config_hash
+    out["smoke_token"] = _safety.smoke_token(rec.config_hash)
+    return _safety.redact(out)
 
 
 def run(
@@ -345,6 +269,7 @@ def run(
     output_dir: str | None = None,
     checkpoint_path: str | None = None,
     bootstrap_ray: bool = False,
+    smoke_token: str | None = None,
 ) -> dict[str, Any]:
     """Confirm-gated full run. Refuses without explicit confirmation (0 silent runs).
 
@@ -358,7 +283,8 @@ def run(
 
     rec = _as_recipe(recipe).freeze()
     data_profile = profile_data(data).to_dict() if data else None
-    env = probe_env().to_dict()
+    env_obj = probe_env()
+    env = env_obj.to_dict()
 
     if confirm is False:
         return {
@@ -377,16 +303,42 @@ def run(
             "config_hash": rec.config_hash,
         }
 
+    pviol = _safety.path_violations([data, output_dir, checkpoint_path, *_safety.recipe_path_params(rec)])
+    if pviol:
+        return {"status": "refused", "reason": "path(s) resolve outside the allowed workspace", "recipe_id": rec.recipe_id, "violations": pviol}
+    if _safety.require_smoke() and not _safety.verify_smoke_token(smoke_token, rec.config_hash):
+        return {
+            "status": "refused",
+            "reason": "run requires smoke evidence (AUDIO_AGENT_REQUIRE_SMOKE is set): run smoke on this recipe and pass its 'smoke_token'",
+            "recipe_id": rec.recipe_id,
+            "config_hash": rec.config_hash,
+        }
+
     stages, issues = build_stages(rec)
     if stages is None:
         return {"status": "error", "recipe_id": rec.recipe_id, "issues": issues}
 
+    rplan = _plan_resources(stages, env_obj, data_profile)
+    rec.with_machine_plan(rplan.to_dict(), machine_fingerprint=rplan.machine_fingerprint)
+    if not rplan.feasible:
+        return {
+            "status": "refused",
+            "reason": "resource plan is infeasible on this machine",
+            "recipe_id": rec.recipe_id,
+            "config_hash": rec.config_hash,
+            "escalations": rplan.escalations,
+            "machine_plan": rplan.to_dict(),
+        }
+
+    caller_executor = executor
     failures: list[dict[str, Any]] = []
     results: list[Any] | None = None
     t0 = time.perf_counter()
     try:
-        if bootstrap_ray and executor is None:
+        if bootstrap_ray and caller_executor is None:
             _bootstrap_ray()
+        if caller_executor is None:
+            executor = _make_executor(rplan.mode)
         results = _run_pipeline(stages, executor, checkpoint_path=checkpoint_path)
     except Exception as e:  # noqa: BLE001 - classify + report, do not crash the caller
         failures.append(classify(f"{type(e).__name__}: {e}"))
@@ -406,11 +358,14 @@ def run(
         if not failures
         else "triage the failure_reasons and re-validate",
     )
-    return {"status": "completed" if not failures else "failed", "report": report_obj.to_dict()}
+    return _safety.redact({"status": "completed" if not failures else "failed", "report": report_obj.to_dict()})
 
 
 def report(output: str, *, recipe: Recipe | dict[str, Any] | None = None, data: str | None = None) -> dict[str, Any]:
     """Post-hoc report from an output manifest/dir (counts rows vs input scale)."""
+    pviol = _safety.path_violations([output, data])
+    if pviol:
+        return {"status": "refused", "reason": "path(s) resolve outside the allowed workspace", "violations": pviol}
     rec = _as_recipe(recipe) if recipe is not None else None
     data_profile = profile_data(data).to_dict() if data else None
     accepted = _count_output_rows(output)
@@ -427,7 +382,7 @@ def report(output: str, *, recipe: Recipe | dict[str, Any] | None = None, data: 
     d["accepted"] = accepted
     d["input_count"] = input_count or accepted
     d["rejected"] = max(0, (input_count or accepted) - accepted)
-    return d
+    return _safety.redact(d)
 
 
 # --------------------------------------------------------------------------- #
@@ -445,6 +400,30 @@ def _run_pipeline(stages: list[Any], executor: Any, *, checkpoint_path: str | No
 
     pipeline = Pipeline(name="audio_agent_run", stages=list(stages))
     return pipeline.run(executor, checkpoint_path=checkpoint_path)
+
+
+def _plan_resources(stages: list[Any], env_obj: Any, data_profile: dict[str, Any] | None):  # noqa: ANN401
+    """Run the deterministic resource planner over the built stages (1C.1)."""
+    from nemo_curator.audio_agent import planner
+    from nemo_curator.stages.audio import agent as foundation
+
+    contracts: list[Any] = []
+    for st in stages:
+        try:
+            contracts.append(foundation.build_contract(st))
+        except Exception:  # noqa: BLE001 - a stage that can't describe itself gets conservative defaults
+            contracts.append(None)
+    return planner.plan(stages, contracts, env_obj, data_profile)
+
+
+def _make_executor(mode: str) -> Any:  # noqa: ANN401
+    """A XennaExecutor with the planned execution_mode; None -> the pipeline default."""
+    try:
+        from nemo_curator.backends.xenna import XennaExecutor
+
+        return XennaExecutor({"execution_mode": mode})
+    except Exception:  # noqa: BLE001 - fall back to the pipeline's default executor (streaming)
+        return None
 
 
 def _bound_recipe(recipe: Recipe, sample: int, rpt: SmokeReport) -> tuple[Recipe, list[str]]:

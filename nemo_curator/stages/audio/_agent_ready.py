@@ -176,6 +176,16 @@ class StageContract:
     # True when the stage only implements ``process_batch`` (``process`` raises).
     # Auto-derived at discovery time; agents must not call ``process`` on these.
     batch_only: bool = False
+    # Input/output task types from the ``ProcessingStage[X, Y]`` generic, auto-derived
+    # at discovery. Enable the task-type compatibility check (e.g. a DocumentBatch
+    # producer feeding an AudioTask-only sink).
+    accepts_task_type: str | None = None
+    produces_task_type: str | None = None
+    # Task-data key VALUES this (configured) stage deletes from the task, so a
+    # downstream stage that needs that role/key can be caught (the "ASR after a
+    # waveform-stripper" key-flow class). Declared in describe(), verified by the
+    # conformance key-diff.
+    removes_keys: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-safe dict of this contract (``json.dumps`` never raises)."""
@@ -199,6 +209,9 @@ class StageContract:
             "error_policy": self.error_policy,
             "key_roles": dict(self.key_roles),
             "batch_only": self.batch_only,
+            "accepts_task_type": self.accepts_task_type,
+            "produces_task_type": self.produces_task_type,
+            "removes_keys": list(self.removes_keys),
         }
 
 

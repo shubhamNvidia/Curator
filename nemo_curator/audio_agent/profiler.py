@@ -160,6 +160,7 @@ def probe_env() -> EnvProfile:
 
     _probe_gpu(env)
     _probe_packages(env)
+    _probe_resources(env)
 
     env.available_secrets = [k for k in _KNOWN_SECRET_ENVS if os.environ.get(k)]
     try:
@@ -179,6 +180,10 @@ def _probe_gpu(env: EnvProfile) -> None:
             env.has_gpu = True
             env.gpu_count = torch.cuda.device_count()
             env.gpu_names = [torch.cuda.get_device_name(i) for i in range(env.gpu_count)]
+            try:
+                env.gpu_mem_gb = round(torch.cuda.get_device_properties(0).total_memory / (1024**3), 1)
+            except Exception:  # noqa: BLE001 - property lookup can fail on odd drivers
+                pass
     except Exception:  # noqa: BLE001 - torch missing or driver issue -> treat as no GPU
         env.notes.append("torch/CUDA not usable; treating as CPU-only")
 
@@ -196,3 +201,25 @@ def _probe_packages(env: EnvProfile) -> None:
         (installed if found else missing).append(pkg)
     env.installed_extras = sorted(set(installed))
     env.missing_packages = sorted(set(missing))
+
+
+def _probe_resources(env: EnvProfile) -> None:
+    """CPU count, host RAM, and free disk for the resource planner (best-effort)."""
+    env.total_cpus = os.cpu_count() or 0
+    try:
+        import psutil
+
+        env.total_ram_gb = round(psutil.virtual_memory().total / (1024**3), 1)
+    except Exception:  # noqa: BLE001 - psutil optional; fall back to /proc/meminfo
+        try:
+            with open("/proc/meminfo", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        env.total_ram_gb = round(int(line.split()[1]) / (1024**2), 1)  # kB -> GB
+                        break
+        except Exception:  # noqa: BLE001 - /proc unavailable (non-Linux)
+            pass
+    try:
+        env.free_disk_gb = round(shutil.disk_usage(os.getcwd()).free / (1024**3), 1)
+    except Exception:  # noqa: BLE001 - disk_usage can fail on odd mounts
+        pass

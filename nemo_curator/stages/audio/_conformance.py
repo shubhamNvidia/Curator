@@ -301,6 +301,8 @@ def assert_agent_ready(  # noqa: C901, PLR0912, PLR0913 (complexity accepted: on
         out_data = _data_of(results[0])
         for key in c.writes.data_keys:
             assert key in out_data, f"{name}: declared write {key!r} missing from task.data"
+        for key in c.removes_keys:
+            assert key not in out_data, f"{name}: declared removes_keys {key!r} but it is still present in task.data"
         declared = set(c.writes.data_keys) | set(ignore_new_keys) | input_keys
         undeclared = set(out_data) - declared
         assert not undeclared, f"{name}: undeclared new top-level keys {sorted(undeclared)} (add to writes.data_keys)"

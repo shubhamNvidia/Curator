@@ -270,6 +270,38 @@ def _derived_dispatch(cls: type, declared: str) -> str:
     return "process_batch" if overrides_batch else "process"
 
 
+def _task_type_name(t: Any) -> str | None:  # noqa: ANN401
+    """The class name of a generic arg, or None for a TypeVar/non-type."""
+    return t.__name__ if isinstance(t, type) else None
+
+
+def _task_types(cls: type) -> tuple[str | None, str | None]:
+    """``(accepts, produces)`` task-type names from the ``ProcessingStage[X, Y]`` generic.
+
+    Walks the MRO's ``__orig_bases__`` for the parametrized ProcessingStage base
+    (e.g. ``ProcessingStage[AudioTask, DocumentBatch]``). Returns ``(None, None)``
+    when unparametrized (bare TypeVars) or not found — those become ``uncertain``
+    at the task-type check rather than a false mismatch.
+    """
+    from nemo_curator.stages.base import ProcessingStage
+
+    for klass in cls.__mro__:
+        for base in getattr(klass, "__orig_bases__", ()) or ():
+            origin = get_origin(base)
+            if origin is None:
+                continue
+            try:
+                is_ps = origin is ProcessingStage or (isinstance(origin, type) and issubclass(origin, ProcessingStage))
+            except TypeError:
+                is_ps = False
+            if not is_ps:
+                continue
+            args = get_args(base)
+            if len(args) == 2:  # noqa: PLR2004 - ProcessingStage[X, Y] has exactly two type args
+                return _task_type_name(args[0]), _task_type_name(args[1])
+    return None, None
+
+
 def _first_doc_line(cls: type) -> str | None:
     doc = inspect.getdoc(cls)
     if not doc:
@@ -332,6 +364,7 @@ def build_contract(stage: Any) -> StageContract:  # noqa: ANN401
         params = derived
     key_roles = _resolve_key_roles(stage, base) or dict(base.key_roles)
     cls = _as_class(stage)
+    accepts_tt, produces_tt = _task_types(cls)
     return dataclasses.replace(
         base,
         params=params,
@@ -340,6 +373,8 @@ def build_contract(stage: Any) -> StageContract:  # noqa: ANN401
         batch_only=base.batch_only or bool(getattr(cls, "BATCH_ONLY", False)),
         stage_id=base.stage_id or cls.__name__,
         description=base.description or _first_doc_line(cls),
+        accepts_task_type=base.accepts_task_type or accepts_tt,
+        produces_task_type=base.produces_task_type or produces_tt,
     )
 
 
@@ -364,6 +399,7 @@ def static_contract(cls: type) -> StageContract:
     on an instance for those.
     """
     hints: StaticHints = getattr(cls, "AGENT_STATIC", None) or StaticHints()
+    accepts_tt, produces_tt = _task_types(cls)
     return StageContract(
         cardinality_options=list(hints.cardinality_options),
         gates=hints.gates,
@@ -374,4 +410,6 @@ def static_contract(cls: type) -> StageContract:
         params=stage_params(cls),
         key_roles=_static_key_roles(cls),
         batch_only=bool(getattr(cls, "BATCH_ONLY", False)),
+        accepts_task_type=accepts_tt,
+        produces_task_type=produces_tt,
     )

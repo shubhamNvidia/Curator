@@ -28,6 +28,7 @@ never raw Python, and the core validates it structurally (here) and semantically
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -70,6 +71,13 @@ class Recipe:
     name: str = "audio_agent_recipe"
     recipe_id: str | None = None
     config_hash: str | None = None
+    # Layered save: recomputable annotations kept OUT of the hash so the recipe
+    # stays portable. Re-run on a different machine/dataset recomputes these rather
+    # than reusing stale, machine-/data-specific numbers.
+    machine_plan: dict[str, Any] | None = None  # mode + per-stage resources (per machine)
+    data_derived: dict[str, Any] | None = None  # data-derived values, e.g. relative thresholds (per dataset)
+    knowledge_version: str | None = None  # knowledge/cards version the plan was approved against
+    parent_run_id: str | None = None  # provenance chain for incremental continuation
 
     # ------------------------------------------------------------------ #
     # (de)serialization
@@ -88,6 +96,10 @@ class Recipe:
             name=str(d.get("name") or "audio_agent_recipe"),
             recipe_id=d.get("recipe_id"),
             config_hash=d.get("config_hash"),
+            machine_plan=d.get("machine_plan"),
+            data_derived=d.get("data_derived"),
+            knowledge_version=d.get("knowledge_version"),
+            parent_run_id=d.get("parent_run_id"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -96,7 +108,13 @@ class Recipe:
         return out
 
     def _canonical(self) -> str:
-        """Stable JSON of the semantic content (excludes id/hash/rationale)."""
+        """Stable JSON of the PORTABLE semantic content only (stages + inputs + preset).
+
+        Deliberately excludes id/hash/rationale AND the recomputable layered-save
+        annotations (``machine_plan`` / ``data_derived`` / ``knowledge_version`` /
+        ``parent_run_id``), so ``config_hash`` stays portable: the same intent on a
+        different machine or dataset hashes identically.
+        """
         payload = {
             "stages": [s.to_dict() for s in self.stages],
             "inputs": self.inputs,
@@ -108,11 +126,43 @@ class Recipe:
         return hashlib.sha256(self._canonical().encode("utf-8")).hexdigest()[:16]
 
     def freeze(self) -> Recipe:
-        """Stamp a ``config_hash`` and a stable ``recipe_id`` (integrity anchor)."""
+        """Stamp a ``config_hash`` and a stable ``recipe_id`` (integrity anchor).
+
+        Only the portable layer (see :meth:`_canonical`) is hashed; the layered-save
+        annotations are attached separately and never change the hash.
+        """
         self.config_hash = self.compute_hash()
         if not self.recipe_id:
             self.recipe_id = f"{self.name}-{self.config_hash[:8]}"
         return self
+
+    # ------------------------------------------------------------------ #
+    # layered save: recomputable annotations (never affect config_hash)
+    # ------------------------------------------------------------------ #
+    def with_machine_plan(self, plan: dict[str, Any], *, machine_fingerprint: str) -> Recipe:
+        """Attach the resolved machine plan (mode + per-stage resources), stamped with
+        the machine it was computed for. Does not change ``config_hash``."""
+        self.machine_plan = {**plan, "machine_fingerprint": machine_fingerprint}
+        return self
+
+    def with_data_derived(self, values: dict[str, Any], *, data_fingerprint: str) -> Recipe:
+        """Attach data-derived values (e.g. relative thresholds), stamped with the
+        dataset they were computed from. Does not change ``config_hash``."""
+        self.data_derived = {**values, "data_fingerprint": data_fingerprint}
+        return self
+
+    def stale_layers(self, *, machine_fingerprint: str | None = None, data_fingerprint: str | None = None) -> list[str]:
+        """Recomputable layers that must be (re)built for the given machine/data.
+
+        A layer is stale when it is absent or was stamped for a different
+        fingerprint, so a re-run recomputes it instead of reusing stale numbers.
+        """
+        stale: list[str] = []
+        if machine_fingerprint is not None and (self.machine_plan or {}).get("machine_fingerprint") != machine_fingerprint:
+            stale.append("machine_plan")
+        if data_fingerprint is not None and (self.data_derived or {}).get("data_fingerprint") != data_fingerprint:
+            stale.append("data_derived")
+        return stale
 
     # ------------------------------------------------------------------ #
     # pipeline-config bridge (round-trips to config.run's `stages:` format)
@@ -127,6 +177,19 @@ class Recipe:
             entry.update(s.params)
             stages_cfg.append(entry)
         return {"stages": stages_cfg}
+
+
+def _accepted_params(cls: type) -> list[str]:
+    """Constructor param names a stage accepts, for a helpful ``bad_params`` error."""
+    try:
+        sig = inspect.signature(cls.__init__)
+    except (TypeError, ValueError):
+        return []
+    return [
+        n
+        for n, p in sig.parameters.items()
+        if n != "self" and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)
+    ]
 
 
 def build_stages(recipe: Recipe) -> tuple[list[ProcessingStage] | None, list[dict[str, Any]]]:
@@ -177,6 +240,8 @@ def build_stages(recipe: Recipe) -> tuple[list[ProcessingStage] | None, list[dic
             if with_kwargs:
                 inst = _apply_with(inst, with_kwargs)
         except TypeError as e:
+            accepted = _accepted_params(cls)
+            fix = f"accepted params for {s.ref}: {accepted}" if accepted else "check required/allowed params via describe() or cards()"
             issues.append(
                 {
                     "code": "bad_params",
@@ -184,7 +249,7 @@ def build_stages(recipe: Recipe) -> tuple[list[ProcessingStage] | None, list[dic
                     "stage_index": idx,
                     "stage": s.ref,
                     "message": f"could not construct {s.ref!r} with params {sorted(params)}: {e}",
-                    "fix": "check required/allowed params via describe() or cards()",
+                    "fix": fix,
                 }
             )
             continue

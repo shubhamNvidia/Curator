@@ -78,6 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     v = sub.add_parser("validate", help="validate a recipe (roles/keys/cards/gates)")
     v.add_argument("--recipe", required=True, help="path to a recipe YAML/JSON (or - for stdin)")
     v.add_argument("--data")
+    v.add_argument("--expected-outputs", nargs="*", help="semantic output roles the user asked for (output-completeness)")
 
     s = sub.add_parser("smoke", help="bounded run for evidence")
     s.add_argument("--recipe", required=True)
@@ -94,6 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--output-dir")
     r.add_argument("--checkpoint-path")
     r.add_argument("--bootstrap-ray", action="store_true", help="auto-start a local Ray head if none is reachable")
+    r.add_argument("--smoke-token", help="smoke-evidence token from a prior smoke (required if AUDIO_AGENT_REQUIRE_SMOKE is set)")
 
     rp = sub.add_parser("report", help="post-hoc report from an output manifest/dir")
     rp.add_argument("--output", required=True)
@@ -119,14 +121,14 @@ def main(argv: list[str] | None = None) -> int:
     elif cmd == "context":
         _emit(aa.context(_parse_goal(args.goal), data=args.data, stages=args.stages, roles=args.roles))
     elif cmd == "validate":
-        _emit(aa.validate(_load_recipe(args.recipe), data=args.data))
+        _emit(aa.validate(_load_recipe(args.recipe), data=args.data, expected_outputs=args.expected_outputs))
     elif cmd == "smoke":
         _emit(aa.smoke(_load_recipe(args.recipe), sample=args.sample, data=args.data,
                        output_dir=args.output_dir, bootstrap_ray=args.bootstrap_ray))
     elif cmd == "run":
         _emit(aa.run(_load_recipe(args.recipe), confirm=args.confirm, data=args.data,
                      output_dir=args.output_dir, checkpoint_path=args.checkpoint_path,
-                     bootstrap_ray=args.bootstrap_ray))
+                     bootstrap_ray=args.bootstrap_ray, smoke_token=args.smoke_token))
     elif cmd == "report":
         recipe = _load_recipe(args.recipe) if args.recipe else None
         _emit(aa.report(args.output, recipe=recipe, data=args.data))

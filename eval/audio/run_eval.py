@@ -76,11 +76,13 @@ def _check(query: dict) -> tuple[bool, str]:  # noqa: C901 - one linear checklis
     if recipe is None:
         return False, "query has neither recipe, recipe_ref, nor a role/capability expectation"
 
-    v = aa.validate(recipe)
+    v = aa.validate(recipe, expected_outputs=query.get("expected_outputs"))
     if "validate_ok" in expect and v["ok"] != expect["validate_ok"]:
         return False, f"validate ok={v['ok']} expected={expect['validate_ok']}"
     if "runnable" in expect and v["runnable"] != expect["runnable"]:
         return False, f"runnable={v['runnable']} expected={expect['runnable']}"
+    if "status" in expect and v.get("status") != expect["status"]:
+        return False, f"status={v.get('status')} expected={expect['status']}"
     if "has_code" in expect:
         codes = {i["code"] for pool in ("issues", "card_violations", "gate_flags") for i in v[pool]}
         if expect["has_code"] not in codes:
