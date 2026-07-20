@@ -122,3 +122,56 @@ queries:
         - {ref: AudioToDocumentStage, params: {}}
     expected_outputs: [pred_text]
     expect: {has_code: missing_output_producer}
+
+  # --- 1A.1 acceptance layer (request-type sanity / criteria compilation / verify) ---
+  - id: acceptance_missing_yield
+    label: negative
+    prompt: "Keep only the clean clips (a filtering request) but no yield criterion is defined."
+    request_type: filter
+    recipe:
+      stages:
+        - {ref: ManifestReader, params: {manifest_path: "REQUIRED"}}
+        - {ref: UTMOSFilterStage, params: {mos_threshold: 4.0}}
+        - {ref: AudioToDocumentStage, params: {}}
+    acceptance_criteria:
+      - {id: quality, type: quality_standard, kind: absolute, severity: must, check: {scope: aggregate, field: utmos_mos, op: ">=", value: 4.0}}
+    expect: {has_code: missing_implied_criterion}
+
+  - id: acceptance_criteria_output_gap
+    label: negative
+    prompt: "Success requires transcripts (pred_text) but the recipe has no ASR stage."
+    request_type: transcribe
+    recipe:
+      stages:
+        - {ref: ManifestReader, params: {manifest_path: "REQUIRED"}}
+        - {ref: GetAudioDurationStage, params: {}}
+        - {ref: AudioToDocumentStage, params: {}}
+    acceptance_criteria:
+      - {id: has_transcripts, type: output_completeness, compiles_to: pred_text, severity: must}
+    expect: {runnable: false, has_code: missing_output_producer}
+
+  - id: acceptance_verify_met
+    label: verify
+    prompt: "Verify: quality>=4.0 met and yield>0 met -> overall met."
+    acceptance_criteria:
+      - {id: quality, type: quality_standard, kind: absolute, severity: must, check: {scope: aggregate, field: utmos_mos, op: ">=", value: 4.0}}
+      - {id: kept, type: yield, kind: absolute, severity: must, check: {op: ">", value: 0}}
+    verify_evidence: {metrics: {utmos_mos: 4.3}, retained: 42, input_count: 100}
+    expect: {acceptance_overall: met}
+
+  - id: acceptance_verify_not_met
+    label: verify
+    prompt: "Verify: absolute must bar not met on this data -> overall not_met (no goalpost-moving)."
+    acceptance_criteria:
+      - {id: quality, type: quality_standard, kind: absolute, severity: must, check: {scope: aggregate, field: utmos_mos, op: ">=", value: 4.5}}
+    verify_evidence: {metrics: {utmos_mos: 3.1}, retained: 0, input_count: 100}
+    expect: {acceptance_overall: not_met, criterion_status: {quality: not_met}}
+
+  - id: acceptance_verify_unverifiable
+    label: verify
+    prompt: "Verify: accuracy criterion with no evidence -> unverifiable, not a silent pass."
+    acceptance_criteria:
+      - {id: accuracy, type: quality_standard, kind: absolute, severity: nice, check: {scope: aggregate, field: wer, op: "<=", value: 10}}
+      - {id: semantic, type: semantic_fit, severity: nice, check: {method: reviewer_judgment}}
+    verify_evidence: {retained: 10, input_count: 10}
+    expect: {acceptance_overall: met, criterion_status: {accuracy: unverifiable, semantic: unverifiable}}

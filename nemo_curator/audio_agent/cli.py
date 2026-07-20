@@ -42,6 +42,25 @@ def _load_recipe(path: str) -> dict[str, Any]:
     return yaml.safe_load(text)
 
 
+def _load_doc(path: str | None) -> Any:  # noqa: ANN401
+    """Load a YAML/JSON doc from a file path (or ``-`` for stdin); ``None`` -> None."""
+    if not path:
+        return None
+    import yaml
+
+    text = sys.stdin.read() if path == "-" else open(path, encoding="utf-8").read()
+    return yaml.safe_load(text)
+
+
+def _criteria_list(doc: Any) -> list[dict[str, Any]] | None:  # noqa: ANN401
+    """Accept either a bare list or a mapping carrying ``acceptance_criteria``."""
+    if doc is None:
+        return None
+    if isinstance(doc, dict):
+        return doc.get("acceptance_criteria") or doc.get("criteria")
+    return doc
+
+
 def _emit(obj: Any) -> None:  # noqa: ANN401
     print(json.dumps(obj, indent=2, ensure_ascii=False, default=str))
 
@@ -79,6 +98,8 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--recipe", required=True, help="path to a recipe YAML/JSON (or - for stdin)")
     v.add_argument("--data")
     v.add_argument("--expected-outputs", nargs="*", help="semantic output roles the user asked for (output-completeness)")
+    v.add_argument("--acceptance-criteria", help="path to acceptance criteria YAML/JSON (list or {acceptance_criteria: [...]})")
+    v.add_argument("--request-type", help="goal/request kind (e.g. filter, transcribe) for request-type sanity")
 
     s = sub.add_parser("smoke", help="bounded run for evidence")
     s.add_argument("--recipe", required=True)
@@ -101,6 +122,10 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--output", required=True)
     rp.add_argument("--recipe")
     rp.add_argument("--data")
+
+    vf = sub.add_parser("verify", help="verify acceptance criteria against evidence -> AcceptanceReport")
+    vf.add_argument("--criteria", required=True, help="acceptance criteria YAML/JSON (list or {acceptance_criteria: [...]}; - for stdin)")
+    vf.add_argument("--evidence", help="evidence YAML/JSON (produced_roles/metrics/retained/...); - for stdin")
     return p
 
 
@@ -121,7 +146,10 @@ def main(argv: list[str] | None = None) -> int:
     elif cmd == "context":
         _emit(aa.context(_parse_goal(args.goal), data=args.data, stages=args.stages, roles=args.roles))
     elif cmd == "validate":
-        _emit(aa.validate(_load_recipe(args.recipe), data=args.data, expected_outputs=args.expected_outputs))
+        _emit(aa.validate(
+            _load_recipe(args.recipe), data=args.data, expected_outputs=args.expected_outputs,
+            acceptance_criteria=_criteria_list(_load_doc(args.acceptance_criteria)), request_type=args.request_type,
+        ))
     elif cmd == "smoke":
         _emit(aa.smoke(_load_recipe(args.recipe), sample=args.sample, data=args.data,
                        output_dir=args.output_dir, bootstrap_ray=args.bootstrap_ray))
@@ -132,6 +160,8 @@ def main(argv: list[str] | None = None) -> int:
     elif cmd == "report":
         recipe = _load_recipe(args.recipe) if args.recipe else None
         _emit(aa.report(args.output, recipe=recipe, data=args.data))
+    elif cmd == "verify":
+        _emit(aa.verify(_criteria_list(_load_doc(args.criteria)) or [], evidence=_load_doc(args.evidence)))
     else:  # pragma: no cover - argparse enforces the choices
         return 2
     return 0

@@ -130,16 +130,20 @@ def validate(
     initial_keys: list[str] | None = None,
     initial_roles: list[str] | None = None,
     expected_outputs: list[str] | None = None,
+    acceptance_criteria: list[dict[str, Any]] | None = None,
+    request_type: str | None = None,
 ) -> dict[str, Any]:
     """Validate a recipe: does it compose, and can it run in this environment?
 
     Well-formedness is checked here (real stages, constructible params); the rest
     runs through the pluggable check registry (``audio_agent.checks``): data-flow
-    (role/key/residency/serialization), card constraints, environment gates, and
-    unproducible roles — plus key-flow / task-type / output-completeness as they
-    land. ``expected_outputs`` (semantic roles) enables the output-completeness
-    check.
+    (role/key/residency/serialization), card constraints, environment gates,
+    unproducible roles, task-type, output-completeness, and request-type sanity.
+    ``expected_outputs`` (semantic roles) enables the output-completeness check;
+    ``acceptance_criteria`` (1A.1) additionally compile their output/metric fields
+    into that check and drive request-type sanity via ``request_type``.
     """
+    from nemo_curator.audio_agent.acceptance import expected_roles_from_criteria, parse_criteria
     from nemo_curator.audio_agent.checks import CheckContext, run_checks
 
     rec = _as_recipe(recipe)
@@ -163,6 +167,9 @@ def validate(
     if initial_keys is not None:
         keys0 = set(initial_keys)
 
+    criteria = parse_criteria(acceptance_criteria)
+    expected = set(expected_outputs or []) | set(expected_roles_from_criteria(criteria))
+
     ctx = CheckContext(
         recipe=rec,
         stages=stages,
@@ -171,7 +178,9 @@ def validate(
         initial_roles=roles0,
         initial_keys=keys0,
         available_gpus=float(env.gpu_count) if env.has_gpu else 0.0,
-        expected_outputs=list(expected_outputs or []),
+        expected_outputs=sorted(expected),
+        acceptance_criteria=criteria,
+        request_type=request_type,
     )
     result = run_checks(ctx)
     verdict.ok = bool(result.ok)
@@ -383,6 +392,25 @@ def report(output: str, *, recipe: Recipe | dict[str, Any] | None = None, data: 
     d["input_count"] = input_count or accepted
     d["rejected"] = max(0, (input_count or accepted) - accepted)
     return _safety.redact(d)
+
+
+def verify(
+    acceptance_criteria: list[dict[str, Any]],
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Evaluate acceptance criteria against gathered evidence -> AcceptanceReport (1A.1).
+
+    Deterministic verifier: it runs nothing itself, it judges the ``evidence`` the
+    host assembled (from ``validate`` — ``produced_roles``/``produced_keys`` — and
+    from ``smoke``/``run`` — ``metrics``/``per_item``/``retained``/``input_count``,
+    plus optional ``unachievable_fields``). Returns per-criterion states
+    (met / not_met / unverifiable / unachievable) and an ``overall`` that is
+    ``met`` iff every ``must`` criterion is met — the anti-goalpost-moving gate.
+    """
+    from nemo_curator.audio_agent.acceptance import parse_criteria, verify as _verify
+
+    report_obj = _verify(parse_criteria(acceptance_criteria), evidence or {})
+    return _safety.redact(report_obj.to_dict())
 
 
 # --------------------------------------------------------------------------- #

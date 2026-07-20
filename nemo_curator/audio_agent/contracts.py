@@ -282,3 +282,96 @@ class PlanResult:
 
     def to_dict(self) -> dict[str, Any]:
         return _clean(asdict(self))
+
+
+# --------------------------------------------------------------------------- #
+# acceptance layer (1A.1): the "did we solve the user's problem?" contract
+# --------------------------------------------------------------------------- #
+CriterionType = Literal["quality_standard", "output_completeness", "yield", "distribution", "honesty", "semantic_fit"]
+CriterionStatus = Literal["met", "not_met", "unverifiable", "unachievable"]
+
+
+@dataclass
+class AcceptanceCriterion:
+    """One checkable condition of success (1A §5.3).
+
+    Host-derived from intent, confirmed at the gate, then verified against
+    evidence. Generic and metric-agnostic: ``check.field`` is any metric/output
+    key; the verifier contains no metric names. ``type`` routes it to the cheapest
+    sufficient owner (deterministic vs reviewer).
+    """
+
+    id: str
+    type: str  # CriterionType
+    description: str = ""
+    kind: str | None = None  # absolute | relative | operational
+    check: dict[str, Any] = field(default_factory=dict)  # scope/field/op/value/tolerance/method
+    compiles_to: str | None = None  # e.g. a producible-role name (output_completeness)
+    source: dict[str, Any] = field(default_factory=dict)
+    severity: Literal["must", "nice"] = "must"
+    on_unachievable: Literal["escalate", "relax_with_confirmation"] = "escalate"
+
+    @classmethod
+    def from_dict(cls, d: Any) -> AcceptanceCriterion:  # noqa: ANN401
+        if isinstance(d, AcceptanceCriterion):
+            return d
+        d = dict(d or {})
+        return cls(
+            id=str(d.get("id", "")),
+            type=str(d.get("type", "")),
+            description=str(d.get("description", "")),
+            kind=d.get("kind"),
+            check=dict(d.get("check") or {}),
+            compiles_to=d.get("compiles_to"),
+            source=dict(d.get("source") or {}),
+            severity=d.get("severity", "must"),
+            on_unachievable=d.get("on_unachievable", "escalate"),
+        )
+
+    @property
+    def field_name(self) -> str | None:
+        f = self.check.get("field")
+        return str(f) if f else None
+
+    @property
+    def is_deterministic(self) -> bool:
+        """True unless this criterion needs the reviewer (semantic / reviewer_judgment)."""
+        return self.type != "semantic_fit" and self.check.get("method") != "reviewer_judgment"
+
+    def to_dict(self) -> dict[str, Any]:
+        return _clean(asdict(self))
+
+
+@dataclass
+class CriterionResult:
+    """One criterion's verification outcome (four honest states)."""
+
+    id: str
+    status: str  # CriterionStatus
+    severity: str = "must"
+    evidence: str = ""
+    note: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return _clean(asdict(self))
+
+
+@dataclass
+class AcceptanceReport:
+    """Per-criterion verification of the success contract (1A §8).
+
+    ``overall`` is ``met`` iff every ``must`` criterion is ``met`` — the
+    anti-goalpost-moving gate. ``not_met``/``unverifiable``/``unachievable`` are
+    reported honestly, never silently relaxed.
+    """
+
+    overall: Literal["met", "not_met"] = "not_met"
+    criteria: list[CriterionResult] = field(default_factory=list)
+    verdict: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "overall": self.overall,
+            "criteria": [c.to_dict() for c in self.criteria],
+            "verdict": self.verdict,
+        }

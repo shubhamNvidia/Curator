@@ -49,6 +49,8 @@ class CheckContext:
     initial_keys: set[str]
     available_gpus: float
     expected_outputs: list[str] = field(default_factory=list)  # roles the user asked for
+    acceptance_criteria: list[Any] = field(default_factory=list)  # parsed AcceptanceCriterion list (1A.1)
+    request_type: str | None = None  # goal/request kind, for request-type sanity (1A.1)
 
 
 @dataclass
@@ -260,6 +262,33 @@ def _check_output_completeness(ctx: CheckContext) -> CheckResult:
                     fix="add a stage that produces this role (see discover / find_producers), or drop the requirement",
                 )
             )
+    return CheckResult(issues=out)
+
+
+@register("request_type_sanity")
+def _check_request_type_sanity(ctx: CheckContext) -> CheckResult:
+    """Acceptance-set sanity (1A.1): a request implying an output must carry the
+    matching criterion (filtering -> yield; transcription -> output_completeness).
+
+    Output-completeness itself is enforced by the ``output_completeness`` check
+    (``validate`` compiles criterion fields into ``expected_outputs``); this check
+    only surfaces a *missing implied criterion* so success can't be declared while
+    silently ignoring the point of the request. Warning + escalate-to-user (not a
+    hard fail: the user may legitimately omit it, but it's flagged at the gate).
+    Inactive unless a ``request_type`` or criteria were supplied.
+    """
+    if not ctx.request_type and not ctx.acceptance_criteria:
+        return CheckResult()
+    from nemo_curator.audio_agent.acceptance import missing_implied
+
+    out = [
+        Issue(
+            "missing_implied_criterion", "warning", hint,
+            fix="add an acceptance criterion of this type to define success for the request",
+            escalate_to="user",
+        )
+        for _implied, hint in missing_implied(ctx.request_type, ctx.acceptance_criteria)
+    ]
     return CheckResult(issues=out)
 
 

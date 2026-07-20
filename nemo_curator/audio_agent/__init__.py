@@ -35,6 +35,9 @@ public tool surface and ``AGENTS.md`` / the skill for the driving instructions.
 from __future__ import annotations
 
 from nemo_curator.audio_agent.contracts import (
+    AcceptanceCriterion,
+    AcceptanceReport,
+    CriterionResult,
     DataProfile,
     EnvProfile,
     PlanningContext,
@@ -54,9 +57,13 @@ from nemo_curator.audio_agent.verbs import (
     run,
     smoke,
     validate,
+    verify,
 )
 
 __all__ = [
+    "AcceptanceCriterion",
+    "AcceptanceReport",
+    "CriterionResult",
     "DataProfile",
     "EnvProfile",
     "PlanResult",
@@ -75,4 +82,5 @@ __all__ = [
     "run",
     "smoke",
     "validate",
+    "verify",
 ]

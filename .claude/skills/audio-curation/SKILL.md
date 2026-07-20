@@ -26,6 +26,10 @@ All commands print JSON. Run them with the repo virtualenv interpreter (base
   has explicitly approved, after seeing a smoke result and the scale/cost estimate.
 - **Evidence only.** Never claim quality/throughput improved without before/after
   numbers from a `report`.
+- **Define success up front, verify it after.** Derive `acceptance_criteria` (the
+  success contract) from the request, confirm them at the gate, and `verify` the
+  result against them. Never declare success without an AcceptanceReport whose
+  `overall` is `met`; never silently relax a `must` criterion.
 - **Refuse / redirect**: human labeling of speaker gender/accent/emotion or other
   subjective traits; model training/eval/deployment; large runs without confirmation.
   Offer a safe alternative (e.g. a manifest + quality report).
@@ -50,6 +54,12 @@ apply), `constraints` (quality/hardware/deps), and `open_questions` (what's stil
 missing). The capability plan is your **coverage checklist** for later steps.
 Ask 1-2 short **user-facing** questions only if something material is ambiguous
 (e.g. no quality *level*). If the request hits the refuse list, stop and redirect.
+
+Also derive `acceptance_criteria` — the **success contract** (what "done" means):
+`output_completeness` (required outputs, e.g. transcripts), `quality_standard`
+(a metric target, `absolute` like "studio" or `relative` like "best 20%"), and
+`yield` (how much to keep). Classify each `absolute`/`relative`. These drive both
+`validate` (output-completeness + request-type sanity) and the final `verify`.
 
 ### 2. Inspect (always before planning)
 
@@ -88,8 +98,14 @@ Adapt, do not blindly copy.
 Emit a Recipe (YAML): `{stages: [{ref, params}], inputs, preset}`. Save it and:
 
 ```bash
-python -m nemo_curator.audio_agent validate --recipe recipe.yaml --data /path/to/data
+python -m nemo_curator.audio_agent validate --recipe recipe.yaml --data /path/to/data \
+  --acceptance-criteria criteria.yaml --request-type quality_filter
 ```
+
+Passing `--acceptance-criteria` + `--request-type` compiles each criterion's
+output/metric into a producible-role check (so "success needs transcripts, no ASR
+stage" fails here as `missing_output_producer`) and runs **request-type sanity**
+(a filtering request with no `yield` criterion is flagged `missing_implied_criterion`).
 
 Read the `Verdict`. If not `runnable`, fix from the issues and re-validate. **A gap
 here means your candidate-card set was incomplete — you are NOT limited to the first
@@ -121,8 +137,12 @@ adjust thresholds, and re-plan.
 
 ### 6. Confirm gate -> run
 
-Present the plan, the smoke evidence, and the scale/time estimate, then ask the
-user to confirm. Only then:
+Present the plan, the smoke evidence, the scale/time estimate, **and the
+acceptance-criteria contract** — stating for each criterion **what its metric
+captures and what it does NOT** (e.g. "UTMOS measures naturalness/overall quality,
+not background-noise level — add a noise/SIGMOS criterion?"). Never silently decide
+which metric stands for a fuzzy word ("clean", "good"); surface it here. Then ask
+the user to confirm. Only then:
 
 ```bash
 python -m nemo_curator.audio_agent run --recipe recipe.yaml --confirm <config_hash> --data /path/to/data --bootstrap-ray
@@ -138,10 +158,23 @@ Guardrails enforced in the tool: paths are restricted to `AUDIO_AGENT_WORKSPACE`
 `smoke` output) or `run` refuses. The resource planner auto-picks streaming/batch
 and refuses if the recipe can't fit the machine.
 
-### 7. Report
+### 7. Report + verify acceptance
 
 Summarize the returned `report` (retained/rejected, per-filter counts, failure
-reasons, output paths) in plain language, and propose a next action.
+reasons, output paths) in plain language. Then **verify the success contract**:
+assemble the evidence (from `validate`: `produced_roles`/`produced_keys`; from the
+`report`/smoke: `metrics`, `retained`, `input_count`) and run:
+
+```bash
+python -m nemo_curator.audio_agent verify --criteria criteria.yaml --evidence evidence.json
+```
+
+Report the `AcceptanceReport`: `overall` (`met` iff every `must` criterion is met)
+plus each criterion's state — `met` / `not_met` / `unverifiable` (no evidence, e.g.
+WER with no references) / `unachievable` (the data cannot reach an absolute target).
+Only declare success when `overall` is `met`. `unachievable`/`not_met` are honest
+outcomes: offer options (adjust thresholds, provide references, relabel an absolute
+bar with the user's consent) — never silently relax a `must`.
 
 ## Control conditions
 

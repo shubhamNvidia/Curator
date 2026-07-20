@@ -72,11 +72,26 @@ def _check(query: dict) -> tuple[bool, str]:  # noqa: C901 - one linear checklis
         unp = get_index().unproducible([role])
         return (role in unp, f"role {role!r} unproducible={role in unp}")
 
+    if "verify_evidence" in query:  # acceptance verifier (1A.1): criteria vs evidence -> report
+        rep = aa.verify(query.get("acceptance_criteria", []), query["verify_evidence"])
+        if "acceptance_overall" in expect and rep["overall"] != expect["acceptance_overall"]:
+            return False, f"acceptance overall={rep['overall']} expected={expect['acceptance_overall']}"
+        statuses = {c["id"]: c["status"] for c in rep["criteria"]}
+        for cid, want in (expect.get("criterion_status") or {}).items():
+            if statuses.get(cid) != want:
+                return False, f"criterion {cid} status={statuses.get(cid)} expected={want}"
+        return True, f"acceptance overall={rep['overall']}"
+
     recipe = _resolve_recipe(query)
     if recipe is None:
         return False, "query has neither recipe, recipe_ref, nor a role/capability expectation"
 
-    v = aa.validate(recipe, expected_outputs=query.get("expected_outputs"))
+    v = aa.validate(
+        recipe,
+        expected_outputs=query.get("expected_outputs"),
+        acceptance_criteria=query.get("acceptance_criteria"),
+        request_type=query.get("request_type"),
+    )
     if "validate_ok" in expect and v["ok"] != expect["validate_ok"]:
         return False, f"validate ok={v['ok']} expected={expect['validate_ok']}"
     if "runnable" in expect and v["runnable"] != expect["runnable"]:
@@ -90,14 +105,39 @@ def _check(query: dict) -> tuple[bool, str]:  # noqa: C901 - one linear checklis
     return True, f"ok={v['ok']} runnable={v['runnable']}"
 
 
+def _card_conformance_preflight() -> tuple[bool, str]:
+    """Card <-> stage conformance: fail on drift (bad params / preset / model_version)
+    or orphan cards; coverage gaps (uncarded stages) are reported, not failed."""
+    from nemo_curator.audio_agent.card_conformance import audit
+
+    a = audit()
+    detail = (
+        f"cards {a['carded_count']}/{a['stage_count']}; drifted={len(a['violations'])} "
+        f"orphan={len(a['orphan_cards'])} uncarded={len(a['uncarded_stages'])}"
+    )
+    if a["violations"]:
+        detail += f" :: {sorted(a['violations'])}"
+    return (not a["violations"] and not a["orphan_cards"]), detail
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Audio agent eval harness")
     ap.add_argument("--min-pass-rate", type=float, default=1.0)
     ap.add_argument("--queries", default=_QUERIES)
+    ap.add_argument("--skip-card-gate", action="store_true", help="skip the card-conformance preflight")
     args = ap.parse_args(argv)
 
     queries = _load_yaml(args.queries)["queries"]
     results = []
+
+    if not args.skip_card_gate:
+        try:
+            passed, detail = _card_conformance_preflight()
+        except Exception as e:  # noqa: BLE001 - a harness error is a failed case, not a crash
+            passed, detail = False, f"harness error: {type(e).__name__}: {e}"
+        results.append({"id": "card_conformance", "label": "gate", "passed": passed, "detail": detail})
+        print(f"[{'PASS' if passed else 'FAIL'}] {'card_conformance':<26} {detail}")
+
     for q in queries:
         try:
             passed, detail = _check(q)

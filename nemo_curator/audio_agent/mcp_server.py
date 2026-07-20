@@ -66,9 +66,21 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
         return aa.context(goal, data=data, stages=stages, roles=roles)
 
     @server.tool()
-    def validate(recipe: dict[str, Any], data: str | None = None) -> dict[str, Any]:
-        """Validate a recipe (roles/keys/cards/gates) and return a Verdict."""
-        return aa.validate(recipe, data=data)
+    def validate(
+        recipe: dict[str, Any],
+        data: str | None = None,
+        expected_outputs: list[str] | None = None,
+        acceptance_criteria: list[dict[str, Any]] | None = None,
+        request_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Validate a recipe (roles/keys/cards/gates/output-completeness) -> Verdict.
+
+        ``acceptance_criteria`` + ``request_type`` add the 1A.1 acceptance checks
+        (criterion fields must be producible; request-type sanity)."""
+        return aa.validate(
+            recipe, data=data, expected_outputs=expected_outputs,
+            acceptance_criteria=acceptance_criteria, request_type=request_type,
+        )
 
     @server.tool()
     def smoke(recipe: dict[str, Any], sample: int = 10, data: str | None = None) -> dict[str, Any]:
@@ -84,6 +96,14 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
     def report(output: str, data: str | None = None) -> dict[str, Any]:
         """Post-hoc evidence report from an output manifest/dir."""
         return aa.report(output, data=data)
+
+    @server.tool()
+    def verify(acceptance_criteria: list[dict[str, Any]], evidence: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Verify acceptance criteria against evidence -> AcceptanceReport (1A.1).
+
+        ``overall`` is ``met`` iff every ``must`` criterion is met; states are
+        met / not_met / unverifiable / unachievable (never silently relaxed)."""
+        return aa.verify(acceptance_criteria, evidence=evidence)
 
     return server
 
