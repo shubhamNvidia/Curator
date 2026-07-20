@@ -188,7 +188,8 @@ assemble the evidence (from `validate`: `produced_roles`/`produced_keys`; from t
 `report`/smoke: `metrics`, `retained`, `input_count`) and run:
 
 ```bash
-python -m nemo_curator.audio_agent verify --criteria criteria.yaml --evidence evidence.json
+python -m nemo_curator.audio_agent verify --criteria criteria.yaml --evidence evidence.json \
+  --recipe recipe.yaml   # frozen contract -> runs the honesty guard
 ```
 
 Report the `AcceptanceReport`: `overall` (`met` iff every `must` criterion is met)
@@ -197,6 +198,19 @@ WER with no references) / `unachievable` (the data cannot reach an absolute targ
 Only declare success when `overall` is `met`. `unachievable`/`not_met` are honest
 outcomes: offer options (adjust thresholds, provide references, relabel an absolute
 bar with the user's consent) — never silently relax a `must`.
+
+**Reviewer charter (you, the host, are the reviewer).** After the deterministic
+verify:
+1. Resolve any `semantic_fit` criteria (they come back `unverifiable` — that's your
+   job): judge, grounded in the evidence/examples, whether the result coheres with
+   intent.
+2. Read the `honesty` section — the guard flags goalpost-moving (a confirmed `must`
+   dropped/downgraded/relaxed vs the frozen contract). If non-empty, `overall` is
+   forced `not_met`: do **not** present success. The contract is frozen into the
+   recipe and covered by `config_hash`, so relaxing a bar means re-confirming a new
+   contract with the user, never editing it silently.
+3. You may surface semantic concerns but **may not override the deterministic
+   verdict** — if unresolved, escalate to the user.
 
 ## Control conditions
 

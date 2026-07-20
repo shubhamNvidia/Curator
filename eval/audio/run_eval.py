@@ -72,15 +72,22 @@ def _check(query: dict) -> tuple[bool, str]:  # noqa: C901 - one linear checklis
         unp = get_index().unproducible([role])
         return (role in unp, f"role {role!r} unproducible={role in unp}")
 
-    if "verify_evidence" in query:  # acceptance verifier (1A.1): criteria vs evidence -> report
-        rep = aa.verify(query.get("acceptance_criteria", []), query["verify_evidence"])
+    if "verify_evidence" in query:  # acceptance verifier (1A.1/1A.3): criteria vs evidence -> report
+        rep = aa.verify(query.get("acceptance_criteria", []), query["verify_evidence"],
+                        frozen_criteria=query.get("frozen_criteria"))
         if "acceptance_overall" in expect and rep["overall"] != expect["acceptance_overall"]:
             return False, f"acceptance overall={rep['overall']} expected={expect['acceptance_overall']}"
         statuses = {c["id"]: c["status"] for c in rep["criteria"]}
         for cid, want in (expect.get("criterion_status") or {}).items():
             if statuses.get(cid) != want:
                 return False, f"criterion {cid} status={statuses.get(cid)} expected={want}"
-        return True, f"acceptance overall={rep['overall']}"
+        if "honesty_flagged" in expect and bool(rep["honesty"]) != expect["honesty_flagged"]:
+            return False, f"honesty flagged={bool(rep['honesty'])} expected={expect['honesty_flagged']}"
+        if "honesty_code" in expect:
+            codes = {h["code"] for h in rep["honesty"]}
+            if expect["honesty_code"] not in codes:
+                return False, f"honesty codes={sorted(codes)} expected {expect['honesty_code']!r}"
+        return True, f"acceptance overall={rep['overall']} honesty={[h['code'] for h in rep['honesty']]}"
 
     if "resolve" in query:  # config-strategy resolver (1A.2): outcome -> concrete config
         spec = query["resolve"]

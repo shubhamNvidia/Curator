@@ -98,12 +98,19 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
         return aa.report(output, data=data)
 
     @server.tool()
-    def verify(acceptance_criteria: list[dict[str, Any]], evidence: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Verify acceptance criteria against evidence -> AcceptanceReport (1A.1).
+    def verify(
+        acceptance_criteria: list[dict[str, Any]],
+        evidence: dict[str, Any] | None = None,
+        frozen_criteria: list[dict[str, Any]] | None = None,
+        recipe: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Verify acceptance criteria against evidence -> AcceptanceReport (1A.1/1A.3).
 
         ``overall`` is ``met`` iff every ``must`` criterion is met; states are
-        met / not_met / unverifiable / unachievable (never silently relaxed)."""
-        return aa.verify(acceptance_criteria, evidence=evidence)
+        met / not_met / unverifiable / unachievable (never silently relaxed). Pass
+        ``frozen_criteria`` or a ``recipe`` to run the honesty guard (flags a
+        weaker-than-confirmed contract and forces overall=not_met)."""
+        return aa.verify(acceptance_criteria, evidence=evidence, frozen_criteria=frozen_criteria, recipe=recipe)
 
     @server.tool()
     def resolve(

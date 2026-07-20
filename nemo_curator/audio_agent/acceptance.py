@@ -105,13 +105,24 @@ def expected_roles_from_criteria(criteria: list[AcceptanceCriterion]) -> list[st
 # --------------------------------------------------------------------------- #
 # verification
 # --------------------------------------------------------------------------- #
-def verify(criteria: list[AcceptanceCriterion], evidence: dict[str, Any]) -> AcceptanceReport:
+def verify(
+    criteria: list[AcceptanceCriterion],
+    evidence: dict[str, Any],
+    *,
+    frozen_criteria: list[AcceptanceCriterion] | None = None,
+) -> AcceptanceReport:
     """Evaluate each criterion against evidence into an :class:`AcceptanceReport`.
 
     ``evidence`` (all optional) may carry: ``produced_roles`` / ``produced_keys``
     (from ``validate``), ``metrics`` (aggregate ``{field: value}``), ``per_item``
     (``[{field: value}, ...]``), ``retained`` / ``input_count`` (from smoke/run),
     and ``unachievable_fields`` (metrics the data provably cannot meet).
+
+    ``frozen_criteria`` (the user-confirmed contract, e.g. from the recipe) enables
+    the honesty guard (1A.3): if the criteria actually verified are weaker than what
+    was confirmed (a ``must`` dropped/downgraded/relaxed), it is flagged and
+    ``overall`` is forced to ``not_met`` — success can't be declared against a
+    silently relaxed bar.
     """
     ev = evidence or {}
     produced = set(ev.get("produced_roles") or []) | set(ev.get("produced_keys") or [])
@@ -128,7 +139,60 @@ def verify(criteria: list[AcceptanceCriterion], evidence: dict[str, Any]) -> Acc
     ]
     musts = [r for r in results if r.severity == "must"]
     overall = "met" if all(r.status == "met" for r in musts) else "not_met"
-    return AcceptanceReport(overall=overall, criteria=results, verdict=_summary(results, overall))
+
+    honesty = honesty_review(frozen_criteria, criteria) if frozen_criteria is not None else []
+    if honesty:
+        overall = "not_met"  # a relaxed/dropped 'must' bar cannot be declared met
+    return AcceptanceReport(overall=overall, criteria=results, verdict=_summary(results, overall, honesty), honesty=honesty)
+
+
+# --------------------------------------------------------------------------- #
+# honesty guard (1A.3): anti-goalpost-moving
+# --------------------------------------------------------------------------- #
+_STRICTER_WHEN = {">=": "higher", ">": "higher", "<=": "lower", "<": "lower"}
+
+
+def honesty_review(
+    frozen: list[AcceptanceCriterion], used: list[AcceptanceCriterion]
+) -> list[dict[str, Any]]:
+    """Goalpost-moving violations: a confirmed ``must`` that is dropped, downgraded,
+    or relaxed in the criteria actually verified. Empty when ``used`` honors ``frozen``.
+    """
+    used_by_id = {c.id: c for c in used}
+    out: list[dict[str, Any]] = []
+    for fc in frozen:
+        if fc.severity != "must":
+            continue
+        uc = used_by_id.get(fc.id)
+        if uc is None:
+            out.append({"code": "must_dropped", "id": fc.id, "message": f"confirmed must-criterion {fc.id!r} is missing from the verified set"})
+        elif uc.severity != "must":
+            out.append({"code": "must_downgraded", "id": fc.id, "message": f"must-criterion {fc.id!r} downgraded to {uc.severity!r}"})
+        else:
+            reason = _weakened_reason(fc, uc)
+            if reason:
+                out.append({"code": "must_relaxed", "id": fc.id, "message": f"must-criterion {fc.id!r} relaxed: {reason}"})
+    return out
+
+
+def _weakened_reason(fc: AcceptanceCriterion, uc: AcceptanceCriterion) -> str | None:
+    """Why ``uc`` is easier to satisfy than ``fc`` (or a changed target), else None."""
+    fchk, uchk = fc.check or {}, uc.check or {}
+    if fchk.get("field") != uchk.get("field"):
+        return f"field {fchk.get('field')!r} -> {uchk.get('field')!r}"
+    fop, uop = fchk.get("op"), uchk.get("op")
+    if fop != uop:
+        return f"op {fop!r} -> {uop!r}"
+    stricter = _STRICTER_WHEN.get(str(fop))
+    fv, uv = fchk.get("value"), uchk.get("value")
+    if stricter is None:
+        return f"value {fv!r} -> {uv!r}" if fv != uv else None
+    try:
+        fvn, uvn = float(fv), float(uv)
+    except (TypeError, ValueError):
+        return f"value {fv!r} -> {uv!r}" if fv != uv else None
+    easier = uvn < fvn if stricter == "higher" else uvn > fvn
+    return f"target {fv} -> {uv} (easier to satisfy)" if easier else None
 
 
 def _verify_one(  # noqa: PLR0911, PLR0913 - one honest branch per criterion type
@@ -214,14 +278,18 @@ def _num(v: Any) -> float:  # noqa: ANN401
         return float("nan")
 
 
-def _summary(results: list[CriterionResult], overall: str) -> str:
+def _summary(results: list[CriterionResult], overall: str, honesty: list[dict[str, Any]] | None = None) -> str:
     n_met = sum(1 for r in results if r.status == "met")
     lines = [f"acceptance: {overall.upper()} ({n_met}/{len(results)} criteria met)"]
     for r in results:
         if r.status != "met":
             detail = r.note or r.evidence
             lines.append(f"  - {r.id} [{r.severity}]: {r.status}" + (f" ({detail})" if detail else ""))
-    if overall == "not_met":
+    for h in honesty or []:
+        lines.append(f"  ! honesty[{h.get('code')}]: {h.get('message')}")
+    if honesty:
+        lines.append("BLOCKED: the verified contract was weaker than what the user confirmed; re-confirm a new contract instead of relaxing a 'must'.")
+    if overall == "not_met" and not honesty:
         lines.append(
             "options: adjust the recipe/thresholds and re-run, provide missing references, or relax a 'nice' "
             "criterion — never silently relax a 'must'."

@@ -191,7 +191,8 @@ def validate(
     if initial_keys is not None:
         keys0 = set(initial_keys)
 
-    criteria = parse_criteria(acceptance_criteria)
+    # Default to the recipe's frozen success contract; an explicit arg overrides it.
+    criteria = parse_criteria(acceptance_criteria if acceptance_criteria is not None else rec.acceptance_criteria)
     expected = set(expected_outputs or []) | set(expected_roles_from_criteria(criteria))
 
     ctx = CheckContext(
@@ -421,8 +422,11 @@ def report(output: str, *, recipe: Recipe | dict[str, Any] | None = None, data: 
 def verify(
     acceptance_criteria: list[dict[str, Any]],
     evidence: dict[str, Any] | None = None,
+    *,
+    frozen_criteria: list[dict[str, Any]] | None = None,
+    recipe: Recipe | dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Evaluate acceptance criteria against gathered evidence -> AcceptanceReport (1A.1).
+    """Evaluate acceptance criteria against gathered evidence -> AcceptanceReport (1A.1/1A.3).
 
     Deterministic verifier: it runs nothing itself, it judges the ``evidence`` the
     host assembled (from ``validate`` — ``produced_roles``/``produced_keys`` — and
@@ -430,10 +434,19 @@ def verify(
     plus optional ``unachievable_fields``). Returns per-criterion states
     (met / not_met / unverifiable / unachievable) and an ``overall`` that is
     ``met`` iff every ``must`` criterion is met — the anti-goalpost-moving gate.
+
+    Pass the confirmed contract as ``frozen_criteria`` (or a ``recipe`` carrying
+    ``acceptance_criteria``) to run the honesty guard (1A.3): if the criteria being
+    verified are weaker than confirmed, it is flagged and ``overall`` is ``not_met``.
     """
     from nemo_curator.audio_agent.acceptance import parse_criteria, verify as _verify
 
-    report_obj = _verify(parse_criteria(acceptance_criteria), evidence or {})
+    frozen = None
+    if recipe is not None:
+        frozen = parse_criteria(_as_recipe(recipe).acceptance_criteria)
+    elif frozen_criteria is not None:
+        frozen = parse_criteria(frozen_criteria)
+    report_obj = _verify(parse_criteria(acceptance_criteria), evidence or {}, frozen_criteria=frozen)
     return _safety.redact(report_obj.to_dict())
 
 

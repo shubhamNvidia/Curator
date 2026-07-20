@@ -368,12 +368,17 @@ class AcceptanceReport:
     overall: Literal["met", "not_met"] = "not_met"
     criteria: list[CriterionResult] = field(default_factory=list)
     verdict: str = ""
+    # Honesty meta-check (1A.3): goalpost-moving violations found by comparing the
+    # criteria actually verified against the confirmed (frozen) contract. Non-empty
+    # forces overall=not_met (a relaxed 'must' bar cannot be declared met).
+    honesty: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "overall": self.overall,
             "criteria": [c.to_dict() for c in self.criteria],
             "verdict": self.verdict,
+            "honesty": list(self.honesty),
         }
 
 

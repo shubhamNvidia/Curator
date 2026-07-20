@@ -206,3 +206,33 @@ queries:
     prompt: "An unknown outcome label -> the resolver asks instead of guessing."
     resolve: {stage: UTMOSFilterStage, label: bogus}
     expect: {resolve_ask: true}
+
+  # --- 1A.3 honesty guard (anti-goalpost-moving) ---
+  - id: honesty_goalpost_moving
+    label: verify
+    prompt: "Confirmed UTMOS>=4.0, but verify against a silently relaxed 3.0 bar -> blocked."
+    frozen_criteria:
+      - {id: quality, type: quality_standard, kind: absolute, severity: must, check: {field: utmos_mos, op: ">=", value: 4.0}}
+    acceptance_criteria:
+      - {id: quality, type: quality_standard, kind: absolute, severity: must, check: {field: utmos_mos, op: ">=", value: 3.0}}
+    verify_evidence: {metrics: {utmos_mos: 3.2}, retained: 8, input_count: 10}
+    expect: {acceptance_overall: not_met, honesty_code: must_relaxed}
+
+  - id: honesty_dropped_must
+    label: verify
+    prompt: "Confirmed a must-criterion, but verify omits it -> blocked as dropped."
+    frozen_criteria:
+      - {id: quality, type: quality_standard, kind: absolute, severity: must, check: {field: utmos_mos, op: ">=", value: 4.0}}
+    acceptance_criteria: []
+    verify_evidence: {retained: 10, input_count: 10}
+    expect: {acceptance_overall: not_met, honesty_code: must_dropped}
+
+  - id: honesty_clean
+    label: verify
+    prompt: "Verify honors the confirmed contract and evidence meets it -> met, no honesty flags."
+    frozen_criteria:
+      - {id: quality, type: quality_standard, kind: absolute, severity: must, check: {field: utmos_mos, op: ">=", value: 4.0}}
+    acceptance_criteria:
+      - {id: quality, type: quality_standard, kind: absolute, severity: must, check: {field: utmos_mos, op: ">=", value: 4.0}}
+    verify_evidence: {metrics: {utmos_mos: 4.3}, retained: 5, input_count: 10}
+    expect: {acceptance_overall: met, honesty_flagged: false}

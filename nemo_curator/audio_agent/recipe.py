@@ -67,6 +67,10 @@ class Recipe:
     stages: list[StageRef] = field(default_factory=list)
     inputs: dict[str, Any] = field(default_factory=dict)
     preset: str | None = None
+    # The confirmed success contract (1A.3). PORTABLE + HASHED: it is part of the
+    # user-confirmed intent, so config_hash covers it -- a 'must' bar cannot be
+    # silently relaxed after confirmation without changing the hash (integrity).
+    acceptance_criteria: list[dict[str, Any]] = field(default_factory=list)
     rationale: str = ""
     name: str = "audio_agent_recipe"
     recipe_id: str | None = None
@@ -93,6 +97,7 @@ class Recipe:
             stages=stages,
             inputs=dict(d.get("inputs") or {}),
             preset=d.get("preset"),
+            acceptance_criteria=list(d.get("acceptance_criteria") or []),
             rationale=str(d.get("rationale") or ""),
             name=str(d.get("name") or "audio_agent_recipe"),
             recipe_id=d.get("recipe_id"),
@@ -110,7 +115,8 @@ class Recipe:
         return out
 
     def _canonical(self) -> str:
-        """Stable JSON of the PORTABLE semantic content only (stages + inputs + preset).
+        """Stable JSON of the PORTABLE semantic content only (stages + inputs + preset
+        + acceptance_criteria — the confirmed success contract).
 
         Deliberately excludes id/hash/rationale AND the recomputable layered-save
         annotations (``machine_plan`` / ``data_derived`` / ``config_strategy`` /
@@ -123,6 +129,7 @@ class Recipe:
             "stages": [s.to_dict() for s in self.stages],
             "inputs": self.inputs,
             "preset": self.preset,
+            "acceptance_criteria": self.acceptance_criteria,
         }
         return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
 

@@ -126,6 +126,8 @@ def build_parser() -> argparse.ArgumentParser:
     vf = sub.add_parser("verify", help="verify acceptance criteria against evidence -> AcceptanceReport")
     vf.add_argument("--criteria", required=True, help="acceptance criteria YAML/JSON (list or {acceptance_criteria: [...]}; - for stdin)")
     vf.add_argument("--evidence", help="evidence YAML/JSON (produced_roles/metrics/retained/...); - for stdin")
+    vf.add_argument("--frozen-criteria", help="the confirmed contract, for the honesty guard (YAML/JSON)")
+    vf.add_argument("--recipe", dest="verify_recipe", help="recipe carrying acceptance_criteria (alt source for the honesty guard)")
 
     rs = sub.add_parser("resolve", help="resolve an outcome (label/use_case/explicit) to concrete stage config (1A.2)")
     rs.add_argument("--stage", required=True)
@@ -168,7 +170,10 @@ def main(argv: list[str] | None = None) -> int:
         recipe = _load_recipe(args.recipe) if args.recipe else None
         _emit(aa.report(args.output, recipe=recipe, data=args.data))
     elif cmd == "verify":
-        _emit(aa.verify(_criteria_list(_load_doc(args.criteria)) or [], evidence=_load_doc(args.evidence)))
+        frozen = _criteria_list(_load_doc(args.frozen_criteria)) if args.frozen_criteria else None
+        rec = _load_recipe(args.verify_recipe) if args.verify_recipe else None
+        _emit(aa.verify(_criteria_list(_load_doc(args.criteria)) or [], evidence=_load_doc(args.evidence),
+                        frozen_criteria=frozen, recipe=rec))
     elif cmd == "resolve":
         explicit = json.loads(args.explicit) if args.explicit else None
         _emit(aa.resolve(args.stage, label=args.label, use_case=args.use_case,
