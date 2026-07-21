@@ -112,6 +112,12 @@ def _fix_for(code: str) -> str | None:
     }.get(code)
 
 
+def _escalate_for(code: str) -> str | None:
+    # A composite hides its writes, so an unsatisfied read past it is neither a hard
+    # fail nor a clean pass -> mark the Verdict 'uncertain' (resolve it with a smoke).
+    return {"unsatisfied_reads_after_composite": "smoke"}.get(code)
+
+
 # --------------------------------------------------------------------------- #
 # registered checks
 # --------------------------------------------------------------------------- #
@@ -127,7 +133,8 @@ def _check_data_flow(ctx: CheckContext) -> CheckResult:
         available_gpus=ctx.available_gpus,
     )
     issues = [
-        Issue(pi.code, pi.severity, pi.message, stage_index=pi.stage_index, stage=pi.stage_name, fix=_fix_for(pi.code))
+        Issue(pi.code, pi.severity, pi.message, stage_index=pi.stage_index, stage=pi.stage_name,
+              fix=_fix_for(pi.code), escalate_to=_escalate_for(pi.code))
         for pi in report.issues
     ]
     return CheckResult(
@@ -145,7 +152,9 @@ def _check_card_constraints(ctx: CheckContext) -> CheckResult:
     idx = get_index()
     out: list[Issue] = []
     data_profile = ctx.data_profile
-    data_srs = set((data_profile or {}).get("sample_rates", {}).keys()) if data_profile else set()
+    # sample-rate keys are strings post-serialization; coerce to int so a matching rate
+    # (16000) doesn't false-warn against an int-typed card supported_sample_rates.
+    data_srs = {int(k) for k in (data_profile or {}).get("sample_rates", {}) if str(k).lstrip("-").isdigit()} if data_profile else set()
     mean_dur = float((data_profile or {}).get("mean_duration_sec", 0.0)) if data_profile else 0.0
     for i, s in enumerate(ctx.recipe.stages):
         card = idx.card(s.ref)
@@ -162,7 +171,7 @@ def _check_card_constraints(ctx: CheckContext) -> CheckResult:
                 )
             )
         supported = cons.get("supported_sample_rates")
-        if supported and data_srs and not data_srs.issubset(set(supported)):
+        if supported and data_srs and not data_srs.issubset({int(s) for s in supported}):
             out.append(
                 Issue(
                     "card_sample_rate", "warning",

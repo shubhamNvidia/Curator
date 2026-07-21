@@ -208,11 +208,12 @@ def validate_pipeline(  # noqa: C901 (complexity accepted: sequential per-stage 
             past_composite = True
             continue
 
-        if past_composite:
-            # The composite's (hidden) writes may satisfy anything downstream:
-            # unknown-availability must not produce false HARD errors on
-            # runnable pipelines. Downgrade to an advisory warning.
-            if not reads_satisfied_by_role(contract, available):
+        # Reads. A composite upstream hides its writes, so an unsatisfied read is
+        # downgraded to an advisory (never a false HARD error); otherwise it is a
+        # hard error. The literal-key (dangling) check only runs when upstream keys
+        # are trustworthy (no composite hiding them).
+        if not reads_satisfied_by_role(contract, available):
+            if past_composite:
                 issues.append(
                     PipelineIssue(
                         index, name, "warning", "unsatisfied_reads_after_composite",
@@ -221,35 +222,26 @@ def validate_pipeline(  # noqa: C901 (complexity accepted: sequential per-stage 
                         f"decompose it to validate this read",
                     )
                 )
-            available |= produced_roles(contract)
-            available_keys |= _write_key_values(contract)
-            continue
-
-        if not reads_satisfied_by_role(contract, available):
-            needed = _required_roles(contract) | {r for o in contract.reads_one_of for r in _roles_of(o, contract)}
-            removed_hit = (needed & removed_roles) - available
-            if removed_hit:
-                issues.append(
-                    PipelineIssue(
-                        index, name, "error", "key_removed_upstream",
-                        f"reads role(s) {sorted(removed_hit)} that an upstream stage removed "
-                        f"(removes_keys) and no stage re-produced; available so far: {sorted(available)}",
-                    )
-                )
             else:
-                issues.append(
-                    PipelineIssue(
-                        index, name, "error", "unsatisfied_reads",
-                        f"requires {_requirement_str(contract, available)} "
-                        f"not produced upstream; available so far: {sorted(available)}",
+                needed = _required_roles(contract) | {r for o in contract.reads_one_of for r in _roles_of(o, contract)}
+                removed_hit = (needed & removed_roles) - available
+                if removed_hit:
+                    issues.append(
+                        PipelineIssue(
+                            index, name, "error", "key_removed_upstream",
+                            f"reads role(s) {sorted(removed_hit)} that an upstream stage removed "
+                            f"(removes_keys) and no stage re-produced; available so far: {sorted(available)}",
+                        )
                     )
-                )
-        else:
-            # Role-satisfied: check literal-key identity. A read whose role is
-            # available but whose exact key VALUE was not produced/seeded means a
-            # producer key was renamed away from what this stage reads -> the
-            # pipeline validates by role but yields no rows at runtime. WARNING
-            # (not error) so source-manifest reads aren't false-rejected.
+                else:
+                    issues.append(
+                        PipelineIssue(
+                            index, name, "error", "unsatisfied_reads",
+                            f"requires {_requirement_str(contract, available)} "
+                            f"not produced upstream; available so far: {sorted(available)}",
+                        )
+                    )
+        elif not past_composite:
             dangling = _dangling_read_keys(contract, available_keys)
             if dangling:
                 issues.append(
@@ -261,6 +253,10 @@ def validate_pipeline(  # noqa: C901 (complexity accepted: sequential per-stage 
                     )
                 )
 
+        # The checks below reason about serialization / GPU / key-flow, NOT the
+        # composite's hidden roles, so they run for every concrete stage even after
+        # a composite (fixes the tensor_into_sink blind spot: ManifestReader is a
+        # composite, so a start-with-reader pipeline used to skip these entirely).
         if available_gpus is not None and contract.gates.requires_gpu and available_gpus <= 0:
             issues.append(
                 PipelineIssue(
@@ -275,10 +271,11 @@ def validate_pipeline(  # noqa: C901 (complexity accepted: sequential per-stage 
         if contract.gates.requires_serializable_input and tensor_resident:
             issues.append(
                 PipelineIssue(
-                    index, name, "warning", "tensor_into_sink",
+                    index, name, "error", "tensor_into_sink",
                     "a resident tensor/audio blob from an upstream stage reaches this "
-                    "serialize-as-JSON sink; route through AudioToDocumentStage first "
-                    "(or drop the tensor) or it will fail at json.dumps",
+                    "serialize-as-JSON sink; it WILL fail at json.dumps — drop the tensor "
+                    "upstream (e.g. keep_segment_waveform_in_task=False) or route through "
+                    "a sanitizing stage before the sink",
                 )
             )
 

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import sys
 import tempfile
 import time
 from typing import Any
@@ -558,7 +559,11 @@ def _run_pipeline(stages: list[Any], executor: Any, *, checkpoint_path: str | No
     from nemo_curator.pipeline import Pipeline
 
     pipeline = Pipeline(name="audio_agent_run", stages=list(stages))
-    return pipeline.run(executor, checkpoint_path=checkpoint_path)
+    # Keep the verb's stdout pure JSON: backend/worker logs (Ray forwards them to the
+    # driver's stdout, e.g. verbose NeMo output) go to stderr during execution, so a
+    # host parsing the CLI's stdout never sees them interleaved with the result.
+    with contextlib.redirect_stdout(sys.stderr):
+        return pipeline.run(executor, checkpoint_path=checkpoint_path)
 
 
 def _plan_resources(stages: list[Any], env_obj: Any, data_profile: dict[str, Any] | None, calibration: dict[str, Any] | None = None):  # noqa: ANN401
