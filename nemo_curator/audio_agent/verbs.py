@@ -27,6 +27,7 @@ ours (deterministic, grounded); interpret/route/plan/critique is the host's.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import sys
 import tempfile
@@ -690,7 +691,23 @@ def _examples(results: list[Any] | None, *, limit: int) -> list[dict[str, Any]]:
 
 
 def _jsonable(v: Any) -> bool:  # noqa: ANN401
-    return isinstance(v, (str, int, float, bool, type(None)))
+    """Preview-safe if a scalar, or a JSON-serializable nested dict/list/tuple.
+
+    Scalars pass directly; nested containers (e.g. ``metrics`` with SQUIM or
+    WER/CER scores, or ``segments``) are kept when they round-trip through
+    ``json.dumps`` (``default=str`` matches the CLI/MCP emitter and tolerates a
+    stray numpy scalar). Bare non-JSON objects (waveform tensors/arrays) are
+    dropped. The report is still ``_safety.redact``-ed and capped by ``limit``.
+    """
+    if isinstance(v, (str, int, float, bool, type(None))):
+        return True
+    if isinstance(v, (dict, list, tuple)):
+        try:
+            json.dumps(v, default=str)
+        except (TypeError, ValueError, RecursionError):
+            return False
+        return True
+    return False
 
 
 def _count_output_rows(output: str) -> int:

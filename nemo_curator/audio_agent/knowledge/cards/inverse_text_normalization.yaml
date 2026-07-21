@@ -13,15 +13,17 @@ resource:
   throughput_hint: "CPU; rule-based text normalization"
 use_cases:
   good_for: ["producing written-form transcripts (numbers, dates, currency) from spoken-form ASR output"]
-  avoid_for: ["languages not supported by the ITN grammar"]
+  avoid_for: ["languages not supported by the ITN grammar", "manifests with only a top-level `text` and no `segments` (rejected)"]
 composition:
   typical_upstream: [InferenceAsrNemoStage, NeMoASRAlignerStage]
   typical_downstream: [ComputeWERStage, AudioToDocumentStage]
 params_of_note:
   language: "language code for the ITN grammar (default en)"
-  text_key: "key holding the text to normalize (default text)"
-  output_suffix: "suffix for the written key (default _ITN)"
+  text_key: "the PER-SEGMENT text field to normalize -- segments[].text (default text). NOT a top-level manifest key: this stage only reads/writes text inside each segment."
+  output_suffix: "suffix for the written per-segment key (default _ITN)"
+param_dependencies:
+  text_key: "requires a `segments` list on each entry (operates on segments[].text) -- produce it upstream with VAD / ASR-align / diarization. A manifest with only a top-level `text` and no `segments` is rejected (missing required attributes: ['segments'])."
 notes:
-  - "Writes normalized text to {text_key}{output_suffix}."
+  - "Writes normalized text to segments[].{text_key}{output_suffix}; entries without a `segments` list are rejected (top-level `text` is ignored)."
 verified: {params: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess}
-provenance: {model_card_url: null, card_version: 1, last_validated: "2026-07-20"}
+provenance: {model_card_url: null, card_version: 2, last_validated: "2026-07-21"}

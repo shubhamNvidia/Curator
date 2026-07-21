@@ -25,9 +25,19 @@ Scope of 1C.1: mode selection + feasibility + escalation. Per-stage resource
 *assignment* (1C.2) and measured calibration (the ``data_driven`` module) refine
 these numbers later; this module never reimplements Xenna's bin-packer.
 
-    streaming feasible iff  Sum(cpus) <= cpus*0.95  AND  Sum(gpu_frac) <= num_gpus
-                            AND  Sum(host_mem) <= ram*0.90
-    else batch (only the largest single stage must fit); if even that fails -> escalate.
+GPU feasibility tracks TWO INDEPENDENT constraints (both must hold):
+  (a) Ray reservation (scheduling) -- each stage reserves ``resources.gpus`` (the
+      fraction Xenna pins per replica); the concurrent sum must fit the GPU COUNT,
+      else Xenna aborts ("requires 1.5 but only 1 are available").
+  (b) VRAM fit (memory) -- the concurrent VRAM (card/measured ``gpu_mem_gb``) must
+      fit one GPU's memory when the machine VRAM is known.
+
+    streaming feasible iff  Sum(cpus) <= cpus*0.95  AND  Sum(host_mem) <= ram*0.90
+                            AND  Sum(gpu_reservation) <= num_gpus
+                            AND  Sum(gpu_mem_gb) <= machine_gpu_mem
+    else batch (only the largest single stage must fit each dimension:
+    max(gpu_reservation) <= num_gpus AND max(gpu_mem_gb) <= machine_gpu_mem);
+    if even that fails -> escalate.
 """
 
 from __future__ import annotations
@@ -54,6 +64,9 @@ class StageNeed:
     gpu_mem_gb: float
     host_mem_gb: float
     gpu_optional: bool = True
+    # Ray ``Resources.gpus`` the stage reserves for SCHEDULING (the fraction Xenna
+    # pins per replica) -- independent of ``gpu_mem_gb`` (the VRAM it actually needs).
+    gpu_reservation: float = 0.0
     source: str = "default"  # measured (calibration) | card | default
 
 
@@ -113,8 +126,11 @@ def _stage_need(
     gpu_mem = pick("gpu_mem_gb", _DEFAULT_GPU_MEM_GB if requires_gpu else 0.0)
     host_mem = float(pick("host_mem_gb", _DEFAULT_HOST_MEM_GB))
     gpu_optional = bool(res.get("gpu_optional", True))
+    # The Ray GPU reservation is a scheduling fact only the built stage knows
+    # (``resources.gpus``); it is NOT a card/calibration number.
+    gpu_reservation = float(getattr(getattr(stage, "resources", None), "gpus", 0.0) or 0.0)
     source = "measured" if calib.get("source") == "measured" and any(k in calib for k in ("cpus", "gpu_mem_gb", "host_mem_gb")) else ("card" if res else "default")
-    return StageNeed(index, name, cpus, float(gpu_mem or 0.0), host_mem, gpu_optional, source=source)
+    return StageNeed(index, name, cpus, float(gpu_mem or 0.0), host_mem, gpu_optional, gpu_reservation, source=source)
 
 
 def plan(
@@ -128,11 +144,13 @@ def plan(
 ) -> ResourcePlan:
     """Choose execution mode + report feasibility for ``stages`` on ``env``.
 
-    Default streaming; fall back to batch when the concurrent sum doesn't fit; if
-    even the largest single stage doesn't fit (or a GPU-only stage has no GPU),
-    mark ``feasible=False`` with escalations. Per-stage needs prefer measured
-    ``calibration`` (1C.2, from a prior smoke) over card ``resource`` facts over
-    conservative defaults.
+    Default streaming; fall back to batch when the concurrent sum doesn't fit
+    (CPU, host-RAM, Ray GPU reservations, or VRAM). If even the largest single
+    stage doesn't fit (reservation > num_gpus, VRAM > machine VRAM, or a GPU-only
+    stage has no GPU), mark ``feasible=False`` with escalations. Per-stage needs
+    prefer measured ``calibration`` (1C.2, from a prior smoke) over card
+    ``resource`` facts over conservative defaults; the Ray GPU *reservation* is
+    always read from the built stage's ``resources.gpus``.
     """
     from nemo_curator.audio_agent.index import get_index
 
@@ -159,40 +177,54 @@ def plan(
     total_ram = float(env.total_ram_gb or 0.0)
 
     sum_cpus = sum(n.cpus for n in needs)
-    sum_gpu = sum(_gpu_fraction(n.gpu_mem_gb, machine_gpu_mem) for n in needs)
     sum_ram = sum(n.host_mem_gb for n in needs)
     max_cpus = max((n.cpus for n in needs), default=0.0)
-    max_gpu = max((_gpu_fraction(n.gpu_mem_gb, machine_gpu_mem) for n in needs), default=0.0)
     max_ram = max((n.host_mem_gb for n in needs), default=0.0)
+    # GPU is TWO INDEPENDENT constraints, tracked separately (both must hold):
+    #  (a) Ray reservation (scheduling): stages reserve ``resources.gpus``; Xenna pins
+    #      that fraction per replica, so the CONCURRENT sum must fit the GPU COUNT (else
+    #      it aborts, e.g. "requires 1.5 but only 1 are available").
+    #  (b) VRAM fit (memory): the CONCURRENT VRAM must fit one GPU's memory (when known).
+    sum_reservation = sum(n.gpu_reservation for n in needs)
+    max_reservation = max((n.gpu_reservation for n in needs), default=0.0)
+    sum_gpu_mem = sum(n.gpu_mem_gb for n in needs)
+    max_gpu_mem = max((n.gpu_mem_gb for n in needs), default=0.0)
+    sum_gpu_fraction = sum(_gpu_fraction(n.gpu_mem_gb, machine_gpu_mem) for n in needs)  # informational
 
     rp = ResourcePlan(machine_fingerprint=env.fingerprint())
     if rp_note:
         rp.notes.append(rp_note)
 
     cpu_ok = sum_cpus <= total_cpus * CPU_ALLOC
-    gpu_ok = sum_gpu <= num_gpus
     ram_ok = total_ram <= 0 or sum_ram <= total_ram * RAM_ALLOC  # unknown RAM -> don't block
+    reservation_stream_ok = sum_reservation <= num_gpus  # (a) concurrent Ray reservations fit the GPU count
+    vram_stream_ok = machine_gpu_mem <= 0 or sum_gpu_mem <= machine_gpu_mem  # (b) concurrent VRAM fits
 
-    if cpu_ok and gpu_ok and ram_ok:
+    if cpu_ok and ram_ok and reservation_stream_ok and vram_stream_ok:
         rp.mode = "streaming"
     else:
         rp.mode = "batch"
         rp.notes.append(
-            f"streaming does not fit (cpu_ok={cpu_ok}, gpu_ok={gpu_ok}, ram_ok={ram_ok}); "
+            f"streaming does not fit (cpu_ok={cpu_ok}, ram_ok={ram_ok}, "
+            f"gpu_reservation_ok={reservation_stream_ok} [sum {round(sum_reservation, 2)} vs {num_gpus} GPU(s)], "
+            f"gpu_vram_ok={vram_stream_ok} [sum {round(sum_gpu_mem, 2)} vs {machine_gpu_mem} GB]); "
             f"falling back to batch (sequential)"
         )
 
-    # Batch feasibility: only the largest single stage must fit; if not -> escalate.
+    # Batch feasibility: only the largest single stage must fit each dimension; else escalate.
     if rp.mode == "batch":
         if max_cpus > total_cpus:
             rp.feasible = False
             rp.escalations.append(f"a single stage needs {max_cpus} CPUs > machine {total_cpus}")
-        if num_gpus == 0 and any(n.gpu_mem_gb > 0 and not n.gpu_optional for n in needs):
+        if num_gpus == 0 and any((n.gpu_reservation > 0 or n.gpu_mem_gb > 0) and not n.gpu_optional for n in needs):
             rp.feasible = False
             rp.escalations.append("a GPU-only stage requires a GPU but none is available")
-        if machine_gpu_mem > 0 and max_gpu > num_gpus:
+        if num_gpus > 0 and max_reservation > num_gpus:
             rp.feasible = False
-            rp.escalations.append("a single stage's VRAM exceeds the available GPU(s)")
+            rp.escalations.append(f"a single stage reserves {max_reservation} Ray GPU(s) > available {num_gpus}")
+        if machine_gpu_mem > 0 and max_gpu_mem > machine_gpu_mem:
+            rp.feasible = False
+            rp.escalations.append(f"a single stage needs {max_gpu_mem} GB VRAM > machine GPU memory {machine_gpu_mem} GB")
         if total_ram > 0 and max_ram > total_ram:
             rp.feasible = False
             rp.escalations.append(f"a single stage needs {max_ram} GB RAM > machine {total_ram} GB")
@@ -202,7 +234,8 @@ def plan(
         rp.notes.append(f"low free disk ({env.free_disk_gb} GB) - outputs may not fit")
 
     rp.per_stage = [
-        {"stage_index": n.index, "stage": n.name, "cpus": n.cpus, "gpu_mem_gb": n.gpu_mem_gb,
+        {"stage_index": n.index, "stage": n.name, "cpus": n.cpus,
+         "gpu_reservation": n.gpu_reservation, "gpu_mem_gb": n.gpu_mem_gb,
          "host_mem_gb": n.host_mem_gb, "source": n.source}
         for n in needs
     ]
@@ -210,7 +243,10 @@ def plan(
         "mode": rp.mode,
         "num_files": int((data_profile or {}).get("num_files", 0)),
         "sum_cpus": round(sum_cpus, 2),
-        "sum_gpu_fraction": round(sum_gpu, 2),
+        "sum_gpu_reservation": round(sum_reservation, 2),
+        "max_gpu_reservation": round(max_reservation, 2),
+        "sum_gpu_mem_gb": round(sum_gpu_mem, 2),
+        "sum_gpu_fraction": round(sum_gpu_fraction, 2),
         "sum_host_mem_gb": round(sum_ram, 2),
         "machine": {"cpus": total_cpus, "gpus": num_gpus, "gpu_mem_gb": machine_gpu_mem, "ram_gb": total_ram},
     }
