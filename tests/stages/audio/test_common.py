@@ -149,6 +149,43 @@ def test_get_audio_duration_error_sets_minus_one(tmp_path: Path) -> None:
         assert result.data["duration"] == -1.0
 
 
+def test_get_audio_duration_waveform_residency() -> None:
+    """input_residency='waveform' computes duration from samples/sample_rate (no file)."""
+    import torch
+
+    stage = GetAudioDurationStage(input_residency="waveform")
+    stage.setup()
+    result = stage.process(AudioTask(data={"waveform": torch.zeros(1, 16000 * 3), "sample_rate": 16000}))
+    assert result.data["duration"] == 3.0
+
+
+def test_get_audio_duration_auto_prefers_waveform() -> None:
+    import torch
+
+    stage = GetAudioDurationStage(input_residency="auto")
+    stage.setup()
+    result = stage.process(AudioTask(data={"waveform": torch.zeros(1, 16000), "sample_rate": 16000}))
+    assert result.data["duration"] == 1.0
+
+
+def test_get_audio_duration_default_rejects_waveform_only() -> None:
+    """Regression: default residency is 'file'; a waveform-only task is not valid input."""
+    import torch
+
+    stage = GetAudioDurationStage()
+    assert stage.input_residency == "file"
+    assert stage.validate_input(AudioTask(data={"waveform": torch.zeros(1, 16000), "sample_rate": 16000})) is False
+    assert stage.validate_input(AudioTask(data={"audio_filepath": "/a.wav"})) is True
+
+
+def test_get_audio_duration_waveform_validate() -> None:
+    import torch
+
+    stage = GetAudioDurationStage(input_residency="waveform")
+    assert stage.validate_input(AudioTask(data={"waveform": torch.zeros(1, 16000), "sample_rate": 16000})) is True
+    assert stage.validate_input(AudioTask(data={"audio_filepath": "/a.wav"})) is False
+
+
 # ---------------------------------------------------------------------------
 # ManifestReaderStage
 # ---------------------------------------------------------------------------

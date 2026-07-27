@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import pickle
 from unittest.mock import MagicMock, patch
 
+import pytest
 import torch
 from pydub import AudioSegment
 
@@ -81,6 +83,56 @@ class TestSpeakerSeparationStage:
         assert item["duration"] == 5.0
         assert "waveform" in item
         assert "sample_rate" in item
+
+    # --- output residency (write-to-disk extension) ---
+
+    def test_default_output_is_in_memory_only(self) -> None:
+        """Regression: default config emits a tensor and sets no disk gate/path."""
+        contract = SpeakerSeparationStage().describe()
+        assert contract.writes.produces == ["tensor"]
+        assert contract.gates.writes_to_disk is False
+        assert "audio_filepath" not in contract.writes.data_keys
+
+    @patch("nemo_curator.stages.audio.segmentation.speaker_separation.SpeakerSeparationStage._initialize_separator")
+    def test_write_to_disk_persists_and_sets_path(self, mock_init: MagicMock, tmp_path) -> None:
+        stage = SpeakerSeparationStage(
+            min_duration=0.5, write_to_disk=True, separated_audio_dir=str(tmp_path / "sep")
+        )
+        separator = MagicMock()
+        separator.get_speaker_audio_data.return_value = {
+            "spk_0": SpeakerResult(_make_audio_segment(3000), 3.0, [(0.0, 3.0)]),
+        }
+        stage._separator = separator
+        item = stage.process(_make_task())[0].data
+        # default keep_waveform_in_task=True -> waveform AND a written per-speaker file
+        assert "waveform" in item
+        assert "audio_filepath" in item
+        assert os.path.exists(item["audio_filepath"])
+
+    @patch("nemo_curator.stages.audio.segmentation.speaker_separation.SpeakerSeparationStage._initialize_separator")
+    def test_write_to_disk_only_drops_waveform(self, mock_init: MagicMock, tmp_path) -> None:
+        stage = SpeakerSeparationStage(
+            min_duration=0.5,
+            write_to_disk=True,
+            separated_audio_dir=str(tmp_path / "sep"),
+            keep_waveform_in_task=False,
+        )
+        separator = MagicMock()
+        separator.get_speaker_audio_data.return_value = {
+            "spk_0": SpeakerResult(_make_audio_segment(3000), 3.0, [(0.0, 3.0)]),
+        }
+        stage._separator = separator
+        item = stage.process(_make_task())[0].data
+        assert "waveform" not in item
+        assert os.path.exists(item["audio_filepath"])
+
+    def test_requires_dir_when_write_to_disk(self) -> None:
+        with pytest.raises(ValueError, match="separated_audio_dir"):
+            SpeakerSeparationStage(write_to_disk=True)
+
+    def test_requires_at_least_one_output_sink(self) -> None:
+        with pytest.raises(ValueError, match="keep_waveform_in_task or write_to_disk"):
+            SpeakerSeparationStage(keep_waveform_in_task=False)
 
     @patch("nemo_curator.stages.audio.segmentation.speaker_separation.SpeakerSeparationStage._initialize_separator")
     def test_min_duration_filters_short_speakers(self, mock_init: MagicMock) -> None:
