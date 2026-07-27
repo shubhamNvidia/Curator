@@ -113,6 +113,8 @@ class EnvProfile:
     missing_packages: list[str] = field(default_factory=list)
     available_secrets: list[str] = field(default_factory=list)
     curator_version: str = ""
+    python_version: str = ""  # running interpreter, e.g. "3.13.1"
+    python_supported: bool = True  # satisfies the project's requires-python (else a note is added)
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -184,12 +186,20 @@ class Issue:
 class Verdict:
     """The output of ``validate``: is this recipe composable and runnable here?
 
-    ``ok`` is the role-level necessary condition (rename-tolerant); ``keys_ok``
-    adds the literal-key-identity check; ``card_violations`` and ``gate_flags``
-    surface model-constraint and environment problems.
+    IMPORTANT — pick the right field to gate on:
+
+    * ``ok`` / ``keys_ok`` are the *data-flow* necessary conditions ONLY (roles connect,
+      then literal keys connect). They are **not** "safe to run": a recipe can be
+      ``ok=True`` while a card constraint (e.g. ``task_type_mismatch``, batch > model max)
+      or an environment gate makes it unrunnable.
+    * To decide whether to run, gate on ``runnable`` (no error-severity problem anywhere)
+      or ``status == "pass"``. Use ``ok``/``keys_ok`` only for data-flow diagnostics.
+
+    ``card_violations`` and ``gate_flags`` carry the model-constraint and environment
+    problems that ``ok`` deliberately ignores.
     """
 
-    ok: bool = False
+    ok: bool = False  # data-flow only (roles connect); NOT safe-to-run -- gate on runnable/status
     keys_ok: bool = False
     issues: list[Issue] = field(default_factory=list)
     card_violations: list[Issue] = field(default_factory=list)

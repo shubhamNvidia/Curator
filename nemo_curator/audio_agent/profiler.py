@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 from collections import Counter
 from typing import Any
 
@@ -81,6 +82,7 @@ def _list_audio_files(folder: str) -> list[str]:
 def _profile_manifest(path: str, prof: DataProfile, *, audio_filepath_key: str, max_probe: int) -> None:
     audio_paths: list[str] = []
     keys: set[str] = set()
+    has_transcript_value = False
     count = 0
     with open(path, encoding="utf-8") as f:
         for line in f:
@@ -95,12 +97,17 @@ def _profile_manifest(path: str, prof: DataProfile, *, audio_filepath_key: str, 
                 continue
             if isinstance(row, dict):
                 keys.update(row.keys())
+                # A transcript COLUMN existing isn't enough -- an all-empty "text" field
+                # would falsely imply transcripts (and e.g. that WER is computable). Require
+                # at least one row to carry a non-empty transcript value.
+                if not has_transcript_value:
+                    has_transcript_value = any(str(row.get(k) or "").strip() for k in _TRANSCRIPT_KEYS)
                 ap = row.get(audio_filepath_key)
                 if ap and len(audio_paths) < max_probe:
                     audio_paths.append(os.path.expanduser(str(ap)))
     prof.num_files = count
     prof.manifest_keys = sorted(keys)
-    prof.has_transcripts = any(k in keys for k in _TRANSCRIPT_KEYS)
+    prof.has_transcripts = has_transcript_value
     _probe_files(audio_paths, prof)
 
 
@@ -169,7 +176,38 @@ def probe_env() -> EnvProfile:
         env.curator_version = getattr(nemo_curator, "__version__", "") or ""
     except Exception:  # noqa: BLE001
         env.curator_version = ""
+    _probe_python(env)
     return env
+
+
+def _probe_python(env: EnvProfile) -> None:
+    """Record the interpreter version and whether it satisfies the project's requires-python.
+
+    A version mismatch is a common, hard-to-spot cause of import / CUDA / model failures, so
+    surface it up front. Just as important: on a *supported* version this confirms the
+    interpreter is fine, so it isn't wrongly blamed when a failure is really elsewhere.
+    """
+    env.python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    try:
+        from importlib.metadata import metadata
+
+        req = metadata("nemo-curator").get("Requires-Python") or ""
+    except Exception:  # noqa: BLE001 - dist metadata may be unavailable (odd installs)
+        return
+    if not req:
+        return
+    try:
+        from packaging.specifiers import SpecifierSet
+        from packaging.version import Version
+
+        env.python_supported = SpecifierSet(req).contains(Version(env.python_version), prereleases=True)
+    except Exception:  # noqa: BLE001 - packaging missing / unparseable specifier -> don't guess
+        return
+    if not env.python_supported:
+        env.notes.append(
+            f"Python {env.python_version} is OUTSIDE the project's requires-python {req!r} -- "
+            "imports or GPU/model stages may fail; use a supported interpreter."
+        )
 
 
 def _probe_gpu(env: EnvProfile) -> None:

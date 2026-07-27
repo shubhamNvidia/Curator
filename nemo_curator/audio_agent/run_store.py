@@ -43,10 +43,18 @@ def runs_dir() -> str:
 
 
 def new_run_id(config_hash: str | None = None) -> str:
-    """A sortable run id: ``run-<UTC timestamp>-<hash8>``."""
-    ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    """A sortable, collision-resistant run id: ``run-<UTC ts.microseconds>Z-<hash8>-<rand4>``.
+
+    Microsecond precision plus a short random tiebreak keeps ids unique even when two
+    identical-config runs start in the same wall-clock second -- a plain second-resolution
+    id (with the same config_hash) would collide and silently overwrite the earlier record.
+    The zero-padded fixed-width timestamp keeps ids lexicographically time-sortable.
+    """
+    now = time.time()
+    ts = time.strftime("%Y%m%dT%H%M%S", time.gmtime(now)) + f".{int((now % 1) * 1_000_000):06d}Z"
+    rand = os.urandom(2).hex()  # 4 hex chars: tiebreak within the same microsecond
     suffix = (config_hash or "")[:8]
-    return f"run-{ts}-{suffix}" if suffix else f"run-{ts}"
+    return f"run-{ts}-{suffix}-{rand}" if suffix else f"run-{ts}-{rand}"
 
 
 def save(record: RunRecord) -> str:

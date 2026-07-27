@@ -60,8 +60,23 @@ _OPS = {">=": operator.ge, "<=": operator.le, "==": operator.eq, "!=": operator.
 
 
 def parse_criteria(raw: Any) -> list[AcceptanceCriterion]:  # noqa: ANN401
-    """Coerce a list of dicts (or criteria) into ``AcceptanceCriterion`` objects."""
-    return [AcceptanceCriterion.from_dict(c) for c in (raw or [])]
+    """Coerce a list of dicts (or criteria) into ``AcceptanceCriterion`` objects.
+
+    Guards the SDK path: a non-list ``raw`` (e.g. a ``{output_completeness: ...}`` mapping)
+    is a shape error, not an empty contract -- raise a clear error instead of silently
+    iterating its keys and producing garbage (which is how malformed criteria used to be
+    ignored end-to-end).
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        detail = f" with keys {sorted(raw)!r}" if isinstance(raw, dict) else ""
+        msg = (
+            f"acceptance criteria must be a LIST of criterion mappings, got {type(raw).__name__}{detail}; "
+            "each is {id, type, check:{field,op,value}, severity}"
+        )
+        raise ValueError(msg)
+    return [AcceptanceCriterion.from_dict(c) for c in raw]
 
 
 def missing_implied(request_type: str | None, criteria: list[AcceptanceCriterion]) -> list[tuple[str, str]]:
@@ -85,6 +100,11 @@ def expected_roles_from_criteria(criteria: list[AcceptanceCriterion]) -> list[st
     A criterion's ``compiles_to`` (explicit role) or ``check.field`` becomes a
     required output role — but only when it resolves to a *known* role, so an
     unrecognized metric key is skipped rather than flagged as a false gap.
+
+    ``yield`` is intentionally excluded: it checks a run-level *retained count*
+    (evidence.retained vs op/value), not a produced manifest field, so a stray
+    ``check.field`` on a yield (e.g. ``field: retained``) must NOT become a
+    producible-role requirement (that produced a spurious ``missing_output_producer``).
     """
     from nemo_curator.stages.audio._roles import role_for_value
 
@@ -95,9 +115,13 @@ def expected_roles_from_criteria(criteria: list[AcceptanceCriterion]) -> list[st
         target: str | None = None
         if c.compiles_to and c.compiles_to != "producible_role":
             target = c.compiles_to
-        elif c.type in ("output_completeness", "quality_standard", "yield"):
+        elif c.type in ("output_completeness", "quality_standard"):
             target = c.field_name
-        if target and role_for_value(target) != "unknown":
+        # Keep the target even when it has no known role: metric fields (wer, sig sub-scores)
+        # collapse to role "unknown"/"score", so dropping them here silently skipped
+        # output-completeness for exactly the metrics the tool exists for. The check now
+        # matches a target against produced roles OR literal produced keys.
+        if target:
             out.append(target)
     return sorted(set(out))
 
@@ -138,7 +162,15 @@ def verify(
         for c in criteria
     ]
     musts = [r for r in results if r.severity == "must"]
-    overall = "met" if all(r.status == "met" for r in musts) else "not_met"
+    if not results:
+        # Empty contract: nothing was verified. Don't claim "met" -- that would declare
+        # success with zero evidence (all([]) is vacuously true). Surface it honestly as
+        # unverifiable; NOT "not_met", which would over-reject a legitimate run that simply
+        # carried no explicit success bar. (A dropped 'must' is still caught by the honesty
+        # guard below via frozen_criteria and forced to not_met.)
+        overall = "unverifiable"
+    else:
+        overall = "met" if all(r.status == "met" for r in musts) else "not_met"
 
     honesty = honesty_review(frozen_criteria, criteria) if frozen_criteria is not None else []
     if honesty:
@@ -220,8 +252,17 @@ def _verify_one(  # noqa: PLR0911, PLR0913 - one honest branch per criterion typ
             return result("unverifiable", note="no output field/role named")
         if not has_producer_evidence:
             return result("unverifiable", note="no producer evidence (pass produced_roles/keys)")
-        ok = target in produced
-        return result("met" if ok else "not_met", evidence=f"{target!r} {'in' if ok else 'not in'} produced roles/keys")
+        if target not in produced:
+            return result("not_met", evidence=f"{target!r} not in produced roles/keys")
+        # Produced -> also require it isn't empty when values are available: a stage can
+        # "produce" a field with no content (e.g. an ASR that ran but emitted empty text),
+        # which presence-only checking would pass.
+        vals = [d[target] for d in per_item if target in d]
+        if not vals and target in metrics:
+            vals = [metrics[target]]
+        if vals and all(_is_empty(v) for v in vals):
+            return result("not_met", evidence=f"{target!r} produced but EMPTY in all {len(vals)} item(s)")
+        return result("met", evidence=f"{target!r} in produced roles/keys")
 
     if field in unachievable:
         return result("unachievable", evidence=f"data cannot meet the target for {field!r}")
@@ -278,7 +319,20 @@ def _num(v: Any) -> float:  # noqa: ANN401
         return float("nan")
 
 
+def _is_empty(v: Any) -> bool:  # noqa: ANN401
+    """A produced value that carries no content (None / blank string / empty container)."""
+    if v is None:
+        return True
+    if isinstance(v, str):
+        return not v.strip()
+    if isinstance(v, (list, dict, tuple)):
+        return len(v) == 0
+    return False
+
+
 def _summary(results: list[CriterionResult], overall: str, honesty: list[dict[str, Any]] | None = None) -> str:
+    if not results and not honesty:
+        return "acceptance: UNVERIFIABLE — no acceptance criteria to check (nothing was verified)"
     n_met = sum(1 for r in results if r.status == "met")
     lines = [f"acceptance: {overall.upper()} ({n_met}/{len(results)} criteria met)"]
     for r in results:

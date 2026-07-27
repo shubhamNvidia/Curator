@@ -53,12 +53,40 @@ def _load_doc(path: str | None) -> Any:  # noqa: ANN401
 
 
 def _criteria_list(doc: Any) -> list[dict[str, Any]] | None:  # noqa: ANN401
-    """Accept either a bare list or a mapping carrying ``acceptance_criteria``."""
+    """Accept a bare list, or a mapping carrying ``acceptance_criteria`` / ``criteria``.
+
+    Fail LOUD (ValueError) when a non-empty doc doesn't yield a criteria list -- a common
+    mistake is a top-level mapping like ``{output_completeness: ..., yield: ...}`` -- so a
+    malformed criteria file is reported instead of being silently ignored (which used to
+    make ``validate``/``verify`` skip the contract without any warning).
+    """
     if doc is None:
         return None
+    if isinstance(doc, list):
+        return doc
     if isinstance(doc, dict):
-        return doc.get("acceptance_criteria") or doc.get("criteria")
-    return doc
+        crit = doc.get("acceptance_criteria")
+        if crit is None:
+            crit = doc.get("criteria")
+        if crit is None:
+            if not doc:  # genuinely empty mapping -> no criteria
+                return None
+            msg = (
+                "acceptance criteria not recognized: expected a YAML/JSON LIST of criteria, "
+                "or a mapping with an 'acceptance_criteria' (or 'criteria') key holding that "
+                f"list; got a mapping with top-level keys {sorted(doc)!r}. Each criterion is "
+                "{id, type, check:{field,op,value}, severity}; e.g.\n"
+                "  acceptance_criteria:\n"
+                "    - {id: dur, type: output_completeness, compiles_to: duration, severity: must}\n"
+                "    - {id: keep, type: yield, kind: absolute, check: {op: '==', value: 4}, severity: must}"
+            )
+            raise ValueError(msg)
+        if not isinstance(crit, list):
+            msg = f"'acceptance_criteria' must be a list of criterion mappings, got {type(crit).__name__}"
+            raise ValueError(msg)
+        return crit
+    msg = f"acceptance criteria must be a list or a mapping with 'acceptance_criteria', got {type(doc).__name__}"
+    raise ValueError(msg)
 
 
 def _calibration_arg(path: str | None) -> dict[str, Any] | None:
@@ -165,50 +193,54 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     cmd = args.cmd
 
-    if cmd == "discover":
-        _emit(aa.discover())
-    elif cmd == "catalog-tree":
-        _emit(aa.catalog_tree())
-    elif cmd == "describe":
-        _emit(aa.describe(args.name))
-    elif cmd == "cards":
-        _emit(aa.cards(category=args.category, names=args.names))
-    elif cmd == "context":
-        _emit(aa.context(_parse_goal(args.goal), data=args.data, stages=args.stages, roles=args.roles))
-    elif cmd == "validate":
-        _emit(aa.validate(
-            _load_recipe(args.recipe), data=args.data, expected_outputs=args.expected_outputs,
-            acceptance_criteria=_criteria_list(_load_doc(args.acceptance_criteria)), request_type=args.request_type,
-        ))
-    elif cmd == "smoke":
-        _emit(aa.smoke(_load_recipe(args.recipe), sample=args.sample, data=args.data,
-                       output_dir=args.output_dir, bootstrap_ray=args.bootstrap_ray,
-                       calibration=_calibration_arg(args.calibration)))
-    elif cmd == "run":
-        _emit(aa.run(_load_recipe(args.recipe), confirm=args.confirm, data=args.data,
-                     output_dir=args.output_dir, checkpoint_path=args.checkpoint_path,
-                     bootstrap_ray=args.bootstrap_ray, smoke_token=args.smoke_token,
-                     calibration=_calibration_arg(args.calibration)))
-    elif cmd == "report":
-        recipe = _load_recipe(args.recipe) if args.recipe else None
-        _emit(aa.report(args.output, recipe=recipe, data=args.data))
-    elif cmd == "verify":
-        frozen = _criteria_list(_load_doc(args.frozen_criteria)) if args.frozen_criteria else None
-        rec = _load_recipe(args.verify_recipe) if args.verify_recipe else None
-        _emit(aa.verify(_criteria_list(_load_doc(args.criteria)) or [], evidence=_load_doc(args.evidence),
-                        frozen_criteria=frozen, recipe=rec))
-    elif cmd == "resolve":
-        explicit = json.loads(args.explicit) if args.explicit else None
-        _emit(aa.resolve(args.stage, label=args.label, use_case=args.use_case,
-                         explicit=explicit, data_driven=args.data_driven))
-    elif cmd == "runs":
-        _emit(aa.runs(run_id=args.run_id))
-    elif cmd == "continue":
-        _emit(aa.plan_continuation(_load_recipe(args.recipe), args.parent_run_id, data=args.data))
-    elif cmd == "calibrate":
-        _emit(aa.calibrate(_load_doc(args.smoke) or {}))
-    else:  # pragma: no cover - argparse enforces the choices
-        return 2
+    try:
+        if cmd == "discover":
+            _emit(aa.discover())
+        elif cmd == "catalog-tree":
+            _emit(aa.catalog_tree())
+        elif cmd == "describe":
+            _emit(aa.describe(args.name))
+        elif cmd == "cards":
+            _emit(aa.cards(category=args.category, names=args.names))
+        elif cmd == "context":
+            _emit(aa.context(_parse_goal(args.goal), data=args.data, stages=args.stages, roles=args.roles))
+        elif cmd == "validate":
+            _emit(aa.validate(
+                _load_recipe(args.recipe), data=args.data, expected_outputs=args.expected_outputs,
+                acceptance_criteria=_criteria_list(_load_doc(args.acceptance_criteria)), request_type=args.request_type,
+            ))
+        elif cmd == "smoke":
+            _emit(aa.smoke(_load_recipe(args.recipe), sample=args.sample, data=args.data,
+                           output_dir=args.output_dir, bootstrap_ray=args.bootstrap_ray,
+                           calibration=_calibration_arg(args.calibration)))
+        elif cmd == "run":
+            _emit(aa.run(_load_recipe(args.recipe), confirm=args.confirm, data=args.data,
+                         output_dir=args.output_dir, checkpoint_path=args.checkpoint_path,
+                         bootstrap_ray=args.bootstrap_ray, smoke_token=args.smoke_token,
+                         calibration=_calibration_arg(args.calibration)))
+        elif cmd == "report":
+            recipe = _load_recipe(args.recipe) if args.recipe else None
+            _emit(aa.report(args.output, recipe=recipe, data=args.data))
+        elif cmd == "verify":
+            frozen = _criteria_list(_load_doc(args.frozen_criteria)) if args.frozen_criteria else None
+            rec = _load_recipe(args.verify_recipe) if args.verify_recipe else None
+            _emit(aa.verify(_criteria_list(_load_doc(args.criteria)) or [], evidence=_load_doc(args.evidence),
+                            frozen_criteria=frozen, recipe=rec))
+        elif cmd == "resolve":
+            explicit = json.loads(args.explicit) if args.explicit else None
+            _emit(aa.resolve(args.stage, label=args.label, use_case=args.use_case,
+                             explicit=explicit, data_driven=args.data_driven))
+        elif cmd == "runs":
+            _emit(aa.runs(run_id=args.run_id))
+        elif cmd == "continue":
+            _emit(aa.plan_continuation(_load_recipe(args.recipe), args.parent_run_id, data=args.data))
+        elif cmd == "calibrate":
+            _emit(aa.calibrate(_load_doc(args.smoke) or {}))
+        else:  # pragma: no cover - argparse enforces the choices
+            return 2
+    except ValueError as e:  # bad criteria / recipe / input shape -> clean JSON, not a traceback
+        _emit({"error": str(e)})
+        return 1
     return 0
 
 

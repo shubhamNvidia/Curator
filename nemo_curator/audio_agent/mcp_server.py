@@ -14,7 +14,7 @@
 
 """MCP adapter — exposes the audio-agent verbs as typed tools for MCP hosts.
 
-Thin wrapper over the exact same deterministic core as the CLL/`verbs`, so
+Thin wrapper over the exact same deterministic core as the CLI/`verbs`, so
 Claude/Cursor (or any MCP client) get native, typed tools. ``mcp`` is an optional
 dependency; the module imports without it and ``main`` prints an install hint.
 
@@ -83,14 +83,46 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
         )
 
     @server.tool()
-    def smoke(recipe: dict[str, Any], sample: int = 10, data: str | None = None) -> dict[str, Any]:
-        """Run a recipe on a bounded sample and return evidence."""
-        return aa.smoke(recipe, sample=sample, data=data)
+    def smoke(
+        recipe: dict[str, Any],
+        sample: int = 10,
+        data: str | None = None,
+        output_dir: str | None = None,
+        bootstrap_ray: bool = False,
+        calibration: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Run a recipe on a bounded sample and return evidence (incl. a ``smoke_token``).
+
+        ``bootstrap_ray`` auto-starts a local Ray head when none is reachable;
+        ``output_dir`` sets where sampled outputs go; ``calibration`` seeds mode
+        selection from a prior smoke. Parity with the ``smoke`` verb/CLI."""
+        return aa.smoke(
+            recipe, sample=sample, data=data, output_dir=output_dir,
+            bootstrap_ray=bootstrap_ray, calibration=calibration,
+        )
 
     @server.tool()
-    def run(recipe: dict[str, Any], confirm: bool | str = False, data: str | None = None) -> dict[str, Any]:
-        """Confirm-gated full run. Refuses without explicit confirmation."""
-        return aa.run(recipe, confirm=confirm, data=data)
+    def run(
+        recipe: dict[str, Any],
+        confirm: bool | str = False,
+        data: str | None = None,
+        output_dir: str | None = None,
+        checkpoint_path: str | None = None,
+        bootstrap_ray: bool = False,
+        smoke_token: str | None = None,
+        calibration: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Confirm-gated full run. Refuses without explicit confirmation.
+
+        ``smoke_token`` satisfies ``AUDIO_AGENT_REQUIRE_SMOKE`` (pass the token from a
+        prior ``smoke``); ``bootstrap_ray`` auto-starts Ray; ``checkpoint_path`` enables
+        partial-run resume; ``output_dir``/``calibration`` mirror the verb. Full parity
+        with the ``run`` verb/CLI."""
+        return aa.run(
+            recipe, confirm=confirm, data=data, output_dir=output_dir,
+            checkpoint_path=checkpoint_path, bootstrap_ray=bootstrap_ray,
+            smoke_token=smoke_token, calibration=calibration,
+        )
 
     @server.tool()
     def report(output: str, data: str | None = None) -> dict[str, Any]:

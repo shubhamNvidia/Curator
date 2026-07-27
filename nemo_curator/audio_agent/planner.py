@@ -133,6 +133,43 @@ def _stage_need(
     return StageNeed(index, name, cpus, float(gpu_mem or 0.0), host_mem, gpu_optional, gpu_reservation, source=source)
 
 
+def _execution_needs(
+    stages: list[Any], contracts: list[Any], idx: Any, calib_for: Any  # noqa: ANN401
+) -> list[StageNeed]:
+    """Flatten composite stages (via ``decompose()``) into the stages the backend runs.
+
+    A ``CompositeStage`` (e.g. ``SplitASRAlignJoinStage``) advertises only its own
+    ``resources`` while hiding the inner stages it expands into at runtime. Summing the
+    composite alone undercounts the concurrent Ray GPU reservation / VRAM / CPU and can
+    wrongly pick streaming (which the executor then aborts). Expanding here makes mode
+    selection match reality for ANY composite -- not one specific recipe. Falls back to
+    treating a stage as a leaf if it does not decompose at plan time.
+    """
+    try:
+        from nemo_curator.stages.base import CompositeStage
+    except Exception:  # noqa: BLE001 - if unavailable, treat every stage as a leaf
+        CompositeStage = ()  # type: ignore[assignment]
+
+    out: list[StageNeed] = []
+
+    def visit(stage: Any, contract: Any, index: int, depth: int) -> None:  # noqa: ANN401
+        inner: list[Any] | None = None
+        if depth < 8 and CompositeStage and isinstance(stage, CompositeStage):
+            try:
+                inner = list(stage.decompose() or [])
+            except Exception:  # noqa: BLE001 - a composite that cannot plan-time decompose stays a leaf
+                inner = None
+        if inner:
+            for sub in inner:
+                visit(sub, None, index, depth + 1)
+        else:
+            out.append(_stage_need(index, stage, contract, idx.card(type(stage).__name__), calib_for(stage)))
+
+    for i, st in enumerate(stages):
+        visit(st, contracts[i] if i < len(contracts) else None, i, 0)
+    return out
+
+
 def plan(
     stages: list[Any],
     contracts: list[Any],
@@ -166,6 +203,10 @@ def plan(
         _stage_need(i, st, contracts[i], idx.card(type(st).__name__), _calib_for(st))
         for i, st in enumerate(stages)
     ]
+    # Feasibility math runs over the EXECUTION stages (composites flattened), so a
+    # composite's hidden inner GPU stages are counted; the per-stage *report* below stays
+    # at the recipe level. exec_needs == needs when there are no composites.
+    exec_needs = _execution_needs(stages, contracts, idx, _calib_for)
     if any(n.source == "measured" for n in needs):
         rp_note = f"using measured calibration for {sum(1 for n in needs if n.source == 'measured')} stage(s)"
     else:
@@ -176,24 +217,29 @@ def plan(
     machine_gpu_mem = float(env.gpu_mem_gb or 0.0)
     total_ram = float(env.total_ram_gb or 0.0)
 
-    sum_cpus = sum(n.cpus for n in needs)
-    sum_ram = sum(n.host_mem_gb for n in needs)
-    max_cpus = max((n.cpus for n in needs), default=0.0)
-    max_ram = max((n.host_mem_gb for n in needs), default=0.0)
+    sum_cpus = sum(n.cpus for n in exec_needs)
+    sum_ram = sum(n.host_mem_gb for n in exec_needs)
+    max_cpus = max((n.cpus for n in exec_needs), default=0.0)
+    max_ram = max((n.host_mem_gb for n in exec_needs), default=0.0)
     # GPU is TWO INDEPENDENT constraints, tracked separately (both must hold):
     #  (a) Ray reservation (scheduling): stages reserve ``resources.gpus``; Xenna pins
     #      that fraction per replica, so the CONCURRENT sum must fit the GPU COUNT (else
     #      it aborts, e.g. "requires 1.5 but only 1 are available").
     #  (b) VRAM fit (memory): the CONCURRENT VRAM must fit one GPU's memory (when known).
-    sum_reservation = sum(n.gpu_reservation for n in needs)
-    max_reservation = max((n.gpu_reservation for n in needs), default=0.0)
-    sum_gpu_mem = sum(n.gpu_mem_gb for n in needs)
-    max_gpu_mem = max((n.gpu_mem_gb for n in needs), default=0.0)
-    sum_gpu_fraction = sum(_gpu_fraction(n.gpu_mem_gb, machine_gpu_mem) for n in needs)  # informational
+    sum_reservation = sum(n.gpu_reservation for n in exec_needs)
+    max_reservation = max((n.gpu_reservation for n in exec_needs), default=0.0)
+    sum_gpu_mem = sum(n.gpu_mem_gb for n in exec_needs)
+    max_gpu_mem = max((n.gpu_mem_gb for n in exec_needs), default=0.0)
+    sum_gpu_fraction = sum(_gpu_fraction(n.gpu_mem_gb, machine_gpu_mem) for n in exec_needs)  # informational
 
     rp = ResourcePlan(machine_fingerprint=env.fingerprint())
     if rp_note:
         rp.notes.append(rp_note)
+    if len(exec_needs) != len(needs):
+        rp.notes.append(
+            f"expanded {len(needs)} recipe stage(s) into {len(exec_needs)} execution stage(s) "
+            "(composites flattened) for resource planning"
+        )
 
     cpu_ok = sum_cpus <= total_cpus * CPU_ALLOC
     ram_ok = total_ram <= 0 or sum_ram <= total_ram * RAM_ALLOC  # unknown RAM -> don't block
@@ -216,7 +262,7 @@ def plan(
         if max_cpus > total_cpus:
             rp.feasible = False
             rp.escalations.append(f"a single stage needs {max_cpus} CPUs > machine {total_cpus}")
-        if num_gpus == 0 and any((n.gpu_reservation > 0 or n.gpu_mem_gb > 0) and not n.gpu_optional for n in needs):
+        if num_gpus == 0 and any((n.gpu_reservation > 0 or n.gpu_mem_gb > 0) and not n.gpu_optional for n in exec_needs):
             rp.feasible = False
             rp.escalations.append("a GPU-only stage requires a GPU but none is available")
         if num_gpus > 0 and max_reservation > num_gpus:

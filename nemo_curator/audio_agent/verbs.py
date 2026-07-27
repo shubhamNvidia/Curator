@@ -40,7 +40,7 @@ from nemo_curator.audio_agent.contracts import Issue, SmokeReport, Verdict
 from nemo_curator.audio_agent.index import get_index
 from nemo_curator.audio_agent.profiler import probe_env, profile_data
 from nemo_curator.audio_agent.recipe import Recipe, build_stages
-from nemo_curator.audio_agent.report import build_run_report
+from nemo_curator.audio_agent.report import _row_count, build_run_report
 
 # Keys in a recipe's source stage that name the input dataset (for smoke bounding).
 _SOURCE_INPUT_KEYS = ("manifest_path", "input_manifest", "manifest", "raw_data_dir", "file_paths")
@@ -168,6 +168,9 @@ def validate(
     ``expected_outputs`` (semantic roles) enables the output-completeness check;
     ``acceptance_criteria`` (1A.1) additionally compile their output/metric fields
     into that check and drive request-type sanity via ``request_type``.
+
+    To decide whether to run, gate on the returned ``runnable`` (no error-severity
+    problem anywhere) or ``status == "pass"`` -- NOT ``ok``, which is data-flow only.
     """
     from nemo_curator.audio_agent.acceptance import expected_roles_from_criteria, parse_criteria
     from nemo_curator.audio_agent.checks import CheckContext, run_checks
@@ -235,6 +238,30 @@ def _issue_from_dict(d: dict[str, Any]) -> Issue:
 # --------------------------------------------------------------------------- #
 # smoke + run + report
 # --------------------------------------------------------------------------- #
+def _is_streaming_infeasible(err: Exception) -> bool:
+    m = str(err).lower()
+    return "streaming mode" in m and any(k in m for k in ("not enough gpu", "batch mode", "requires"))
+
+
+def _run_pipeline_autofallback(
+    stages: list[Any], mode: str, caller_executor: Any, *,  # noqa: ANN401
+    checkpoint_path: str | None = None, note: Any = None,  # noqa: ANN401
+) -> tuple[list[Any] | None, str]:
+    """Run in the planned mode; on a runtime streaming-infeasibility error (e.g. a
+    composite stage hides inner GPU stages, so the planner undercounted the concurrent
+    GPU reservation), retry once in batch -- Xenna's own recommended remedy.
+    """
+    executor = caller_executor if caller_executor is not None else _make_executor(mode)
+    try:
+        return _run_pipeline(stages, executor, checkpoint_path=checkpoint_path), mode
+    except Exception as e:  # noqa: BLE001
+        if caller_executor is None and mode != "batch" and _is_streaming_infeasible(e):
+            if callable(note):
+                note("streaming infeasible at runtime -> retried in batch")
+            return _run_pipeline(stages, _make_executor("batch"), checkpoint_path=checkpoint_path), "batch"
+        raise
+
+
 def smoke(
     recipe: Recipe | dict[str, Any],
     *,
@@ -279,15 +306,19 @@ def smoke(
     try:
         if bootstrap_ray and caller_executor is None:
             rpt.notes.append("ray_head=" + _bootstrap_ray())
-        if caller_executor is None:
-            executor = _make_executor(rplan.mode)
-        results = _run_pipeline(stages, executor)
+        results, _used_mode = _run_pipeline_autofallback(stages, rplan.mode, caller_executor, note=rpt.notes.append)
         rpt.ran = True
-        rpt.retained = len(results or [])
+        rpt.retained = _row_count(results)  # rows, not task count (DocumentBatch holds a table)
         rpt.rejected = max(0, min(sample, rpt.input_count) - rpt.retained)
         rpt.per_stage_metrics = _stage_metrics(results)
         rpt.examples = _examples(results, limit=3)
         rpt.goals_met = rpt.retained > 0
+        empty_outputs = _empty_required_outputs(rec, rpt.examples)
+        if empty_outputs:
+            # A stage ran and 'produced' the field, but with no content (e.g. an ASR that ran
+            # yet emitted empty transcripts). retained>0 alone would wrongly read as success.
+            rpt.goals_met = False
+            rpt.notes.append("required output(s) produced but EMPTY in sampled rows: " + ", ".join(empty_outputs))
     except Exception as e:  # noqa: BLE001 - classify any execution failure for the critic
         rpt.errors.append(f"{type(e).__name__}: {e}")
         rpt.notes.append(str(classify(f"{type(e).__name__}: {e}")))
@@ -296,11 +327,15 @@ def smoke(
         _cleanup(tmp_paths)
     out = rpt.to_dict()
     out["config_hash"] = rec.config_hash
-    out["smoke_token"] = _safety.smoke_token(rec.config_hash)
     from nemo_curator.audio_agent import calibration as _cal
 
     out["calibration"] = _cal.from_smoke(out, machine_fingerprint=rplan.machine_fingerprint)
-    return _safety.redact(out)
+    redacted = _safety.redact(out)
+    # Surface the smoke token AFTER redaction: it is evidence the host must hand back
+    # to run() (AUDIO_AGENT_REQUIRE_SMOKE), not a secret to hide from the host. redact()
+    # would otherwise strip it because the key contains "token".
+    redacted["smoke_token"] = _safety.smoke_token(rec.config_hash)
+    return redacted
 
 
 def run(
@@ -383,9 +418,7 @@ def run(
     try:
         if bootstrap_ray and caller_executor is None:
             _bootstrap_ray()
-        if caller_executor is None:
-            executor = _make_executor(rplan.mode)
-        results = _run_pipeline(stages, executor, checkpoint_path=checkpoint_path)
+        results, _used_mode = _run_pipeline_autofallback(stages, rplan.mode, caller_executor, checkpoint_path=checkpoint_path)
     except Exception as e:  # noqa: BLE001 - classify + report, do not crash the caller
         failures.append(classify(f"{type(e).__name__}: {e}"))
     elapsed = time.perf_counter() - t0
@@ -688,6 +721,43 @@ def _examples(results: list[Any] | None, *, limit: int) -> list[dict[str, Any]]:
         if isinstance(data, dict):
             out.append({k: v for k, v in data.items() if _jsonable(v)})
     return out
+
+
+def _is_value_empty(v: Any) -> bool:  # noqa: ANN401
+    """A produced value that carries no content (None / blank string / empty container)."""
+    if v is None:
+        return True
+    if isinstance(v, str):
+        return not v.strip()
+    if isinstance(v, (list, dict, tuple)):
+        return len(v) == 0
+    return False
+
+
+def _empty_required_outputs(rec: Recipe, rows: list[dict[str, Any]]) -> list[str]:
+    """Required output keys (from the recipe's ``output_completeness`` criteria) that are
+    PRESENT in the sampled rows but EMPTY in every one of them -- i.e. produced-but-empty.
+
+    Never flags an absent key (that's a produce/presence gap for validate/verify) and does
+    nothing when the recipe declares no output_completeness criteria, so it only tightens
+    ``goals_met`` on a real degenerate output (e.g. an ASR that ran but emitted no text).
+    """
+    if not rows:
+        return []
+    from nemo_curator.audio_agent.acceptance import parse_criteria
+
+    keys: list[str] = []
+    for c in parse_criteria(getattr(rec, "acceptance_criteria", None) or []):
+        if c.type == "output_completeness" and c.is_deterministic:
+            key = c.field_name or (c.compiles_to if c.compiles_to and c.compiles_to != "producible_role" else None)
+            if key:
+                keys.append(key)
+    empty: list[str] = []
+    for key in keys:
+        present = [row[key] for row in rows if key in row]
+        if present and all(_is_value_empty(v) for v in present):
+            empty.append(key)
+    return empty
 
 
 def _jsonable(v: Any) -> bool:  # noqa: ANN401

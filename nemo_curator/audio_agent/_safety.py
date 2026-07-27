@@ -31,8 +31,13 @@ needs judgment a deterministic tool can't make, so it stays a skill/policy conce
 from __future__ import annotations
 
 import hashlib
+import hmac
 import os
+import secrets
+from functools import lru_cache
 from typing import Any
+
+_SMOKE_SECRET_ENV = "AUDIO_AGENT_SMOKE_SECRET"
 
 # Substrings that mark a dict key as holding a secret (redacted from returns).
 _SECRET_HINTS = ("token", "api_key", "apikey", "secret", "password", "aws_access_key", "credential")
@@ -106,14 +111,55 @@ def redact(obj: Any, *, redact_transcripts: bool = True) -> Any:  # noqa: ANN401
     return _r(obj)
 
 
+@lru_cache(maxsize=1)
+def _process_smoke_secret() -> bytes:
+    """Random per-process secret (fallback when no stable secret is available)."""
+    return secrets.token_bytes(32)
+
+
+@lru_cache(maxsize=1)
+def _smoke_secret() -> bytes:
+    """HMAC key for smoke tokens.
+
+    Precedence: ``AUDIO_AGENT_SMOKE_SECRET`` env (pin across machines / CI) > a
+    per-deployment secret persisted once under the user cache (so a smoke in one
+    process and the run in another share it) > a random per-process secret (still
+    unforgeable within this process, e.g. the long-lived MCP server).
+    """
+    env = os.environ.get(_SMOKE_SECRET_ENV)
+    if env:
+        return env.encode("utf-8")
+    cache = os.path.join(os.path.expanduser("~/.cache/nemo_curator"), "audio_agent_smoke.secret")
+    try:
+        if os.path.isfile(cache):
+            with open(cache, "rb") as f:
+                data = f.read().strip()
+            if data:
+                return data
+        os.makedirs(os.path.dirname(cache), exist_ok=True)
+        fd = os.open(cache, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            secret = secrets.token_hex(32).encode("utf-8")
+            f.write(secret)
+        return secret
+    except OSError:
+        return _process_smoke_secret()
+
+
 def smoke_token(config_hash: str | None) -> str:
-    """Deterministic proof that a smoke ran for this exact (frozen) recipe."""
-    return hashlib.sha256(f"audio_agent_smoke|{config_hash}".encode()).hexdigest()[:24]
+    """Unforgeable proof that a smoke ran for this exact (frozen) recipe.
+
+    HMAC over the config_hash keyed by a deployment/process secret (see
+    :func:`_smoke_secret`), so — unlike a plain hash of the public config_hash — it
+    cannot be minted by anything that merely knows the config_hash.
+    """
+    mac = hmac.new(_smoke_secret(), f"audio_agent_smoke|{config_hash}".encode("utf-8"), hashlib.sha256)
+    return mac.hexdigest()[:24]
 
 
 def verify_smoke_token(token: str | None, config_hash: str | None) -> bool:
-    """True iff ``token`` is the smoke token for ``config_hash``."""
-    return bool(token) and bool(config_hash) and token == smoke_token(config_hash)
+    """True iff ``token`` is the smoke token for ``config_hash`` (constant-time)."""
+    return bool(token) and bool(config_hash) and hmac.compare_digest(token, smoke_token(config_hash))
 
 
 def require_smoke() -> bool:

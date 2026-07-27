@@ -81,11 +81,37 @@ def register(name: str) -> Callable[[Check], Check]:
     return deco
 
 
+def _to_int(v: Any) -> int | None:  # noqa: ANN401
+    """Best-effort int coercion (None on failure), so a malformed card value or an
+    LLM-supplied param (e.g. num_speakers='two') can't raise out of a check."""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def run_checks(ctx: CheckContext) -> CheckResult:
-    """Run every registered check and merge the results into one ``CheckResult``."""
+    """Run every registered check and merge the results into one ``CheckResult``.
+
+    Each check is isolated: if one raises, it is converted into a ``check_error``
+    issue (and the recipe is marked not-ok) instead of propagating out of
+    ``validate`` -- the grounding layer must never emit a traceback where it promised
+    a JSON Verdict.
+    """
     merged = CheckResult()
-    for _name, fn in REGISTRY:
-        r = fn(ctx)
+    for name, fn in REGISTRY:
+        try:
+            r = fn(ctx)
+        except Exception as e:  # noqa: BLE001 - a single check must never crash the verb
+            merged.issues.append(
+                Issue(
+                    "check_error", "error",
+                    f"check {name!r} could not run ({type(e).__name__}: {e}); recipe not fully validated",
+                    fix="treat as not-runnable; fix the offending card/param, or report a bug",
+                )
+            )
+            merged.ok = False
+            continue
         merged.issues.extend(r.issues)
         merged.card_violations.extend(r.card_violations)
         merged.gate_flags.extend(r.gate_flags)
@@ -105,7 +131,13 @@ def _fix_for(code: str) -> str | None:
     return {
         "unsatisfied_reads": "insert an upstream stage that produces the missing role (see find_producers)",
         "dangling_key": "align the producer's *_key value with what this stage reads, or seed it from the source manifest",
-        "tensor_into_sink": "route through AudioToDocumentStage before the JSON writer",
+        "tensor_into_sink": (
+            "a resident tensor/audio blob is reaching a sink that serializes task.data as-is; strip it "
+            "before the sink using a method that preserves the sink's input task type -- e.g. read/score "
+            "from file (input_residency=file) or stop carrying the waveform (keep_waveform_in_task=false). "
+            "A sanitizer stage only helps if its OUTPUT task type matches the sink (e.g. AudioToDocumentStage "
+            "emits a DocumentBatch, so it fits a DocumentBatch sink, not an AudioTask sink like ManifestWriterStage)."
+        ),
         "gpu_unavailable": "run on a GPU host or set the stage to CPU resources",
         "composite": "decompose the composite (it hides its true I/O) before validating downstream",
         "key_removed_upstream": "reorder so the reader runs before the stage that removes the key, or re-produce the key",
@@ -171,7 +203,8 @@ def _check_card_constraints(ctx: CheckContext) -> CheckResult:
                 )
             )
         supported = cons.get("supported_sample_rates")
-        if supported and data_srs and not data_srs.issubset({int(s) for s in supported}):
+        supported_ints = {iv for iv in (_to_int(x) for x in (supported or [])) if iv is not None}
+        if supported and data_srs and supported_ints and not data_srs.issubset(supported_ints):
             out.append(
                 Issue(
                     "card_sample_rate", "warning",
@@ -189,13 +222,14 @@ def _check_card_constraints(ctx: CheckContext) -> CheckResult:
                 )
             )
         for key in _MAX_SPEAKERS_KEYS:
-            mx = cons.get("max_speakers")
-            if mx and s.params.get(key) and int(s.params[key]) > int(mx):
+            mx_int = _to_int(cons.get("max_speakers"))
+            val_int = _to_int(s.params.get(key))
+            if mx_int is not None and val_int is not None and val_int > mx_int:
                 out.append(
                     Issue(
                         "card_max_speakers", "error",
-                        f"{s.ref}: {key}={s.params[key]} exceeds model max_speakers={mx}",
-                        stage_index=i, stage=s.ref, fix=f"set {key}<={mx}",
+                        f"{s.ref}: {key}={s.params[key]} exceeds model max_speakers={mx_int}",
+                        stage_index=i, stage=s.ref, fix=f"set {key}<={mx_int}",
                     )
                 )
     return CheckResult(card_violations=out)
@@ -255,20 +289,26 @@ def _check_output_completeness(ctx: CheckContext) -> CheckResult:
     from nemo_curator.stages.audio import agent as foundation
     from nemo_curator.stages.audio._conformance import produced_roles
 
-    available = set(ctx.initial_roles)
+    available_roles = set(ctx.initial_roles)
+    available_keys = set(ctx.initial_keys)
     for st in ctx.stages:
         try:
-            available |= produced_roles(foundation.build_contract(st))
+            contract = foundation.build_contract(st)
         except Exception:  # noqa: BLE001
             continue
+        available_roles |= produced_roles(contract)
+        available_keys |= set(contract.writes.data_keys) | set(contract.writes.segment_data_keys)
     out: list[Issue] = []
-    for role in ctx.expected_outputs:
-        if role not in available:
+    for want in ctx.expected_outputs:
+        # Satisfied by a produced semantic role OR a literal produced key. The key match
+        # lets output-completeness distinguish specific metrics (e.g. wer vs a SIGMOS
+        # sub-score) that all share the generic "score" role.
+        if want not in available_roles and want not in available_keys:
             out.append(
                 Issue(
                     "missing_output_producer", "error",
-                    f"requested output role {role!r} is not produced by any stage in the recipe",
-                    fix="add a stage that produces this role (see discover / find_producers), or drop the requirement",
+                    f"requested output {want!r} is not produced by any stage in the recipe (no matching role or key)",
+                    fix="add a stage that produces this output (see discover / find_producers), or drop the requirement",
                 )
             )
     return CheckResult(issues=out)
@@ -332,6 +372,79 @@ def _check_task_type(ctx: CheckContext) -> CheckResult:
                     f"{up_name} produces {prod} but {dn_name} accepts {acc}",
                     stage_index=i + 1, stage=dn_name,
                     fix="insert a converter (e.g. AudioToDocumentStage) or reorder so task types line up",
+                )
+            )
+    return CheckResult(issues=out)
+
+
+# Diarization/speaker-separation needs a continuous waveform. If a fragmenting VAD
+# stage precedes a diarizer/separator with no re-join in between, the diarizer gets a
+# torn, per-segment signal - the enforced `diarization-needs-continuous-audio` rule
+# (patterns/composition.yaml). Separating BEFORE the VAD (on continuous audio) is fine.
+# All three roles are derived from card metadata so a NEW stage is covered with no code
+# change, unioned with an explicit fallback for a card that is missing/miscategorized:
+#   diarizer   = card category 'diarize'
+#   fragmenter = card category 'segment' + a 'fanout' tag (a VAD-style per-segment split),
+#                excluding diarizers (SpeakerSeparation also fans out but is a diarizer)
+#   re-joiner  = the stage that stitches segments back into a continuous waveform; the only
+#                such stage is SegmentConcatenationStage and there is no distinct card signal
+#                for it, so it stays an explicit set (wrapped in a helper for symmetry).
+_DIARIZERS = frozenset({"InferenceSortformerStage", "PyAnnoteDiarizationStage", "SpeakerSeparationStage"})
+_FRAGMENTERS = frozenset({"VADSegmentationStage", "WhisperXVADStage"})
+_REJOINERS = frozenset({"SegmentConcatenationStage"})
+
+
+def _is_diarizer(ref: str, idx: Any) -> bool:  # noqa: ANN401
+    """A diarizer/separator: card category 'diarize' (extensible) or the explicit set."""
+    if ref in _DIARIZERS:
+        return True
+    return (idx.card(ref) or {}).get("category") == "diarize"
+
+
+def _is_fragmenter(ref: str, idx: Any) -> bool:  # noqa: ANN401
+    """A VAD-style stage that fans continuous audio into per-segment tasks (breaking
+    continuity): the explicit set, or any card with category 'segment' AND a 'fanout' tag
+    that is not itself a diarizer -- so a NEW VAD-style stage is covered with no code change.
+    """
+    if ref in _FRAGMENTERS:
+        return True
+    card = idx.card(ref) or {}
+    return card.get("category") == "segment" and "fanout" in (card.get("tags") or []) and not _is_diarizer(ref, idx)
+
+
+def _is_rejoiner(ref: str, idx: Any) -> bool:  # noqa: ANN401
+    """A stage that stitches segments back into a continuous waveform. Structural: the only
+    such stage today is SegmentConcatenationStage, so this is an explicit set kept behind a
+    helper for symmetry with the derived diarizer/fragmenter checks (and a future card signal).
+    """
+    return ref in _REJOINERS
+
+
+@register("diarization_continuity")
+def _check_diarization_continuity(ctx: CheckContext) -> CheckResult:
+    """Flag a diarizer/separator that runs after VAD fragmentation without a
+    SegmentConcatenation re-join (it would see per-segment clips, not continuous
+    audio). Diarizing/separating on the continuous audio before any VAD does not trip.
+    """
+    idx = get_index()
+    refs = [s.ref for s in ctx.recipe.stages]
+    out: list[Issue] = []
+    for di, r in enumerate(refs):
+        if not _is_diarizer(r, idx):
+            continue
+        frags_before = [fi for fi, fr in enumerate(refs[:di]) if _is_fragmenter(fr, idx)]
+        if not frags_before:
+            continue  # runs on continuous audio (no upstream fragmentation) -> fine
+        fi = max(frags_before)  # nearest fragmenter before the diarizer
+        if not any(_is_rejoiner(rr, idx) for rr in refs[fi + 1:di]):
+            out.append(
+                Issue(
+                    "diarization_needs_continuous_audio", "error",
+                    f"{r} runs after {refs[fi]} without re-joining segments; "
+                    "diarization/separation needs a continuous waveform",
+                    stage_index=di, stage=r,
+                    fix="insert SegmentConcatenationStage between the VAD and the diarizer, "
+                        "or diarize/separate on the continuous audio before segmenting",
                 )
             )
     return CheckResult(issues=out)

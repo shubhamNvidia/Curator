@@ -52,10 +52,12 @@ def _free_port() -> int:
 def _reachable(address: str, timeout: float = 1.0) -> bool:
     """True if something is listening at ``host:port`` (cheap liveness probe)."""
     try:
-        host, _, port = address.rpartition(":")
+        host, sep, port = address.rpartition(":")
+        if not sep or not port.isdigit():  # no "host:port" -> not a probeable address
+            return False
         with socket.create_connection((host or "127.0.0.1", int(port)), timeout=timeout):
             return True
-    except OSError:
+    except (OSError, ValueError):
         return False
 
 

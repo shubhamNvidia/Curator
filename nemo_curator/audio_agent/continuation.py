@@ -53,6 +53,48 @@ def _common_prefix_len(a: list[dict[str, Any]], b: list[dict[str, Any]]) -> int:
     return n
 
 
+def _resume_breaks_on_disk_boundary(new_recipe: Recipe, prefix: int) -> str | None:
+    """Resident role(s) the appended suffix needs that the parent's *persisted* (on-disk)
+    output cannot carry, or ``None`` when resuming from disk is safe.
+
+    Incremental reuse resumes the suffix from the parent's persisted output -- a manifest on
+    disk, which cannot carry an in-memory ``waveform`` tensor. This re-validates *only the
+    suffix*, seeded with the roles the parent produced, WITH vs WITHOUT the non-serializable
+    ``waveform`` role. Only reads that break *specifically* because the waveform is dropped at
+    that boundary are reported: reads that fail for other reasons (or are satisfied by
+    pass-through columns) fail/pass in both runs and cancel out, so a legitimate incremental
+    is never downgraded, and a suffix that reloads audio from file (``audio_filepath``
+    survives) is correctly allowed. Best-effort: any internal error -> ``None`` (keep reuse).
+    """
+    try:
+        from nemo_curator.audio_agent.recipe import build_stages
+        from nemo_curator.stages.audio import agent as foundation
+        from nemo_curator.stages.audio._conformance import produced_roles
+
+        built, _ = build_stages(new_recipe)
+        if not built or not 0 < prefix < len(built):
+            return None
+        parent_built, suffix_built = built[:prefix], built[prefix:]
+
+        roles: set[str] = {"audio_filepath"}
+        keys: set[str] = {"audio_filepath"}
+        for st in parent_built:
+            c = foundation.build_contract(st)
+            roles |= produced_roles(c)
+            keys |= set(c.writes.data_keys) | set(c.writes.segment_data_keys)
+
+        def _errs(initial_roles: set[str]) -> set[tuple[str, str]]:
+            rep = foundation.validate_pipeline(suffix_built, initial_roles=initial_roles, initial_keys=keys)
+            return {(i.stage_name, i.code) for i in rep.issues if i.severity == "error"}
+
+        new_breaks = _errs(roles - {"waveform"}) - _errs(roles)  # roles broken only by dropping the waveform
+        if new_breaks:
+            return "waveform needed by " + ", ".join(sorted({name for name, _ in new_breaks}))
+        return None
+    except Exception:  # noqa: BLE001 - resume-safety is best-effort; never block reuse on a guard error
+        return None
+
+
 def plan_continuation(
     new_recipe: Recipe,
     parent: RunRecord,
@@ -60,8 +102,14 @@ def plan_continuation(
     data_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     """Compute the incremental execution plan for ``new_recipe`` given a ``parent`` run."""
+    from nemo_curator.audio_agent import _safety
+
     parent_stages = list(parent.recipe.get("stages") or [])
-    new_stages = _stage_dicts(new_recipe)
+    # ``verbs.run`` persists a *redacted* recipe, so redact the new stages with the same
+    # policy before diffing -- otherwise a secret-named param compares masked-vs-real and
+    # forces a needless full_rerun on every follow-up. (refs are never secret, so
+    # run/reuse-stage lists are unaffected.)
+    new_stages = [_safety.redact(s, redact_transcripts=False) for s in _stage_dicts(new_recipe)]
     parent_refs = [s.get("ref") for s in parent_stages]
     new_refs = [s.get("ref") for s in new_stages]
 
@@ -74,7 +122,12 @@ def plan_continuation(
             "run_stages": new_refs,
         }
 
-    if new_stages == parent_stages:
+    # Identical recipe: prefer the canonical config_hash (computed from the *unredacted*
+    # recipe, so it is exact and redaction-proof); fall back to the stage-diff for older
+    # records that predate config_hash. The data guard above already matched the source.
+    parent_hash = getattr(parent, "config_hash", None)
+    new_hash = getattr(new_recipe, "config_hash", None)
+    if (new_hash and parent_hash and new_hash == parent_hash) or new_stages == parent_stages:
         return {
             "mode": "already_done",
             "parent_run_id": parent.run_id,
@@ -87,6 +140,23 @@ def plan_continuation(
     prefix = _common_prefix_len(parent_stages, new_stages)
     if prefix == len(parent_stages) and len(new_stages) > len(parent_stages):
         suffix = new_stages[prefix:]
+        # Resume-safety: the reuse point is the parent's *persisted* output (a manifest on
+        # disk), which can't carry an in-memory waveform. If dropping the waveform at that
+        # boundary breaks the appended suffix (it needs a resident waveform no suffix stage
+        # reloads from file), resuming would silently fail -> honest full_rerun instead.
+        lost = _resume_breaks_on_disk_boundary(new_recipe, prefix)
+        if lost:
+            return {
+                "mode": "full_rerun",
+                "parent_run_id": parent.run_id,
+                "diverged_at": prefix,
+                "reason": (
+                    f"the appended stage(s) need in-memory audio the parent's persisted output cannot "
+                    f"carry ({lost}); resuming from disk would drop it, so rerun to regenerate it "
+                    f"(or persist audio to disk in the parent, e.g. keep_waveform_in_task=False + write_to_disk)"
+                ),
+                "run_stages": new_refs,
+            }
         return {
             "mode": "incremental",
             "parent_run_id": parent.run_id,

@@ -95,6 +95,16 @@ def _filter_counts(per_stage: dict[str, Any]) -> dict[str, Any]:
     return counts
 
 
+def _row_count(tasks: list[Any] | None) -> int:
+    """Count ROWS across result tasks, not the number of tasks.
+
+    An ``AudioTask`` holds one item (``num_items`` == 1), but a ``DocumentBatch`` holds a
+    whole table -- so ``len(tasks)`` under-counts any pipeline that ends in a batch type
+    (e.g. after ``AudioToDocumentStage``). Summing ``num_items`` gives the true row count.
+    """
+    return sum(int(getattr(t, "num_items", 1) or 0) for t in (tasks or []))
+
+
 def build_run_report(  # noqa: PLR0913 - a report intentionally gathers many fields
     *,
     recipe: Any,  # noqa: ANN401
@@ -111,7 +121,7 @@ def build_run_report(  # noqa: PLR0913 - a report intentionally gathers many fie
     """Assemble a RunReport from a pipeline's returned tasks and the run context."""
     result_tasks = result_tasks or []
     per_stage = _dedup_stage_perf(result_tasks)
-    accepted = len(result_tasks)
+    accepted = _row_count(result_tasks)  # rows, not task count (DocumentBatch holds a table)
     input_count = int((data_profile or {}).get("num_files", 0)) or accepted
     dep_mode = ""
     if env_profile:

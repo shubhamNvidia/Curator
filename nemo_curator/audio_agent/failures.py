@@ -47,23 +47,31 @@ def _taxonomy() -> list[dict[str, Any]]:
 
 
 def classify(error_text: str) -> dict[str, Any]:
-    """Return the best-matching FailureClass for ``error_text`` (or an ``unknown``)."""
-    text = (error_text or "").lower()
+    """Return the best-matching FailureClass for ``error_text`` (or an ``unknown``).
+
+    Each ``symptom_signature`` is matched as a case-insensitive regex; a signature
+    that is not a valid regex falls back to a case-insensitive substring test. We do
+    NOT *additionally* substring-match a valid regex -- doing so would defeat the
+    ``\\b`` anchors in the taxonomy that keep short tokens (e.g. ``\\bray\\b``) from
+    firing on unrelated words like "array". Entries are tried in file order, which the
+    taxonomy keeps specific-before-generic so the first match is the best match.
+    """
+    text = error_text or ""
     for entry in _taxonomy():
         for sig in entry.get("symptom_signature", []) or []:
             sig_str = str(sig)
             try:
-                hit = re.search(sig_str, text) is not None
-            except re.error:
-                hit = sig_str.lower() in text
-            if hit or sig_str.lower() in text:
+                matched = re.search(sig_str, text, re.IGNORECASE) is not None
+            except re.error:  # signature is not a valid regex -> literal substring
+                matched = sig_str.lower() in text.lower()
+            if matched:
                 return {
                     "code": entry.get("code", "unknown"),
                     "likely_cause": entry.get("likely_cause", ""),
                     "layer": entry.get("layer", "unknown"),
                     "auto_fix": entry.get("auto_fix"),
                     "user_guidance": entry.get("user_guidance", ""),
-                    "evidence": error_text[:500],
+                    "evidence": (error_text or "")[:500],
                 }
     return {
         "code": "unknown_failure",
