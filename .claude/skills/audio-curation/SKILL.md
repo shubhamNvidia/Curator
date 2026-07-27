@@ -14,7 +14,7 @@ All commands print JSON. Run them with the repo virtualenv interpreter (base
 `python` may lack Curator's deps) from the Curator repo root:
 
 ```bash
-/localhome/local-shbhawsar/ADV/Curator/.venv/bin/python -m nemo_curator.audio_agent <verb> [args]
+.venv/bin/python -m nemo_curator.audio_agent <verb> [args]   # repo virtualenv, from the repo root
 # or: source .venv/bin/activate  &&  python -m nemo_curator.audio_agent <verb> [args]
 ```
 
@@ -92,6 +92,24 @@ one-line plain-language difference + your recommendation (never expose internal 
 Prefer adapting a `matched_blueprint` (it encodes idiomatic ordering with
 `enforced`/`advisory` tags and `topology_selection`) over composing from scratch.
 Adapt, do not blindly copy.
+
+**Prune to the request.** A stage earns its place only if it serves a stated goal. Every
+filter DROPS data, so each filter must trace to a criterion the user actually asked for
+(e.g. "clean" -> a noise gate; "high-quality" -> a MOS gate) — do NOT add a filter for a
+dimension the user never mentioned (bandwidth, VAD, an extra quality gate). A blueprint is
+a menu, not a mandate: keep the `enforced` stages plus only the `advisory` ones that match
+the goal, and drop the rest — never carry a template's (or composite's) full stage set
+wholesale. Rule of thumb: if a filter has no matching acceptance criterion, it should not
+be in the recipe.
+
+This applies to **preprocess**, not just filters: add mono/resample only if a downstream
+stage actually needs that form — UTMOS/SIGMOS/SQUIM accept any channel count and resample
+internally, so they do NOT require an upstream mono/resample. And avoid **no-op** stages: a
+mono/resample with `keep_waveform_in_task=false` AND `write_to_disk=false` (or `write_to_disk`
+without `update_audio_filepath`) while the next stage reads from file **converts the audio and
+then discards it** — downstream still scores the ORIGINAL files. Either make it effective
+(`write_to_disk=true` + `update_audio_filepath`, or keep the waveform and have the next stage
+read it via `input_residency`) or drop the stage.
 
 ### 3b. Resolve outcomes to parameters (never expose internal numbers)
 

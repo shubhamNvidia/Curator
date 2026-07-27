@@ -1,0 +1,22 @@
+---
+description: Route any audio / audio-dataset task through the nemo_curator.audio_agent tool core instead of writing one-off scripts.
+alwaysApply: true
+---
+
+# Use the audio-curation agent for audio tasks
+
+For ANY task involving audio files or audio datasets — e.g. file durations, quality
+filtering, VAD/segmentation, resampling / mono conversion, transcription (ASR), WER,
+diarization, building a TTS/ASR training set, or exporting an audio manifest — drive the
+`nemo_curator.audio_agent` tool core. **Do NOT write ad-hoc shell/Python** (ffprobe,
+soundfile, librosa, torchaudio loops) to inspect or process the audio, even for a
+"quick" one-off like reading durations — use `GetAudioDurationStage` via the agent.
+
+Follow the workflow in
+[audio-agent.mdc](mdc:.cursor/rules/audio-agent.mdc) and
+[SKILL.md](mdc:.claude/skills/audio-curation/SKILL.md): route → `validate` → `smoke` →
+confirm → `run` → `report`, using only real stages from `discover` / `cards` / `describe`
+(never invent names) and honoring the confirm gate (no silent full-scale runs).
+
+Run verbs with the repo virtualenv from the repo root:
+`.venv/bin/python -m nemo_curator.audio_agent <verb> [args]`.

@@ -12,8 +12,8 @@ deterministic tool core that grounds every decision. Full instructions:
 [AGENTS.md](mdc:nemo_curator/audio_agent/AGENTS.md).
 
 All verbs print JSON. IMPORTANT: run them with the repo virtualenv interpreter
-(base `python` lacks Curator's deps) — use
-`/localhome/local-shbhawsar/ADV/Curator/.venv/bin/python -m nemo_curator.audio_agent ...`
+(base `python` lacks Curator's deps) — from the repo root use
+`.venv/bin/python -m nemo_curator.audio_agent ...`
 (or `source .venv/bin/activate` first). Add `2>/dev/null` to see just the JSON.
 
 ```bash
@@ -31,6 +31,17 @@ python -m nemo_curator.audio_agent report --output OUT --data DATA
 ## Golden rules
 
 - Never invent stage/param names — only use what `discover`/`cards`/`describe` return.
+- Prune to the request: a stage earns its place only if it serves a stated goal. Every
+  filter DROPS data, so each filter must trace to a criterion the user actually asked for
+  ("clean" -> noise gate, "high-quality" -> MOS gate) — never add a filter for a dimension
+  the user didn't mention (bandwidth, VAD, extra gates). A blueprint/composite is a menu:
+  keep `enforced` stages + only the `advisory` ones that fit the goal; don't copy the whole
+  template. If a filter has no matching acceptance criterion, it should not be in the recipe.
+  Same for preprocess: add mono/resample only if a downstream stage needs that form (UTMOS/
+  SIGMOS/SQUIM accept any channels + resample internally), and never leave a NO-OP mono/
+  resample — `keep_waveform_in_task=false` + `write_to_disk=false` while the next stage reads
+  from file converts then discards the audio (scorers still see the originals): make it
+  effective (`write_to_disk` + `update_audio_filepath`, or keep the waveform) or drop it.
 - 0 silent full-scale runs: never `run --confirm` until the user approves after seeing a
   smoke result + scale estimate. Pass the recipe `config_hash` to `--confirm` (integrity).
 - Evidence only: no lift claims without before/after numbers from `report`.
