@@ -1,0 +1,24 @@
+{
+  "scenario_id": "L02_readspeech_quality",
+  "prompt": "I have a folder of WAVs, give me cleaner speech data (I don't know which checks to use).",
+  "captured_by": "example",
+  "tool_calls": [
+    {"verb": "context", "args": {"goal": {"task": "quality_filter", "domain": "read"}, "data": "/data/wavs"}},
+    {"verb": "catalog_tree", "args": {}},
+    {"verb": "cards", "args": {"category": "quality"}},
+    {"clarification": "which quality level do you need: studio, general, or lenient?"},
+    {"verb": "resolve", "args": {"stage": "UTMOSFilterStage", "label": "studio"}, "result": {"params": {"mos_threshold": 4.0}}},
+    {"verb": "validate", "args": {"recipe": "readspeech_quality"}, "result": {"runnable": true, "status": "pass", "produced_roles": ["score", "duration"]}}
+  ],
+  "final_recipe": {
+    "stages": [
+      {"ref": "ManifestReader", "params": {"manifest_path": "REQUIRED"}},
+      {"ref": "MonoConversionStage", "params": {}},
+      {"ref": "UTMOSFilterStage", "params": {"mos_threshold": 4.0}},
+      {"ref": "AudioToDocumentStage", "params": {}}
+    ]
+  },
+  "refused": false,
+  "continuation": null,
+  "explanation": "UTMOS estimates perceived naturalness (not noise or bandwidth specifically); the 4.0 threshold comes from the 'studio' outcome you picked, so I did not hand-pick a number. No ASR/WER stage is present because there are no transcripts to score against."
+}

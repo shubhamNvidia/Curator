@@ -1,0 +1,3 @@
+{"audio_filepath": "eval/audio/fixtures/audio/clip0.wav", "text": "the quick brown fox"}
+{"audio_filepath": "eval/audio/fixtures/audio/clip1.wav", "text": "jumps over the lazy dog"}
+{"audio_filepath": "eval/audio/fixtures/audio/clip2.wav", "text": "hello world this is a test"}

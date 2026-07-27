@@ -1,0 +1,10 @@
+# Generated test artifacts (regenerate with make_fixtures.py / run_eval / run_all.sh).
+fixtures/audio/
+reports/*.json
+reports/*.md
+# Captured agent traces are generated per-run; keep only the bundled grading examples.
+traces/*.json
+!traces/*.good.json
+!traces/*.bad.json
+# Keep the committed regression baseline under reports/snapshots/.
+!reports/snapshots/

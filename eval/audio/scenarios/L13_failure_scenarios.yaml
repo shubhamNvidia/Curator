@@ -1,0 +1,105 @@
+# Level 13 — failure scenarios: invalid params, missing deps, runtime errors,
+# partial execution. The agent must detect, classify, and recover or surface a setup step.
+level: 13
+scenarios:
+  - id: L13_invalid_batch_size
+    level: 13
+    label: failure
+    objective: "A card-fixed batch size is violated -> detect and correct."
+    prompt: "Diarize with Sortformer using batch size 8 for speed."
+    dataset: "calls"
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, diarize]
+    expected_modules:
+      required: [InferenceSortformerStage]
+      equivalence: {}
+      forbidden: []
+    expected_order: [ManifestReader, InferenceSortformerStage]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_output_roles: [diar_segments]
+    detects_code: card_batch_size
+    explanation_rubric:
+      - "cites the fixed batch_size=1 card constraint and corrects it"
+    pass_criteria: "final recipe uses the allowed batch size; validates"
+    fail_criteria: "keeps batch_size=8; validation stays failed"
+
+  - id: L13_missing_hf_token
+    level: 13
+    label: failure
+    objective: "PyAnnote needs an HF token; if absent, surface a setup step (not a silent run)."
+    prompt: "Diarize with PyAnnote."
+    dataset: "calls"
+    prerequisites: ["HF token may or may not be set in the environment"]
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, diarize]
+    expected_modules:
+      required: [PyAnnoteDiarizationStage]
+      equivalence: {}
+      forbidden: []
+    expected_order: [ManifestReader, PyAnnoteDiarizationStage]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_output_roles: [segments]
+    detects_code: missing_secret
+    explanation_rubric:
+      - "surfaces the missing HF token as a setup step before running"
+    pass_criteria: "flags missing_secret as a gate; does not claim it ran"
+    fail_criteria: "ignores the missing secret and reports success"
+
+  - id: L13_unknown_stage
+    level: 13
+    label: failure
+    objective: "A hallucinated stage name is rejected; the agent picks a real one."
+    prompt: "Denoise with the MagicDenoiser stage."
+    dataset: "noisy audio"
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    refuse: true   # there is no denoiser capability in the catalog -> refuse/redirect is correct
+    expected_capabilities: [ingest, quality]
+    expected_modules:
+      required: []
+      equivalence: {}
+      forbidden: [MagicDenoiserStage]
+    expected_order: [ingest]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_output_roles: []
+    detects_code: unknown_stage
+    explanation_rubric:
+      - "recognizes there is no such stage; discovers a real capability or declines"
+    pass_criteria: "does not keep the fake stage; uses a real one or says none exists"
+    fail_criteria: "keeps MagicDenoiserStage in the recipe"
+
+  - id: L13_partial_execution
+    level: 13
+    label: failure
+    objective: "Some clips fail in smoke -> report the partial result honestly and adjust."
+    prompt: "Quality-filter my mixed dataset."
+    dataset: "mixed, some corrupt files"
+    prerequisites: ["a smoke run rejects/errs on some items"]
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, quality, filter]
+    expected_modules:
+      required: []
+      equivalence: {quality: [UTMOSFilterStage, SIGMOSFilterStage]}
+      forbidden: []
+    expected_order: [ingest, quality]
+    expected_params: {must_resolve: [mos_threshold], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: streaming, accepted_gt: 0}
+    expected_output_roles: [score]
+    explanation_rubric:
+      - "reports retained vs rejected honestly from smoke"
+      - "does not claim 100% success when some items failed"
+    pass_criteria: "surfaces partial failures with numbers; proposes a next step"
+    fail_criteria: "reports success while some items errored"

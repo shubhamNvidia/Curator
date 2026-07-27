@@ -1,0 +1,1885 @@
+{
+  "persona": {
+    "id": "Cx2_transcription_grade",
+    "group": "complex",
+    "level": 2,
+    "executable": true,
+    "data": "/tmp/aa_real/manifest.jsonl",
+    "goal": "transcription-grade corpus: low WER AND good quality",
+    "opening_prompt": "I want to build a really clean transcription training set from these recordings. I've got the correct transcripts already. Keep only the clips where the machine transcription basically matches, and that also sound good.",
+    "persona_facts": "Manifest has reference 'text'; English read speech.",
+    "preferences": "When asked the WER bar, say transcription-grade (about 10% or better). When asked quality level, say general. Approve a plan that transcribes, checks WER vs the reference, and filters on both WER and quality.",
+    "expected": {
+      "required": [
+        "InferenceAsrNemoStage"
+      ],
+      "equivalence": {
+        "wer": [
+          "GetPairwiseWerStage",
+          "ComputeWERStage"
+        ],
+        "quality": [
+          "UTMOSFilterStage",
+          "SIGMOSFilterStage"
+        ],
+        "filter": [
+          "PreserveByValueStage"
+        ]
+      },
+      "forbidden": [],
+      "order_constraints": [
+        [
+          "InferenceAsrNemoStage",
+          "wer"
+        ]
+      ],
+      "output_roles": [
+        "pred_text",
+        "score"
+      ]
+    },
+    "success": {
+      "kind": "executes"
+    }
+  },
+  "conversation": {
+    "blocked": false,
+    "transcript": [
+      {
+        "turn": 0,
+        "speaker": "user",
+        "text": "I want to build a really clean transcription training set from these recordings. I've got the correct transcripts already. Keep only the clips where the machine transcription basically matches, and that also sound good."
+      },
+      {
+        "turn": 1,
+        "speaker": "agent",
+        "text": "The recipe is **runnable**. Both outcome\u2192threshold mappings resolved cleanly from the card anchors (no `asks`), and the only remaining items are benign warnings (the composite reader hides that your references arrive under the manifest's `text` field \u2014 confirmable at smoke \u2014 and a `yield` note).\n\n**What I found / decided:**\n- **Match the reference transcripts** \u2192 you need a machine transcription to compare against, so `InferenceAsrNemoStage` (produces `pred_text`; English `parakeet-tdt-0.6b-v2`) \u2192 `GetPairwiseWerStage` (WER% of `pred_text` vs your reference `text`) \u2192 filter. `resolve` mapped \"basically matches\" for a transcription set to the card's **`transcription_grade`** anchor = keep `wer_pct \u2264 10` (via `PreserveByValueStage`). I chose `GetPairwiseWerStage` over `ComputeWERStage` because it's the cheap single-WER-per-row option built for accuracy filtering and it's the one carrying the resolvable anchors.\n- **\"Sound good\"** \u2192 `UTMOSFilterStage` (overall perceptual MOS). `resolve` mapped it to the **`general`/ASR-grade** anchor = `mos_threshold 3.4` (the card's ASR-curation bar), dropping clips below it.\n- Order is cheap-cull-first: WER filter (CPU) before the UTMOS model gate.\n\n**Assumptions worth flagging (I inferred rather than asked, per the card):**\n- Quality bar = **general (MOS \u2265 3.4)**, the card's ASR-training anchor. If you meant *pristine/studio*, say so and I'll re-`resolve` to `studio` (MOS \u2265 4.0).\n- References live under the manifest key `text` and audio is **English, 16 kHz mono** (both ASR and UTMOS require 16 kHz). If your recordings aren't 16 kHz mono, I'll insert `ResampleAudioStage`/`MonoConversionStage` upstream \u2014 I'll confirm this by running `context`/`smoke` against your actual data path.\n\n**Gates:** GPU needed (ASR); both the ASR and UTMOS models download once (internet on first run). No full run happens until you approve after a bounded smoke test.\n\n```recipe\nstages:\n  - {ref: ManifestReader, params: {manifest_path: REQUIRED}}\n  - {ref: InferenceAsrNemoStage, params: {model_name: nvidia/parakeet-tdt-0.6b-v2}}\n  - {ref: GetPairwiseWerStage, params: {}}\n  - {ref: PreserveByValueStage, params: {input_value_key: wer_pct, operator: le, target_value: 10}}\n  - {ref: UTMOSFilterStage, params: {mos_threshold: 3.4, action: filter}}\n  - {ref: ManifestWriterStage, params: {output_path: REQUIRED}}\n```\n\nThis transcribes each clip, keeps only those whose machine transcription is within WER \u2264 10% of your reference (transcription-grade match) **and** score UTMOS MOS \u2265 3.4 (ASR-grade \"sounds good\"), then writes the survivors to a curated JSONL manifest. Note that UTMOS captures overall perceptual naturalness, **not** specifically background-noise level \u2014 if \"clean\" means low noise to you, I can add a `SIGMOSFilterStage` noise criterion. Point me at your data path and I'll profile it, run a 10-clip smoke test, and show retained/rejected examples before any full run.",
+        "tool_calls": [
+          {
+            "verb": "discover",
+            "args": {},
+            "result": {
+              "count": 44,
+              "stages": [
+                {
+                  "stage": "ALMDataBuilderStage",
+                  "category": "alm",
+                  "summary": "Build ALM training windows from audio segments, filtered by rate/bandwidth/speaker-count/duration.",
+                  "tags": []
+                },
+                {
+                  "stage": "ALMDataOverlapStage",
+                  "category": "alm",
+                  "summary": "Filter overlapping ALM windows, keeping those closest to the target duration.",
+                  "tags": [
+                    "is_filter"
+                  ]
+                },
+                {
+                  "stage": "AudioDataFilterStage",
+                  "category": "export",
+                  "summary": "Complete audio filtering/curation pipeline (CompositeStage) driven by a config.",
+                  "tags": []
+                },
+                {
+                  "stage": "AudioToDocumentStage",
+                  "category": "export",
+                  "summary": "Aggregate AudioTasks into a DocumentBatch DataFrame, stripping tensors/audio blobs.",
+                  "tags": [
+                    "sink",
+                    "sanitizes_output",
+                    "batch_only"
+                  ]
+                },
+                {
+                  "stage": "BandFilterStage",
+                  "category": "quality",
+                  "summary": "Classify audio as full_band vs narrow_band (spectral RF) and filter/annotate.",
+                  "tags": [
+                    "produces_score",
+                    "is_filter",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "BandwidthEstimationStage",
+                  "category": "quality",
+                  "summary": "Estimate effective audio bandwidth from the power spectrum; write to metrics.",
+                  "tags": [
+                    "produces_score"
+                  ]
+                },
+                {
+                  "stage": "ChineseConversionStage",
+                  "category": "text_norm",
+                  "summary": "Convert Traditional Chinese to Simplified (or other OpenCC conversions), per segment.",
+                  "tags": []
+                },
+                {
+                  "stage": "ComputeWERStage",
+                  "category": "quality",
+                  "summary": "Compute WER/CER (plus edge-CER and optional PNC WER/CER) between hypothesis and reference text.",
+                  "tags": [
+                    "produces_score"
+                  ]
+                },
+                {
+                  "stage": "CreateInitialManifestFleursStage",
+                  "category": "ingest",
+                  "summary": "Download the FLEURS dataset and emit one AudioTask per transcript line.",
+                  "tags": [
+                    "needs_internet_first_run",
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "CreateInitialManifestReadSpeechStage",
+                  "category": "ingest",
+                  "summary": "Download the DNS Challenge 5 Read Speech set and emit one AudioTask per file.",
+                  "tags": [
+                    "needs_internet_first_run",
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "GetAudioDurationStage",
+                  "category": "export",
+                  "summary": "Compute audio duration from the file and store it under duration_key.",
+                  "tags": []
+                },
+                {
+                  "stage": "GetPairwiseWerStage",
+                  "category": "quality",
+                  "summary": "Compute pairwise WER (%) between reference text and ASR pred_text.",
+                  "tags": [
+                    "produces_score"
+                  ]
+                },
+                {
+                  "stage": "InferenceAsrNemoStage",
+                  "category": "transcribe",
+                  "summary": "Batched ASR transcription with a NeMo model; writes pred_text.",
+                  "tags": [
+                    "needs_gpu",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "InferenceSortformerStage",
+                  "category": "diarize",
+                  "summary": "Speaker diarization (who spoke when) with NVIDIA Sortformer; passthrough or fan-out.",
+                  "tags": [
+                    "needs_gpu",
+                    "needs_internet_first_run",
+                    "fanout"
+                  ]
+                },
+                {
+                  "stage": "InverseTextNormalizationStage",
+                  "category": "text_norm",
+                  "summary": "Inverse text normalization: spoken form -> written form (e.g. 'forty two' -> '42').",
+                  "tags": []
+                },
+                {
+                  "stage": "JoinSplitAudioMetadataStage",
+                  "category": "segment",
+                  "summary": "Rejoin transcripts/alignments of previously split audio back into the original file's metadata.",
+                  "tags": []
+                },
+                {
+                  "stage": "ManifestReader",
+                  "category": "ingest",
+                  "summary": "Read JSONL manifest(s) and emit one AudioTask per line (composite: partition + read).",
+                  "tags": []
+                },
+                {
+                  "stage": "ManifestReaderStage",
+                  "category": "ingest",
+                  "summary": "Inner reader: turn a FileGroupTask into one AudioTask per JSONL line (streaming).",
+                  "tags": []
+                },
+                {
+                  "stage": "ManifestWriterStage",
+                  "category": "export",
+                  "summary": "Append each AudioTask to a JSONL manifest file (final sink).",
+                  "tags": [
+                    "sink",
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "MergeAlignmentDiarizationStage",
+                  "category": "transcribe",
+                  "summary": "Merge word alignments into diarization segments (produce who-said-what text per speaker).",
+                  "tags": []
+                },
+                {
+                  "stage": "MonoConversionStage",
+                  "category": "preprocess",
+                  "summary": "Convert to mono and (optionally) verify/resample to a target sample rate.",
+                  "tags": [
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "NeMoASRAlignerStage",
+                  "category": "transcribe",
+                  "summary": "Transcribe and word-align audio with a NeMo ASR model (CTC/RNNT), producing word timestamps.",
+                  "tags": [
+                    "needs_gpu",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "OverlapFilterStage",
+                  "category": "alm",
+                  "summary": "Drop empty segments and mutually-overlapping segment pairs.",
+                  "tags": [
+                    "is_filter"
+                  ]
+                },
+                {
+                  "stage": "PrepareModuleSegmentsStage",
+                  "category": "export",
+                  "summary": "Shape segments for TTS or ASR: merge same-speaker, then split on duration/pause/punctuation/bandwidth.",
+                  "tags": []
+                },
+                {
+                  "stage": "PreserveByValueStage",
+                  "category": "filter",
+                  "summary": "Keep/drop rows by comparing a numeric or string field against a target value.",
+                  "tags": [
+                    "is_filter",
+                    "batch_only"
+                  ]
+                },
+                {
+                  "stage": "PretrainMetricsAggregatorStage",
+                  "category": "alm",
+                  "summary": "Aggregate per-replica ALM pretrain metrics: append one JSONL record per task to a shard.",
+                  "tags": [
+                    "sink",
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "PyAnnoteDiarizationStage",
+                  "category": "diarize",
+                  "summary": "Speaker diarization + overlap detection with PyAnnote 3.1.",
+                  "tags": [
+                    "needs_gpu",
+                    "needs_internet_first_run",
+                    "needs_hf_token",
+                    "writes_disk",
+                    "fanout"
+                  ]
+                },
+                {
+                  "stage": "ReadLongFormManifestStage",
+                  "category": "alm",
+                  "summary": "Read a JSONL manifest of long-form audios and emit one AudioTask per row (ALM pretrain source).",
+                  "tags": []
+                },
+                {
+                  "stage": "ResampleAudioStage",
+                  "category": "preprocess",
+                  "summary": "Resample/convert audio to a target sample rate (and format) via ffmpeg.",
+                  "tags": [
+                    "needs_ffmpeg",
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "SIGMOSFilterStage",
+                  "category": "quality",
+                  "summary": "SIGMOS (ITU-T P.804) neural MOS across 7 quality dimensions; filter/annotate.",
+                  "tags": [
+                    "produces_score",
+                    "is_filter",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "SegmentConcatenationStage",
+                  "category": "segment",
+                  "summary": "Concatenate nested VAD segments into a single combined waveform (with silence gaps).",
+                  "tags": []
+                },
+                {
+                  "stage": "SegmentExtractionStage",
+                  "category": "export",
+                  "summary": "Read audio slices from original files and write them as standalone segment files.",
+                  "tags": [
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "SnippetCutPlannerStage",
+                  "category": "alm",
+                  "summary": "Plan snippet cut boundaries for one long-form audio (pure planning, no audio I/O).",
+                  "tags": []
+                },
+                {
+                  "stage": "SnippetExtractionStage",
+                  "category": "alm",
+                  "summary": "Slice source audio per the snippet plan, mono-resample, and write snippets into a tar.",
+                  "tags": [
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "SnippetManifestWriterStage",
+                  "category": "export",
+                  "summary": "Append each (non-stub) ALM snippet's data as a JSONL line (snippet manifest sink).",
+                  "tags": [
+                    "sink",
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "SnippetRepetitionFilterStage",
+                  "category": "alm",
+                  "summary": "Drop planned snippets whose transcript shows suspicious n-gram repetition (ASR degeneration).",
+                  "tags": [
+                    "is_filter",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "SpeakerSeparationStage",
+                  "category": "diarize",
+                  "summary": "Separate audio by speaker (NeMo SortFormer diarization) into per-speaker AudioTasks.",
+                  "tags": [
+                    "needs_gpu",
+                    "needs_internet_first_run",
+                    "fanout"
+                  ]
+                },
+                {
+                  "stage": "SplitASRAlignJoinStage",
+                  "category": "segment",
+                  "summary": "Composite: split long audio -> NeMo ASR align -> join transcripts/alignments back to originals.",
+                  "tags": [
+                    "needs_gpu",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "SplitLongAudioStage",
+                  "category": "segment",
+                  "summary": "Split long audio files into smaller pieces at natural pauses to keep speech coherent.",
+                  "tags": [
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "TimestampMapperStage",
+                  "category": "export",
+                  "summary": "Normalize task data at the output boundary: build original_file/start/end/duration and copy passthrough keys.",
+                  "tags": []
+                },
+                {
+                  "stage": "TorchSquimQualityMetricsStage",
+                  "category": "quality",
+                  "summary": "Estimate PESQ / STOI / SI-SDR with the torchaudio SQUIM model; write to metrics.",
+                  "tags": [
+                    "produces_score",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "UTMOSFilterStage",
+                  "category": "quality",
+                  "summary": "Predict UTMOS mean-opinion-score (MOS) and filter/annotate audio by quality.",
+                  "tags": [
+                    "produces_score",
+                    "is_filter",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "VADSegmentationStage",
+                  "category": "segment",
+                  "summary": "Silero VAD: detect speech and emit one segment per speech chunk (fan-out or nested).",
+                  "tags": [
+                    "fanout",
+                    "produces_score"
+                  ]
+                },
+                {
+                  "stage": "WhisperXVADStage",
+                  "category": "segment",
+                  "summary": "Voice Activity Detection with WhisperX's VAD model; emit speech segments.",
+                  "tags": [
+                    "needs_internet_first_run",
+                    "fanout"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "verb": "catalog_tree",
+            "args": {},
+            "result": {
+              "categories": [
+                {
+                  "category": "ingest",
+                  "description": "Create/read manifests and partition input files (dataset sources, manifest readers).",
+                  "stages": [
+                    "CreateInitialManifestFleursStage",
+                    "CreateInitialManifestReadSpeechStage",
+                    "ManifestReader",
+                    "ManifestReaderStage"
+                  ]
+                },
+                {
+                  "category": "preprocess",
+                  "description": "Normalize audio before models: mono conversion and sample-rate resampling.",
+                  "stages": [
+                    "MonoConversionStage",
+                    "ResampleAudioStage"
+                  ]
+                },
+                {
+                  "category": "segment",
+                  "description": "Cut audio into speech chunks: VAD, long-audio splitting, segment concatenation.",
+                  "stages": [
+                    "JoinSplitAudioMetadataStage",
+                    "SegmentConcatenationStage",
+                    "SplitASRAlignJoinStage",
+                    "SplitLongAudioStage",
+                    "VADSegmentationStage",
+                    "WhisperXVADStage"
+                  ]
+                },
+                {
+                  "category": "diarize",
+                  "description": "Who-spoke-when and per-speaker separation (Sortformer, PyAnnote, speaker separation).",
+                  "stages": [
+                    "InferenceSortformerStage",
+                    "PyAnnoteDiarizationStage",
+                    "SpeakerSeparationStage"
+                  ]
+                },
+                {
+                  "category": "transcribe",
+                  "description": "ASR transcription and forced word-alignment (NeMo ASR).",
+                  "stages": [
+                    "InferenceAsrNemoStage",
+                    "MergeAlignmentDiarizationStage",
+                    "NeMoASRAlignerStage"
+                  ]
+                },
+                {
+                  "category": "text_norm",
+                  "description": "Text post-processing on transcripts: inverse text normalization, Chinese conversion.",
+                  "stages": [
+                    "ChineseConversionStage",
+                    "InverseTextNormalizationStage"
+                  ]
+                },
+                {
+                  "category": "quality",
+                  "description": "Score/gate audio quality: UTMOS, SIGMOS, SQUIM, bandwidth, band filter.",
+                  "stages": [
+                    "BandFilterStage",
+                    "BandwidthEstimationStage",
+                    "ComputeWERStage",
+                    "GetPairwiseWerStage",
+                    "SIGMOSFilterStage",
+                    "TorchSquimQualityMetricsStage",
+                    "UTMOSFilterStage"
+                  ]
+                },
+                {
+                  "category": "filter",
+                  "description": "Generic value-based row filtering (keep/drop by a numeric or string field).",
+                  "stages": [
+                    "PreserveByValueStage"
+                  ]
+                },
+                {
+                  "category": "alm",
+                  "description": "Audio-language-model data building: windowing, overlap filtering, snippet planning.",
+                  "stages": [
+                    "ALMDataBuilderStage",
+                    "ALMDataOverlapStage",
+                    "OverlapFilterStage",
+                    "PretrainMetricsAggregatorStage",
+                    "ReadLongFormManifestStage",
+                    "SnippetCutPlannerStage",
+                    "SnippetExtractionStage",
+                    "SnippetRepetitionFilterStage"
+                  ]
+                },
+                {
+                  "category": "export",
+                  "description": "Convert/aggregate and write results: AudioToDocument, manifest/JSONL writers, timestamp mapping, segment extraction.",
+                  "stages": [
+                    "AudioDataFilterStage",
+                    "AudioToDocumentStage",
+                    "GetAudioDurationStage",
+                    "ManifestWriterStage",
+                    "PrepareModuleSegmentsStage",
+                    "SegmentExtractionStage",
+                    "SnippetManifestWriterStage",
+                    "TimestampMapperStage"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "verb": "cards",
+            "args": {
+              "names": [
+                "ManifestReader",
+                "InferenceAsrNemoStage",
+                "GetPairwiseWerStage",
+                "ComputeWERStage",
+                "UTMOSFilterStage",
+                "SIGMOSFilterStage",
+                "PreserveByValueStage",
+                "ManifestWriterStage",
+                "AudioToDocumentStage"
+              ]
+            },
+            "result": ""
+          },
+          {
+            "verb": "read",
+            "args": {
+              "path": "/localhome/local-shbhawsar/.cursor/projects/localhome-local-shbhawsar-ADV-Curator/agent-tools/76165d57-4661-4546-b7e7-b4af74655dec.txt"
+            },
+            "result": "<result>"
+          },
+          {
+            "verb": "resolve",
+            "args": {
+              "stage": "GetPairwiseWerStage",
+              "label": "transcription_grade"
+            },
+            "result": {
+              "stage": "GetPairwiseWerStage",
+              "params": {},
+              "filter_stage": {
+                "ref": "PreserveByValueStage",
+                "params": {
+                  "input_value_key": "wer_pct",
+                  "operator": "le",
+                  "target_value": 10.0
+                }
+              },
+              "strategy": [
+                {
+                  "param": "target_value",
+                  "value": 10.0,
+                  "metric": "wer_pct",
+                  "kind": "absolute",
+                  "mode": "knowledge_driven",
+                  "source": {
+                    "from": "card_anchor",
+                    "ref": "transcription_grade"
+                  },
+                  "recompute_on": "none",
+                  "rationale": "label 'transcription_grade' -> filter wer_pct le 10.0 (PreserveByValueStage)"
+                }
+              ],
+              "asks": []
+            }
+          },
+          {
+            "verb": "resolve",
+            "args": {
+              "stage": "UTMOSFilterStage",
+              "label": "general"
+            },
+            "result": {
+              "stage": "UTMOSFilterStage",
+              "params": {
+                "mos_threshold": 3.4
+              },
+              "filter_stage": null,
+              "strategy": [
+                {
+                  "param": "mos_threshold",
+                  "value": 3.4,
+                  "metric": "utmos_mos",
+                  "kind": "absolute",
+                  "mode": "knowledge_driven",
+                  "source": {
+                    "from": "card_anchor",
+                    "ref": "general"
+                  },
+                  "recompute_on": "none",
+                  "rationale": "label 'general' -> utmos_mos=3.4"
+                }
+              ],
+              "asks": []
+            }
+          },
+          {
+            "verb": "validate",
+            "args": {
+              "recipe": {
+                "stages": [
+                  {
+                    "ref": "ManifestReader",
+                    "params": {
+                      "manifest_path": "REQUIRED"
+                    }
+                  },
+                  {
+                    "ref": "InferenceAsrNemoStage",
+                    "params": {
+                      "model_name": "nvidia/parakeet-tdt-0.6b-v2"
+                    }
+                  },
+                  {
+                    "ref": "GetPairwiseWerStage",
+                    "params": {}
+                  },
+                  {
+                    "ref": "PreserveByValueStage",
+                    "params": {
+                      "input_value_key": "wer_pct",
+                      "operator": "le",
+                      "target_value": 10
+                    }
+                  },
+                  {
+                    "ref": "UTMOSFilterStage",
+                    "params": {
+                      "mos_threshold": 3.4,
+                      "action": "filter"
+                    }
+                  },
+                  {
+                    "ref": "AudioToDocumentStage",
+                    "params": {}
+                  },
+                  {
+                    "ref": "ManifestWriterStage",
+                    "params": {
+                      "output_path": "REQUIRED"
+                    }
+                  }
+                ]
+              },
+              "request_type": "quality_filter",
+              "acceptance_criteria": [
+                {
+                  "id": "curated_manifest",
+                  "kind": "output_completeness",
+                  "metric": "pred_text",
+                  "necessity": "must"
+                },
+                {
+                  "id": "wer_match",
+                  "kind": "quality_standard",
+                  "metric": "wer_pct",
+                  "target": 10,
+                  "operator": "le",
+                  "classification": "absolute",
+                  "necessity": "must"
+                },
+                {
+                  "id": "sounds_good",
+                  "kind": "quality_standard",
+                  "metric": "utmos_mos",
+                  "target": 3.4,
+                  "operator": "ge",
+                  "classification": "absolute",
+                  "necessity": "must"
+                }
+              ]
+            },
+            "result": {
+              "ok": true,
+              "keys_ok": true,
+              "runnable": false,
+              "status": "fail",
+              "issues": [
+                {
+                  "code": "composite",
+                  "severity": "warning",
+                  "message": "composite stage \u2014 decompose before validating its data flow",
+                  "stage_index": 0,
+                  "stage": "ManifestReader",
+                  "fix": "decompose the composite (it hides its true I/O) before validating downstream",
+                  "escalate_to": null
+                },
+                {
+                  "code": "unsatisfied_reads_after_composite",
+                  "severity": "warning",
+                  "message": "requires role(s) ['text'] not visibly produced \u2014 but an upstream composite hides its writes; decompose it to validate this read",
+                  "stage_index": 2,
+                  "stage": "GetPairwiseWerStage",
+                  "fix": null,
+                  "escalate_to": "smoke"
+                },
+                {
+                  "code": "missing_implied_criterion",
+                  "severity": "warning",
+                  "message": "a filtering/curation request should carry a 'yield' criterion (define how much to keep, e.g. retained > 0 or ~=N%)",
+                  "stage_index": null,
+                  "stage": null,
+                  "fix": "add an acceptance criterion of this type to define success for the request",
+                  "escalate_to": "user"
+                },
+                {
+                  "code": "task_type_mismatch",
+                  "severity": "error",
+                  "message": "AudioToDocumentStage produces DocumentBatch but ManifestWriterStage accepts AudioTask",
+                  "stage_index": 6,
+                  "stage": "ManifestWriterStage",
+                  "fix": "insert a converter (e.g. AudioToDocumentStage) or reorder so task types line up",
+                  "escalate_to": null
+                }
+              ],
+              "card_violations": [],
+              "gate_flags": [
+                {
+                  "code": "internet_first_run",
+                  "severity": "info",
+                  "message": "InferenceAsrNemoStage downloads a model on first run",
+                  "stage_index": 1,
+                  "stage": "InferenceAsrNemoStage",
+                  "fix": null,
+                  "escalate_to": null
+                },
+                {
+                  "code": "internet_first_run",
+                  "severity": "info",
+                  "message": "UTMOSFilterStage downloads a model on first run",
+                  "stage_index": 4,
+                  "stage": "UTMOSFilterStage",
+                  "fix": null,
+                  "escalate_to": null
+                }
+              ],
+              "unproducible_roles": [],
+              "produced_roles": [
+                "audio_filepath",
+                "pred_text",
+                "score"
+              ],
+              "produced_keys": [
+                "audio_filepath",
+                "pred_text",
+                "utmos_mos",
+                "wer_pct"
+              ],
+              "summary": "1 error(s), 3 warning(s):\n  [warning] composite [ManifestReader]: composite stage \u2014 decompose before validating its data flow -> decompose the composite (it hides its true I/O) before validating downstream\n  [warning] unsatisfied_reads_after_composite [GetPairwiseWerStage]: requires role(s) ['text'] not visibly produced \u2014 but an upstream composite hides its writes; decompose it to validate this read\n  [warning] missing_implied_criterion: a filtering/curation request should carry a 'yield' criterion (define how much to keep, e.g. retained > 0 or ~=N%) -> add an acceptance criterion of this type to define success for the request\n  [error] task_type_mismatch [ManifestWriterStage]: AudioToDocumentStage produces DocumentBatch but ManifestWriterStage accepts AudioTask -> insert a converter (e.g. AudioToDocumentStage) or reorder so task types line up\n  [info] internet_first_run [InferenceAsrNemoStage]: InferenceAsrNemoStage downloads a model on first run\n  [info] internet_first_run [UTMOSFilterStage]: UTMOSFilterStage downloads a model on first run"
+            }
+          },
+          {
+            "verb": "validate",
+            "args": {
+              "recipe": {
+                "stages": [
+                  {
+                    "ref": "ManifestReader",
+                    "params": {
+                      "manifest_path": "REQUIRED"
+                    }
+                  },
+                  {
+                    "ref": "InferenceAsrNemoStage",
+                    "params": {
+                      "model_name": "nvidia/parakeet-tdt-0.6b-v2"
+                    }
+                  },
+                  {
+                    "ref": "GetPairwiseWerStage",
+                    "params": {}
+                  },
+                  {
+                    "ref": "PreserveByValueStage",
+                    "params": {
+                      "input_value_key": "wer_pct",
+                      "operator": "le",
+                      "target_value": 10
+                    }
+                  },
+                  {
+                    "ref": "UTMOSFilterStage",
+                    "params": {
+                      "mos_threshold": 3.4,
+                      "action": "filter"
+                    }
+                  },
+                  {
+                    "ref": "ManifestWriterStage",
+                    "params": {
+                      "output_path": "REQUIRED"
+                    }
+                  }
+                ]
+              },
+              "request_type": "quality_filter",
+              "acceptance_criteria": [
+                {
+                  "id": "curated_manifest",
+                  "kind": "output_completeness",
+                  "metric": "pred_text",
+                  "necessity": "must"
+                },
+                {
+                  "id": "wer_match",
+                  "kind": "quality_standard",
+                  "metric": "wer_pct",
+                  "target": 10,
+                  "operator": "le",
+                  "classification": "absolute",
+                  "necessity": "must"
+                },
+                {
+                  "id": "sounds_good",
+                  "kind": "quality_standard",
+                  "metric": "utmos_mos",
+                  "target": 3.4,
+                  "operator": "ge",
+                  "classification": "absolute",
+                  "necessity": "must"
+                },
+                {
+                  "id": "retain_some",
+                  "kind": "yield",
+                  "metric": "retained",
+                  "operator": "gt",
+                  "target": 0,
+                  "necessity": "should"
+                }
+              ]
+            },
+            "result": {
+              "ok": true,
+              "keys_ok": true,
+              "runnable": true,
+              "status": "uncertain",
+              "issues": [
+                {
+                  "code": "composite",
+                  "severity": "warning",
+                  "message": "composite stage \u2014 decompose before validating its data flow",
+                  "stage_index": 0,
+                  "stage": "ManifestReader",
+                  "fix": "decompose the composite (it hides its true I/O) before validating downstream",
+                  "escalate_to": null
+                },
+                {
+                  "code": "unsatisfied_reads_after_composite",
+                  "severity": "warning",
+                  "message": "requires role(s) ['text'] not visibly produced \u2014 but an upstream composite hides its writes; decompose it to validate this read",
+                  "stage_index": 2,
+                  "stage": "GetPairwiseWerStage",
+                  "fix": null,
+                  "escalate_to": "smoke"
+                },
+                {
+                  "code": "missing_implied_criterion",
+                  "severity": "warning",
+                  "message": "a filtering/curation request should carry a 'yield' criterion (define how much to keep, e.g. retained > 0 or ~=N%)",
+                  "stage_index": null,
+                  "stage": null,
+                  "fix": "add an acceptance criterion of this type to define success for the request",
+                  "escalate_to": "user"
+                }
+              ],
+              "card_violations": [],
+              "gate_flags": [
+                {
+                  "code": "internet_first_run",
+                  "severity": "info",
+                  "message": "InferenceAsrNemoStage downloads a model on first run",
+                  "stage_index": 1,
+                  "stage": "InferenceAsrNemoStage",
+                  "fix": null,
+                  "escalate_to": null
+                },
+                {
+                  "code": "internet_first_run",
+                  "severity": "info",
+                  "message": "UTMOSFilterStage downloads a model on first run",
+                  "stage_index": 4,
+                  "stage": "UTMOSFilterStage",
+                  "fix": null,
+                  "escalate_to": null
+                }
+              ],
+              "unproducible_roles": [],
+              "produced_roles": [
+                "audio_filepath",
+                "pred_text",
+                "score"
+              ],
+              "produced_keys": [
+                "audio_filepath",
+                "pred_text",
+                "utmos_mos",
+                "wer_pct"
+              ],
+              "summary": "0 error(s), 3 warning(s):\n  [warning] composite [ManifestReader]: composite stage \u2014 decompose before validating its data flow -> decompose the composite (it hides its true I/O) before validating downstream\n  [warning] unsatisfied_reads_after_composite [GetPairwiseWerStage]: requires role(s) ['text'] not visibly produced \u2014 but an upstream composite hides its writes; decompose it to validate this read\n  [warning] missing_implied_criterion: a filtering/curation request should carry a 'yield' criterion (define how much to keep, e.g. retained > 0 or ~=N%) -> add an acceptance criterion of this type to define success for the request\n  [info] internet_first_run [InferenceAsrNemoStage]: InferenceAsrNemoStage downloads a model on first run\n  [info] internet_first_run [UTMOSFilterStage]: UTMOSFilterStage downloads a model on first run"
+            }
+          }
+        ]
+      }
+    ],
+    "tool_calls": [
+      {
+        "verb": "discover",
+        "args": {},
+        "result": {
+          "count": 44,
+          "stages": [
+            {
+              "stage": "ALMDataBuilderStage",
+              "category": "alm",
+              "summary": "Build ALM training windows from audio segments, filtered by rate/bandwidth/speaker-count/duration.",
+              "tags": []
+            },
+            {
+              "stage": "ALMDataOverlapStage",
+              "category": "alm",
+              "summary": "Filter overlapping ALM windows, keeping those closest to the target duration.",
+              "tags": [
+                "is_filter"
+              ]
+            },
+            {
+              "stage": "AudioDataFilterStage",
+              "category": "export",
+              "summary": "Complete audio filtering/curation pipeline (CompositeStage) driven by a config.",
+              "tags": []
+            },
+            {
+              "stage": "AudioToDocumentStage",
+              "category": "export",
+              "summary": "Aggregate AudioTasks into a DocumentBatch DataFrame, stripping tensors/audio blobs.",
+              "tags": [
+                "sink",
+                "sanitizes_output",
+                "batch_only"
+              ]
+            },
+            {
+              "stage": "BandFilterStage",
+              "category": "quality",
+              "summary": "Classify audio as full_band vs narrow_band (spectral RF) and filter/annotate.",
+              "tags": [
+                "produces_score",
+                "is_filter",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "BandwidthEstimationStage",
+              "category": "quality",
+              "summary": "Estimate effective audio bandwidth from the power spectrum; write to metrics.",
+              "tags": [
+                "produces_score"
+              ]
+            },
+            {
+              "stage": "ChineseConversionStage",
+              "category": "text_norm",
+              "summary": "Convert Traditional Chinese to Simplified (or other OpenCC conversions), per segment.",
+              "tags": []
+            },
+            {
+              "stage": "ComputeWERStage",
+              "category": "quality",
+              "summary": "Compute WER/CER (plus edge-CER and optional PNC WER/CER) between hypothesis and reference text.",
+              "tags": [
+                "produces_score"
+              ]
+            },
+            {
+              "stage": "CreateInitialManifestFleursStage",
+              "category": "ingest",
+              "summary": "Download the FLEURS dataset and emit one AudioTask per transcript line.",
+              "tags": [
+                "needs_internet_first_run",
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "CreateInitialManifestReadSpeechStage",
+              "category": "ingest",
+              "summary": "Download the DNS Challenge 5 Read Speech set and emit one AudioTask per file.",
+              "tags": [
+                "needs_internet_first_run",
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "GetAudioDurationStage",
+              "category": "export",
+              "summary": "Compute audio duration from the file and store it under duration_key.",
+              "tags": []
+            },
+            {
+              "stage": "GetPairwiseWerStage",
+              "category": "quality",
+              "summary": "Compute pairwise WER (%) between reference text and ASR pred_text.",
+              "tags": [
+                "produces_score"
+              ]
+            },
+            {
+              "stage": "InferenceAsrNemoStage",
+              "category": "transcribe",
+              "summary": "Batched ASR transcription with a NeMo model; writes pred_text.",
+              "tags": [
+                "needs_gpu",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "InferenceSortformerStage",
+              "category": "diarize",
+              "summary": "Speaker diarization (who spoke when) with NVIDIA Sortformer; passthrough or fan-out.",
+              "tags": [
+                "needs_gpu",
+                "needs_internet_first_run",
+                "fanout"
+              ]
+            },
+            {
+              "stage": "InverseTextNormalizationStage",
+              "category": "text_norm",
+              "summary": "Inverse text normalization: spoken form -> written form (e.g. 'forty two' -> '42').",
+              "tags": []
+            },
+            {
+              "stage": "JoinSplitAudioMetadataStage",
+              "category": "segment",
+              "summary": "Rejoin transcripts/alignments of previously split audio back into the original file's metadata.",
+              "tags": []
+            },
+            {
+              "stage": "ManifestReader",
+              "category": "ingest",
+              "summary": "Read JSONL manifest(s) and emit one AudioTask per line (composite: partition + read).",
+              "tags": []
+            },
+            {
+              "stage": "ManifestReaderStage",
+              "category": "ingest",
+              "summary": "Inner reader: turn a FileGroupTask into one AudioTask per JSONL line (streaming).",
+              "tags": []
+            },
+            {
+              "stage": "ManifestWriterStage",
+              "category": "export",
+              "summary": "Append each AudioTask to a JSONL manifest file (final sink).",
+              "tags": [
+                "sink",
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "MergeAlignmentDiarizationStage",
+              "category": "transcribe",
+              "summary": "Merge word alignments into diarization segments (produce who-said-what text per speaker).",
+              "tags": []
+            },
+            {
+              "stage": "MonoConversionStage",
+              "category": "preprocess",
+              "summary": "Convert to mono and (optionally) verify/resample to a target sample rate.",
+              "tags": [
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "NeMoASRAlignerStage",
+              "category": "transcribe",
+              "summary": "Transcribe and word-align audio with a NeMo ASR model (CTC/RNNT), producing word timestamps.",
+              "tags": [
+                "needs_gpu",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "OverlapFilterStage",
+              "category": "alm",
+              "summary": "Drop empty segments and mutually-overlapping segment pairs.",
+              "tags": [
+                "is_filter"
+              ]
+            },
+            {
+              "stage": "PrepareModuleSegmentsStage",
+              "category": "export",
+              "summary": "Shape segments for TTS or ASR: merge same-speaker, then split on duration/pause/punctuation/bandwidth.",
+              "tags": []
+            },
+            {
+              "stage": "PreserveByValueStage",
+              "category": "filter",
+              "summary": "Keep/drop rows by comparing a numeric or string field against a target value.",
+              "tags": [
+                "is_filter",
+                "batch_only"
+              ]
+            },
+            {
+              "stage": "PretrainMetricsAggregatorStage",
+              "category": "alm",
+              "summary": "Aggregate per-replica ALM pretrain metrics: append one JSONL record per task to a shard.",
+              "tags": [
+                "sink",
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "PyAnnoteDiarizationStage",
+              "category": "diarize",
+              "summary": "Speaker diarization + overlap detection with PyAnnote 3.1.",
+              "tags": [
+                "needs_gpu",
+                "needs_internet_first_run",
+                "needs_hf_token",
+                "writes_disk",
+                "fanout"
+              ]
+            },
+            {
+              "stage": "ReadLongFormManifestStage",
+              "category": "alm",
+              "summary": "Read a JSONL manifest of long-form audios and emit one AudioTask per row (ALM pretrain source).",
+              "tags": []
+            },
+            {
+              "stage": "ResampleAudioStage",
+              "category": "preprocess",
+              "summary": "Resample/convert audio to a target sample rate (and format) via ffmpeg.",
+              "tags": [
+                "needs_ffmpeg",
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "SIGMOSFilterStage",
+              "category": "quality",
+              "summary": "SIGMOS (ITU-T P.804) neural MOS across 7 quality dimensions; filter/annotate.",
+              "tags": [
+                "produces_score",
+                "is_filter",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "SegmentConcatenationStage",
+              "category": "segment",
+              "summary": "Concatenate nested VAD segments into a single combined waveform (with silence gaps).",
+              "tags": []
+            },
+            {
+              "stage": "SegmentExtractionStage",
+              "category": "export",
+              "summary": "Read audio slices from original files and write them as standalone segment files.",
+              "tags": [
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "SnippetCutPlannerStage",
+              "category": "alm",
+              "summary": "Plan snippet cut boundaries for one long-form audio (pure planning, no audio I/O).",
+              "tags": []
+            },
+            {
+              "stage": "SnippetExtractionStage",
+              "category": "alm",
+              "summary": "Slice source audio per the snippet plan, mono-resample, and write snippets into a tar.",
+              "tags": [
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "SnippetManifestWriterStage",
+              "category": "export",
+              "summary": "Append each (non-stub) ALM snippet's data as a JSONL line (snippet manifest sink).",
+              "tags": [
+                "sink",
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "SnippetRepetitionFilterStage",
+              "category": "alm",
+              "summary": "Drop planned snippets whose transcript shows suspicious n-gram repetition (ASR degeneration).",
+              "tags": [
+                "is_filter",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "SpeakerSeparationStage",
+              "category": "diarize",
+              "summary": "Separate audio by speaker (NeMo SortFormer diarization) into per-speaker AudioTasks.",
+              "tags": [
+                "needs_gpu",
+                "needs_internet_first_run",
+                "fanout"
+              ]
+            },
+            {
+              "stage": "SplitASRAlignJoinStage",
+              "category": "segment",
+              "summary": "Composite: split long audio -> NeMo ASR align -> join transcripts/alignments back to originals.",
+              "tags": [
+                "needs_gpu",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "SplitLongAudioStage",
+              "category": "segment",
+              "summary": "Split long audio files into smaller pieces at natural pauses to keep speech coherent.",
+              "tags": [
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "TimestampMapperStage",
+              "category": "export",
+              "summary": "Normalize task data at the output boundary: build original_file/start/end/duration and copy passthrough keys.",
+              "tags": []
+            },
+            {
+              "stage": "TorchSquimQualityMetricsStage",
+              "category": "quality",
+              "summary": "Estimate PESQ / STOI / SI-SDR with the torchaudio SQUIM model; write to metrics.",
+              "tags": [
+                "produces_score",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "UTMOSFilterStage",
+              "category": "quality",
+              "summary": "Predict UTMOS mean-opinion-score (MOS) and filter/annotate audio by quality.",
+              "tags": [
+                "produces_score",
+                "is_filter",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "VADSegmentationStage",
+              "category": "segment",
+              "summary": "Silero VAD: detect speech and emit one segment per speech chunk (fan-out or nested).",
+              "tags": [
+                "fanout",
+                "produces_score"
+              ]
+            },
+            {
+              "stage": "WhisperXVADStage",
+              "category": "segment",
+              "summary": "Voice Activity Detection with WhisperX's VAD model; emit speech segments.",
+              "tags": [
+                "needs_internet_first_run",
+                "fanout"
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "verb": "catalog_tree",
+        "args": {},
+        "result": {
+          "categories": [
+            {
+              "category": "ingest",
+              "description": "Create/read manifests and partition input files (dataset sources, manifest readers).",
+              "stages": [
+                "CreateInitialManifestFleursStage",
+                "CreateInitialManifestReadSpeechStage",
+                "ManifestReader",
+                "ManifestReaderStage"
+              ]
+            },
+            {
+              "category": "preprocess",
+              "description": "Normalize audio before models: mono conversion and sample-rate resampling.",
+              "stages": [
+                "MonoConversionStage",
+                "ResampleAudioStage"
+              ]
+            },
+            {
+              "category": "segment",
+              "description": "Cut audio into speech chunks: VAD, long-audio splitting, segment concatenation.",
+              "stages": [
+                "JoinSplitAudioMetadataStage",
+                "SegmentConcatenationStage",
+                "SplitASRAlignJoinStage",
+                "SplitLongAudioStage",
+                "VADSegmentationStage",
+                "WhisperXVADStage"
+              ]
+            },
+            {
+              "category": "diarize",
+              "description": "Who-spoke-when and per-speaker separation (Sortformer, PyAnnote, speaker separation).",
+              "stages": [
+                "InferenceSortformerStage",
+                "PyAnnoteDiarizationStage",
+                "SpeakerSeparationStage"
+              ]
+            },
+            {
+              "category": "transcribe",
+              "description": "ASR transcription and forced word-alignment (NeMo ASR).",
+              "stages": [
+                "InferenceAsrNemoStage",
+                "MergeAlignmentDiarizationStage",
+                "NeMoASRAlignerStage"
+              ]
+            },
+            {
+              "category": "text_norm",
+              "description": "Text post-processing on transcripts: inverse text normalization, Chinese conversion.",
+              "stages": [
+                "ChineseConversionStage",
+                "InverseTextNormalizationStage"
+              ]
+            },
+            {
+              "category": "quality",
+              "description": "Score/gate audio quality: UTMOS, SIGMOS, SQUIM, bandwidth, band filter.",
+              "stages": [
+                "BandFilterStage",
+                "BandwidthEstimationStage",
+                "ComputeWERStage",
+                "GetPairwiseWerStage",
+                "SIGMOSFilterStage",
+                "TorchSquimQualityMetricsStage",
+                "UTMOSFilterStage"
+              ]
+            },
+            {
+              "category": "filter",
+              "description": "Generic value-based row filtering (keep/drop by a numeric or string field).",
+              "stages": [
+                "PreserveByValueStage"
+              ]
+            },
+            {
+              "category": "alm",
+              "description": "Audio-language-model data building: windowing, overlap filtering, snippet planning.",
+              "stages": [
+                "ALMDataBuilderStage",
+                "ALMDataOverlapStage",
+                "OverlapFilterStage",
+                "PretrainMetricsAggregatorStage",
+                "ReadLongFormManifestStage",
+                "SnippetCutPlannerStage",
+                "SnippetExtractionStage",
+                "SnippetRepetitionFilterStage"
+              ]
+            },
+            {
+              "category": "export",
+              "description": "Convert/aggregate and write results: AudioToDocument, manifest/JSONL writers, timestamp mapping, segment extraction.",
+              "stages": [
+                "AudioDataFilterStage",
+                "AudioToDocumentStage",
+                "GetAudioDurationStage",
+                "ManifestWriterStage",
+                "PrepareModuleSegmentsStage",
+                "SegmentExtractionStage",
+                "SnippetManifestWriterStage",
+                "TimestampMapperStage"
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "verb": "cards",
+        "args": {
+          "names": [
+            "ManifestReader",
+            "InferenceAsrNemoStage",
+            "GetPairwiseWerStage",
+            "ComputeWERStage",
+            "UTMOSFilterStage",
+            "SIGMOSFilterStage",
+            "PreserveByValueStage",
+            "ManifestWriterStage",
+            "AudioToDocumentStage"
+          ]
+        },
+        "result": ""
+      },
+      {
+        "verb": "read",
+        "args": {
+          "path": "/localhome/local-shbhawsar/.cursor/projects/localhome-local-shbhawsar-ADV-Curator/agent-tools/76165d57-4661-4546-b7e7-b4af74655dec.txt"
+        },
+        "result": "<result>"
+      },
+      {
+        "verb": "resolve",
+        "args": {
+          "stage": "GetPairwiseWerStage",
+          "label": "transcription_grade"
+        },
+        "result": {
+          "stage": "GetPairwiseWerStage",
+          "params": {},
+          "filter_stage": {
+            "ref": "PreserveByValueStage",
+            "params": {
+              "input_value_key": "wer_pct",
+              "operator": "le",
+              "target_value": 10.0
+            }
+          },
+          "strategy": [
+            {
+              "param": "target_value",
+              "value": 10.0,
+              "metric": "wer_pct",
+              "kind": "absolute",
+              "mode": "knowledge_driven",
+              "source": {
+                "from": "card_anchor",
+                "ref": "transcription_grade"
+              },
+              "recompute_on": "none",
+              "rationale": "label 'transcription_grade' -> filter wer_pct le 10.0 (PreserveByValueStage)"
+            }
+          ],
+          "asks": []
+        }
+      },
+      {
+        "verb": "resolve",
+        "args": {
+          "stage": "UTMOSFilterStage",
+          "label": "general"
+        },
+        "result": {
+          "stage": "UTMOSFilterStage",
+          "params": {
+            "mos_threshold": 3.4
+          },
+          "filter_stage": null,
+          "strategy": [
+            {
+              "param": "mos_threshold",
+              "value": 3.4,
+              "metric": "utmos_mos",
+              "kind": "absolute",
+              "mode": "knowledge_driven",
+              "source": {
+                "from": "card_anchor",
+                "ref": "general"
+              },
+              "recompute_on": "none",
+              "rationale": "label 'general' -> utmos_mos=3.4"
+            }
+          ],
+          "asks": []
+        }
+      },
+      {
+        "verb": "validate",
+        "args": {
+          "recipe": {
+            "stages": [
+              {
+                "ref": "ManifestReader",
+                "params": {
+                  "manifest_path": "REQUIRED"
+                }
+              },
+              {
+                "ref": "InferenceAsrNemoStage",
+                "params": {
+                  "model_name": "nvidia/parakeet-tdt-0.6b-v2"
+                }
+              },
+              {
+                "ref": "GetPairwiseWerStage",
+                "params": {}
+              },
+              {
+                "ref": "PreserveByValueStage",
+                "params": {
+                  "input_value_key": "wer_pct",
+                  "operator": "le",
+                  "target_value": 10
+                }
+              },
+              {
+                "ref": "UTMOSFilterStage",
+                "params": {
+                  "mos_threshold": 3.4,
+                  "action": "filter"
+                }
+              },
+              {
+                "ref": "AudioToDocumentStage",
+                "params": {}
+              },
+              {
+                "ref": "ManifestWriterStage",
+                "params": {
+                  "output_path": "REQUIRED"
+                }
+              }
+            ]
+          },
+          "request_type": "quality_filter",
+          "acceptance_criteria": [
+            {
+              "id": "curated_manifest",
+              "kind": "output_completeness",
+              "metric": "pred_text",
+              "necessity": "must"
+            },
+            {
+              "id": "wer_match",
+              "kind": "quality_standard",
+              "metric": "wer_pct",
+              "target": 10,
+              "operator": "le",
+              "classification": "absolute",
+              "necessity": "must"
+            },
+            {
+              "id": "sounds_good",
+              "kind": "quality_standard",
+              "metric": "utmos_mos",
+              "target": 3.4,
+              "operator": "ge",
+              "classification": "absolute",
+              "necessity": "must"
+            }
+          ]
+        },
+        "result": {
+          "ok": true,
+          "keys_ok": true,
+          "runnable": false,
+          "status": "fail",
+          "issues": [
+            {
+              "code": "composite",
+              "severity": "warning",
+              "message": "composite stage \u2014 decompose before validating its data flow",
+              "stage_index": 0,
+              "stage": "ManifestReader",
+              "fix": "decompose the composite (it hides its true I/O) before validating downstream",
+              "escalate_to": null
+            },
+            {
+              "code": "unsatisfied_reads_after_composite",
+              "severity": "warning",
+              "message": "requires role(s) ['text'] not visibly produced \u2014 but an upstream composite hides its writes; decompose it to validate this read",
+              "stage_index": 2,
+              "stage": "GetPairwiseWerStage",
+              "fix": null,
+              "escalate_to": "smoke"
+            },
+            {
+              "code": "missing_implied_criterion",
+              "severity": "warning",
+              "message": "a filtering/curation request should carry a 'yield' criterion (define how much to keep, e.g. retained > 0 or ~=N%)",
+              "stage_index": null,
+              "stage": null,
+              "fix": "add an acceptance criterion of this type to define success for the request",
+              "escalate_to": "user"
+            },
+            {
+              "code": "task_type_mismatch",
+              "severity": "error",
+              "message": "AudioToDocumentStage produces DocumentBatch but ManifestWriterStage accepts AudioTask",
+              "stage_index": 6,
+              "stage": "ManifestWriterStage",
+              "fix": "insert a converter (e.g. AudioToDocumentStage) or reorder so task types line up",
+              "escalate_to": null
+            }
+          ],
+          "card_violations": [],
+          "gate_flags": [
+            {
+              "code": "internet_first_run",
+              "severity": "info",
+              "message": "InferenceAsrNemoStage downloads a model on first run",
+              "stage_index": 1,
+              "stage": "InferenceAsrNemoStage",
+              "fix": null,
+              "escalate_to": null
+            },
+            {
+              "code": "internet_first_run",
+              "severity": "info",
+              "message": "UTMOSFilterStage downloads a model on first run",
+              "stage_index": 4,
+              "stage": "UTMOSFilterStage",
+              "fix": null,
+              "escalate_to": null
+            }
+          ],
+          "unproducible_roles": [],
+          "produced_roles": [
+            "audio_filepath",
+            "pred_text",
+            "score"
+          ],
+          "produced_keys": [
+            "audio_filepath",
+            "pred_text",
+            "utmos_mos",
+            "wer_pct"
+          ],
+          "summary": "1 error(s), 3 warning(s):\n  [warning] composite [ManifestReader]: composite stage \u2014 decompose before validating its data flow -> decompose the composite (it hides its true I/O) before validating downstream\n  [warning] unsatisfied_reads_after_composite [GetPairwiseWerStage]: requires role(s) ['text'] not visibly produced \u2014 but an upstream composite hides its writes; decompose it to validate this read\n  [warning] missing_implied_criterion: a filtering/curation request should carry a 'yield' criterion (define how much to keep, e.g. retained > 0 or ~=N%) -> add an acceptance criterion of this type to define success for the request\n  [error] task_type_mismatch [ManifestWriterStage]: AudioToDocumentStage produces DocumentBatch but ManifestWriterStage accepts AudioTask -> insert a converter (e.g. AudioToDocumentStage) or reorder so task types line up\n  [info] internet_first_run [InferenceAsrNemoStage]: InferenceAsrNemoStage downloads a model on first run\n  [info] internet_first_run [UTMOSFilterStage]: UTMOSFilterStage downloads a model on first run"
+        }
+      },
+      {
+        "verb": "validate",
+        "args": {
+          "recipe": {
+            "stages": [
+              {
+                "ref": "ManifestReader",
+                "params": {
+                  "manifest_path": "REQUIRED"
+                }
+              },
+              {
+                "ref": "InferenceAsrNemoStage",
+                "params": {
+                  "model_name": "nvidia/parakeet-tdt-0.6b-v2"
+                }
+              },
+              {
+                "ref": "GetPairwiseWerStage",
+                "params": {}
+              },
+              {
+                "ref": "PreserveByValueStage",
+                "params": {
+                  "input_value_key": "wer_pct",
+                  "operator": "le",
+                  "target_value": 10
+                }
+              },
+              {
+                "ref": "UTMOSFilterStage",
+                "params": {
+                  "mos_threshold": 3.4,
+                  "action": "filter"
+                }
+              },
+              {
+                "ref": "ManifestWriterStage",
+                "params": {
+                  "output_path": "REQUIRED"
+                }
+              }
+            ]
+          },
+          "request_type": "quality_filter",
+          "acceptance_criteria": [
+            {
+              "id": "curated_manifest",
+              "kind": "output_completeness",
+              "metric": "pred_text",
+              "necessity": "must"
+            },
+            {
+              "id": "wer_match",
+              "kind": "quality_standard",
+              "metric": "wer_pct",
+              "target": 10,
+              "operator": "le",
+              "classification": "absolute",
+              "necessity": "must"
+            },
+            {
+              "id": "sounds_good",
+              "kind": "quality_standard",
+              "metric": "utmos_mos",
+              "target": 3.4,
+              "operator": "ge",
+              "classification": "absolute",
+              "necessity": "must"
+            },
+            {
+              "id": "retain_some",
+              "kind": "yield",
+              "metric": "retained",
+              "operator": "gt",
+              "target": 0,
+              "necessity": "should"
+            }
+          ]
+        },
+        "result": {
+          "ok": true,
+          "keys_ok": true,
+          "runnable": true,
+          "status": "uncertain",
+          "issues": [
+            {
+              "code": "composite",
+              "severity": "warning",
+              "message": "composite stage \u2014 decompose before validating its data flow",
+              "stage_index": 0,
+              "stage": "ManifestReader",
+              "fix": "decompose the composite (it hides its true I/O) before validating downstream",
+              "escalate_to": null
+            },
+            {
+              "code": "unsatisfied_reads_after_composite",
+              "severity": "warning",
+              "message": "requires role(s) ['text'] not visibly produced \u2014 but an upstream composite hides its writes; decompose it to validate this read",
+              "stage_index": 2,
+              "stage": "GetPairwiseWerStage",
+              "fix": null,
+              "escalate_to": "smoke"
+            },
+            {
+              "code": "missing_implied_criterion",
+              "severity": "warning",
+              "message": "a filtering/curation request should carry a 'yield' criterion (define how much to keep, e.g. retained > 0 or ~=N%)",
+              "stage_index": null,
+              "stage": null,
+              "fix": "add an acceptance criterion of this type to define success for the request",
+              "escalate_to": "user"
+            }
+          ],
+          "card_violations": [],
+          "gate_flags": [
+            {
+              "code": "internet_first_run",
+              "severity": "info",
+              "message": "InferenceAsrNemoStage downloads a model on first run",
+              "stage_index": 1,
+              "stage": "InferenceAsrNemoStage",
+              "fix": null,
+              "escalate_to": null
+            },
+            {
+              "code": "internet_first_run",
+              "severity": "info",
+              "message": "UTMOSFilterStage downloads a model on first run",
+              "stage_index": 4,
+              "stage": "UTMOSFilterStage",
+              "fix": null,
+              "escalate_to": null
+            }
+          ],
+          "unproducible_roles": [],
+          "produced_roles": [
+            "audio_filepath",
+            "pred_text",
+            "score"
+          ],
+          "produced_keys": [
+            "audio_filepath",
+            "pred_text",
+            "utmos_mos",
+            "wer_pct"
+          ],
+          "summary": "0 error(s), 3 warning(s):\n  [warning] composite [ManifestReader]: composite stage \u2014 decompose before validating its data flow -> decompose the composite (it hides its true I/O) before validating downstream\n  [warning] unsatisfied_reads_after_composite [GetPairwiseWerStage]: requires role(s) ['text'] not visibly produced \u2014 but an upstream composite hides its writes; decompose it to validate this read\n  [warning] missing_implied_criterion: a filtering/curation request should carry a 'yield' criterion (define how much to keep, e.g. retained > 0 or ~=N%) -> add an acceptance criterion of this type to define success for the request\n  [info] internet_first_run [InferenceAsrNemoStage]: InferenceAsrNemoStage downloads a model on first run\n  [info] internet_first_run [UTMOSFilterStage]: UTMOSFilterStage downloads a model on first run"
+        }
+      }
+    ],
+    "final_recipe": {
+      "stages": [
+        {
+          "ref": "ManifestReader",
+          "params": {
+            "manifest_path": "REQUIRED"
+          }
+        },
+        {
+          "ref": "InferenceAsrNemoStage",
+          "params": {
+            "model_name": "nvidia/parakeet-tdt-0.6b-v2"
+          }
+        },
+        {
+          "ref": "GetPairwiseWerStage",
+          "params": {}
+        },
+        {
+          "ref": "PreserveByValueStage",
+          "params": {
+            "input_value_key": "wer_pct",
+            "operator": "le",
+            "target_value": 10
+          }
+        },
+        {
+          "ref": "UTMOSFilterStage",
+          "params": {
+            "mos_threshold": 3.4,
+            "action": "filter"
+          }
+        },
+        {
+          "ref": "ManifestWriterStage",
+          "params": {
+            "output_path": "REQUIRED"
+          }
+        }
+      ]
+    },
+    "outcome": "recipe",
+    "asked_clarification": false
+  },
+  "execution": {
+    "attempted": true,
+    "smoke": {
+      "ran": true,
+      "retained": 0,
+      "errors": 0
+    },
+    "status": "completed",
+    "accepted": 0,
+    "input_count": 12,
+    "failures": [],
+    "metrics": {},
+    "verify_overall": "not_met"
+  },
+  "grade": {
+    "overall": "pass",
+    "dimensions": {
+      "success": {
+        "pass": true,
+        "note": "outcome=recipe (wanted a recipe)"
+      },
+      "modules": {
+        "pass": true,
+        "note": "module set matches"
+      },
+      "validity": {
+        "pass": true,
+        "note": "status=uncertain runnable=True"
+      },
+      "ordering": {
+        "pass": true,
+        "note": "InferenceAsrNemoStage->wer: ok"
+      },
+      "execution": {
+        "pass": true,
+        "note": "status=completed accepted=0/12"
+      }
+    },
+    "findings": []
+  }
+}

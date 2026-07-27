@@ -1,0 +1,56 @@
+# Level 14 — a new module / capability card not present during the agent's original
+# development. Tests generalization: the agent discovers the new stage via discover/
+# cards and uses it, and the card-conformance machinery accepts it unchanged.
+# The concrete novel stage + card live in fixtures/novel_stage/ and are checked by
+# fixtures/novel_card_check.py (a deterministic proof the machinery generalizes).
+level: 14
+scenarios:
+  - id: L14_use_new_stage
+    level: 14
+    label: generalization
+    objective: "A brand-new NewLoudnessNormStage + card is added; the agent finds and uses it."
+    prompt: "Normalize loudness of my clips with the new loudness stage."
+    dataset: "WAVs"
+    prerequisites:
+      - "fixtures/novel_stage/new_loudness_norm.py is importable"
+      - "fixtures/novel_stage/new_loudness_norm.yaml passes card_conformance.check_card"
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, preprocess, export]
+    expected_modules:
+      required: [NewLoudnessNormStage]
+      equivalence: {}
+      forbidden: []
+    expected_order: [ManifestReader, NewLoudnessNormStage, AudioToDocumentStage]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_output_roles: [duration]
+    generalization_check: fixtures/novel_stage/novel_card_check.py
+    explanation_rubric:
+      - "discovers the new stage via discover/cards rather than assuming it"
+      - "reads the new card's params_of_note before configuring"
+    pass_criteria: "agent uses the newly-added stage; check_card passes on its card"
+    fail_criteria: "ignores the new stage; hallucinates params not in the new card"
+
+  - id: L14_new_card_conformance
+    level: 14
+    label: generalization
+    objective: "The conformance gate accepts a well-formed brand-new card (no code change)."
+    prompt: "(machinery check) Validate the new loudness card against its stage."
+    dataset: "n/a"
+    prerequisites: ["novel stage + card fixtures present"]
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: []
+    expected_modules: {required: [], equivalence: {}, forbidden: []}
+    expected_order: []
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_output_roles: []
+    generalization_check: fixtures/novel_stage/novel_card_check.py
+    explanation_rubric:
+      - "the card gate re-derives the contract and finds zero drift for an unseen card"
+    pass_criteria: "check_card returns no violations for the new card"
+    fail_criteria: "the gate rejects a well-formed unseen card (over-fitting to known stages)"

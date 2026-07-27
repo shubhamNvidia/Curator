@@ -1,0 +1,28 @@
+# FIXTURE capability card for the (post-development) NewLoudnessNormStage.
+# Proves the conformance gate accepts a well-formed, previously-unseen card with
+# zero drift (test-plan level 14). Kept out of knowledge/cards so the real gate
+# count is unaffected.
+stage_id: NewLoudnessNormStage
+category: preprocess
+summary: "(fixture) Normalize perceived loudness toward a target LUFS."
+tags: []
+model_id: null
+domain: {language: any, style: any}
+resource:
+  cpus: 1.0
+  gpu_mem_gb: 0.0
+  gpu_optional: true
+  bound: cpu
+  throughput_hint: "CPU; loudness normalization"
+use_cases:
+  good_for: ["leveling loudness across a dataset before training/eval"]
+  avoid_for: ["already-normalized audio"]
+composition:
+  typical_upstream: [ManifestReader, MonoConversionStage]
+  typical_downstream: [AudioToDocumentStage]
+params_of_note:
+  audio_filepath_key: "key holding the audio path"
+  loudness_key: "key to write the loudness (LUFS)"
+  target_lufs: "target integrated loudness in LUFS (default -23.0)"
+verified: {params: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess}
+provenance: {model_card_url: null, card_version: 1, last_validated: "2026-07-21"}

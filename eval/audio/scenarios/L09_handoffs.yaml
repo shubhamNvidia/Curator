@@ -1,0 +1,79 @@
+# Level 9 — file-based vs in-memory data handoffs. The agent must wire residency
+# correctly and sanitize before any JSON sink (no tensor into a manifest writer).
+level: 9
+scenarios:
+  - id: L09_file_export
+    level: 9
+    label: handoff
+    objective: "File-based handoff: read a manifest, annotate, export JSONL."
+    prompt: "Add duration to my manifest and export a new JSONL."
+    dataset: "JSONL manifest"
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, preprocess, export]
+    expected_modules:
+      required: [GetAudioDurationStage]
+      equivalence: {sink: [AudioToDocumentStage, ManifestWriterStage]}
+      forbidden: []
+    expected_order: [ManifestReader, GetAudioDurationStage, AudioToDocumentStage]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: streaming, accepted_gt: 0}
+    expected_output_roles: [duration]
+    explanation_rubric:
+      - "explains the file-based read/write and JSON-safe export"
+    pass_criteria: "validates; sanitizer/document stage before the JSON writer"
+    fail_criteria: "writes a resident tensor to JSON (tensor_into_sink)"
+
+  - id: L09_inmemory_waveform
+    level: 9
+    label: handoff
+    objective: "In-memory waveform handoff through quality, sanitized before export."
+    prompt: "Score quality from in-memory audio to avoid re-reading files, then export."
+    dataset: "manifest with audio_filepath"
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, preprocess, quality, export]
+    expected_modules:
+      required: [AudioToDocumentStage]
+      equivalence: {quality: [UTMOSFilterStage, SIGMOSFilterStage]}
+      forbidden: []
+    expected_order: [ManifestReader, MonoConversionStage, quality, AudioToDocumentStage]
+    expected_params: {must_resolve: [], fixed: {input_residency: waveform}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: streaming, accepted_gt: 0}
+    expected_output_roles: [score]
+    explanation_rubric:
+      - "explains waveform residency and that it's sanitized before the sink"
+    pass_criteria: "validates; no tensor_into_sink; residency consistent"
+    fail_criteria: "advertises a residency it won't consume; tensor into sink"
+
+  - id: L09_tensor_sink_guard
+    level: 9
+    label: handoff
+    objective: "Keeping a waveform tensor then writing JSON must be caught / avoided."
+    prompt: "Keep the raw waveform in the rows and write them to a JSON manifest."
+    dataset: "manifest with audio_filepath"
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    refuse: false
+    expected_capabilities: [ingest, preprocess, export]
+    expected_modules:
+      required: [AudioToDocumentStage]     # the fix: sanitize before the writer
+      equivalence: {}
+      forbidden: []
+    expected_order: [ManifestReader, ResampleAudioStage, AudioToDocumentStage, ManifestWriterStage]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_output_roles: [duration]
+    explanation_rubric:
+      - "recognizes a resident tensor can't be JSON-serialized"
+      - "inserts a sanitizing stage before the writer (or drops the tensor upstream)"
+    pass_criteria: "final recipe validates (no tensor_into_sink) after inserting a sanitizer"
+    fail_criteria: "final recipe still routes a tensor into the JSON writer"

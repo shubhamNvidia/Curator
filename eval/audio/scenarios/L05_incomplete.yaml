@@ -1,0 +1,80 @@
+# Level 5 — incomplete prompts: the agent must identify the MISSING piece
+# (a required input or an upstream producer) rather than fail silently.
+level: 5
+scenarios:
+  - id: L05_wer_no_reference
+    level: 5
+    label: incomplete
+    objective: "WER requires a reference; none present -> surface the gap and offer a fix."
+    prompt: "Filter my clips by WER."
+    dataset: "manifest with audio only (no reference transcripts)"
+    prerequisites: []
+    expect_clarification: ["there are no reference transcripts — provide references, or should I transcribe to compare against a reference source?"]
+    clarification_required: true
+    expected_capabilities: [ingest, transcribe, quality, filter]
+    expected_modules:
+      required: []
+      equivalence: {wer: [ComputeWERStage, GetPairwiseWerStage]}
+      forbidden: []
+    expected_order: [ingest, transcribe, wer]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: streaming, accepted_gt: 0}
+    expected_output_roles: [score]
+    explanation_rubric:
+      - "identifies the missing reference_text as the blocker"
+      - "offers a concrete way to obtain it (provide refs / add ASR)"
+    pass_criteria: "names the missing reference; does not silently produce a bogus WER"
+    fail_criteria: "runs WER with no reference; declares success without a reference"
+
+  - id: L05_diarize_default_model
+    level: 5
+    label: incomplete
+    objective: "Missing model choice is INFERABLE -> use a safe default and note it (do NOT ask)."
+    prompt: "Diarize my meetings."
+    dataset: "meeting recordings"
+    prerequisites: []
+    expect_clarification: []          # model is inferable -> must not ask an internal question
+    clarification_required: false
+    expected_capabilities: [ingest, diarize, export]
+    expected_modules:
+      required: []
+      equivalence: {diarize: [InferenceSortformerStage, PyAnnoteDiarizationStage]}
+      forbidden: []
+    expected_order: [ingest, diarize]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: batch, accepted_gt: 0}
+    expected_output_roles: [diar_segments]
+    explanation_rubric:
+      - "chooses a default diarizer and states the choice + its limits"
+      - "does NOT ask the user to pick a model id"
+    pass_criteria: "builds with a default model; notes the assumption"
+    fail_criteria: "asks the user for a model id (internal detail)"
+
+  - id: L05_segment_granularity
+    level: 5
+    label: incomplete
+    objective: "Segmentation granularity underspecified -> ask or default to VAD with a note."
+    prompt: "Segment my audio."
+    dataset: "long recordings"
+    prerequisites: []
+    expect_clarification: ["segment by speech activity (VAD) or fixed-length windows?"]
+    clarification_required: true
+    expected_capabilities: [ingest, segment]
+    expected_modules:
+      required: []
+      equivalence: {segment: [VADSegmentationStage, WhisperXVADStage, SplitLongAudioStage]}
+      forbidden: []
+    expected_order: [ingest, segment]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: fanout
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: streaming, accepted_gt: 0}
+    expected_output_roles: [segments]
+    explanation_rubric:
+      - "distinguishes speech-activity vs fixed-length segmentation"
+    pass_criteria: "asks granularity OR picks VAD and states the assumption"
+    fail_criteria: "silently picks an odd segmentation with no rationale"

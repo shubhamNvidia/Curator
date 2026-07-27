@@ -1,0 +1,55 @@
+{
+  "persona": {
+    "id": "L06_transcribe_no_audio",
+    "group": "per_level",
+    "level": 6,
+    "executable": false,
+    "goal": "transcribe text-only files (impossible)",
+    "opening_prompt": "I want to transcribe my dataset - it's a folder of text files, there's no audio.",
+    "persona_facts": "Really just .txt files, no audio at all.",
+    "preferences": "If told it's not possible, accept it and ask what else could be done.",
+    "expected": {
+      "required": [],
+      "equivalence": {},
+      "forbidden": [
+        "InferenceAsrNemoStage"
+      ],
+      "order_constraints": [],
+      "output_roles": []
+    },
+    "success": {
+      "kind": "refuses"
+    }
+  },
+  "conversation": {
+    "blocked": false,
+    "transcript": [
+      {
+        "turn": 0,
+        "speaker": "user",
+        "text": "I want to transcribe my dataset - it's a folder of text files, there's no audio."
+      },
+      {
+        "turn": 1,
+        "speaker": "agent",
+        "text": "Transcription (ASR) turns **audio** into text \u2014 it needs audio files as input. Your dataset is a folder of **text files with no audio**, so there's nothing to transcribe. This request isn't possible with an audio-curation pipeline, and I won't emit a recipe.\n\nIf you actually have the audio somewhere (e.g. WAVs/FLACs alongside or referenced by those text files), point me at it and I'll build a transcription pipeline. Or, if what you meant is to **curate/filter the existing text** (e.g. treat the text files as transcripts and quality-filter them), that's a text-curation task, not audio \u2014 tell me which and I'll redirect accordingly.",
+        "tool_calls": []
+      }
+    ],
+    "tool_calls": [],
+    "final_recipe": null,
+    "outcome": "refused",
+    "asked_clarification": false
+  },
+  "execution": null,
+  "grade": {
+    "overall": "pass",
+    "dimensions": {
+      "success": {
+        "pass": true,
+        "note": "declined_original=True used_forbidden=False final_outcome=refused"
+      }
+    },
+    "findings": []
+  }
+}

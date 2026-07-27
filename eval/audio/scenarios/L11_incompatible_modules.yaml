@@ -1,0 +1,81 @@
+# Level 11 — pipelines containing incompatible modules. The agent must detect the
+# contract break (task-type, tensor-into-sink, removed-key) and repair or refuse it.
+level: 11
+scenarios:
+  - id: L11_task_type_break
+    level: 11
+    label: incompatible
+    objective: "A DocumentBatch producer feeding an AudioTask stage is a task-type break."
+    prompt: "Convert to a document, then measure audio duration on it."
+    dataset: "manifest"
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, preprocess, export]
+    expected_modules:
+      required: [GetAudioDurationStage, AudioToDocumentStage]
+      equivalence: {}
+      forbidden: []
+    expected_order: [ManifestReader, GetAudioDurationStage, AudioToDocumentStage]  # duration BEFORE the doc conversion
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_output_roles: [duration]
+    detects_code: task_type_mismatch
+    explanation_rubric:
+      - "recognizes duration must run on AudioTask before the DocumentBatch conversion"
+      - "reorders so the audio stage precedes AudioToDocument"
+    pass_criteria: "final recipe reorders to avoid task_type_mismatch and validates"
+    fail_criteria: "keeps the AudioTask stage after AudioToDocument (task_type_mismatch)"
+
+  - id: L11_tensor_into_sink
+    level: 11
+    label: incompatible
+    objective: "A resident tensor into a JSON writer must be caught and repaired."
+    prompt: "Keep the resampled waveform and write everything to a JSON manifest."
+    dataset: "manifest"
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, preprocess, export]
+    expected_modules:
+      required: []
+      equivalence: {sink: [AudioToDocumentStage, ManifestWriterStage]}
+      forbidden: []
+    expected_order: [ManifestReader, ResampleAudioStage, AudioToDocumentStage, ManifestWriterStage]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_output_roles: [duration]
+    detects_code: tensor_into_sink
+    explanation_rubric:
+      - "explains a tensor cannot be JSON-serialized"
+      - "sanitizes before the writer or drops the tensor upstream"
+    pass_criteria: "final recipe validates (tensor_into_sink resolved)"
+    fail_criteria: "final recipe still has tensor_into_sink"
+
+  - id: L11_removed_key
+    level: 11
+    label: incompatible
+    objective: "Nested VAD removes the top-level waveform; a downstream waveform reader breaks."
+    prompt: "Nested-VAD my audio, then transcribe from the top-level waveform."
+    dataset: "manifest"
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, segment, transcribe]
+    expected_modules:
+      required: [VADSegmentationStage, InferenceAsrNemoStage]
+      equivalence: {}
+      forbidden: []
+    expected_order: [MonoConversionStage, VADSegmentationStage, InferenceAsrNemoStage]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: fanout
+    expected_validation: {status: pass, runnable: true}
+    expected_output_roles: [pred_text]
+    detects_code: key_removed_upstream
+    explanation_rubric:
+      - "recognizes nested VAD removed the waveform the ASR wanted"
+      - "reads from the correct residency (file/segment) or reorders"
+    pass_criteria: "final recipe validates (no key_removed_upstream)"
+    fail_criteria: "ASR reads a removed waveform key"

@@ -1,0 +1,30 @@
+{
+  "recipes": {
+    "alm_windowing": "4876ef45d8568efc",
+    "fleurs_asr_filter": "ee551b8b80db5af3",
+    "readspeech_quality": "b0bed3d98ec06e41"
+  },
+  "resolve": {
+    "UTMOSFilterStage:studio": {
+      "params": {
+        "mos_threshold": 4.0
+      },
+      "filter": null
+    },
+    "BandFilterStage:wideband": {
+      "params": {
+        "band_value": "full_band"
+      },
+      "filter": null
+    },
+    "GetPairwiseWerStage:transcription_grade": {
+      "params": {},
+      "filter": "PreserveByValueStage"
+    }
+  },
+  "verdicts": {
+    "canon_duration": "pass",
+    "canon_task_type_mismatch": "fail",
+    "canon_uncertain_after_composite": "uncertain"
+  }
+}

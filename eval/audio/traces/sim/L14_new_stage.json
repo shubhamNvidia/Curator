@@ -1,0 +1,1059 @@
+{
+  "persona": {
+    "id": "L14_new_stage",
+    "group": "per_level",
+    "level": 14,
+    "executable": false,
+    "goal": "use a stage not in the live catalog",
+    "opening_prompt": "Use the new loudness-normalization stage to level out my clips.",
+    "persona_facts": "I heard there's a new loudness stage.",
+    "preferences": "If it isn't available, tell me honestly.",
+    "expected": {
+      "required": [],
+      "equivalence": {},
+      "forbidden": [
+        "NewLoudnessNormStage"
+      ],
+      "order_constraints": [],
+      "output_roles": []
+    },
+    "success": {
+      "kind": "refuses"
+    }
+  },
+  "conversation": {
+    "blocked": false,
+    "transcript": [
+      {
+        "turn": 0,
+        "speaker": "user",
+        "text": "Use the new loudness-normalization stage to level out my clips."
+      },
+      {
+        "turn": 1,
+        "speaker": "agent",
+        "text": "I checked the catalog, and there is **no loudness-normalization stage** in the audio_agent tool core.\n\nThe full stage list (44 stages) has no loudness/level/gain/LUFS/dBFS normalization stage. The only `preprocess` stages (\"Normalize audio before models\") are:\n- `MonoConversionStage` \u2014 mono downmix (+ optional resample)\n- `ResampleAudioStage` \u2014 sample-rate/format conversion\n\nNeither adjusts loudness/level. Nothing elsewhere in the catalog (quality, segment, export, etc.) performs loudness leveling either. Per the golden rules I can't invent a stage or parameters that don't exist, so this request is **unsupported** as stated and I'm stopping here without emitting a recipe.\n\nIf it would help, a couple of safe alternatives grounded in real stages:\n- **Measure** current per-clip levels/quality (not fix them) with quality stages like `TorchSquimQualityMetricsStage`, `SIGMOSFilterStage`, or `UTMOSFilterStage` to produce a quality report/manifest.\n- **Standardize format** (mono + target sample rate) with `MonoConversionStage` / `ResampleAudioStage` \u2014 but note this does *not* level loudness.\n\nIf \"level out my clips\" actually means one of those (e.g. a quality-filter or a format-standardization pass), tell me which outcome you want and I'll build and validate a proper recipe.",
+        "tool_calls": [
+          {
+            "verb": "discover",
+            "args": {},
+            "result": {
+              "count": 44,
+              "stages": [
+                {
+                  "stage": "ALMDataBuilderStage",
+                  "category": "alm",
+                  "summary": "Build ALM training windows from audio segments, filtered by rate/bandwidth/speaker-count/duration.",
+                  "tags": []
+                },
+                {
+                  "stage": "ALMDataOverlapStage",
+                  "category": "alm",
+                  "summary": "Filter overlapping ALM windows, keeping those closest to the target duration.",
+                  "tags": [
+                    "is_filter"
+                  ]
+                },
+                {
+                  "stage": "AudioDataFilterStage",
+                  "category": "export",
+                  "summary": "Complete audio filtering/curation pipeline (CompositeStage) driven by a config.",
+                  "tags": []
+                },
+                {
+                  "stage": "AudioToDocumentStage",
+                  "category": "export",
+                  "summary": "Aggregate AudioTasks into a DocumentBatch DataFrame, stripping tensors/audio blobs.",
+                  "tags": [
+                    "sink",
+                    "sanitizes_output",
+                    "batch_only"
+                  ]
+                },
+                {
+                  "stage": "BandFilterStage",
+                  "category": "quality",
+                  "summary": "Classify audio as full_band vs narrow_band (spectral RF) and filter/annotate.",
+                  "tags": [
+                    "produces_score",
+                    "is_filter",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "BandwidthEstimationStage",
+                  "category": "quality",
+                  "summary": "Estimate effective audio bandwidth from the power spectrum; write to metrics.",
+                  "tags": [
+                    "produces_score"
+                  ]
+                },
+                {
+                  "stage": "ChineseConversionStage",
+                  "category": "text_norm",
+                  "summary": "Convert Traditional Chinese to Simplified (or other OpenCC conversions), per segment.",
+                  "tags": []
+                },
+                {
+                  "stage": "ComputeWERStage",
+                  "category": "quality",
+                  "summary": "Compute WER/CER (plus edge-CER and optional PNC WER/CER) between hypothesis and reference text.",
+                  "tags": [
+                    "produces_score"
+                  ]
+                },
+                {
+                  "stage": "CreateInitialManifestFleursStage",
+                  "category": "ingest",
+                  "summary": "Download the FLEURS dataset and emit one AudioTask per transcript line.",
+                  "tags": [
+                    "needs_internet_first_run",
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "CreateInitialManifestReadSpeechStage",
+                  "category": "ingest",
+                  "summary": "Download the DNS Challenge 5 Read Speech set and emit one AudioTask per file.",
+                  "tags": [
+                    "needs_internet_first_run",
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "GetAudioDurationStage",
+                  "category": "export",
+                  "summary": "Compute audio duration from the file and store it under duration_key.",
+                  "tags": []
+                },
+                {
+                  "stage": "GetPairwiseWerStage",
+                  "category": "quality",
+                  "summary": "Compute pairwise WER (%) between reference text and ASR pred_text.",
+                  "tags": [
+                    "produces_score"
+                  ]
+                },
+                {
+                  "stage": "InferenceAsrNemoStage",
+                  "category": "transcribe",
+                  "summary": "Batched ASR transcription with a NeMo model; writes pred_text.",
+                  "tags": [
+                    "needs_gpu",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "InferenceSortformerStage",
+                  "category": "diarize",
+                  "summary": "Speaker diarization (who spoke when) with NVIDIA Sortformer; passthrough or fan-out.",
+                  "tags": [
+                    "needs_gpu",
+                    "needs_internet_first_run",
+                    "fanout"
+                  ]
+                },
+                {
+                  "stage": "InverseTextNormalizationStage",
+                  "category": "text_norm",
+                  "summary": "Inverse text normalization: spoken form -> written form (e.g. 'forty two' -> '42').",
+                  "tags": []
+                },
+                {
+                  "stage": "JoinSplitAudioMetadataStage",
+                  "category": "segment",
+                  "summary": "Rejoin transcripts/alignments of previously split audio back into the original file's metadata.",
+                  "tags": []
+                },
+                {
+                  "stage": "ManifestReader",
+                  "category": "ingest",
+                  "summary": "Read JSONL manifest(s) and emit one AudioTask per line (composite: partition + read).",
+                  "tags": []
+                },
+                {
+                  "stage": "ManifestReaderStage",
+                  "category": "ingest",
+                  "summary": "Inner reader: turn a FileGroupTask into one AudioTask per JSONL line (streaming).",
+                  "tags": []
+                },
+                {
+                  "stage": "ManifestWriterStage",
+                  "category": "export",
+                  "summary": "Append each AudioTask to a JSONL manifest file (final sink).",
+                  "tags": [
+                    "sink",
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "MergeAlignmentDiarizationStage",
+                  "category": "transcribe",
+                  "summary": "Merge word alignments into diarization segments (produce who-said-what text per speaker).",
+                  "tags": []
+                },
+                {
+                  "stage": "MonoConversionStage",
+                  "category": "preprocess",
+                  "summary": "Convert to mono and (optionally) verify/resample to a target sample rate.",
+                  "tags": [
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "NeMoASRAlignerStage",
+                  "category": "transcribe",
+                  "summary": "Transcribe and word-align audio with a NeMo ASR model (CTC/RNNT), producing word timestamps.",
+                  "tags": [
+                    "needs_gpu",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "OverlapFilterStage",
+                  "category": "alm",
+                  "summary": "Drop empty segments and mutually-overlapping segment pairs.",
+                  "tags": [
+                    "is_filter"
+                  ]
+                },
+                {
+                  "stage": "PrepareModuleSegmentsStage",
+                  "category": "export",
+                  "summary": "Shape segments for TTS or ASR: merge same-speaker, then split on duration/pause/punctuation/bandwidth.",
+                  "tags": []
+                },
+                {
+                  "stage": "PreserveByValueStage",
+                  "category": "filter",
+                  "summary": "Keep/drop rows by comparing a numeric or string field against a target value.",
+                  "tags": [
+                    "is_filter",
+                    "batch_only"
+                  ]
+                },
+                {
+                  "stage": "PretrainMetricsAggregatorStage",
+                  "category": "alm",
+                  "summary": "Aggregate per-replica ALM pretrain metrics: append one JSONL record per task to a shard.",
+                  "tags": [
+                    "sink",
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "PyAnnoteDiarizationStage",
+                  "category": "diarize",
+                  "summary": "Speaker diarization + overlap detection with PyAnnote 3.1.",
+                  "tags": [
+                    "needs_gpu",
+                    "needs_internet_first_run",
+                    "needs_hf_token",
+                    "writes_disk",
+                    "fanout"
+                  ]
+                },
+                {
+                  "stage": "ReadLongFormManifestStage",
+                  "category": "alm",
+                  "summary": "Read a JSONL manifest of long-form audios and emit one AudioTask per row (ALM pretrain source).",
+                  "tags": []
+                },
+                {
+                  "stage": "ResampleAudioStage",
+                  "category": "preprocess",
+                  "summary": "Resample/convert audio to a target sample rate (and format) via ffmpeg.",
+                  "tags": [
+                    "needs_ffmpeg",
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "SIGMOSFilterStage",
+                  "category": "quality",
+                  "summary": "SIGMOS (ITU-T P.804) neural MOS across 7 quality dimensions; filter/annotate.",
+                  "tags": [
+                    "produces_score",
+                    "is_filter",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "SegmentConcatenationStage",
+                  "category": "segment",
+                  "summary": "Concatenate nested VAD segments into a single combined waveform (with silence gaps).",
+                  "tags": []
+                },
+                {
+                  "stage": "SegmentExtractionStage",
+                  "category": "export",
+                  "summary": "Read audio slices from original files and write them as standalone segment files.",
+                  "tags": [
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "SnippetCutPlannerStage",
+                  "category": "alm",
+                  "summary": "Plan snippet cut boundaries for one long-form audio (pure planning, no audio I/O).",
+                  "tags": []
+                },
+                {
+                  "stage": "SnippetExtractionStage",
+                  "category": "alm",
+                  "summary": "Slice source audio per the snippet plan, mono-resample, and write snippets into a tar.",
+                  "tags": [
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "SnippetManifestWriterStage",
+                  "category": "export",
+                  "summary": "Append each (non-stub) ALM snippet's data as a JSONL line (snippet manifest sink).",
+                  "tags": [
+                    "sink",
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "SnippetRepetitionFilterStage",
+                  "category": "alm",
+                  "summary": "Drop planned snippets whose transcript shows suspicious n-gram repetition (ASR degeneration).",
+                  "tags": [
+                    "is_filter",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "SpeakerSeparationStage",
+                  "category": "diarize",
+                  "summary": "Separate audio by speaker (NeMo SortFormer diarization) into per-speaker AudioTasks.",
+                  "tags": [
+                    "needs_gpu",
+                    "needs_internet_first_run",
+                    "fanout"
+                  ]
+                },
+                {
+                  "stage": "SplitASRAlignJoinStage",
+                  "category": "segment",
+                  "summary": "Composite: split long audio -> NeMo ASR align -> join transcripts/alignments back to originals.",
+                  "tags": [
+                    "needs_gpu",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "SplitLongAudioStage",
+                  "category": "segment",
+                  "summary": "Split long audio files into smaller pieces at natural pauses to keep speech coherent.",
+                  "tags": [
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "TimestampMapperStage",
+                  "category": "export",
+                  "summary": "Normalize task data at the output boundary: build original_file/start/end/duration and copy passthrough keys.",
+                  "tags": []
+                },
+                {
+                  "stage": "TorchSquimQualityMetricsStage",
+                  "category": "quality",
+                  "summary": "Estimate PESQ / STOI / SI-SDR with the torchaudio SQUIM model; write to metrics.",
+                  "tags": [
+                    "produces_score",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "UTMOSFilterStage",
+                  "category": "quality",
+                  "summary": "Predict UTMOS mean-opinion-score (MOS) and filter/annotate audio by quality.",
+                  "tags": [
+                    "produces_score",
+                    "is_filter",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "VADSegmentationStage",
+                  "category": "segment",
+                  "summary": "Silero VAD: detect speech and emit one segment per speech chunk (fan-out or nested).",
+                  "tags": [
+                    "fanout",
+                    "produces_score"
+                  ]
+                },
+                {
+                  "stage": "WhisperXVADStage",
+                  "category": "segment",
+                  "summary": "Voice Activity Detection with WhisperX's VAD model; emit speech segments.",
+                  "tags": [
+                    "needs_internet_first_run",
+                    "fanout"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "verb": "catalog_tree",
+            "args": {},
+            "result": {
+              "categories": [
+                {
+                  "category": "ingest",
+                  "description": "Create/read manifests and partition input files (dataset sources, manifest readers).",
+                  "stages": [
+                    "CreateInitialManifestFleursStage",
+                    "CreateInitialManifestReadSpeechStage",
+                    "ManifestReader",
+                    "ManifestReaderStage"
+                  ]
+                },
+                {
+                  "category": "preprocess",
+                  "description": "Normalize audio before models: mono conversion and sample-rate resampling.",
+                  "stages": [
+                    "MonoConversionStage",
+                    "ResampleAudioStage"
+                  ]
+                },
+                {
+                  "category": "segment",
+                  "description": "Cut audio into speech chunks: VAD, long-audio splitting, segment concatenation.",
+                  "stages": [
+                    "JoinSplitAudioMetadataStage",
+                    "SegmentConcatenationStage",
+                    "SplitASRAlignJoinStage",
+                    "SplitLongAudioStage",
+                    "VADSegmentationStage",
+                    "WhisperXVADStage"
+                  ]
+                },
+                {
+                  "category": "diarize",
+                  "description": "Who-spoke-when and per-speaker separation (Sortformer, PyAnnote, speaker separation).",
+                  "stages": [
+                    "InferenceSortformerStage",
+                    "PyAnnoteDiarizationStage",
+                    "SpeakerSeparationStage"
+                  ]
+                },
+                {
+                  "category": "transcribe",
+                  "description": "ASR transcription and forced word-alignment (NeMo ASR).",
+                  "stages": [
+                    "InferenceAsrNemoStage",
+                    "MergeAlignmentDiarizationStage",
+                    "NeMoASRAlignerStage"
+                  ]
+                },
+                {
+                  "category": "text_norm",
+                  "description": "Text post-processing on transcripts: inverse text normalization, Chinese conversion.",
+                  "stages": [
+                    "ChineseConversionStage",
+                    "InverseTextNormalizationStage"
+                  ]
+                },
+                {
+                  "category": "quality",
+                  "description": "Score/gate audio quality: UTMOS, SIGMOS, SQUIM, bandwidth, band filter.",
+                  "stages": [
+                    "BandFilterStage",
+                    "BandwidthEstimationStage",
+                    "ComputeWERStage",
+                    "GetPairwiseWerStage",
+                    "SIGMOSFilterStage",
+                    "TorchSquimQualityMetricsStage",
+                    "UTMOSFilterStage"
+                  ]
+                },
+                {
+                  "category": "filter",
+                  "description": "Generic value-based row filtering (keep/drop by a numeric or string field).",
+                  "stages": [
+                    "PreserveByValueStage"
+                  ]
+                },
+                {
+                  "category": "alm",
+                  "description": "Audio-language-model data building: windowing, overlap filtering, snippet planning.",
+                  "stages": [
+                    "ALMDataBuilderStage",
+                    "ALMDataOverlapStage",
+                    "OverlapFilterStage",
+                    "PretrainMetricsAggregatorStage",
+                    "ReadLongFormManifestStage",
+                    "SnippetCutPlannerStage",
+                    "SnippetExtractionStage",
+                    "SnippetRepetitionFilterStage"
+                  ]
+                },
+                {
+                  "category": "export",
+                  "description": "Convert/aggregate and write results: AudioToDocument, manifest/JSONL writers, timestamp mapping, segment extraction.",
+                  "stages": [
+                    "AudioDataFilterStage",
+                    "AudioToDocumentStage",
+                    "GetAudioDurationStage",
+                    "ManifestWriterStage",
+                    "PrepareModuleSegmentsStage",
+                    "SegmentExtractionStage",
+                    "SnippetManifestWriterStage",
+                    "TimestampMapperStage"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "verb": "cards",
+            "args": {
+              "category": "preprocess"
+            },
+            "result": {
+              "category": "preprocess",
+              "stages": [
+                {
+                  "stage": "MonoConversionStage",
+                  "summary": "Convert to mono and (optionally) verify/resample to a target sample rate.",
+                  "tags": [
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "ResampleAudioStage",
+                  "summary": "Resample/convert audio to a target sample rate (and format) via ffmpeg.",
+                  "tags": [
+                    "needs_ffmpeg",
+                    "writes_disk"
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "tool_calls": [
+      {
+        "verb": "discover",
+        "args": {},
+        "result": {
+          "count": 44,
+          "stages": [
+            {
+              "stage": "ALMDataBuilderStage",
+              "category": "alm",
+              "summary": "Build ALM training windows from audio segments, filtered by rate/bandwidth/speaker-count/duration.",
+              "tags": []
+            },
+            {
+              "stage": "ALMDataOverlapStage",
+              "category": "alm",
+              "summary": "Filter overlapping ALM windows, keeping those closest to the target duration.",
+              "tags": [
+                "is_filter"
+              ]
+            },
+            {
+              "stage": "AudioDataFilterStage",
+              "category": "export",
+              "summary": "Complete audio filtering/curation pipeline (CompositeStage) driven by a config.",
+              "tags": []
+            },
+            {
+              "stage": "AudioToDocumentStage",
+              "category": "export",
+              "summary": "Aggregate AudioTasks into a DocumentBatch DataFrame, stripping tensors/audio blobs.",
+              "tags": [
+                "sink",
+                "sanitizes_output",
+                "batch_only"
+              ]
+            },
+            {
+              "stage": "BandFilterStage",
+              "category": "quality",
+              "summary": "Classify audio as full_band vs narrow_band (spectral RF) and filter/annotate.",
+              "tags": [
+                "produces_score",
+                "is_filter",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "BandwidthEstimationStage",
+              "category": "quality",
+              "summary": "Estimate effective audio bandwidth from the power spectrum; write to metrics.",
+              "tags": [
+                "produces_score"
+              ]
+            },
+            {
+              "stage": "ChineseConversionStage",
+              "category": "text_norm",
+              "summary": "Convert Traditional Chinese to Simplified (or other OpenCC conversions), per segment.",
+              "tags": []
+            },
+            {
+              "stage": "ComputeWERStage",
+              "category": "quality",
+              "summary": "Compute WER/CER (plus edge-CER and optional PNC WER/CER) between hypothesis and reference text.",
+              "tags": [
+                "produces_score"
+              ]
+            },
+            {
+              "stage": "CreateInitialManifestFleursStage",
+              "category": "ingest",
+              "summary": "Download the FLEURS dataset and emit one AudioTask per transcript line.",
+              "tags": [
+                "needs_internet_first_run",
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "CreateInitialManifestReadSpeechStage",
+              "category": "ingest",
+              "summary": "Download the DNS Challenge 5 Read Speech set and emit one AudioTask per file.",
+              "tags": [
+                "needs_internet_first_run",
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "GetAudioDurationStage",
+              "category": "export",
+              "summary": "Compute audio duration from the file and store it under duration_key.",
+              "tags": []
+            },
+            {
+              "stage": "GetPairwiseWerStage",
+              "category": "quality",
+              "summary": "Compute pairwise WER (%) between reference text and ASR pred_text.",
+              "tags": [
+                "produces_score"
+              ]
+            },
+            {
+              "stage": "InferenceAsrNemoStage",
+              "category": "transcribe",
+              "summary": "Batched ASR transcription with a NeMo model; writes pred_text.",
+              "tags": [
+                "needs_gpu",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "InferenceSortformerStage",
+              "category": "diarize",
+              "summary": "Speaker diarization (who spoke when) with NVIDIA Sortformer; passthrough or fan-out.",
+              "tags": [
+                "needs_gpu",
+                "needs_internet_first_run",
+                "fanout"
+              ]
+            },
+            {
+              "stage": "InverseTextNormalizationStage",
+              "category": "text_norm",
+              "summary": "Inverse text normalization: spoken form -> written form (e.g. 'forty two' -> '42').",
+              "tags": []
+            },
+            {
+              "stage": "JoinSplitAudioMetadataStage",
+              "category": "segment",
+              "summary": "Rejoin transcripts/alignments of previously split audio back into the original file's metadata.",
+              "tags": []
+            },
+            {
+              "stage": "ManifestReader",
+              "category": "ingest",
+              "summary": "Read JSONL manifest(s) and emit one AudioTask per line (composite: partition + read).",
+              "tags": []
+            },
+            {
+              "stage": "ManifestReaderStage",
+              "category": "ingest",
+              "summary": "Inner reader: turn a FileGroupTask into one AudioTask per JSONL line (streaming).",
+              "tags": []
+            },
+            {
+              "stage": "ManifestWriterStage",
+              "category": "export",
+              "summary": "Append each AudioTask to a JSONL manifest file (final sink).",
+              "tags": [
+                "sink",
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "MergeAlignmentDiarizationStage",
+              "category": "transcribe",
+              "summary": "Merge word alignments into diarization segments (produce who-said-what text per speaker).",
+              "tags": []
+            },
+            {
+              "stage": "MonoConversionStage",
+              "category": "preprocess",
+              "summary": "Convert to mono and (optionally) verify/resample to a target sample rate.",
+              "tags": [
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "NeMoASRAlignerStage",
+              "category": "transcribe",
+              "summary": "Transcribe and word-align audio with a NeMo ASR model (CTC/RNNT), producing word timestamps.",
+              "tags": [
+                "needs_gpu",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "OverlapFilterStage",
+              "category": "alm",
+              "summary": "Drop empty segments and mutually-overlapping segment pairs.",
+              "tags": [
+                "is_filter"
+              ]
+            },
+            {
+              "stage": "PrepareModuleSegmentsStage",
+              "category": "export",
+              "summary": "Shape segments for TTS or ASR: merge same-speaker, then split on duration/pause/punctuation/bandwidth.",
+              "tags": []
+            },
+            {
+              "stage": "PreserveByValueStage",
+              "category": "filter",
+              "summary": "Keep/drop rows by comparing a numeric or string field against a target value.",
+              "tags": [
+                "is_filter",
+                "batch_only"
+              ]
+            },
+            {
+              "stage": "PretrainMetricsAggregatorStage",
+              "category": "alm",
+              "summary": "Aggregate per-replica ALM pretrain metrics: append one JSONL record per task to a shard.",
+              "tags": [
+                "sink",
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "PyAnnoteDiarizationStage",
+              "category": "diarize",
+              "summary": "Speaker diarization + overlap detection with PyAnnote 3.1.",
+              "tags": [
+                "needs_gpu",
+                "needs_internet_first_run",
+                "needs_hf_token",
+                "writes_disk",
+                "fanout"
+              ]
+            },
+            {
+              "stage": "ReadLongFormManifestStage",
+              "category": "alm",
+              "summary": "Read a JSONL manifest of long-form audios and emit one AudioTask per row (ALM pretrain source).",
+              "tags": []
+            },
+            {
+              "stage": "ResampleAudioStage",
+              "category": "preprocess",
+              "summary": "Resample/convert audio to a target sample rate (and format) via ffmpeg.",
+              "tags": [
+                "needs_ffmpeg",
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "SIGMOSFilterStage",
+              "category": "quality",
+              "summary": "SIGMOS (ITU-T P.804) neural MOS across 7 quality dimensions; filter/annotate.",
+              "tags": [
+                "produces_score",
+                "is_filter",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "SegmentConcatenationStage",
+              "category": "segment",
+              "summary": "Concatenate nested VAD segments into a single combined waveform (with silence gaps).",
+              "tags": []
+            },
+            {
+              "stage": "SegmentExtractionStage",
+              "category": "export",
+              "summary": "Read audio slices from original files and write them as standalone segment files.",
+              "tags": [
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "SnippetCutPlannerStage",
+              "category": "alm",
+              "summary": "Plan snippet cut boundaries for one long-form audio (pure planning, no audio I/O).",
+              "tags": []
+            },
+            {
+              "stage": "SnippetExtractionStage",
+              "category": "alm",
+              "summary": "Slice source audio per the snippet plan, mono-resample, and write snippets into a tar.",
+              "tags": [
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "SnippetManifestWriterStage",
+              "category": "export",
+              "summary": "Append each (non-stub) ALM snippet's data as a JSONL line (snippet manifest sink).",
+              "tags": [
+                "sink",
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "SnippetRepetitionFilterStage",
+              "category": "alm",
+              "summary": "Drop planned snippets whose transcript shows suspicious n-gram repetition (ASR degeneration).",
+              "tags": [
+                "is_filter",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "SpeakerSeparationStage",
+              "category": "diarize",
+              "summary": "Separate audio by speaker (NeMo SortFormer diarization) into per-speaker AudioTasks.",
+              "tags": [
+                "needs_gpu",
+                "needs_internet_first_run",
+                "fanout"
+              ]
+            },
+            {
+              "stage": "SplitASRAlignJoinStage",
+              "category": "segment",
+              "summary": "Composite: split long audio -> NeMo ASR align -> join transcripts/alignments back to originals.",
+              "tags": [
+                "needs_gpu",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "SplitLongAudioStage",
+              "category": "segment",
+              "summary": "Split long audio files into smaller pieces at natural pauses to keep speech coherent.",
+              "tags": [
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "TimestampMapperStage",
+              "category": "export",
+              "summary": "Normalize task data at the output boundary: build original_file/start/end/duration and copy passthrough keys.",
+              "tags": []
+            },
+            {
+              "stage": "TorchSquimQualityMetricsStage",
+              "category": "quality",
+              "summary": "Estimate PESQ / STOI / SI-SDR with the torchaudio SQUIM model; write to metrics.",
+              "tags": [
+                "produces_score",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "UTMOSFilterStage",
+              "category": "quality",
+              "summary": "Predict UTMOS mean-opinion-score (MOS) and filter/annotate audio by quality.",
+              "tags": [
+                "produces_score",
+                "is_filter",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "VADSegmentationStage",
+              "category": "segment",
+              "summary": "Silero VAD: detect speech and emit one segment per speech chunk (fan-out or nested).",
+              "tags": [
+                "fanout",
+                "produces_score"
+              ]
+            },
+            {
+              "stage": "WhisperXVADStage",
+              "category": "segment",
+              "summary": "Voice Activity Detection with WhisperX's VAD model; emit speech segments.",
+              "tags": [
+                "needs_internet_first_run",
+                "fanout"
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "verb": "catalog_tree",
+        "args": {},
+        "result": {
+          "categories": [
+            {
+              "category": "ingest",
+              "description": "Create/read manifests and partition input files (dataset sources, manifest readers).",
+              "stages": [
+                "CreateInitialManifestFleursStage",
+                "CreateInitialManifestReadSpeechStage",
+                "ManifestReader",
+                "ManifestReaderStage"
+              ]
+            },
+            {
+              "category": "preprocess",
+              "description": "Normalize audio before models: mono conversion and sample-rate resampling.",
+              "stages": [
+                "MonoConversionStage",
+                "ResampleAudioStage"
+              ]
+            },
+            {
+              "category": "segment",
+              "description": "Cut audio into speech chunks: VAD, long-audio splitting, segment concatenation.",
+              "stages": [
+                "JoinSplitAudioMetadataStage",
+                "SegmentConcatenationStage",
+                "SplitASRAlignJoinStage",
+                "SplitLongAudioStage",
+                "VADSegmentationStage",
+                "WhisperXVADStage"
+              ]
+            },
+            {
+              "category": "diarize",
+              "description": "Who-spoke-when and per-speaker separation (Sortformer, PyAnnote, speaker separation).",
+              "stages": [
+                "InferenceSortformerStage",
+                "PyAnnoteDiarizationStage",
+                "SpeakerSeparationStage"
+              ]
+            },
+            {
+              "category": "transcribe",
+              "description": "ASR transcription and forced word-alignment (NeMo ASR).",
+              "stages": [
+                "InferenceAsrNemoStage",
+                "MergeAlignmentDiarizationStage",
+                "NeMoASRAlignerStage"
+              ]
+            },
+            {
+              "category": "text_norm",
+              "description": "Text post-processing on transcripts: inverse text normalization, Chinese conversion.",
+              "stages": [
+                "ChineseConversionStage",
+                "InverseTextNormalizationStage"
+              ]
+            },
+            {
+              "category": "quality",
+              "description": "Score/gate audio quality: UTMOS, SIGMOS, SQUIM, bandwidth, band filter.",
+              "stages": [
+                "BandFilterStage",
+                "BandwidthEstimationStage",
+                "ComputeWERStage",
+                "GetPairwiseWerStage",
+                "SIGMOSFilterStage",
+                "TorchSquimQualityMetricsStage",
+                "UTMOSFilterStage"
+              ]
+            },
+            {
+              "category": "filter",
+              "description": "Generic value-based row filtering (keep/drop by a numeric or string field).",
+              "stages": [
+                "PreserveByValueStage"
+              ]
+            },
+            {
+              "category": "alm",
+              "description": "Audio-language-model data building: windowing, overlap filtering, snippet planning.",
+              "stages": [
+                "ALMDataBuilderStage",
+                "ALMDataOverlapStage",
+                "OverlapFilterStage",
+                "PretrainMetricsAggregatorStage",
+                "ReadLongFormManifestStage",
+                "SnippetCutPlannerStage",
+                "SnippetExtractionStage",
+                "SnippetRepetitionFilterStage"
+              ]
+            },
+            {
+              "category": "export",
+              "description": "Convert/aggregate and write results: AudioToDocument, manifest/JSONL writers, timestamp mapping, segment extraction.",
+              "stages": [
+                "AudioDataFilterStage",
+                "AudioToDocumentStage",
+                "GetAudioDurationStage",
+                "ManifestWriterStage",
+                "PrepareModuleSegmentsStage",
+                "SegmentExtractionStage",
+                "SnippetManifestWriterStage",
+                "TimestampMapperStage"
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "verb": "cards",
+        "args": {
+          "category": "preprocess"
+        },
+        "result": {
+          "category": "preprocess",
+          "stages": [
+            {
+              "stage": "MonoConversionStage",
+              "summary": "Convert to mono and (optionally) verify/resample to a target sample rate.",
+              "tags": [
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "ResampleAudioStage",
+              "summary": "Resample/convert audio to a target sample rate (and format) via ffmpeg.",
+              "tags": [
+                "needs_ffmpeg",
+                "writes_disk"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "final_recipe": null,
+    "outcome": "refused",
+    "asked_clarification": false
+  },
+  "execution": null,
+  "grade": {
+    "overall": "pass",
+    "dimensions": {
+      "success": {
+        "pass": true,
+        "note": "declined_original=True used_forbidden=False final_outcome=refused"
+      }
+    },
+    "findings": []
+  }
+}

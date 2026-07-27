@@ -1,0 +1,82 @@
+# Level 1 — simple single-stage pipelines.
+# Graded by trace_check.py against a captured agent trace (tool calls + final recipe).
+# Schema: see AGENT_TEST_PLAN.md 7.1. `clarification_required` derives from a
+# non-empty `expect_clarification`; `refuse: true` means no runnable recipe is expected.
+level: 1
+scenarios:
+  - id: L01_duration
+    level: 1
+    label: single_stage
+    objective: "Add per-clip duration with one processing stage."
+    prompt: "How long is each clip in my manifest?"
+    dataset: "JSONL manifest with audio_filepath"
+    prerequisites: []
+    expect_clarification: []          # unambiguous -> must NOT ask
+    clarification_required: false
+    expected_capabilities: [ingest, preprocess, export]
+    expected_modules:
+      required: [GetAudioDurationStage]
+      equivalence: {}
+      forbidden: [InferenceAsrNemoStage, UTMOSFilterStage]
+    expected_order: [ManifestReader, GetAudioDurationStage, AudioToDocumentStage]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: streaming, accepted_gt: 0}
+    expected_output_roles: [duration]
+    explanation_rubric:
+      - "states duration is computed per clip"
+      - "no filtering/transcription added (not requested)"
+    pass_criteria: "recipe validates; GetAudioDurationStage present; no extra stages"
+    fail_criteria: "adds unrequested stages; fails validation; asks a needless question"
+
+  - id: L01_mono
+    level: 1
+    label: single_stage
+    objective: "Downmix to mono."
+    prompt: "Convert my audio to mono."
+    dataset: "folder/manifest of stereo WAVs"
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, preprocess, export]
+    expected_modules:
+      required: [MonoConversionStage]
+      equivalence: {}
+      forbidden: []
+    expected_order: [ManifestReader, MonoConversionStage, AudioToDocumentStage]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: streaming, accepted_gt: 0}
+    expected_output_roles: [duration]
+    explanation_rubric:
+      - "explains mono downmix and (if set) target sample rate"
+    pass_criteria: "recipe validates; MonoConversionStage present"
+    fail_criteria: "adds resample/quality without being asked; fails validation"
+
+  - id: L01_resample
+    level: 1
+    label: single_stage
+    objective: "Resample to a target rate."
+    prompt: "Resample everything to 16 kHz."
+    dataset: "manifest of 48kHz WAVs"
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, preprocess, export]
+    expected_modules:
+      required: []
+      equivalence: {resample: [MonoConversionStage, ResampleAudioStage]}
+      forbidden: []
+    expected_order: [ManifestReader, resample, AudioToDocumentStage]
+    expected_params: {must_resolve: [], fixed: {output_sample_rate: 16000}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: streaming, accepted_gt: 0}
+    expected_output_roles: [duration]
+    explanation_rubric:
+      - "names the target sample rate (16 kHz)"
+      - "picks Mono or Resample and says why"
+    pass_criteria: "recipe validates; a resampling stage set to 16000"
+    fail_criteria: "wrong rate; fails validation"

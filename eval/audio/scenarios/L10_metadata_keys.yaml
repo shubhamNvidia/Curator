@@ -1,0 +1,76 @@
+# Level 10 — configurable input/output metadata keys. The agent must align
+# producer/consumer *_key values (mismatch -> dangling_key) and keep them coherent.
+level: 10
+scenarios:
+  - id: L10_custom_score_key
+    level: 10
+    label: metadata_keys
+    objective: "Filter on a producer's custom score key -> keys aligned end to end."
+    prompt: "Score quality into a field called 'mos' and keep rows where it's high."
+    dataset: "WAVs"
+    prerequisites: []
+    expect_clarification: ["what quality level / threshold counts as 'high'?"]
+    clarification_required: true
+    expected_capabilities: [ingest, quality, filter, export]
+    expected_modules:
+      required: [PreserveByValueStage]
+      equivalence: {quality: [UTMOSFilterStage, SIGMOSFilterStage]}
+      forbidden: []
+    expected_order: [ManifestReader, quality, PreserveByValueStage, AudioToDocumentStage]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: streaming, accepted_gt: 0}
+    expected_output_roles: [score]
+    explanation_rubric:
+      - "the filter's input_value_key matches the quality stage's score key"
+    pass_criteria: "producer score key == consumer key; validates"
+    fail_criteria: "keys mismatch (dangling_key); validation degraded"
+
+  - id: L10_key_mismatch_repair
+    level: 10
+    label: metadata_keys
+    objective: "A key mismatch surfaces as dangling_key and the agent repairs it."
+    prompt: "Filter on 'quality_score' but my scorer writes 'utmos_mos'."
+    dataset: "WAVs"
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, quality, filter]
+    expected_modules:
+      required: [PreserveByValueStage]
+      equivalence: {quality: [UTMOSFilterStage]}
+      forbidden: []
+    expected_order: [ManifestReader, quality, PreserveByValueStage]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_output_roles: [score]
+    explanation_rubric:
+      - "detects the dangling key and aligns the two *_key values"
+    pass_criteria: "final recipe has matching keys; validates without dangling_key"
+    fail_criteria: "leaves the keys mismatched"
+
+  - id: L10_custom_text_keys_wer
+    level: 10
+    label: metadata_keys
+    objective: "WER over custom hypothesis/reference key names."
+    prompt: "Compute WER between my 'asr' field and my 'gold' field."
+    dataset: "manifest with asr + gold text"
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [quality]
+    expected_modules:
+      required: []
+      equivalence: {wer: [ComputeWERStage, GetPairwiseWerStage]}
+      forbidden: []
+    expected_order: [ManifestReader, wer]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_output_roles: [metrics, score]
+    explanation_rubric:
+      - "maps the two custom text keys to the WER stage's hypothesis/reference params"
+    pass_criteria: "custom keys wired; validates"
+    fail_criteria: "uses default keys that don't exist in the data"

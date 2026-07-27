@@ -1,0 +1,4509 @@
+{
+  "persona": {
+    "id": "Px_wer_needs_reference",
+    "group": "pattern",
+    "pattern_id": "wer-needs-reference",
+    "pattern_kind": "enforced",
+    "executable": false,
+    "goal": "transcribe and drop high-WER clips (references provided)",
+    "opening_prompt": "I have recordings together with their correct transcripts - run speech recognition on them and throw out the ones where the result is way off from the correct text.",
+    "persona_facts": "Reference transcripts are present in the manifest.",
+    "preferences": "When asked the bar, say drop worse than 25%.",
+    "expected": {
+      "required": [
+        "InferenceAsrNemoStage"
+      ],
+      "equivalence": {
+        "wer": [
+          "GetPairwiseWerStage",
+          "ComputeWERStage"
+        ]
+      },
+      "forbidden": [],
+      "order_constraints": [
+        [
+          "InferenceAsrNemoStage",
+          "wer"
+        ]
+      ],
+      "output_roles": [
+        "pred_text"
+      ]
+    },
+    "success": {
+      "kind": "executes"
+    }
+  },
+  "conversation": {
+    "blocked": false,
+    "transcript": [
+      {
+        "turn": 0,
+        "speaker": "user",
+        "text": "I have recordings together with their correct transcripts - run speech recognition on them and throw out the ones where the result is way off from the correct text."
+      },
+      {
+        "turn": 1,
+        "speaker": "agent",
+        "text": "Here's my plan, grounded in the catalog.\n\n**What you're asking for** is a classic **transcribe \u2192 WER-filter** pipeline: run ASR to get a hypothesis, compare it against your known-correct transcripts, and drop rows where the two diverge badly. This matches the built-in `fleurs-asr-wer-filter` blueprint, adapted to read *your* manifest instead of downloading FLEURS.\n\n**Stages selected (from `cards`, nothing invented):**\n- `ManifestReader` \u2014 reads your JSONL (each line needs `audio_filepath` + reference `text`).\n- `InferenceAsrNemoStage` \u2014 ASR, writes `pred_text` (GPU; your RTX 4090 + `nemo_toolkit[asr]` are present).\n- `GetPairwiseWerStage` \u2014 one `wer_pct` per row vs. the reference. I chose this over `ComputeWERStage` (they explicitly `conflict_with` each other): your goal is a single \"how far off\" number for a keep/drop decision, which is exactly what this cheap CPU stage produces. `ComputeWERStage` adds normalized CER/edge/PNC metrics you don't need here \u2014 say the word if you want normalized WER instead.\n- `PreserveByValueStage` \u2014 keeps the good rows, drops the \"way off\" ones.\n\n**Threshold \u2014 resolved, not hand-picked:** I ran `resolve GetPairwiseWerStage --label usable`, which maps to `wer_pct <= 25.0` via the card's own anchors (`0\u201310` = transcription-grade, `10\u201325` = usable, `>25` = \"way off\"). So rows worse than 25% WER are dropped.\n\n**`validate` verdict: `runnable`** (0 errors). Produced roles: `pred_text`, `wer_pct`. Two warnings are expected and benign: `ManifestReader` is composite so the validator can't statically \"see\" that your manifest supplies the reference `text` (it must \u2014 that's the one hard data requirement), and a yield reminder. First ASR run downloads the model.\n\n**Key assumptions (flagged):** (1) your manifest carries the reference transcript under `text` and the audio path under `audio_filepath`; (2) audio is 16 kHz mono \u2014 if not, prepend `ResampleAudioStage`/`MonoConversionStage`; (3) I defaulted to the **English** checkpoint `nvidia/parakeet-tdt-0.6b-v2` \u2014 swap `model_name` to match your language, or a wrong-language model will make everything look \"way off.\" Next step after you supply the data path would be a bounded `smoke` run before any full run.\n\n```recipe\nstages:\n  - {ref: ManifestReader, params: {manifest_path: REQUIRED}}\n  - {ref: InferenceAsrNemoStage, params: {model_name: nvidia/parakeet-tdt-0.6b-v2}}\n  - {ref: GetPairwiseWerStage, params: {}}\n  - {ref: PreserveByValueStage, params: {input_value_key: wer_pct, operator: le, target_value: 25.0}}\n  - {ref: ManifestWriterStage, params: {output_path: REQUIRED}}\n```\n\nThis transcribes each recording with a NeMo ASR model, computes per-row `wer_pct` against your reference `text`, and keeps only rows at or below 25% WER (the card's \"usable\" anchor) \u2014 throwing out the ones where ASR came out way off \u2014 then writes the survivors to a JSONL manifest. The only preference-dependent knob, the \"way off\" cutoff, was resolved from the stage card's anchors rather than guessed; the sole assumption worth confirming is the language of your audio (drives `model_name`).",
+        "tool_calls": [
+          {
+            "verb": "discover",
+            "args": {},
+            "result": {
+              "count": 44,
+              "stages": [
+                {
+                  "stage": "ALMDataBuilderStage",
+                  "category": "alm",
+                  "summary": "Build ALM training windows from audio segments, filtered by rate/bandwidth/speaker-count/duration.",
+                  "tags": []
+                },
+                {
+                  "stage": "ALMDataOverlapStage",
+                  "category": "alm",
+                  "summary": "Filter overlapping ALM windows, keeping those closest to the target duration.",
+                  "tags": [
+                    "is_filter"
+                  ]
+                },
+                {
+                  "stage": "AudioDataFilterStage",
+                  "category": "export",
+                  "summary": "Complete audio filtering/curation pipeline (CompositeStage) driven by a config.",
+                  "tags": []
+                },
+                {
+                  "stage": "AudioToDocumentStage",
+                  "category": "export",
+                  "summary": "Aggregate AudioTasks into a DocumentBatch DataFrame, stripping tensors/audio blobs.",
+                  "tags": [
+                    "sink",
+                    "sanitizes_output",
+                    "batch_only"
+                  ]
+                },
+                {
+                  "stage": "BandFilterStage",
+                  "category": "quality",
+                  "summary": "Classify audio as full_band vs narrow_band (spectral RF) and filter/annotate.",
+                  "tags": [
+                    "produces_score",
+                    "is_filter",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "BandwidthEstimationStage",
+                  "category": "quality",
+                  "summary": "Estimate effective audio bandwidth from the power spectrum; write to metrics.",
+                  "tags": [
+                    "produces_score"
+                  ]
+                },
+                {
+                  "stage": "ChineseConversionStage",
+                  "category": "text_norm",
+                  "summary": "Convert Traditional Chinese to Simplified (or other OpenCC conversions), per segment.",
+                  "tags": []
+                },
+                {
+                  "stage": "ComputeWERStage",
+                  "category": "quality",
+                  "summary": "Compute WER/CER (plus edge-CER and optional PNC WER/CER) between hypothesis and reference text.",
+                  "tags": [
+                    "produces_score"
+                  ]
+                },
+                {
+                  "stage": "CreateInitialManifestFleursStage",
+                  "category": "ingest",
+                  "summary": "Download the FLEURS dataset and emit one AudioTask per transcript line.",
+                  "tags": [
+                    "needs_internet_first_run",
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "CreateInitialManifestReadSpeechStage",
+                  "category": "ingest",
+                  "summary": "Download the DNS Challenge 5 Read Speech set and emit one AudioTask per file.",
+                  "tags": [
+                    "needs_internet_first_run",
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "GetAudioDurationStage",
+                  "category": "export",
+                  "summary": "Compute audio duration from the file and store it under duration_key.",
+                  "tags": []
+                },
+                {
+                  "stage": "GetPairwiseWerStage",
+                  "category": "quality",
+                  "summary": "Compute pairwise WER (%) between reference text and ASR pred_text.",
+                  "tags": [
+                    "produces_score"
+                  ]
+                },
+                {
+                  "stage": "InferenceAsrNemoStage",
+                  "category": "transcribe",
+                  "summary": "Batched ASR transcription with a NeMo model; writes pred_text.",
+                  "tags": [
+                    "needs_gpu",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "InferenceSortformerStage",
+                  "category": "diarize",
+                  "summary": "Speaker diarization (who spoke when) with NVIDIA Sortformer; passthrough or fan-out.",
+                  "tags": [
+                    "needs_gpu",
+                    "needs_internet_first_run",
+                    "fanout"
+                  ]
+                },
+                {
+                  "stage": "InverseTextNormalizationStage",
+                  "category": "text_norm",
+                  "summary": "Inverse text normalization: spoken form -> written form (e.g. 'forty two' -> '42').",
+                  "tags": []
+                },
+                {
+                  "stage": "JoinSplitAudioMetadataStage",
+                  "category": "segment",
+                  "summary": "Rejoin transcripts/alignments of previously split audio back into the original file's metadata.",
+                  "tags": []
+                },
+                {
+                  "stage": "ManifestReader",
+                  "category": "ingest",
+                  "summary": "Read JSONL manifest(s) and emit one AudioTask per line (composite: partition + read).",
+                  "tags": []
+                },
+                {
+                  "stage": "ManifestReaderStage",
+                  "category": "ingest",
+                  "summary": "Inner reader: turn a FileGroupTask into one AudioTask per JSONL line (streaming).",
+                  "tags": []
+                },
+                {
+                  "stage": "ManifestWriterStage",
+                  "category": "export",
+                  "summary": "Append each AudioTask to a JSONL manifest file (final sink).",
+                  "tags": [
+                    "sink",
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "MergeAlignmentDiarizationStage",
+                  "category": "transcribe",
+                  "summary": "Merge word alignments into diarization segments (produce who-said-what text per speaker).",
+                  "tags": []
+                },
+                {
+                  "stage": "MonoConversionStage",
+                  "category": "preprocess",
+                  "summary": "Convert to mono and (optionally) verify/resample to a target sample rate.",
+                  "tags": [
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "NeMoASRAlignerStage",
+                  "category": "transcribe",
+                  "summary": "Transcribe and word-align audio with a NeMo ASR model (CTC/RNNT), producing word timestamps.",
+                  "tags": [
+                    "needs_gpu",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "OverlapFilterStage",
+                  "category": "alm",
+                  "summary": "Drop empty segments and mutually-overlapping segment pairs.",
+                  "tags": [
+                    "is_filter"
+                  ]
+                },
+                {
+                  "stage": "PrepareModuleSegmentsStage",
+                  "category": "export",
+                  "summary": "Shape segments for TTS or ASR: merge same-speaker, then split on duration/pause/punctuation/bandwidth.",
+                  "tags": []
+                },
+                {
+                  "stage": "PreserveByValueStage",
+                  "category": "filter",
+                  "summary": "Keep/drop rows by comparing a numeric or string field against a target value.",
+                  "tags": [
+                    "is_filter",
+                    "batch_only"
+                  ]
+                },
+                {
+                  "stage": "PretrainMetricsAggregatorStage",
+                  "category": "alm",
+                  "summary": "Aggregate per-replica ALM pretrain metrics: append one JSONL record per task to a shard.",
+                  "tags": [
+                    "sink",
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "PyAnnoteDiarizationStage",
+                  "category": "diarize",
+                  "summary": "Speaker diarization + overlap detection with PyAnnote 3.1.",
+                  "tags": [
+                    "needs_gpu",
+                    "needs_internet_first_run",
+                    "needs_hf_token",
+                    "writes_disk",
+                    "fanout"
+                  ]
+                },
+                {
+                  "stage": "ReadLongFormManifestStage",
+                  "category": "alm",
+                  "summary": "Read a JSONL manifest of long-form audios and emit one AudioTask per row (ALM pretrain source).",
+                  "tags": []
+                },
+                {
+                  "stage": "ResampleAudioStage",
+                  "category": "preprocess",
+                  "summary": "Resample/convert audio to a target sample rate (and format) via ffmpeg.",
+                  "tags": [
+                    "needs_ffmpeg",
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "SIGMOSFilterStage",
+                  "category": "quality",
+                  "summary": "SIGMOS (ITU-T P.804) neural MOS across 7 quality dimensions; filter/annotate.",
+                  "tags": [
+                    "produces_score",
+                    "is_filter",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "SegmentConcatenationStage",
+                  "category": "segment",
+                  "summary": "Concatenate nested VAD segments into a single combined waveform (with silence gaps).",
+                  "tags": []
+                },
+                {
+                  "stage": "SegmentExtractionStage",
+                  "category": "export",
+                  "summary": "Read audio slices from original files and write them as standalone segment files.",
+                  "tags": [
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "SnippetCutPlannerStage",
+                  "category": "alm",
+                  "summary": "Plan snippet cut boundaries for one long-form audio (pure planning, no audio I/O).",
+                  "tags": []
+                },
+                {
+                  "stage": "SnippetExtractionStage",
+                  "category": "alm",
+                  "summary": "Slice source audio per the snippet plan, mono-resample, and write snippets into a tar.",
+                  "tags": [
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "SnippetManifestWriterStage",
+                  "category": "export",
+                  "summary": "Append each (non-stub) ALM snippet's data as a JSONL line (snippet manifest sink).",
+                  "tags": [
+                    "sink",
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "SnippetRepetitionFilterStage",
+                  "category": "alm",
+                  "summary": "Drop planned snippets whose transcript shows suspicious n-gram repetition (ASR degeneration).",
+                  "tags": [
+                    "is_filter",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "SpeakerSeparationStage",
+                  "category": "diarize",
+                  "summary": "Separate audio by speaker (NeMo SortFormer diarization) into per-speaker AudioTasks.",
+                  "tags": [
+                    "needs_gpu",
+                    "needs_internet_first_run",
+                    "fanout"
+                  ]
+                },
+                {
+                  "stage": "SplitASRAlignJoinStage",
+                  "category": "segment",
+                  "summary": "Composite: split long audio -> NeMo ASR align -> join transcripts/alignments back to originals.",
+                  "tags": [
+                    "needs_gpu",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "SplitLongAudioStage",
+                  "category": "segment",
+                  "summary": "Split long audio files into smaller pieces at natural pauses to keep speech coherent.",
+                  "tags": [
+                    "writes_disk"
+                  ]
+                },
+                {
+                  "stage": "TimestampMapperStage",
+                  "category": "export",
+                  "summary": "Normalize task data at the output boundary: build original_file/start/end/duration and copy passthrough keys.",
+                  "tags": []
+                },
+                {
+                  "stage": "TorchSquimQualityMetricsStage",
+                  "category": "quality",
+                  "summary": "Estimate PESQ / STOI / SI-SDR with the torchaudio SQUIM model; write to metrics.",
+                  "tags": [
+                    "produces_score",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "UTMOSFilterStage",
+                  "category": "quality",
+                  "summary": "Predict UTMOS mean-opinion-score (MOS) and filter/annotate audio by quality.",
+                  "tags": [
+                    "produces_score",
+                    "is_filter",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "VADSegmentationStage",
+                  "category": "segment",
+                  "summary": "Silero VAD: detect speech and emit one segment per speech chunk (fan-out or nested).",
+                  "tags": [
+                    "fanout",
+                    "produces_score"
+                  ]
+                },
+                {
+                  "stage": "WhisperXVADStage",
+                  "category": "segment",
+                  "summary": "Voice Activity Detection with WhisperX's VAD model; emit speech segments.",
+                  "tags": [
+                    "needs_internet_first_run",
+                    "fanout"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "verb": "catalog_tree",
+            "args": {},
+            "result": {
+              "categories": [
+                {
+                  "category": "ingest",
+                  "description": "Create/read manifests and partition input files (dataset sources, manifest readers).",
+                  "stages": [
+                    "CreateInitialManifestFleursStage",
+                    "CreateInitialManifestReadSpeechStage",
+                    "ManifestReader",
+                    "ManifestReaderStage"
+                  ]
+                },
+                {
+                  "category": "preprocess",
+                  "description": "Normalize audio before models: mono conversion and sample-rate resampling.",
+                  "stages": [
+                    "MonoConversionStage",
+                    "ResampleAudioStage"
+                  ]
+                },
+                {
+                  "category": "segment",
+                  "description": "Cut audio into speech chunks: VAD, long-audio splitting, segment concatenation.",
+                  "stages": [
+                    "JoinSplitAudioMetadataStage",
+                    "SegmentConcatenationStage",
+                    "SplitASRAlignJoinStage",
+                    "SplitLongAudioStage",
+                    "VADSegmentationStage",
+                    "WhisperXVADStage"
+                  ]
+                },
+                {
+                  "category": "diarize",
+                  "description": "Who-spoke-when and per-speaker separation (Sortformer, PyAnnote, speaker separation).",
+                  "stages": [
+                    "InferenceSortformerStage",
+                    "PyAnnoteDiarizationStage",
+                    "SpeakerSeparationStage"
+                  ]
+                },
+                {
+                  "category": "transcribe",
+                  "description": "ASR transcription and forced word-alignment (NeMo ASR).",
+                  "stages": [
+                    "InferenceAsrNemoStage",
+                    "MergeAlignmentDiarizationStage",
+                    "NeMoASRAlignerStage"
+                  ]
+                },
+                {
+                  "category": "text_norm",
+                  "description": "Text post-processing on transcripts: inverse text normalization, Chinese conversion.",
+                  "stages": [
+                    "ChineseConversionStage",
+                    "InverseTextNormalizationStage"
+                  ]
+                },
+                {
+                  "category": "quality",
+                  "description": "Score/gate audio quality: UTMOS, SIGMOS, SQUIM, bandwidth, band filter.",
+                  "stages": [
+                    "BandFilterStage",
+                    "BandwidthEstimationStage",
+                    "ComputeWERStage",
+                    "GetPairwiseWerStage",
+                    "SIGMOSFilterStage",
+                    "TorchSquimQualityMetricsStage",
+                    "UTMOSFilterStage"
+                  ]
+                },
+                {
+                  "category": "filter",
+                  "description": "Generic value-based row filtering (keep/drop by a numeric or string field).",
+                  "stages": [
+                    "PreserveByValueStage"
+                  ]
+                },
+                {
+                  "category": "alm",
+                  "description": "Audio-language-model data building: windowing, overlap filtering, snippet planning.",
+                  "stages": [
+                    "ALMDataBuilderStage",
+                    "ALMDataOverlapStage",
+                    "OverlapFilterStage",
+                    "PretrainMetricsAggregatorStage",
+                    "ReadLongFormManifestStage",
+                    "SnippetCutPlannerStage",
+                    "SnippetExtractionStage",
+                    "SnippetRepetitionFilterStage"
+                  ]
+                },
+                {
+                  "category": "export",
+                  "description": "Convert/aggregate and write results: AudioToDocument, manifest/JSONL writers, timestamp mapping, segment extraction.",
+                  "stages": [
+                    "AudioDataFilterStage",
+                    "AudioToDocumentStage",
+                    "GetAudioDurationStage",
+                    "ManifestWriterStage",
+                    "PrepareModuleSegmentsStage",
+                    "SegmentExtractionStage",
+                    "SnippetManifestWriterStage",
+                    "TimestampMapperStage"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "verb": "context",
+            "args": {
+              "goal": {
+                "task": "wer_filter",
+                "domain": "read"
+              }
+            },
+            "result": {
+              "goal": {
+                "task": "wer_filter",
+                "domain": "read"
+              },
+              "category_tree": [
+                {
+                  "category": "ingest",
+                  "description": "Create/read manifests and partition input files (dataset sources, manifest readers).",
+                  "stages": [
+                    "CreateInitialManifestFleursStage",
+                    "CreateInitialManifestReadSpeechStage",
+                    "ManifestReader",
+                    "ManifestReaderStage"
+                  ]
+                },
+                {
+                  "category": "preprocess",
+                  "description": "Normalize audio before models: mono conversion and sample-rate resampling.",
+                  "stages": [
+                    "MonoConversionStage",
+                    "ResampleAudioStage"
+                  ]
+                },
+                {
+                  "category": "segment",
+                  "description": "Cut audio into speech chunks: VAD, long-audio splitting, segment concatenation.",
+                  "stages": [
+                    "JoinSplitAudioMetadataStage",
+                    "SegmentConcatenationStage",
+                    "SplitASRAlignJoinStage",
+                    "SplitLongAudioStage",
+                    "VADSegmentationStage",
+                    "WhisperXVADStage"
+                  ]
+                },
+                {
+                  "category": "diarize",
+                  "description": "Who-spoke-when and per-speaker separation (Sortformer, PyAnnote, speaker separation).",
+                  "stages": [
+                    "InferenceSortformerStage",
+                    "PyAnnoteDiarizationStage",
+                    "SpeakerSeparationStage"
+                  ]
+                },
+                {
+                  "category": "transcribe",
+                  "description": "ASR transcription and forced word-alignment (NeMo ASR).",
+                  "stages": [
+                    "InferenceAsrNemoStage",
+                    "MergeAlignmentDiarizationStage",
+                    "NeMoASRAlignerStage"
+                  ]
+                },
+                {
+                  "category": "text_norm",
+                  "description": "Text post-processing on transcripts: inverse text normalization, Chinese conversion.",
+                  "stages": [
+                    "ChineseConversionStage",
+                    "InverseTextNormalizationStage"
+                  ]
+                },
+                {
+                  "category": "quality",
+                  "description": "Score/gate audio quality: UTMOS, SIGMOS, SQUIM, bandwidth, band filter.",
+                  "stages": [
+                    "BandFilterStage",
+                    "BandwidthEstimationStage",
+                    "ComputeWERStage",
+                    "GetPairwiseWerStage",
+                    "SIGMOSFilterStage",
+                    "TorchSquimQualityMetricsStage",
+                    "UTMOSFilterStage"
+                  ]
+                },
+                {
+                  "category": "filter",
+                  "description": "Generic value-based row filtering (keep/drop by a numeric or string field).",
+                  "stages": [
+                    "PreserveByValueStage"
+                  ]
+                },
+                {
+                  "category": "alm",
+                  "description": "Audio-language-model data building: windowing, overlap filtering, snippet planning.",
+                  "stages": [
+                    "ALMDataBuilderStage",
+                    "ALMDataOverlapStage",
+                    "OverlapFilterStage",
+                    "PretrainMetricsAggregatorStage",
+                    "ReadLongFormManifestStage",
+                    "SnippetCutPlannerStage",
+                    "SnippetExtractionStage",
+                    "SnippetRepetitionFilterStage"
+                  ]
+                },
+                {
+                  "category": "export",
+                  "description": "Convert/aggregate and write results: AudioToDocument, manifest/JSONL writers, timestamp mapping, segment extraction.",
+                  "stages": [
+                    "AudioDataFilterStage",
+                    "AudioToDocumentStage",
+                    "GetAudioDurationStage",
+                    "ManifestWriterStage",
+                    "PrepareModuleSegmentsStage",
+                    "SegmentExtractionStage",
+                    "SnippetManifestWriterStage",
+                    "TimestampMapperStage"
+                  ]
+                }
+              ],
+              "selected_stages": [],
+              "presets": {
+                "_blueprint_fleurs-asr-wer-filter": {
+                  "english_parakeet": {
+                    "model_name": "nvidia/parakeet-tdt-0.6b-v2",
+                    "wer_threshold": 25.0
+                  }
+                },
+                "_blueprint_readspeech-quality-filter": {
+                  "tts_reference": {
+                    "utmos_mos_threshold": 4.0
+                  },
+                  "asr_finetune": {
+                    "utmos_mos_threshold": 3.4
+                  },
+                  "max_retention": {
+                    "utmos_mos_threshold": 2.5
+                  }
+                }
+              },
+              "matched_blueprints": [
+                {
+                  "blueprint_id": "fleurs-asr-wer-filter",
+                  "intent": "transcribe a dataset and drop low-accuracy rows by WER",
+                  "data_assumptions": {
+                    "input": "manifest or dataset with reference transcripts",
+                    "transcripts": "present",
+                    "sr": "any"
+                  },
+                  "produces": "JSONL manifest with pred_text + wer, low-WER rows only",
+                  "recipe_ref": "recipes/fleurs_asr_filter.yaml",
+                  "stages": [
+                    {
+                      "ref": "CreateInitialManifestFleursStage",
+                      "tag": "enforced",
+                      "why_here": "source: downloads FLEURS and produces audio_filepath + reference text"
+                    },
+                    {
+                      "ref": "InferenceAsrNemoStage",
+                      "tag": "advisory",
+                      "why_here": "ASR assumes 16 kHz; pick the checkpoint for the data's language (card)"
+                    },
+                    {
+                      "ref": "GetPairwiseWerStage",
+                      "tag": "enforced",
+                      "why_here": "needs text + pred_text -> must follow ASR"
+                    },
+                    {
+                      "ref": "GetAudioDurationStage",
+                      "tag": "advisory",
+                      "why_here": "annotate duration for downstream filtering/reporting"
+                    },
+                    {
+                      "ref": "PreserveByValueStage",
+                      "tag": "advisory",
+                      "why_here": "filter AFTER wer exists; early filter saves the write cost"
+                    },
+                    {
+                      "ref": "ManifestWriterStage",
+                      "tag": "enforced",
+                      "why_here": "sink"
+                    }
+                  ],
+                  "pitfalls": [
+                    "WER requires reference transcripts in the source AND ASR pred_text; without transcripts, WER is unproducible",
+                    "match the ASR checkpoint to the data's language (model-card fact)",
+                    "don't filter before wer is produced"
+                  ],
+                  "presets": {
+                    "english_parakeet": {
+                      "model_name": "nvidia/parakeet-tdt-0.6b-v2",
+                      "wer_threshold": 25.0
+                    }
+                  },
+                  "provenance": {
+                    "derived_from": "tutorials/audio/fleurs",
+                    "version": 1,
+                    "validated": true
+                  }
+                },
+                {
+                  "blueprint_id": "alm-windowing",
+                  "intent": "build audio-language-model training windows from a diarized manifest and filter overlaps",
+                  "data_assumptions": {
+                    "input": "JSONL manifest with segments (speaker/start/end/text)",
+                    "transcripts": "present",
+                    "sr": ">=16000"
+                  },
+                  "produces": "JSONL manifest of bounded, overlap-filtered training windows",
+                  "recipe_ref": "recipes/alm_windowing.yaml",
+                  "stages": [
+                    {
+                      "ref": "ManifestReader",
+                      "tag": "enforced",
+                      "why_here": "source: streams the JSONL manifest into AudioTasks"
+                    },
+                    {
+                      "ref": "ALMDataBuilderStage",
+                      "tag": "advisory",
+                      "why_here": "filters segments by bandwidth/SR/speaker-count and builds sliding windows; drops words/segments to shrink rows"
+                    },
+                    {
+                      "ref": "ALMDataOverlapStage",
+                      "tag": "advisory",
+                      "why_here": "removes windows overlapping beyond a threshold; run after windows exist"
+                    },
+                    {
+                      "ref": "ManifestWriterStage",
+                      "tag": "enforced",
+                      "why_here": "sink"
+                    }
+                  ],
+                  "pitfalls": [
+                    "input must already carry per-segment metadata (speaker/start/end); this blueprint does not diarize",
+                    "CPU-only and fixture-fast -- a good local smoke test"
+                  ],
+                  "provenance": {
+                    "derived_from": "tutorials/audio/alm",
+                    "version": 1,
+                    "validated": true
+                  }
+                },
+                {
+                  "blueprint_id": "readspeech-quality-filter",
+                  "intent": "curate clean speech from a raw WAV folder by quality; no transcription",
+                  "data_assumptions": {
+                    "input": "folder of WAV (48kHz, mono or stereo)",
+                    "transcripts": "absent",
+                    "sr": 48000
+                  },
+                  "produces": "JSONL manifest with per-item quality scores + timestamps",
+                  "recipe_ref": "recipes/readspeech_quality.yaml",
+                  "topology_selection": {
+                    "rule": "output granularity decides which flags to enable",
+                    "options": [
+                      {
+                        "intent": "whole-file scores",
+                        "flags": [],
+                        "shape": "Mono -> Filters -> TimestampMapper"
+                      },
+                      {
+                        "intent": "per-speech-segment scores",
+                        "flags": [
+                          "vad"
+                        ],
+                        "shape": "Mono -> VAD(fanout) -> Filters -> TimestampMapper"
+                      },
+                      {
+                        "intent": "per-speaker scores",
+                        "flags": [
+                          "speaker_separation"
+                        ],
+                        "shape": "Mono -> Filters -> SpeakerSep(fanout) -> Filters -> TimestampMapper"
+                      },
+                      {
+                        "intent": "per-speaker-segment",
+                        "flags": [
+                          "vad",
+                          "speaker_separation"
+                        ],
+                        "shape": "Mono -> VAD(nested) -> Filters -> SegConcat -> SpeakerSep -> VAD -> Filters -> TimestampMapper"
+                      }
+                    ]
+                  },
+                  "stages": [
+                    {
+                      "ref": "CreateInitialManifestReadSpeechStage",
+                      "tag": "enforced",
+                      "why_here": "source: scans the folder and produces audio_filepath"
+                    },
+                    {
+                      "ref": "MonoConversionStage",
+                      "tag": "advisory",
+                      "why_here": "normalize to mono + one SR once, upfront (downstream models assume mono)"
+                    },
+                    {
+                      "ref": "VADSegmentationStage",
+                      "tag": "advisory",
+                      "why_here": "segment speech so scores are per-segment; this is a granularity choice, not a data dependency"
+                    },
+                    {
+                      "ref": "BandFilterStage",
+                      "tag": "advisory",
+                      "why_here": "cheapest filter (CPU) first; cull low-fidelity before GPU work"
+                    },
+                    {
+                      "ref": "UTMOSFilterStage",
+                      "tag": "advisory",
+                      "why_here": "MOS gate"
+                    },
+                    {
+                      "ref": "SIGMOSFilterStage",
+                      "tag": "advisory",
+                      "why_here": "7-dim gate; MOST aggressive -- last = cheap->expensive, first = max early cull (validator does not constrain this order)"
+                    },
+                    {
+                      "ref": "ManifestWriterStage",
+                      "tag": "enforced",
+                      "why_here": "sink; TimestampMapper upstream already stripped non-serializable keys"
+                    }
+                  ],
+                  "pitfalls": [
+                    "no transcripts here -> cannot add ASR/WER; use the fleurs blueprint for that",
+                    "all filters at default ~= 23% pass rate; SIGMOS dominates the drop",
+                    "don't skip resample/mono on 48k stereo data"
+                  ],
+                  "presets": {
+                    "tts_reference": {
+                      "utmos_mos_threshold": 4.0
+                    },
+                    "asr_finetune": {
+                      "utmos_mos_threshold": 3.4
+                    },
+                    "max_retention": {
+                      "utmos_mos_threshold": 2.5
+                    }
+                  },
+                  "provenance": {
+                    "derived_from": "tutorials/audio/readspeech",
+                    "version": 1,
+                    "validated": true
+                  }
+                }
+              ],
+              "matched_recipes": [
+                {
+                  "recipe_id": "fleurs-asr-wer-filter",
+                  "name": "fleurs_asr_filter",
+                  "intent": "download FLEURS, transcribe, drop rows whose WER exceeds a threshold",
+                  "preset": "english_parakeet",
+                  "inputs": {
+                    "raw_data_dir": "REQUIRED: staging dir for the FLEURS download",
+                    "output_manifest": "REQUIRED: output .jsonl path"
+                  },
+                  "stages": [
+                    {
+                      "ref": "CreateInitialManifestFleursStage",
+                      "params": {
+                        "lang": "en_us",
+                        "split": "dev",
+                        "raw_data_dir": "REQUIRED_raw_data_dir",
+                        "batch_size": 4
+                      }
+                    },
+                    {
+                      "ref": "InferenceAsrNemoStage",
+                      "params": {
+                        "model_name": "nvidia/parakeet-tdt-0.6b-v2",
+                        "batch_size": 16
+                      }
+                    },
+                    {
+                      "ref": "GetPairwiseWerStage",
+                      "params": {}
+                    },
+                    {
+                      "ref": "GetAudioDurationStage",
+                      "params": {}
+                    },
+                    {
+                      "ref": "PreserveByValueStage",
+                      "params": {
+                        "input_value_key": "wer_pct",
+                        "target_value": 25.0,
+                        "operator": "le"
+                      }
+                    },
+                    {
+                      "ref": "ManifestWriterStage",
+                      "params": {
+                        "output_path": "REQUIRED_output_manifest"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "recipe_id": "alm-windowing",
+                  "name": "alm_windowing",
+                  "intent": "build audio-language-model training windows from a diarized manifest, then filter overlaps",
+                  "inputs": {
+                    "manifest_path": "REQUIRED: input JSONL manifest with segments",
+                    "output_manifest": "REQUIRED: output .jsonl path"
+                  },
+                  "stages": [
+                    {
+                      "ref": "ManifestReader",
+                      "params": {
+                        "manifest_path": "REQUIRED_manifest_path",
+                        "files_per_partition": 1
+                      }
+                    },
+                    {
+                      "ref": "ALMDataBuilderStage",
+                      "params": {
+                        "target_window_duration": 120.0,
+                        "tolerance": 0.1,
+                        "min_sample_rate": 16000,
+                        "min_bandwidth": 8000,
+                        "min_speakers": 2,
+                        "max_speakers": 5,
+                        "truncation": true,
+                        "drop_fields": "words",
+                        "drop_fields_top_level": "words,segments"
+                      }
+                    },
+                    {
+                      "ref": "ALMDataOverlapStage",
+                      "params": {
+                        "overlap_percentage": 50,
+                        "target_duration": 120.0
+                      }
+                    },
+                    {
+                      "ref": "ManifestWriterStage",
+                      "params": {
+                        "output_path": "REQUIRED_output_manifest"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "recipe_id": "readspeech-quality-filter",
+                  "name": "readspeech_quality",
+                  "intent": "curate clean speech from a raw WAV folder by quality (no transcription)",
+                  "preset": "general",
+                  "inputs": {
+                    "raw_data_dir": "REQUIRED: folder of WAV files (or DNS download dir)",
+                    "output_manifest": "REQUIRED: output .jsonl path"
+                  },
+                  "stages": [
+                    {
+                      "ref": "CreateInitialManifestReadSpeechStage",
+                      "params": {
+                        "raw_data_dir": "REQUIRED_raw_data_dir",
+                        "max_samples": 5000,
+                        "auto_download": false,
+                        "batch_size": 1
+                      }
+                    },
+                    {
+                      "ref": "AudioDataFilterStage",
+                      "params": {
+                        "config": {
+                          "mono_conversion": {
+                            "output_sample_rate": 48000
+                          },
+                          "vad": {
+                            "enable": true,
+                            "min_duration_sec": 2.0,
+                            "max_duration_sec": 60.0,
+                            "threshold": 0.5
+                          },
+                          "band_filter": {
+                            "enable": true,
+                            "band_value": "full_band"
+                          },
+                          "utmos": {
+                            "enable": true,
+                            "mos_threshold": 3.4
+                          },
+                          "sigmos": {
+                            "enable": true,
+                            "noise_threshold": 4.0,
+                            "ovrl_threshold": 3.5
+                          },
+                          "speaker_separation": {
+                            "enable": false
+                          },
+                          "timestamp_mapper": {}
+                        }
+                      }
+                    },
+                    {
+                      "ref": "ManifestWriterStage",
+                      "params": {
+                        "output_path": "REQUIRED_output_manifest"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "patterns": [
+                {
+                  "id": "mono-first",
+                  "kind": "advisory",
+                  "when": "input may be stereo/multi-channel",
+                  "then": "put MonoConversionStage first so downstream models get consistent mono input"
+                },
+                {
+                  "id": "resample-before-16k-models",
+                  "kind": "advisory",
+                  "when": "a model stage's card lists supported_sample_rates=[16000] and the data has other rates",
+                  "then": "insert ResampleAudioStage (or MonoConversionStage output_sample_rate=16000) upstream; doing it once avoids each model re-resampling"
+                },
+                {
+                  "id": "sanitize-before-json-sink",
+                  "kind": "enforced",
+                  "when": "a tensor/audio-producing stage precedes a JSON/JSONL writer",
+                  "then": "insert AudioToDocumentStage before the writer (it strips tensors); the validator also flags this as tensor_into_sink"
+                },
+                {
+                  "id": "filter-after-metric",
+                  "kind": "advisory",
+                  "when": "filtering on a metric field (e.g. wer, duration, mos)",
+                  "then": "place the filter AFTER the stage that produces the metric; filtering early (before convert/write) saves cost"
+                },
+                {
+                  "id": "cheap-filters-first",
+                  "kind": "advisory",
+                  "when": "multiple independent quality filters are used",
+                  "then": "order cheap CPU filters (BandFilter) before expensive GPU filters (UTMOS/SIGMOS). Note: SIGMOS is empirically the most aggressive -- put it first only if you want maximum early cull"
+                },
+                {
+                  "id": "wer-needs-reference",
+                  "kind": "enforced",
+                  "when": "WER/CER filtering is requested",
+                  "then": "requires reference transcripts in the source manifest AND ASR pred_text upstream; if transcripts are absent, WER is unproducible (find_producers('reference_text') is empty)"
+                },
+                {
+                  "id": "vad-changes-granularity",
+                  "kind": "advisory",
+                  "when": "the user wants per-segment (not whole-file) scores",
+                  "then": "enable VAD to fan out one row per speech segment; omit VAD for whole-file scores"
+                },
+                {
+                  "id": "diarization-needs-continuous-audio",
+                  "kind": "enforced",
+                  "when": "speaker separation follows VAD segmentation",
+                  "then": "re-join segments (SegmentConcatenationStage) before diarization; diarization needs a continuous waveform"
+                }
+              ],
+              "role_graph_slice": {
+                "producers": {
+                  "alignment": [
+                    "JoinSplitAudioMetadataStage",
+                    "NeMoASRAlignerStage"
+                  ],
+                  "audio_filepath": [
+                    "CreateInitialManifestReadSpeechStage",
+                    "InferenceSortformerStage",
+                    "ManifestReaderStage",
+                    "ReadLongFormManifestStage",
+                    "ResampleAudioStage",
+                    "SnippetExtractionStage"
+                  ],
+                  "diar_segments": [
+                    "InferenceSortformerStage",
+                    "SpeakerSeparationStage",
+                    "TimestampMapperStage"
+                  ],
+                  "duration": [
+                    "GetAudioDurationStage",
+                    "MonoConversionStage",
+                    "ResampleAudioStage",
+                    "SegmentConcatenationStage",
+                    "SnippetExtractionStage",
+                    "SpeakerSeparationStage",
+                    "TimestampMapperStage",
+                    "VADSegmentationStage"
+                  ],
+                  "end_ms": [
+                    "TimestampMapperStage",
+                    "VADSegmentationStage"
+                  ],
+                  "item_id": [
+                    "ResampleAudioStage"
+                  ],
+                  "metrics": [
+                    "ALMDataBuilderStage",
+                    "BandwidthEstimationStage",
+                    "ComputeWERStage",
+                    "TorchSquimQualityMetricsStage"
+                  ],
+                  "num_samples": [
+                    "MonoConversionStage"
+                  ],
+                  "num_speakers": [
+                    "SpeakerSeparationStage"
+                  ],
+                  "original_file": [
+                    "SegmentConcatenationStage",
+                    "TimestampMapperStage",
+                    "VADSegmentationStage"
+                  ],
+                  "overlap_segments": [
+                    "PyAnnoteDiarizationStage"
+                  ],
+                  "pred_text": [
+                    "InferenceAsrNemoStage"
+                  ],
+                  "prediction": [
+                    "BandFilterStage"
+                  ],
+                  "sample_rate": [
+                    "MonoConversionStage",
+                    "SegmentConcatenationStage",
+                    "SpeakerSeparationStage",
+                    "VADSegmentationStage"
+                  ],
+                  "score": [
+                    "GetPairwiseWerStage",
+                    "SIGMOSFilterStage",
+                    "UTMOSFilterStage"
+                  ],
+                  "segment_num": [
+                    "VADSegmentationStage"
+                  ],
+                  "segments": [
+                    "OverlapFilterStage",
+                    "PrepareModuleSegmentsStage",
+                    "PyAnnoteDiarizationStage",
+                    "ReadLongFormManifestStage",
+                    "SnippetExtractionStage",
+                    "WhisperXVADStage"
+                  ],
+                  "speaker_id": [
+                    "SpeakerSeparationStage"
+                  ],
+                  "start_ms": [
+                    "TimestampMapperStage",
+                    "VADSegmentationStage"
+                  ],
+                  "text": [
+                    "CreateInitialManifestReadSpeechStage",
+                    "JoinSplitAudioMetadataStage",
+                    "MergeAlignmentDiarizationStage",
+                    "NeMoASRAlignerStage"
+                  ],
+                  "waveform": [
+                    "MonoConversionStage",
+                    "SegmentConcatenationStage",
+                    "SpeakerSeparationStage",
+                    "VADSegmentationStage"
+                  ],
+                  "windows": [
+                    "ALMDataBuilderStage",
+                    "ALMDataOverlapStage"
+                  ],
+                  "words": [
+                    "MergeAlignmentDiarizationStage",
+                    "NeMoASRAlignerStage"
+                  ]
+                },
+                "consumers": {
+                  "alignment": [
+                    "MergeAlignmentDiarizationStage"
+                  ],
+                  "audio_filepath": [
+                    "ALMDataBuilderStage",
+                    "BandFilterStage",
+                    "BandwidthEstimationStage",
+                    "GetAudioDurationStage",
+                    "InferenceAsrNemoStage",
+                    "InferenceSortformerStage",
+                    "MonoConversionStage",
+                    "PyAnnoteDiarizationStage",
+                    "ResampleAudioStage",
+                    "SIGMOSFilterStage",
+                    "SnippetExtractionStage",
+                    "SpeakerSeparationStage",
+                    "SplitLongAudioStage",
+                    "TorchSquimQualityMetricsStage",
+                    "UTMOSFilterStage",
+                    "VADSegmentationStage",
+                    "WhisperXVADStage"
+                  ],
+                  "diar_segments": [
+                    "TimestampMapperStage"
+                  ],
+                  "duration": [
+                    "BandwidthEstimationStage",
+                    "NeMoASRAlignerStage",
+                    "PrepareModuleSegmentsStage",
+                    "SplitLongAudioStage",
+                    "TimestampMapperStage"
+                  ],
+                  "end_ms": [
+                    "TimestampMapperStage"
+                  ],
+                  "pred_text": [
+                    "GetPairwiseWerStage"
+                  ],
+                  "reference_text": [
+                    "ComputeWERStage"
+                  ],
+                  "sample_rate": [
+                    "ALMDataBuilderStage",
+                    "BandFilterStage",
+                    "MonoConversionStage",
+                    "SIGMOSFilterStage",
+                    "SpeakerSeparationStage",
+                    "UTMOSFilterStage",
+                    "VADSegmentationStage"
+                  ],
+                  "segments": [
+                    "ALMDataBuilderStage",
+                    "BandFilterStage",
+                    "BandwidthEstimationStage",
+                    "ChineseConversionStage",
+                    "ComputeWERStage",
+                    "InverseTextNormalizationStage",
+                    "MergeAlignmentDiarizationStage",
+                    "NeMoASRAlignerStage",
+                    "OverlapFilterStage",
+                    "PrepareModuleSegmentsStage",
+                    "SIGMOSFilterStage",
+                    "SegmentConcatenationStage",
+                    "SnippetCutPlannerStage",
+                    "SplitLongAudioStage",
+                    "TorchSquimQualityMetricsStage",
+                    "UTMOSFilterStage"
+                  ],
+                  "start_ms": [
+                    "TimestampMapperStage"
+                  ],
+                  "text": [
+                    "ComputeWERStage",
+                    "GetPairwiseWerStage"
+                  ],
+                  "waveform": [
+                    "BandFilterStage",
+                    "MonoConversionStage",
+                    "SIGMOSFilterStage",
+                    "SpeakerSeparationStage",
+                    "UTMOSFilterStage",
+                    "VADSegmentationStage"
+                  ],
+                  "windows": [
+                    "ALMDataOverlapStage"
+                  ]
+                },
+                "unresolved_stages": [
+                  "CreateInitialManifestFleursStage",
+                  "SegmentExtractionStage"
+                ]
+              },
+              "data_profile": null,
+              "env_profile": {
+                "has_gpu": true,
+                "gpu_count": 1,
+                "gpu_names": [
+                  "NVIDIA GeForce RTX 4090"
+                ],
+                "gpu_mem_gb": 23.5,
+                "total_cpus": 16,
+                "total_ram_gb": 125.6,
+                "free_disk_gb": 86.9,
+                "has_ffmpeg": true,
+                "installed_extras": [
+                  "librosa",
+                  "nemo_text_processing",
+                  "nemo_toolkit[asr]",
+                  "onnxruntime",
+                  "pyannote-audio",
+                  "silero-vad",
+                  "soundfile",
+                  "torchaudio",
+                  "whisperx"
+                ],
+                "missing_packages": [],
+                "available_secrets": [],
+                "curator_version": "1.3.0+06d993b6",
+                "notes": []
+              }
+            }
+          },
+          {
+            "verb": "cards",
+            "args": {
+              "names": [
+                "InferenceAsrNemoStage",
+                "ComputeWERStage",
+                "GetPairwiseWerStage",
+                "PreserveByValueStage"
+              ]
+            },
+            "result": {
+              "cards": [
+                {
+                  "stage": "InferenceAsrNemoStage",
+                  "category": "transcribe",
+                  "card": {
+                    "stage_id": "InferenceAsrNemoStage",
+                    "category": "transcribe",
+                    "summary": "Batched ASR transcription with a NeMo model; writes pred_text.",
+                    "tags": [
+                      "needs_gpu",
+                      "needs_internet_first_run"
+                    ],
+                    "model_id": "nvidia/parakeet-tdt-0.6b-v2 (or any NeMo ASR checkpoint, incl. language-specific FastConformer)",
+                    "model_version": "user-specified via model_name (default preset: nvidia/parakeet-tdt-0.6b-v2)",
+                    "domain": {
+                      "language": "model-dependent (e.g. en for parakeet)",
+                      "style": "read+conversational"
+                    },
+                    "constraints": {
+                      "supported_sample_rates": [
+                        16000
+                      ],
+                      "input_duration_sweetspot_sec": {
+                        "min": 0.5,
+                        "max": 40.0
+                      }
+                    },
+                    "resource": {
+                      "cpus": 1.0,
+                      "gpu_mem_gb": 5.0,
+                      "gpu_optional": false,
+                      "bound": "gpu",
+                      "throughput_hint": "batched GPU inference"
+                    },
+                    "use_cases": {
+                      "good_for": [
+                        "transcribing speech to text",
+                        "producing pred_text for WER/CER filtering"
+                      ],
+                      "avoid_for": [
+                        "languages the chosen checkpoint was not trained on",
+                        "non-16kHz input without an upstream resample"
+                      ]
+                    },
+                    "composition": {
+                      "typical_upstream": [
+                        "ResampleAudioStage",
+                        "VADSegmentationStage",
+                        "SplitLongAudioStage"
+                      ],
+                      "typical_downstream": [
+                        "GetPairwiseWerStage",
+                        "ComputeWERStage",
+                        "InverseTextNormalizationStage"
+                      ]
+                    },
+                    "params_of_note": {
+                      "model_name": "the ASR checkpoint id (choose per language)"
+                    },
+                    "comparison": {
+                      "language_support": "checkpoint-dependent (parakeet: en); pick model_name to match data language",
+                      "accuracy_hint": "checkpoint-dependent (model-card fact)",
+                      "config_complexity": "low (pick model_name)",
+                      "known_limitations": "no batch_size stage param (batching is an executor knob); needs 16 kHz input"
+                    },
+                    "notes": [
+                      "Language coverage is a checkpoint property (model-card fact), not derivable from source; pick the checkpoint to match the data's language.",
+                      "WER/CER filtering requires reference transcripts in the source manifest; if absent, WER is unproducible.",
+                      "batch_size is an executor/runtime knob, not a stage constructor param."
+                    ],
+                    "presets": {
+                      "english_parakeet": {
+                        "model_name": "nvidia/parakeet-tdt-0.6b-v2"
+                      }
+                    },
+                    "verified": {
+                      "params": "mechanical",
+                      "tags": "mechanical",
+                      "model_version": "best_guess",
+                      "resource": "best_guess",
+                      "constraints": "best_guess",
+                      "domain": "best_guess",
+                      "use_cases": "best_guess",
+                      "comparison": "best_guess"
+                    },
+                    "provenance": {
+                      "model_card_url": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2",
+                      "card_version": 2,
+                      "last_validated": "2026-07-20"
+                    }
+                  },
+                  "contract": {
+                    "reads": {
+                      "data_keys": [],
+                      "segment_data_keys": [],
+                      "accepts": [],
+                      "produces": []
+                    },
+                    "writes": {
+                      "data_keys": [],
+                      "segment_data_keys": [],
+                      "accepts": [],
+                      "produces": []
+                    },
+                    "reads_one_of": [],
+                    "metadata_reads": [],
+                    "metadata_writes": [],
+                    "cardinality": "1:1",
+                    "cardinality_options": [],
+                    "iteration_key": null,
+                    "preserves_upstream_keys": true,
+                    "wrappable": true,
+                    "size_envelope": {
+                      "max_input_sec": null,
+                      "allowed_sample_rates": null,
+                      "channels": "any",
+                      "memory_hint": null
+                    },
+                    "gates": {
+                      "writes_to_disk": false,
+                      "requires_gpu": false,
+                      "requires_internet_first_run": false,
+                      "requires_ffmpeg": false,
+                      "lifecycle_side_effects": false,
+                      "runtime_secrets": [],
+                      "requires_serializable_input": false,
+                      "sanitizes_output": false
+                    },
+                    "stage_id": "InferenceAsrNemoStage",
+                    "description": "Speech recognition inference using a NeMo ASR model.",
+                    "params": [
+                      {
+                        "name": "model_name",
+                        "type": "str",
+                        "default": "",
+                        "required": false,
+                        "choices": null,
+                        "description": "Pretrained NeMo ASR model name. See full list at https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit/asr/all_chkpt.html",
+                        "role": null
+                      },
+                      {
+                        "name": "cache_dir",
+                        "type": "str | None",
+                        "default": null,
+                        "required": false,
+                        "choices": null,
+                        "description": "Optional directory for model download cache. When set, NeMo stores/loads the pretrained checkpoint here instead of the default cache location.",
+                        "role": null
+                      },
+                      {
+                        "name": "asr_model",
+                        "type": "Any | None",
+                        "default": null,
+                        "required": false,
+                        "choices": null,
+                        "description": null,
+                        "role": null
+                      },
+                      {
+                        "name": "filepath_key",
+                        "type": "str",
+                        "default": "audio_filepath",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key in the entry dict pointing to the audio file.",
+                        "role": "audio_filepath"
+                      },
+                      {
+                        "name": "waveform_key",
+                        "type": "str",
+                        "default": "waveform",
+                        "required": false,
+                        "choices": null,
+                        "description": null,
+                        "role": "waveform"
+                      },
+                      {
+                        "name": "sample_rate_key",
+                        "type": "str",
+                        "default": "sample_rate",
+                        "required": false,
+                        "choices": null,
+                        "description": null,
+                        "role": "sample_rate"
+                      },
+                      {
+                        "name": "input_residency",
+                        "type": "str",
+                        "default": "file",
+                        "required": false,
+                        "choices": [
+                          "file",
+                          "waveform",
+                          "auto"
+                        ],
+                        "description": null,
+                        "role": null
+                      },
+                      {
+                        "name": "pred_text_key",
+                        "type": "str",
+                        "default": "pred_text",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key where the predicted transcription is stored.",
+                        "role": "pred_text"
+                      }
+                    ],
+                    "dispatch": "process_batch",
+                    "error_policy": "unknown",
+                    "key_roles": {
+                      "audio_filepath": "audio_filepath",
+                      "waveform": "waveform",
+                      "sample_rate": "sample_rate",
+                      "pred_text": "pred_text"
+                    },
+                    "batch_only": true,
+                    "accepts_task_type": "AudioTask",
+                    "produces_task_type": "AudioTask",
+                    "removes_keys": []
+                  }
+                },
+                {
+                  "stage": "ComputeWERStage",
+                  "category": "quality",
+                  "card": {
+                    "stage_id": "ComputeWERStage",
+                    "category": "quality",
+                    "summary": "Compute WER/CER (plus edge-CER and optional PNC WER/CER) between hypothesis and reference text.",
+                    "tags": [
+                      "produces_score"
+                    ],
+                    "model_id": null,
+                    "domain": {
+                      "language": "configurable (default en)",
+                      "style": "any"
+                    },
+                    "constraints": {},
+                    "resource": {
+                      "cpus": 1.0,
+                      "gpu_mem_gb": 0.0,
+                      "gpu_optional": false,
+                      "bound": "cpu",
+                      "throughput_hint": "CPU; text cleaning + normalization (NeMo text processing)"
+                    },
+                    "use_cases": {
+                      "good_for": [
+                        "measuring ASR accuracy (normalized WER/CER, edge-CER, PNC) for filtering",
+                        "per-segment scoring"
+                      ],
+                      "avoid_for": [
+                        "data with no reference transcripts (WER is unproducible)"
+                      ]
+                    },
+                    "composition": {
+                      "typical_upstream": [
+                        "InferenceAsrNemoStage",
+                        "NeMoASRAlignerStage"
+                      ],
+                      "typical_downstream": [
+                        "PreserveByValueStage",
+                        "AudioToDocumentStage"
+                      ]
+                    },
+                    "params_of_note": {
+                      "language": "language for text normalization (default en)",
+                      "hypothesis_text_key": "ASR prediction key (default text)",
+                      "reference_text_key": "reference transcript key (default text_ref)",
+                      "compute_pnc_wer": "also compute punctuation-and-capitalization WER/CER",
+                      "edge_length": "characters at each edge for edge-CER"
+                    },
+                    "param_dependencies": {
+                      "hypothesis_text_key": "requires an upstream ASR prediction",
+                      "reference_text_key": "requires reference transcripts in the source manifest"
+                    },
+                    "comparison": {
+                      "accuracy_hint": "normalized, multi-metric (WER/CER/edge/PNC), operates on segments",
+                      "config_complexity": "medium (language + PNC + thresholds)",
+                      "known_limitations": "requires references; normalization is language-dependent"
+                    },
+                    "conflicts_with": [
+                      "GetPairwiseWerStage"
+                    ],
+                    "notes": [
+                      "Cleans/normalizes text via NeMo text processing before scoring. Writes results under metrics_key."
+                    ],
+                    "verified": {
+                      "params": "mechanical",
+                      "tags": "mechanical",
+                      "resource": "best_guess",
+                      "use_cases": "best_guess",
+                      "domain": "best_guess",
+                      "comparison": "best_guess"
+                    },
+                    "provenance": {
+                      "model_card_url": null,
+                      "card_version": 1,
+                      "last_validated": "2026-07-20"
+                    }
+                  },
+                  "contract": {
+                    "reads": {
+                      "data_keys": [],
+                      "segment_data_keys": [],
+                      "accepts": [],
+                      "produces": []
+                    },
+                    "writes": {
+                      "data_keys": [],
+                      "segment_data_keys": [],
+                      "accepts": [],
+                      "produces": []
+                    },
+                    "reads_one_of": [],
+                    "metadata_reads": [],
+                    "metadata_writes": [],
+                    "cardinality": "1:1",
+                    "cardinality_options": [],
+                    "iteration_key": null,
+                    "preserves_upstream_keys": true,
+                    "wrappable": true,
+                    "size_envelope": {
+                      "max_input_sec": null,
+                      "allowed_sample_rates": null,
+                      "channels": "any",
+                      "memory_hint": null
+                    },
+                    "gates": {
+                      "writes_to_disk": false,
+                      "requires_gpu": false,
+                      "requires_internet_first_run": false,
+                      "requires_ffmpeg": false,
+                      "lifecycle_side_effects": false,
+                      "runtime_secrets": [],
+                      "requires_serializable_input": false,
+                      "sanitizes_output": false
+                    },
+                    "stage_id": "ComputeWERStage",
+                    "description": "Stage that computes Word Error Rate (WER), CER, edge CER, and optionally PNC WER/CER.",
+                    "params": [
+                      {
+                        "name": "language",
+                        "type": "str",
+                        "default": "en",
+                        "required": false,
+                        "choices": null,
+                        "description": "Language of the text. Defaults to \"en\".",
+                        "role": null
+                      },
+                      {
+                        "name": "hypothesis_text_key",
+                        "type": "str",
+                        "default": "text",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key to the hypothesis text. Defaults to \"text\".",
+                        "role": "text"
+                      },
+                      {
+                        "name": "reference_text_key",
+                        "type": "str",
+                        "default": "text_ref",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key to the reference text. Defaults to \"text\".",
+                        "role": "reference_text"
+                      },
+                      {
+                        "name": "num_words_threshold",
+                        "type": "int",
+                        "default": 200,
+                        "required": false,
+                        "choices": null,
+                        "description": "Number of words to use for normalization. Defaults to 200.",
+                        "role": null
+                      },
+                      {
+                        "name": "num_words_look_back",
+                        "type": "int",
+                        "default": 5,
+                        "required": false,
+                        "choices": null,
+                        "description": "Number of words to look back for normalization. Defaults to 5.",
+                        "role": null
+                      },
+                      {
+                        "name": "compute_pnc_wer",
+                        "type": "bool",
+                        "default": false,
+                        "required": false,
+                        "choices": null,
+                        "description": "Whether to compute PNC WER/CER. Defaults to False.",
+                        "role": null
+                      },
+                      {
+                        "name": "pnc_chars",
+                        "type": "str",
+                        "default": "\u060c\u061f.\u3001\uff1f\u00bf!,?\u0964",
+                        "required": false,
+                        "choices": null,
+                        "description": "Punctuation characters to use for normalization. Defaults to special punctuation string.",
+                        "role": null
+                      },
+                      {
+                        "name": "edge_length",
+                        "type": "int",
+                        "default": 12,
+                        "required": false,
+                        "choices": null,
+                        "description": "Length of the edge to compute CER. Defaults to 12.",
+                        "role": null
+                      },
+                      {
+                        "name": "segments_key",
+                        "type": "str",
+                        "default": "segments",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key for the segments in the manifest. Defaults to \"segments\".",
+                        "role": "segments"
+                      },
+                      {
+                        "name": "metrics_key",
+                        "type": "str",
+                        "default": "metrics",
+                        "required": false,
+                        "choices": null,
+                        "description": null,
+                        "role": "metrics"
+                      }
+                    ],
+                    "dispatch": "process",
+                    "error_policy": "unknown",
+                    "key_roles": {
+                      "text": "text",
+                      "text_ref": "reference_text",
+                      "segments": "segments",
+                      "metrics": "metrics"
+                    },
+                    "batch_only": false,
+                    "accepts_task_type": "AudioTask",
+                    "produces_task_type": "AudioTask",
+                    "removes_keys": []
+                  }
+                },
+                {
+                  "stage": "GetPairwiseWerStage",
+                  "category": "quality",
+                  "card": {
+                    "stage_id": "GetPairwiseWerStage",
+                    "category": "quality",
+                    "summary": "Compute pairwise WER (%) between reference text and ASR pred_text.",
+                    "tags": [
+                      "produces_score"
+                    ],
+                    "model_id": null,
+                    "domain": {
+                      "language": "any",
+                      "style": "any"
+                    },
+                    "constraints": {},
+                    "resource": {
+                      "cpus": 1.0,
+                      "gpu_mem_gb": 0.0,
+                      "gpu_optional": false,
+                      "bound": "cpu",
+                      "throughput_hint": "CPU; trivial"
+                    },
+                    "use_cases": {
+                      "good_for": [
+                        "a quick single WER% per row for accuracy filtering"
+                      ],
+                      "avoid_for": [
+                        "data with no reference transcripts",
+                        "when you need CER/edge/PNC (use ComputeWERStage)"
+                      ]
+                    },
+                    "composition": {
+                      "typical_upstream": [
+                        "InferenceAsrNemoStage"
+                      ],
+                      "typical_downstream": [
+                        "PreserveByValueStage",
+                        "AudioToDocumentStage"
+                      ]
+                    },
+                    "params_of_note": {
+                      "text_key": "reference transcript key (default text)",
+                      "pred_text_key": "ASR prediction key (default pred_text)",
+                      "wer_key": "output key for the WER percentage (default wer_pct)"
+                    },
+                    "metrics": {
+                      "wer_pct": {
+                        "scale": {
+                          "min": 0.0,
+                          "max": 100.0,
+                          "direction": "lower_better"
+                        },
+                        "anchors": {
+                          "0-10": "transcription_grade",
+                          "10-25": "usable"
+                        },
+                        "valid_range": [
+                          0.0,
+                          100.0
+                        ]
+                      }
+                    },
+                    "param_dependencies": {
+                      "pred_text_key": "requires an upstream ASR prediction (e.g. InferenceAsrNemoStage)",
+                      "text_key": "requires reference transcripts in the source manifest"
+                    },
+                    "comparison": {
+                      "accuracy_hint": "single WER% (no CER/edge/PNC, no normalization)",
+                      "latency_hint": "cheapest WER option",
+                      "config_complexity": "low",
+                      "known_limitations": "no text normalization; requires references"
+                    },
+                    "conflicts_with": [
+                      "ComputeWERStage"
+                    ],
+                    "notes": [
+                      "WER is a percentage (5.0 == 5%)."
+                    ],
+                    "verified": {
+                      "params": "mechanical",
+                      "tags": "mechanical",
+                      "resource": "best_guess",
+                      "use_cases": "best_guess",
+                      "domain": "best_guess",
+                      "comparison": "best_guess",
+                      "metrics": "best_guess"
+                    },
+                    "provenance": {
+                      "model_card_url": null,
+                      "card_version": 1,
+                      "last_validated": "2026-07-20"
+                    }
+                  },
+                  "contract": {
+                    "reads": {
+                      "data_keys": [],
+                      "segment_data_keys": [],
+                      "accepts": [],
+                      "produces": []
+                    },
+                    "writes": {
+                      "data_keys": [],
+                      "segment_data_keys": [],
+                      "accepts": [],
+                      "produces": []
+                    },
+                    "reads_one_of": [],
+                    "metadata_reads": [],
+                    "metadata_writes": [],
+                    "cardinality": "1:1",
+                    "cardinality_options": [],
+                    "iteration_key": null,
+                    "preserves_upstream_keys": true,
+                    "wrappable": true,
+                    "size_envelope": {
+                      "max_input_sec": null,
+                      "allowed_sample_rates": null,
+                      "channels": "any",
+                      "memory_hint": null
+                    },
+                    "gates": {
+                      "writes_to_disk": false,
+                      "requires_gpu": false,
+                      "requires_internet_first_run": false,
+                      "requires_ffmpeg": false,
+                      "lifecycle_side_effects": false,
+                      "runtime_secrets": [],
+                      "requires_serializable_input": false,
+                      "sanitizes_output": false
+                    },
+                    "stage_id": "GetPairwiseWerStage",
+                    "description": "Compute pairwise word-error-rate (WER) as a percentage for each pair of text and pred_text.",
+                    "params": [
+                      {
+                        "name": "text_key",
+                        "type": "str",
+                        "default": "text",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key for the utterance transcript. Defaults to \"text\".",
+                        "role": "text"
+                      },
+                      {
+                        "name": "pred_text_key",
+                        "type": "str",
+                        "default": "pred_text",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key for the ASR predictions. Defaults to \"pred_text\".",
+                        "role": "pred_text"
+                      },
+                      {
+                        "name": "wer_key",
+                        "type": "str",
+                        "default": "wer_pct",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key to store the computed WER percentage. Defaults to \"wer_pct\".",
+                        "role": "score"
+                      }
+                    ],
+                    "dispatch": "process",
+                    "error_policy": "unknown",
+                    "key_roles": {
+                      "text": "text",
+                      "pred_text": "pred_text",
+                      "wer_pct": "score"
+                    },
+                    "batch_only": false,
+                    "accepts_task_type": "AudioTask",
+                    "produces_task_type": "AudioTask",
+                    "removes_keys": []
+                  }
+                },
+                {
+                  "stage": "PreserveByValueStage",
+                  "category": "filter",
+                  "card": {
+                    "stage_id": "PreserveByValueStage",
+                    "category": "filter",
+                    "summary": "Keep/drop rows by comparing a numeric or string field against a target value.",
+                    "tags": [
+                      "is_filter",
+                      "batch_only"
+                    ],
+                    "model_id": null,
+                    "domain": {
+                      "language": "any",
+                      "style": "any"
+                    },
+                    "constraints": {
+                      "batch_size": {
+                        "fixed": null,
+                        "reason": "batch-only stage; process() raises, use process_batch"
+                      }
+                    },
+                    "resource": {
+                      "cpus": 1.0,
+                      "gpu_mem_gb": 0.0,
+                      "gpu_optional": false,
+                      "bound": "cpu",
+                      "throughput_hint": "CPU, trivial"
+                    },
+                    "use_cases": {
+                      "good_for": [
+                        "thresholding on a computed metric (e.g. keep wer <= 25, duration >= 1.0)"
+                      ],
+                      "avoid_for": [
+                        "filtering before the metric field exists upstream"
+                      ]
+                    },
+                    "composition": {
+                      "typical_upstream": [
+                        "GetPairwiseWerStage",
+                        "GetAudioDurationStage",
+                        "ComputeWERStage"
+                      ],
+                      "typical_downstream": [
+                        "AudioToDocumentStage",
+                        "ManifestWriterStage"
+                      ]
+                    },
+                    "params_of_note": {
+                      "input_value_key": "the field to compare (must be produced upstream)",
+                      "target_value": "the value to compare against",
+                      "operator": "one of lt, le, eq, ne, ge, gt"
+                    },
+                    "param_dependencies": {
+                      "input_value_key": "must be a key produced by an upstream stage (e.g. wer, duration)"
+                    },
+                    "notes": [
+                      "Filter AFTER the metric it reads is produced; filtering early (before convert/write) saves downstream cost."
+                    ],
+                    "verified": {
+                      "params": "mechanical",
+                      "tags": "mechanical",
+                      "resource": "best_guess",
+                      "use_cases": "best_guess",
+                      "domain": "best_guess"
+                    },
+                    "provenance": {
+                      "model_card_url": null,
+                      "card_version": 2,
+                      "last_validated": "2026-07-20"
+                    }
+                  },
+                  "contract": {
+                    "reads": {
+                      "data_keys": [],
+                      "segment_data_keys": [],
+                      "accepts": [],
+                      "produces": []
+                    },
+                    "writes": {
+                      "data_keys": [],
+                      "segment_data_keys": [],
+                      "accepts": [],
+                      "produces": []
+                    },
+                    "reads_one_of": [],
+                    "metadata_reads": [],
+                    "metadata_writes": [],
+                    "cardinality": "1:1",
+                    "cardinality_options": [],
+                    "iteration_key": null,
+                    "preserves_upstream_keys": true,
+                    "wrappable": true,
+                    "size_envelope": {
+                      "max_input_sec": null,
+                      "allowed_sample_rates": null,
+                      "channels": "any",
+                      "memory_hint": null
+                    },
+                    "gates": {
+                      "writes_to_disk": false,
+                      "requires_gpu": false,
+                      "requires_internet_first_run": false,
+                      "requires_ffmpeg": false,
+                      "lifecycle_side_effects": false,
+                      "runtime_secrets": [],
+                      "requires_serializable_input": false,
+                      "sanitizes_output": false
+                    },
+                    "stage_id": "PreserveByValueStage",
+                    "description": "Filter entries by comparing *input_value_key* against *target_value*.",
+                    "params": [
+                      {
+                        "name": "input_value_key",
+                        "type": "str",
+                        "default": null,
+                        "required": true,
+                        "choices": null,
+                        "description": "The field in the dataset entries to evaluate.",
+                        "role": "unknown"
+                      },
+                      {
+                        "name": "target_value",
+                        "type": "int | str",
+                        "default": null,
+                        "required": true,
+                        "choices": null,
+                        "description": "The value to compare with.",
+                        "role": null
+                      },
+                      {
+                        "name": "operator",
+                        "type": "str",
+                        "default": "eq",
+                        "required": false,
+                        "choices": null,
+                        "description": "Comparison operator (lt, le, eq, ne, ge, gt).",
+                        "role": null
+                      }
+                    ],
+                    "dispatch": "process_batch",
+                    "error_policy": "unknown",
+                    "key_roles": {},
+                    "batch_only": true,
+                    "accepts_task_type": "AudioTask",
+                    "produces_task_type": "AudioTask",
+                    "removes_keys": []
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "verb": "resolve",
+            "args": {
+              "stage": "GetPairwiseWerStage",
+              "label": "usable"
+            },
+            "result": {
+              "stage": "GetPairwiseWerStage",
+              "params": {},
+              "filter_stage": {
+                "ref": "PreserveByValueStage",
+                "params": {
+                  "input_value_key": "wer_pct",
+                  "operator": "le",
+                  "target_value": 25.0
+                }
+              },
+              "strategy": [
+                {
+                  "param": "target_value",
+                  "value": 25.0,
+                  "metric": "wer_pct",
+                  "kind": "absolute",
+                  "mode": "knowledge_driven",
+                  "source": {
+                    "from": "card_anchor",
+                    "ref": "usable"
+                  },
+                  "recompute_on": "none",
+                  "rationale": "label 'usable' -> filter wer_pct le 25.0 (PreserveByValueStage)"
+                }
+              ],
+              "asks": []
+            }
+          },
+          {
+            "verb": "validate",
+            "args": {
+              "recipe": {
+                "stages": [
+                  {
+                    "ref": "ManifestReader",
+                    "params": {
+                      "manifest_path": "REQUIRED"
+                    }
+                  },
+                  {
+                    "ref": "InferenceAsrNemoStage",
+                    "params": {
+                      "model_name": "nvidia/parakeet-tdt-0.6b-v2"
+                    }
+                  },
+                  {
+                    "ref": "GetPairwiseWerStage",
+                    "params": {}
+                  },
+                  {
+                    "ref": "PreserveByValueStage",
+                    "params": {
+                      "input_value_key": "wer_pct",
+                      "operator": "le",
+                      "target_value": 25
+                    }
+                  },
+                  {
+                    "ref": "ManifestWriterStage",
+                    "params": {
+                      "output_path": "REQUIRED"
+                    }
+                  }
+                ]
+              },
+              "request_type": "wer_filter",
+              "acceptance_criteria": [
+                {
+                  "kind": "output_completeness",
+                  "field": "pred_text",
+                  "requirement": "must"
+                },
+                {
+                  "kind": "quality_standard",
+                  "metric": "wer_pct",
+                  "type": "absolute",
+                  "operator": "le",
+                  "target": 25,
+                  "requirement": "must"
+                },
+                {
+                  "kind": "yield",
+                  "type": "relative",
+                  "requirement": "should"
+                }
+              ]
+            },
+            "result": {
+              "ok": true,
+              "keys_ok": true,
+              "runnable": true,
+              "status": "uncertain",
+              "issues": [
+                {
+                  "code": "composite",
+                  "severity": "warning",
+                  "message": "composite stage \u2014 decompose before validating its data flow",
+                  "stage_index": 0,
+                  "stage": "ManifestReader",
+                  "fix": "decompose the composite (it hides its true I/O) before validating downstream",
+                  "escalate_to": null
+                },
+                {
+                  "code": "unsatisfied_reads_after_composite",
+                  "severity": "warning",
+                  "message": "requires role(s) ['text'] not visibly produced \u2014 but an upstream composite hides its writes; decompose it to validate this read",
+                  "stage_index": 2,
+                  "stage": "GetPairwiseWerStage",
+                  "fix": null,
+                  "escalate_to": "smoke"
+                },
+                {
+                  "code": "missing_implied_criterion",
+                  "severity": "warning",
+                  "message": "a filtering/curation request should carry a 'yield' criterion (define how much to keep, e.g. retained > 0 or ~=N%)",
+                  "stage_index": null,
+                  "stage": null,
+                  "fix": "add an acceptance criterion of this type to define success for the request",
+                  "escalate_to": "user"
+                }
+              ],
+              "card_violations": [],
+              "gate_flags": [
+                {
+                  "code": "internet_first_run",
+                  "severity": "info",
+                  "message": "InferenceAsrNemoStage downloads a model on first run",
+                  "stage_index": 1,
+                  "stage": "InferenceAsrNemoStage",
+                  "fix": null,
+                  "escalate_to": null
+                }
+              ],
+              "unproducible_roles": [],
+              "produced_roles": [
+                "audio_filepath",
+                "pred_text",
+                "score"
+              ],
+              "produced_keys": [
+                "audio_filepath",
+                "pred_text",
+                "wer_pct"
+              ],
+              "summary": "0 error(s), 3 warning(s):\n  [warning] composite [ManifestReader]: composite stage \u2014 decompose before validating its data flow -> decompose the composite (it hides its true I/O) before validating downstream\n  [warning] unsatisfied_reads_after_composite [GetPairwiseWerStage]: requires role(s) ['text'] not visibly produced \u2014 but an upstream composite hides its writes; decompose it to validate this read\n  [warning] missing_implied_criterion: a filtering/curation request should carry a 'yield' criterion (define how much to keep, e.g. retained > 0 or ~=N%) -> add an acceptance criterion of this type to define success for the request\n  [info] internet_first_run [InferenceAsrNemoStage]: InferenceAsrNemoStage downloads a model on first run"
+            }
+          }
+        ]
+      }
+    ],
+    "tool_calls": [
+      {
+        "verb": "discover",
+        "args": {},
+        "result": {
+          "count": 44,
+          "stages": [
+            {
+              "stage": "ALMDataBuilderStage",
+              "category": "alm",
+              "summary": "Build ALM training windows from audio segments, filtered by rate/bandwidth/speaker-count/duration.",
+              "tags": []
+            },
+            {
+              "stage": "ALMDataOverlapStage",
+              "category": "alm",
+              "summary": "Filter overlapping ALM windows, keeping those closest to the target duration.",
+              "tags": [
+                "is_filter"
+              ]
+            },
+            {
+              "stage": "AudioDataFilterStage",
+              "category": "export",
+              "summary": "Complete audio filtering/curation pipeline (CompositeStage) driven by a config.",
+              "tags": []
+            },
+            {
+              "stage": "AudioToDocumentStage",
+              "category": "export",
+              "summary": "Aggregate AudioTasks into a DocumentBatch DataFrame, stripping tensors/audio blobs.",
+              "tags": [
+                "sink",
+                "sanitizes_output",
+                "batch_only"
+              ]
+            },
+            {
+              "stage": "BandFilterStage",
+              "category": "quality",
+              "summary": "Classify audio as full_band vs narrow_band (spectral RF) and filter/annotate.",
+              "tags": [
+                "produces_score",
+                "is_filter",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "BandwidthEstimationStage",
+              "category": "quality",
+              "summary": "Estimate effective audio bandwidth from the power spectrum; write to metrics.",
+              "tags": [
+                "produces_score"
+              ]
+            },
+            {
+              "stage": "ChineseConversionStage",
+              "category": "text_norm",
+              "summary": "Convert Traditional Chinese to Simplified (or other OpenCC conversions), per segment.",
+              "tags": []
+            },
+            {
+              "stage": "ComputeWERStage",
+              "category": "quality",
+              "summary": "Compute WER/CER (plus edge-CER and optional PNC WER/CER) between hypothesis and reference text.",
+              "tags": [
+                "produces_score"
+              ]
+            },
+            {
+              "stage": "CreateInitialManifestFleursStage",
+              "category": "ingest",
+              "summary": "Download the FLEURS dataset and emit one AudioTask per transcript line.",
+              "tags": [
+                "needs_internet_first_run",
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "CreateInitialManifestReadSpeechStage",
+              "category": "ingest",
+              "summary": "Download the DNS Challenge 5 Read Speech set and emit one AudioTask per file.",
+              "tags": [
+                "needs_internet_first_run",
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "GetAudioDurationStage",
+              "category": "export",
+              "summary": "Compute audio duration from the file and store it under duration_key.",
+              "tags": []
+            },
+            {
+              "stage": "GetPairwiseWerStage",
+              "category": "quality",
+              "summary": "Compute pairwise WER (%) between reference text and ASR pred_text.",
+              "tags": [
+                "produces_score"
+              ]
+            },
+            {
+              "stage": "InferenceAsrNemoStage",
+              "category": "transcribe",
+              "summary": "Batched ASR transcription with a NeMo model; writes pred_text.",
+              "tags": [
+                "needs_gpu",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "InferenceSortformerStage",
+              "category": "diarize",
+              "summary": "Speaker diarization (who spoke when) with NVIDIA Sortformer; passthrough or fan-out.",
+              "tags": [
+                "needs_gpu",
+                "needs_internet_first_run",
+                "fanout"
+              ]
+            },
+            {
+              "stage": "InverseTextNormalizationStage",
+              "category": "text_norm",
+              "summary": "Inverse text normalization: spoken form -> written form (e.g. 'forty two' -> '42').",
+              "tags": []
+            },
+            {
+              "stage": "JoinSplitAudioMetadataStage",
+              "category": "segment",
+              "summary": "Rejoin transcripts/alignments of previously split audio back into the original file's metadata.",
+              "tags": []
+            },
+            {
+              "stage": "ManifestReader",
+              "category": "ingest",
+              "summary": "Read JSONL manifest(s) and emit one AudioTask per line (composite: partition + read).",
+              "tags": []
+            },
+            {
+              "stage": "ManifestReaderStage",
+              "category": "ingest",
+              "summary": "Inner reader: turn a FileGroupTask into one AudioTask per JSONL line (streaming).",
+              "tags": []
+            },
+            {
+              "stage": "ManifestWriterStage",
+              "category": "export",
+              "summary": "Append each AudioTask to a JSONL manifest file (final sink).",
+              "tags": [
+                "sink",
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "MergeAlignmentDiarizationStage",
+              "category": "transcribe",
+              "summary": "Merge word alignments into diarization segments (produce who-said-what text per speaker).",
+              "tags": []
+            },
+            {
+              "stage": "MonoConversionStage",
+              "category": "preprocess",
+              "summary": "Convert to mono and (optionally) verify/resample to a target sample rate.",
+              "tags": [
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "NeMoASRAlignerStage",
+              "category": "transcribe",
+              "summary": "Transcribe and word-align audio with a NeMo ASR model (CTC/RNNT), producing word timestamps.",
+              "tags": [
+                "needs_gpu",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "OverlapFilterStage",
+              "category": "alm",
+              "summary": "Drop empty segments and mutually-overlapping segment pairs.",
+              "tags": [
+                "is_filter"
+              ]
+            },
+            {
+              "stage": "PrepareModuleSegmentsStage",
+              "category": "export",
+              "summary": "Shape segments for TTS or ASR: merge same-speaker, then split on duration/pause/punctuation/bandwidth.",
+              "tags": []
+            },
+            {
+              "stage": "PreserveByValueStage",
+              "category": "filter",
+              "summary": "Keep/drop rows by comparing a numeric or string field against a target value.",
+              "tags": [
+                "is_filter",
+                "batch_only"
+              ]
+            },
+            {
+              "stage": "PretrainMetricsAggregatorStage",
+              "category": "alm",
+              "summary": "Aggregate per-replica ALM pretrain metrics: append one JSONL record per task to a shard.",
+              "tags": [
+                "sink",
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "PyAnnoteDiarizationStage",
+              "category": "diarize",
+              "summary": "Speaker diarization + overlap detection with PyAnnote 3.1.",
+              "tags": [
+                "needs_gpu",
+                "needs_internet_first_run",
+                "needs_hf_token",
+                "writes_disk",
+                "fanout"
+              ]
+            },
+            {
+              "stage": "ReadLongFormManifestStage",
+              "category": "alm",
+              "summary": "Read a JSONL manifest of long-form audios and emit one AudioTask per row (ALM pretrain source).",
+              "tags": []
+            },
+            {
+              "stage": "ResampleAudioStage",
+              "category": "preprocess",
+              "summary": "Resample/convert audio to a target sample rate (and format) via ffmpeg.",
+              "tags": [
+                "needs_ffmpeg",
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "SIGMOSFilterStage",
+              "category": "quality",
+              "summary": "SIGMOS (ITU-T P.804) neural MOS across 7 quality dimensions; filter/annotate.",
+              "tags": [
+                "produces_score",
+                "is_filter",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "SegmentConcatenationStage",
+              "category": "segment",
+              "summary": "Concatenate nested VAD segments into a single combined waveform (with silence gaps).",
+              "tags": []
+            },
+            {
+              "stage": "SegmentExtractionStage",
+              "category": "export",
+              "summary": "Read audio slices from original files and write them as standalone segment files.",
+              "tags": [
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "SnippetCutPlannerStage",
+              "category": "alm",
+              "summary": "Plan snippet cut boundaries for one long-form audio (pure planning, no audio I/O).",
+              "tags": []
+            },
+            {
+              "stage": "SnippetExtractionStage",
+              "category": "alm",
+              "summary": "Slice source audio per the snippet plan, mono-resample, and write snippets into a tar.",
+              "tags": [
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "SnippetManifestWriterStage",
+              "category": "export",
+              "summary": "Append each (non-stub) ALM snippet's data as a JSONL line (snippet manifest sink).",
+              "tags": [
+                "sink",
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "SnippetRepetitionFilterStage",
+              "category": "alm",
+              "summary": "Drop planned snippets whose transcript shows suspicious n-gram repetition (ASR degeneration).",
+              "tags": [
+                "is_filter",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "SpeakerSeparationStage",
+              "category": "diarize",
+              "summary": "Separate audio by speaker (NeMo SortFormer diarization) into per-speaker AudioTasks.",
+              "tags": [
+                "needs_gpu",
+                "needs_internet_first_run",
+                "fanout"
+              ]
+            },
+            {
+              "stage": "SplitASRAlignJoinStage",
+              "category": "segment",
+              "summary": "Composite: split long audio -> NeMo ASR align -> join transcripts/alignments back to originals.",
+              "tags": [
+                "needs_gpu",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "SplitLongAudioStage",
+              "category": "segment",
+              "summary": "Split long audio files into smaller pieces at natural pauses to keep speech coherent.",
+              "tags": [
+                "writes_disk"
+              ]
+            },
+            {
+              "stage": "TimestampMapperStage",
+              "category": "export",
+              "summary": "Normalize task data at the output boundary: build original_file/start/end/duration and copy passthrough keys.",
+              "tags": []
+            },
+            {
+              "stage": "TorchSquimQualityMetricsStage",
+              "category": "quality",
+              "summary": "Estimate PESQ / STOI / SI-SDR with the torchaudio SQUIM model; write to metrics.",
+              "tags": [
+                "produces_score",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "UTMOSFilterStage",
+              "category": "quality",
+              "summary": "Predict UTMOS mean-opinion-score (MOS) and filter/annotate audio by quality.",
+              "tags": [
+                "produces_score",
+                "is_filter",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "VADSegmentationStage",
+              "category": "segment",
+              "summary": "Silero VAD: detect speech and emit one segment per speech chunk (fan-out or nested).",
+              "tags": [
+                "fanout",
+                "produces_score"
+              ]
+            },
+            {
+              "stage": "WhisperXVADStage",
+              "category": "segment",
+              "summary": "Voice Activity Detection with WhisperX's VAD model; emit speech segments.",
+              "tags": [
+                "needs_internet_first_run",
+                "fanout"
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "verb": "catalog_tree",
+        "args": {},
+        "result": {
+          "categories": [
+            {
+              "category": "ingest",
+              "description": "Create/read manifests and partition input files (dataset sources, manifest readers).",
+              "stages": [
+                "CreateInitialManifestFleursStage",
+                "CreateInitialManifestReadSpeechStage",
+                "ManifestReader",
+                "ManifestReaderStage"
+              ]
+            },
+            {
+              "category": "preprocess",
+              "description": "Normalize audio before models: mono conversion and sample-rate resampling.",
+              "stages": [
+                "MonoConversionStage",
+                "ResampleAudioStage"
+              ]
+            },
+            {
+              "category": "segment",
+              "description": "Cut audio into speech chunks: VAD, long-audio splitting, segment concatenation.",
+              "stages": [
+                "JoinSplitAudioMetadataStage",
+                "SegmentConcatenationStage",
+                "SplitASRAlignJoinStage",
+                "SplitLongAudioStage",
+                "VADSegmentationStage",
+                "WhisperXVADStage"
+              ]
+            },
+            {
+              "category": "diarize",
+              "description": "Who-spoke-when and per-speaker separation (Sortformer, PyAnnote, speaker separation).",
+              "stages": [
+                "InferenceSortformerStage",
+                "PyAnnoteDiarizationStage",
+                "SpeakerSeparationStage"
+              ]
+            },
+            {
+              "category": "transcribe",
+              "description": "ASR transcription and forced word-alignment (NeMo ASR).",
+              "stages": [
+                "InferenceAsrNemoStage",
+                "MergeAlignmentDiarizationStage",
+                "NeMoASRAlignerStage"
+              ]
+            },
+            {
+              "category": "text_norm",
+              "description": "Text post-processing on transcripts: inverse text normalization, Chinese conversion.",
+              "stages": [
+                "ChineseConversionStage",
+                "InverseTextNormalizationStage"
+              ]
+            },
+            {
+              "category": "quality",
+              "description": "Score/gate audio quality: UTMOS, SIGMOS, SQUIM, bandwidth, band filter.",
+              "stages": [
+                "BandFilterStage",
+                "BandwidthEstimationStage",
+                "ComputeWERStage",
+                "GetPairwiseWerStage",
+                "SIGMOSFilterStage",
+                "TorchSquimQualityMetricsStage",
+                "UTMOSFilterStage"
+              ]
+            },
+            {
+              "category": "filter",
+              "description": "Generic value-based row filtering (keep/drop by a numeric or string field).",
+              "stages": [
+                "PreserveByValueStage"
+              ]
+            },
+            {
+              "category": "alm",
+              "description": "Audio-language-model data building: windowing, overlap filtering, snippet planning.",
+              "stages": [
+                "ALMDataBuilderStage",
+                "ALMDataOverlapStage",
+                "OverlapFilterStage",
+                "PretrainMetricsAggregatorStage",
+                "ReadLongFormManifestStage",
+                "SnippetCutPlannerStage",
+                "SnippetExtractionStage",
+                "SnippetRepetitionFilterStage"
+              ]
+            },
+            {
+              "category": "export",
+              "description": "Convert/aggregate and write results: AudioToDocument, manifest/JSONL writers, timestamp mapping, segment extraction.",
+              "stages": [
+                "AudioDataFilterStage",
+                "AudioToDocumentStage",
+                "GetAudioDurationStage",
+                "ManifestWriterStage",
+                "PrepareModuleSegmentsStage",
+                "SegmentExtractionStage",
+                "SnippetManifestWriterStage",
+                "TimestampMapperStage"
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "verb": "context",
+        "args": {
+          "goal": {
+            "task": "wer_filter",
+            "domain": "read"
+          }
+        },
+        "result": {
+          "goal": {
+            "task": "wer_filter",
+            "domain": "read"
+          },
+          "category_tree": [
+            {
+              "category": "ingest",
+              "description": "Create/read manifests and partition input files (dataset sources, manifest readers).",
+              "stages": [
+                "CreateInitialManifestFleursStage",
+                "CreateInitialManifestReadSpeechStage",
+                "ManifestReader",
+                "ManifestReaderStage"
+              ]
+            },
+            {
+              "category": "preprocess",
+              "description": "Normalize audio before models: mono conversion and sample-rate resampling.",
+              "stages": [
+                "MonoConversionStage",
+                "ResampleAudioStage"
+              ]
+            },
+            {
+              "category": "segment",
+              "description": "Cut audio into speech chunks: VAD, long-audio splitting, segment concatenation.",
+              "stages": [
+                "JoinSplitAudioMetadataStage",
+                "SegmentConcatenationStage",
+                "SplitASRAlignJoinStage",
+                "SplitLongAudioStage",
+                "VADSegmentationStage",
+                "WhisperXVADStage"
+              ]
+            },
+            {
+              "category": "diarize",
+              "description": "Who-spoke-when and per-speaker separation (Sortformer, PyAnnote, speaker separation).",
+              "stages": [
+                "InferenceSortformerStage",
+                "PyAnnoteDiarizationStage",
+                "SpeakerSeparationStage"
+              ]
+            },
+            {
+              "category": "transcribe",
+              "description": "ASR transcription and forced word-alignment (NeMo ASR).",
+              "stages": [
+                "InferenceAsrNemoStage",
+                "MergeAlignmentDiarizationStage",
+                "NeMoASRAlignerStage"
+              ]
+            },
+            {
+              "category": "text_norm",
+              "description": "Text post-processing on transcripts: inverse text normalization, Chinese conversion.",
+              "stages": [
+                "ChineseConversionStage",
+                "InverseTextNormalizationStage"
+              ]
+            },
+            {
+              "category": "quality",
+              "description": "Score/gate audio quality: UTMOS, SIGMOS, SQUIM, bandwidth, band filter.",
+              "stages": [
+                "BandFilterStage",
+                "BandwidthEstimationStage",
+                "ComputeWERStage",
+                "GetPairwiseWerStage",
+                "SIGMOSFilterStage",
+                "TorchSquimQualityMetricsStage",
+                "UTMOSFilterStage"
+              ]
+            },
+            {
+              "category": "filter",
+              "description": "Generic value-based row filtering (keep/drop by a numeric or string field).",
+              "stages": [
+                "PreserveByValueStage"
+              ]
+            },
+            {
+              "category": "alm",
+              "description": "Audio-language-model data building: windowing, overlap filtering, snippet planning.",
+              "stages": [
+                "ALMDataBuilderStage",
+                "ALMDataOverlapStage",
+                "OverlapFilterStage",
+                "PretrainMetricsAggregatorStage",
+                "ReadLongFormManifestStage",
+                "SnippetCutPlannerStage",
+                "SnippetExtractionStage",
+                "SnippetRepetitionFilterStage"
+              ]
+            },
+            {
+              "category": "export",
+              "description": "Convert/aggregate and write results: AudioToDocument, manifest/JSONL writers, timestamp mapping, segment extraction.",
+              "stages": [
+                "AudioDataFilterStage",
+                "AudioToDocumentStage",
+                "GetAudioDurationStage",
+                "ManifestWriterStage",
+                "PrepareModuleSegmentsStage",
+                "SegmentExtractionStage",
+                "SnippetManifestWriterStage",
+                "TimestampMapperStage"
+              ]
+            }
+          ],
+          "selected_stages": [],
+          "presets": {
+            "_blueprint_fleurs-asr-wer-filter": {
+              "english_parakeet": {
+                "model_name": "nvidia/parakeet-tdt-0.6b-v2",
+                "wer_threshold": 25.0
+              }
+            },
+            "_blueprint_readspeech-quality-filter": {
+              "tts_reference": {
+                "utmos_mos_threshold": 4.0
+              },
+              "asr_finetune": {
+                "utmos_mos_threshold": 3.4
+              },
+              "max_retention": {
+                "utmos_mos_threshold": 2.5
+              }
+            }
+          },
+          "matched_blueprints": [
+            {
+              "blueprint_id": "fleurs-asr-wer-filter",
+              "intent": "transcribe a dataset and drop low-accuracy rows by WER",
+              "data_assumptions": {
+                "input": "manifest or dataset with reference transcripts",
+                "transcripts": "present",
+                "sr": "any"
+              },
+              "produces": "JSONL manifest with pred_text + wer, low-WER rows only",
+              "recipe_ref": "recipes/fleurs_asr_filter.yaml",
+              "stages": [
+                {
+                  "ref": "CreateInitialManifestFleursStage",
+                  "tag": "enforced",
+                  "why_here": "source: downloads FLEURS and produces audio_filepath + reference text"
+                },
+                {
+                  "ref": "InferenceAsrNemoStage",
+                  "tag": "advisory",
+                  "why_here": "ASR assumes 16 kHz; pick the checkpoint for the data's language (card)"
+                },
+                {
+                  "ref": "GetPairwiseWerStage",
+                  "tag": "enforced",
+                  "why_here": "needs text + pred_text -> must follow ASR"
+                },
+                {
+                  "ref": "GetAudioDurationStage",
+                  "tag": "advisory",
+                  "why_here": "annotate duration for downstream filtering/reporting"
+                },
+                {
+                  "ref": "PreserveByValueStage",
+                  "tag": "advisory",
+                  "why_here": "filter AFTER wer exists; early filter saves the write cost"
+                },
+                {
+                  "ref": "ManifestWriterStage",
+                  "tag": "enforced",
+                  "why_here": "sink"
+                }
+              ],
+              "pitfalls": [
+                "WER requires reference transcripts in the source AND ASR pred_text; without transcripts, WER is unproducible",
+                "match the ASR checkpoint to the data's language (model-card fact)",
+                "don't filter before wer is produced"
+              ],
+              "presets": {
+                "english_parakeet": {
+                  "model_name": "nvidia/parakeet-tdt-0.6b-v2",
+                  "wer_threshold": 25.0
+                }
+              },
+              "provenance": {
+                "derived_from": "tutorials/audio/fleurs",
+                "version": 1,
+                "validated": true
+              }
+            },
+            {
+              "blueprint_id": "alm-windowing",
+              "intent": "build audio-language-model training windows from a diarized manifest and filter overlaps",
+              "data_assumptions": {
+                "input": "JSONL manifest with segments (speaker/start/end/text)",
+                "transcripts": "present",
+                "sr": ">=16000"
+              },
+              "produces": "JSONL manifest of bounded, overlap-filtered training windows",
+              "recipe_ref": "recipes/alm_windowing.yaml",
+              "stages": [
+                {
+                  "ref": "ManifestReader",
+                  "tag": "enforced",
+                  "why_here": "source: streams the JSONL manifest into AudioTasks"
+                },
+                {
+                  "ref": "ALMDataBuilderStage",
+                  "tag": "advisory",
+                  "why_here": "filters segments by bandwidth/SR/speaker-count and builds sliding windows; drops words/segments to shrink rows"
+                },
+                {
+                  "ref": "ALMDataOverlapStage",
+                  "tag": "advisory",
+                  "why_here": "removes windows overlapping beyond a threshold; run after windows exist"
+                },
+                {
+                  "ref": "ManifestWriterStage",
+                  "tag": "enforced",
+                  "why_here": "sink"
+                }
+              ],
+              "pitfalls": [
+                "input must already carry per-segment metadata (speaker/start/end); this blueprint does not diarize",
+                "CPU-only and fixture-fast -- a good local smoke test"
+              ],
+              "provenance": {
+                "derived_from": "tutorials/audio/alm",
+                "version": 1,
+                "validated": true
+              }
+            },
+            {
+              "blueprint_id": "readspeech-quality-filter",
+              "intent": "curate clean speech from a raw WAV folder by quality; no transcription",
+              "data_assumptions": {
+                "input": "folder of WAV (48kHz, mono or stereo)",
+                "transcripts": "absent",
+                "sr": 48000
+              },
+              "produces": "JSONL manifest with per-item quality scores + timestamps",
+              "recipe_ref": "recipes/readspeech_quality.yaml",
+              "topology_selection": {
+                "rule": "output granularity decides which flags to enable",
+                "options": [
+                  {
+                    "intent": "whole-file scores",
+                    "flags": [],
+                    "shape": "Mono -> Filters -> TimestampMapper"
+                  },
+                  {
+                    "intent": "per-speech-segment scores",
+                    "flags": [
+                      "vad"
+                    ],
+                    "shape": "Mono -> VAD(fanout) -> Filters -> TimestampMapper"
+                  },
+                  {
+                    "intent": "per-speaker scores",
+                    "flags": [
+                      "speaker_separation"
+                    ],
+                    "shape": "Mono -> Filters -> SpeakerSep(fanout) -> Filters -> TimestampMapper"
+                  },
+                  {
+                    "intent": "per-speaker-segment",
+                    "flags": [
+                      "vad",
+                      "speaker_separation"
+                    ],
+                    "shape": "Mono -> VAD(nested) -> Filters -> SegConcat -> SpeakerSep -> VAD -> Filters -> TimestampMapper"
+                  }
+                ]
+              },
+              "stages": [
+                {
+                  "ref": "CreateInitialManifestReadSpeechStage",
+                  "tag": "enforced",
+                  "why_here": "source: scans the folder and produces audio_filepath"
+                },
+                {
+                  "ref": "MonoConversionStage",
+                  "tag": "advisory",
+                  "why_here": "normalize to mono + one SR once, upfront (downstream models assume mono)"
+                },
+                {
+                  "ref": "VADSegmentationStage",
+                  "tag": "advisory",
+                  "why_here": "segment speech so scores are per-segment; this is a granularity choice, not a data dependency"
+                },
+                {
+                  "ref": "BandFilterStage",
+                  "tag": "advisory",
+                  "why_here": "cheapest filter (CPU) first; cull low-fidelity before GPU work"
+                },
+                {
+                  "ref": "UTMOSFilterStage",
+                  "tag": "advisory",
+                  "why_here": "MOS gate"
+                },
+                {
+                  "ref": "SIGMOSFilterStage",
+                  "tag": "advisory",
+                  "why_here": "7-dim gate; MOST aggressive -- last = cheap->expensive, first = max early cull (validator does not constrain this order)"
+                },
+                {
+                  "ref": "ManifestWriterStage",
+                  "tag": "enforced",
+                  "why_here": "sink; TimestampMapper upstream already stripped non-serializable keys"
+                }
+              ],
+              "pitfalls": [
+                "no transcripts here -> cannot add ASR/WER; use the fleurs blueprint for that",
+                "all filters at default ~= 23% pass rate; SIGMOS dominates the drop",
+                "don't skip resample/mono on 48k stereo data"
+              ],
+              "presets": {
+                "tts_reference": {
+                  "utmos_mos_threshold": 4.0
+                },
+                "asr_finetune": {
+                  "utmos_mos_threshold": 3.4
+                },
+                "max_retention": {
+                  "utmos_mos_threshold": 2.5
+                }
+              },
+              "provenance": {
+                "derived_from": "tutorials/audio/readspeech",
+                "version": 1,
+                "validated": true
+              }
+            }
+          ],
+          "matched_recipes": [
+            {
+              "recipe_id": "fleurs-asr-wer-filter",
+              "name": "fleurs_asr_filter",
+              "intent": "download FLEURS, transcribe, drop rows whose WER exceeds a threshold",
+              "preset": "english_parakeet",
+              "inputs": {
+                "raw_data_dir": "REQUIRED: staging dir for the FLEURS download",
+                "output_manifest": "REQUIRED: output .jsonl path"
+              },
+              "stages": [
+                {
+                  "ref": "CreateInitialManifestFleursStage",
+                  "params": {
+                    "lang": "en_us",
+                    "split": "dev",
+                    "raw_data_dir": "REQUIRED_raw_data_dir",
+                    "batch_size": 4
+                  }
+                },
+                {
+                  "ref": "InferenceAsrNemoStage",
+                  "params": {
+                    "model_name": "nvidia/parakeet-tdt-0.6b-v2",
+                    "batch_size": 16
+                  }
+                },
+                {
+                  "ref": "GetPairwiseWerStage",
+                  "params": {}
+                },
+                {
+                  "ref": "GetAudioDurationStage",
+                  "params": {}
+                },
+                {
+                  "ref": "PreserveByValueStage",
+                  "params": {
+                    "input_value_key": "wer_pct",
+                    "target_value": 25.0,
+                    "operator": "le"
+                  }
+                },
+                {
+                  "ref": "ManifestWriterStage",
+                  "params": {
+                    "output_path": "REQUIRED_output_manifest"
+                  }
+                }
+              ]
+            },
+            {
+              "recipe_id": "alm-windowing",
+              "name": "alm_windowing",
+              "intent": "build audio-language-model training windows from a diarized manifest, then filter overlaps",
+              "inputs": {
+                "manifest_path": "REQUIRED: input JSONL manifest with segments",
+                "output_manifest": "REQUIRED: output .jsonl path"
+              },
+              "stages": [
+                {
+                  "ref": "ManifestReader",
+                  "params": {
+                    "manifest_path": "REQUIRED_manifest_path",
+                    "files_per_partition": 1
+                  }
+                },
+                {
+                  "ref": "ALMDataBuilderStage",
+                  "params": {
+                    "target_window_duration": 120.0,
+                    "tolerance": 0.1,
+                    "min_sample_rate": 16000,
+                    "min_bandwidth": 8000,
+                    "min_speakers": 2,
+                    "max_speakers": 5,
+                    "truncation": true,
+                    "drop_fields": "words",
+                    "drop_fields_top_level": "words,segments"
+                  }
+                },
+                {
+                  "ref": "ALMDataOverlapStage",
+                  "params": {
+                    "overlap_percentage": 50,
+                    "target_duration": 120.0
+                  }
+                },
+                {
+                  "ref": "ManifestWriterStage",
+                  "params": {
+                    "output_path": "REQUIRED_output_manifest"
+                  }
+                }
+              ]
+            },
+            {
+              "recipe_id": "readspeech-quality-filter",
+              "name": "readspeech_quality",
+              "intent": "curate clean speech from a raw WAV folder by quality (no transcription)",
+              "preset": "general",
+              "inputs": {
+                "raw_data_dir": "REQUIRED: folder of WAV files (or DNS download dir)",
+                "output_manifest": "REQUIRED: output .jsonl path"
+              },
+              "stages": [
+                {
+                  "ref": "CreateInitialManifestReadSpeechStage",
+                  "params": {
+                    "raw_data_dir": "REQUIRED_raw_data_dir",
+                    "max_samples": 5000,
+                    "auto_download": false,
+                    "batch_size": 1
+                  }
+                },
+                {
+                  "ref": "AudioDataFilterStage",
+                  "params": {
+                    "config": {
+                      "mono_conversion": {
+                        "output_sample_rate": 48000
+                      },
+                      "vad": {
+                        "enable": true,
+                        "min_duration_sec": 2.0,
+                        "max_duration_sec": 60.0,
+                        "threshold": 0.5
+                      },
+                      "band_filter": {
+                        "enable": true,
+                        "band_value": "full_band"
+                      },
+                      "utmos": {
+                        "enable": true,
+                        "mos_threshold": 3.4
+                      },
+                      "sigmos": {
+                        "enable": true,
+                        "noise_threshold": 4.0,
+                        "ovrl_threshold": 3.5
+                      },
+                      "speaker_separation": {
+                        "enable": false
+                      },
+                      "timestamp_mapper": {}
+                    }
+                  }
+                },
+                {
+                  "ref": "ManifestWriterStage",
+                  "params": {
+                    "output_path": "REQUIRED_output_manifest"
+                  }
+                }
+              ]
+            }
+          ],
+          "patterns": [
+            {
+              "id": "mono-first",
+              "kind": "advisory",
+              "when": "input may be stereo/multi-channel",
+              "then": "put MonoConversionStage first so downstream models get consistent mono input"
+            },
+            {
+              "id": "resample-before-16k-models",
+              "kind": "advisory",
+              "when": "a model stage's card lists supported_sample_rates=[16000] and the data has other rates",
+              "then": "insert ResampleAudioStage (or MonoConversionStage output_sample_rate=16000) upstream; doing it once avoids each model re-resampling"
+            },
+            {
+              "id": "sanitize-before-json-sink",
+              "kind": "enforced",
+              "when": "a tensor/audio-producing stage precedes a JSON/JSONL writer",
+              "then": "insert AudioToDocumentStage before the writer (it strips tensors); the validator also flags this as tensor_into_sink"
+            },
+            {
+              "id": "filter-after-metric",
+              "kind": "advisory",
+              "when": "filtering on a metric field (e.g. wer, duration, mos)",
+              "then": "place the filter AFTER the stage that produces the metric; filtering early (before convert/write) saves cost"
+            },
+            {
+              "id": "cheap-filters-first",
+              "kind": "advisory",
+              "when": "multiple independent quality filters are used",
+              "then": "order cheap CPU filters (BandFilter) before expensive GPU filters (UTMOS/SIGMOS). Note: SIGMOS is empirically the most aggressive -- put it first only if you want maximum early cull"
+            },
+            {
+              "id": "wer-needs-reference",
+              "kind": "enforced",
+              "when": "WER/CER filtering is requested",
+              "then": "requires reference transcripts in the source manifest AND ASR pred_text upstream; if transcripts are absent, WER is unproducible (find_producers('reference_text') is empty)"
+            },
+            {
+              "id": "vad-changes-granularity",
+              "kind": "advisory",
+              "when": "the user wants per-segment (not whole-file) scores",
+              "then": "enable VAD to fan out one row per speech segment; omit VAD for whole-file scores"
+            },
+            {
+              "id": "diarization-needs-continuous-audio",
+              "kind": "enforced",
+              "when": "speaker separation follows VAD segmentation",
+              "then": "re-join segments (SegmentConcatenationStage) before diarization; diarization needs a continuous waveform"
+            }
+          ],
+          "role_graph_slice": {
+            "producers": {
+              "alignment": [
+                "JoinSplitAudioMetadataStage",
+                "NeMoASRAlignerStage"
+              ],
+              "audio_filepath": [
+                "CreateInitialManifestReadSpeechStage",
+                "InferenceSortformerStage",
+                "ManifestReaderStage",
+                "ReadLongFormManifestStage",
+                "ResampleAudioStage",
+                "SnippetExtractionStage"
+              ],
+              "diar_segments": [
+                "InferenceSortformerStage",
+                "SpeakerSeparationStage",
+                "TimestampMapperStage"
+              ],
+              "duration": [
+                "GetAudioDurationStage",
+                "MonoConversionStage",
+                "ResampleAudioStage",
+                "SegmentConcatenationStage",
+                "SnippetExtractionStage",
+                "SpeakerSeparationStage",
+                "TimestampMapperStage",
+                "VADSegmentationStage"
+              ],
+              "end_ms": [
+                "TimestampMapperStage",
+                "VADSegmentationStage"
+              ],
+              "item_id": [
+                "ResampleAudioStage"
+              ],
+              "metrics": [
+                "ALMDataBuilderStage",
+                "BandwidthEstimationStage",
+                "ComputeWERStage",
+                "TorchSquimQualityMetricsStage"
+              ],
+              "num_samples": [
+                "MonoConversionStage"
+              ],
+              "num_speakers": [
+                "SpeakerSeparationStage"
+              ],
+              "original_file": [
+                "SegmentConcatenationStage",
+                "TimestampMapperStage",
+                "VADSegmentationStage"
+              ],
+              "overlap_segments": [
+                "PyAnnoteDiarizationStage"
+              ],
+              "pred_text": [
+                "InferenceAsrNemoStage"
+              ],
+              "prediction": [
+                "BandFilterStage"
+              ],
+              "sample_rate": [
+                "MonoConversionStage",
+                "SegmentConcatenationStage",
+                "SpeakerSeparationStage",
+                "VADSegmentationStage"
+              ],
+              "score": [
+                "GetPairwiseWerStage",
+                "SIGMOSFilterStage",
+                "UTMOSFilterStage"
+              ],
+              "segment_num": [
+                "VADSegmentationStage"
+              ],
+              "segments": [
+                "OverlapFilterStage",
+                "PrepareModuleSegmentsStage",
+                "PyAnnoteDiarizationStage",
+                "ReadLongFormManifestStage",
+                "SnippetExtractionStage",
+                "WhisperXVADStage"
+              ],
+              "speaker_id": [
+                "SpeakerSeparationStage"
+              ],
+              "start_ms": [
+                "TimestampMapperStage",
+                "VADSegmentationStage"
+              ],
+              "text": [
+                "CreateInitialManifestReadSpeechStage",
+                "JoinSplitAudioMetadataStage",
+                "MergeAlignmentDiarizationStage",
+                "NeMoASRAlignerStage"
+              ],
+              "waveform": [
+                "MonoConversionStage",
+                "SegmentConcatenationStage",
+                "SpeakerSeparationStage",
+                "VADSegmentationStage"
+              ],
+              "windows": [
+                "ALMDataBuilderStage",
+                "ALMDataOverlapStage"
+              ],
+              "words": [
+                "MergeAlignmentDiarizationStage",
+                "NeMoASRAlignerStage"
+              ]
+            },
+            "consumers": {
+              "alignment": [
+                "MergeAlignmentDiarizationStage"
+              ],
+              "audio_filepath": [
+                "ALMDataBuilderStage",
+                "BandFilterStage",
+                "BandwidthEstimationStage",
+                "GetAudioDurationStage",
+                "InferenceAsrNemoStage",
+                "InferenceSortformerStage",
+                "MonoConversionStage",
+                "PyAnnoteDiarizationStage",
+                "ResampleAudioStage",
+                "SIGMOSFilterStage",
+                "SnippetExtractionStage",
+                "SpeakerSeparationStage",
+                "SplitLongAudioStage",
+                "TorchSquimQualityMetricsStage",
+                "UTMOSFilterStage",
+                "VADSegmentationStage",
+                "WhisperXVADStage"
+              ],
+              "diar_segments": [
+                "TimestampMapperStage"
+              ],
+              "duration": [
+                "BandwidthEstimationStage",
+                "NeMoASRAlignerStage",
+                "PrepareModuleSegmentsStage",
+                "SplitLongAudioStage",
+                "TimestampMapperStage"
+              ],
+              "end_ms": [
+                "TimestampMapperStage"
+              ],
+              "pred_text": [
+                "GetPairwiseWerStage"
+              ],
+              "reference_text": [
+                "ComputeWERStage"
+              ],
+              "sample_rate": [
+                "ALMDataBuilderStage",
+                "BandFilterStage",
+                "MonoConversionStage",
+                "SIGMOSFilterStage",
+                "SpeakerSeparationStage",
+                "UTMOSFilterStage",
+                "VADSegmentationStage"
+              ],
+              "segments": [
+                "ALMDataBuilderStage",
+                "BandFilterStage",
+                "BandwidthEstimationStage",
+                "ChineseConversionStage",
+                "ComputeWERStage",
+                "InverseTextNormalizationStage",
+                "MergeAlignmentDiarizationStage",
+                "NeMoASRAlignerStage",
+                "OverlapFilterStage",
+                "PrepareModuleSegmentsStage",
+                "SIGMOSFilterStage",
+                "SegmentConcatenationStage",
+                "SnippetCutPlannerStage",
+                "SplitLongAudioStage",
+                "TorchSquimQualityMetricsStage",
+                "UTMOSFilterStage"
+              ],
+              "start_ms": [
+                "TimestampMapperStage"
+              ],
+              "text": [
+                "ComputeWERStage",
+                "GetPairwiseWerStage"
+              ],
+              "waveform": [
+                "BandFilterStage",
+                "MonoConversionStage",
+                "SIGMOSFilterStage",
+                "SpeakerSeparationStage",
+                "UTMOSFilterStage",
+                "VADSegmentationStage"
+              ],
+              "windows": [
+                "ALMDataOverlapStage"
+              ]
+            },
+            "unresolved_stages": [
+              "CreateInitialManifestFleursStage",
+              "SegmentExtractionStage"
+            ]
+          },
+          "data_profile": null,
+          "env_profile": {
+            "has_gpu": true,
+            "gpu_count": 1,
+            "gpu_names": [
+              "NVIDIA GeForce RTX 4090"
+            ],
+            "gpu_mem_gb": 23.5,
+            "total_cpus": 16,
+            "total_ram_gb": 125.6,
+            "free_disk_gb": 86.9,
+            "has_ffmpeg": true,
+            "installed_extras": [
+              "librosa",
+              "nemo_text_processing",
+              "nemo_toolkit[asr]",
+              "onnxruntime",
+              "pyannote-audio",
+              "silero-vad",
+              "soundfile",
+              "torchaudio",
+              "whisperx"
+            ],
+            "missing_packages": [],
+            "available_secrets": [],
+            "curator_version": "1.3.0+06d993b6",
+            "notes": []
+          }
+        }
+      },
+      {
+        "verb": "cards",
+        "args": {
+          "names": [
+            "InferenceAsrNemoStage",
+            "ComputeWERStage",
+            "GetPairwiseWerStage",
+            "PreserveByValueStage"
+          ]
+        },
+        "result": {
+          "cards": [
+            {
+              "stage": "InferenceAsrNemoStage",
+              "category": "transcribe",
+              "card": {
+                "stage_id": "InferenceAsrNemoStage",
+                "category": "transcribe",
+                "summary": "Batched ASR transcription with a NeMo model; writes pred_text.",
+                "tags": [
+                  "needs_gpu",
+                  "needs_internet_first_run"
+                ],
+                "model_id": "nvidia/parakeet-tdt-0.6b-v2 (or any NeMo ASR checkpoint, incl. language-specific FastConformer)",
+                "model_version": "user-specified via model_name (default preset: nvidia/parakeet-tdt-0.6b-v2)",
+                "domain": {
+                  "language": "model-dependent (e.g. en for parakeet)",
+                  "style": "read+conversational"
+                },
+                "constraints": {
+                  "supported_sample_rates": [
+                    16000
+                  ],
+                  "input_duration_sweetspot_sec": {
+                    "min": 0.5,
+                    "max": 40.0
+                  }
+                },
+                "resource": {
+                  "cpus": 1.0,
+                  "gpu_mem_gb": 5.0,
+                  "gpu_optional": false,
+                  "bound": "gpu",
+                  "throughput_hint": "batched GPU inference"
+                },
+                "use_cases": {
+                  "good_for": [
+                    "transcribing speech to text",
+                    "producing pred_text for WER/CER filtering"
+                  ],
+                  "avoid_for": [
+                    "languages the chosen checkpoint was not trained on",
+                    "non-16kHz input without an upstream resample"
+                  ]
+                },
+                "composition": {
+                  "typical_upstream": [
+                    "ResampleAudioStage",
+                    "VADSegmentationStage",
+                    "SplitLongAudioStage"
+                  ],
+                  "typical_downstream": [
+                    "GetPairwiseWerStage",
+                    "ComputeWERStage",
+                    "InverseTextNormalizationStage"
+                  ]
+                },
+                "params_of_note": {
+                  "model_name": "the ASR checkpoint id (choose per language)"
+                },
+                "comparison": {
+                  "language_support": "checkpoint-dependent (parakeet: en); pick model_name to match data language",
+                  "accuracy_hint": "checkpoint-dependent (model-card fact)",
+                  "config_complexity": "low (pick model_name)",
+                  "known_limitations": "no batch_size stage param (batching is an executor knob); needs 16 kHz input"
+                },
+                "notes": [
+                  "Language coverage is a checkpoint property (model-card fact), not derivable from source; pick the checkpoint to match the data's language.",
+                  "WER/CER filtering requires reference transcripts in the source manifest; if absent, WER is unproducible.",
+                  "batch_size is an executor/runtime knob, not a stage constructor param."
+                ],
+                "presets": {
+                  "english_parakeet": {
+                    "model_name": "nvidia/parakeet-tdt-0.6b-v2"
+                  }
+                },
+                "verified": {
+                  "params": "mechanical",
+                  "tags": "mechanical",
+                  "model_version": "best_guess",
+                  "resource": "best_guess",
+                  "constraints": "best_guess",
+                  "domain": "best_guess",
+                  "use_cases": "best_guess",
+                  "comparison": "best_guess"
+                },
+                "provenance": {
+                  "model_card_url": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2",
+                  "card_version": 2,
+                  "last_validated": "2026-07-20"
+                }
+              },
+              "contract": {
+                "reads": {
+                  "data_keys": [],
+                  "segment_data_keys": [],
+                  "accepts": [],
+                  "produces": []
+                },
+                "writes": {
+                  "data_keys": [],
+                  "segment_data_keys": [],
+                  "accepts": [],
+                  "produces": []
+                },
+                "reads_one_of": [],
+                "metadata_reads": [],
+                "metadata_writes": [],
+                "cardinality": "1:1",
+                "cardinality_options": [],
+                "iteration_key": null,
+                "preserves_upstream_keys": true,
+                "wrappable": true,
+                "size_envelope": {
+                  "max_input_sec": null,
+                  "allowed_sample_rates": null,
+                  "channels": "any",
+                  "memory_hint": null
+                },
+                "gates": {
+                  "writes_to_disk": false,
+                  "requires_gpu": false,
+                  "requires_internet_first_run": false,
+                  "requires_ffmpeg": false,
+                  "lifecycle_side_effects": false,
+                  "runtime_secrets": [],
+                  "requires_serializable_input": false,
+                  "sanitizes_output": false
+                },
+                "stage_id": "InferenceAsrNemoStage",
+                "description": "Speech recognition inference using a NeMo ASR model.",
+                "params": [
+                  {
+                    "name": "model_name",
+                    "type": "str",
+                    "default": "",
+                    "required": false,
+                    "choices": null,
+                    "description": "Pretrained NeMo ASR model name. See full list at https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit/asr/all_chkpt.html",
+                    "role": null
+                  },
+                  {
+                    "name": "cache_dir",
+                    "type": "str | None",
+                    "default": null,
+                    "required": false,
+                    "choices": null,
+                    "description": "Optional directory for model download cache. When set, NeMo stores/loads the pretrained checkpoint here instead of the default cache location.",
+                    "role": null
+                  },
+                  {
+                    "name": "asr_model",
+                    "type": "Any | None",
+                    "default": null,
+                    "required": false,
+                    "choices": null,
+                    "description": null,
+                    "role": null
+                  },
+                  {
+                    "name": "filepath_key",
+                    "type": "str",
+                    "default": "audio_filepath",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key in the entry dict pointing to the audio file.",
+                    "role": "audio_filepath"
+                  },
+                  {
+                    "name": "waveform_key",
+                    "type": "str",
+                    "default": "waveform",
+                    "required": false,
+                    "choices": null,
+                    "description": null,
+                    "role": "waveform"
+                  },
+                  {
+                    "name": "sample_rate_key",
+                    "type": "str",
+                    "default": "sample_rate",
+                    "required": false,
+                    "choices": null,
+                    "description": null,
+                    "role": "sample_rate"
+                  },
+                  {
+                    "name": "input_residency",
+                    "type": "str",
+                    "default": "file",
+                    "required": false,
+                    "choices": [
+                      "file",
+                      "waveform",
+                      "auto"
+                    ],
+                    "description": null,
+                    "role": null
+                  },
+                  {
+                    "name": "pred_text_key",
+                    "type": "str",
+                    "default": "pred_text",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key where the predicted transcription is stored.",
+                    "role": "pred_text"
+                  }
+                ],
+                "dispatch": "process_batch",
+                "error_policy": "unknown",
+                "key_roles": {
+                  "audio_filepath": "audio_filepath",
+                  "waveform": "waveform",
+                  "sample_rate": "sample_rate",
+                  "pred_text": "pred_text"
+                },
+                "batch_only": true,
+                "accepts_task_type": "AudioTask",
+                "produces_task_type": "AudioTask",
+                "removes_keys": []
+              }
+            },
+            {
+              "stage": "ComputeWERStage",
+              "category": "quality",
+              "card": {
+                "stage_id": "ComputeWERStage",
+                "category": "quality",
+                "summary": "Compute WER/CER (plus edge-CER and optional PNC WER/CER) between hypothesis and reference text.",
+                "tags": [
+                  "produces_score"
+                ],
+                "model_id": null,
+                "domain": {
+                  "language": "configurable (default en)",
+                  "style": "any"
+                },
+                "constraints": {},
+                "resource": {
+                  "cpus": 1.0,
+                  "gpu_mem_gb": 0.0,
+                  "gpu_optional": false,
+                  "bound": "cpu",
+                  "throughput_hint": "CPU; text cleaning + normalization (NeMo text processing)"
+                },
+                "use_cases": {
+                  "good_for": [
+                    "measuring ASR accuracy (normalized WER/CER, edge-CER, PNC) for filtering",
+                    "per-segment scoring"
+                  ],
+                  "avoid_for": [
+                    "data with no reference transcripts (WER is unproducible)"
+                  ]
+                },
+                "composition": {
+                  "typical_upstream": [
+                    "InferenceAsrNemoStage",
+                    "NeMoASRAlignerStage"
+                  ],
+                  "typical_downstream": [
+                    "PreserveByValueStage",
+                    "AudioToDocumentStage"
+                  ]
+                },
+                "params_of_note": {
+                  "language": "language for text normalization (default en)",
+                  "hypothesis_text_key": "ASR prediction key (default text)",
+                  "reference_text_key": "reference transcript key (default text_ref)",
+                  "compute_pnc_wer": "also compute punctuation-and-capitalization WER/CER",
+                  "edge_length": "characters at each edge for edge-CER"
+                },
+                "param_dependencies": {
+                  "hypothesis_text_key": "requires an upstream ASR prediction",
+                  "reference_text_key": "requires reference transcripts in the source manifest"
+                },
+                "comparison": {
+                  "accuracy_hint": "normalized, multi-metric (WER/CER/edge/PNC), operates on segments",
+                  "config_complexity": "medium (language + PNC + thresholds)",
+                  "known_limitations": "requires references; normalization is language-dependent"
+                },
+                "conflicts_with": [
+                  "GetPairwiseWerStage"
+                ],
+                "notes": [
+                  "Cleans/normalizes text via NeMo text processing before scoring. Writes results under metrics_key."
+                ],
+                "verified": {
+                  "params": "mechanical",
+                  "tags": "mechanical",
+                  "resource": "best_guess",
+                  "use_cases": "best_guess",
+                  "domain": "best_guess",
+                  "comparison": "best_guess"
+                },
+                "provenance": {
+                  "model_card_url": null,
+                  "card_version": 1,
+                  "last_validated": "2026-07-20"
+                }
+              },
+              "contract": {
+                "reads": {
+                  "data_keys": [],
+                  "segment_data_keys": [],
+                  "accepts": [],
+                  "produces": []
+                },
+                "writes": {
+                  "data_keys": [],
+                  "segment_data_keys": [],
+                  "accepts": [],
+                  "produces": []
+                },
+                "reads_one_of": [],
+                "metadata_reads": [],
+                "metadata_writes": [],
+                "cardinality": "1:1",
+                "cardinality_options": [],
+                "iteration_key": null,
+                "preserves_upstream_keys": true,
+                "wrappable": true,
+                "size_envelope": {
+                  "max_input_sec": null,
+                  "allowed_sample_rates": null,
+                  "channels": "any",
+                  "memory_hint": null
+                },
+                "gates": {
+                  "writes_to_disk": false,
+                  "requires_gpu": false,
+                  "requires_internet_first_run": false,
+                  "requires_ffmpeg": false,
+                  "lifecycle_side_effects": false,
+                  "runtime_secrets": [],
+                  "requires_serializable_input": false,
+                  "sanitizes_output": false
+                },
+                "stage_id": "ComputeWERStage",
+                "description": "Stage that computes Word Error Rate (WER), CER, edge CER, and optionally PNC WER/CER.",
+                "params": [
+                  {
+                    "name": "language",
+                    "type": "str",
+                    "default": "en",
+                    "required": false,
+                    "choices": null,
+                    "description": "Language of the text. Defaults to \"en\".",
+                    "role": null
+                  },
+                  {
+                    "name": "hypothesis_text_key",
+                    "type": "str",
+                    "default": "text",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key to the hypothesis text. Defaults to \"text\".",
+                    "role": "text"
+                  },
+                  {
+                    "name": "reference_text_key",
+                    "type": "str",
+                    "default": "text_ref",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key to the reference text. Defaults to \"text\".",
+                    "role": "reference_text"
+                  },
+                  {
+                    "name": "num_words_threshold",
+                    "type": "int",
+                    "default": 200,
+                    "required": false,
+                    "choices": null,
+                    "description": "Number of words to use for normalization. Defaults to 200.",
+                    "role": null
+                  },
+                  {
+                    "name": "num_words_look_back",
+                    "type": "int",
+                    "default": 5,
+                    "required": false,
+                    "choices": null,
+                    "description": "Number of words to look back for normalization. Defaults to 5.",
+                    "role": null
+                  },
+                  {
+                    "name": "compute_pnc_wer",
+                    "type": "bool",
+                    "default": false,
+                    "required": false,
+                    "choices": null,
+                    "description": "Whether to compute PNC WER/CER. Defaults to False.",
+                    "role": null
+                  },
+                  {
+                    "name": "pnc_chars",
+                    "type": "str",
+                    "default": "\u060c\u061f.\u3001\uff1f\u00bf!,?\u0964",
+                    "required": false,
+                    "choices": null,
+                    "description": "Punctuation characters to use for normalization. Defaults to special punctuation string.",
+                    "role": null
+                  },
+                  {
+                    "name": "edge_length",
+                    "type": "int",
+                    "default": 12,
+                    "required": false,
+                    "choices": null,
+                    "description": "Length of the edge to compute CER. Defaults to 12.",
+                    "role": null
+                  },
+                  {
+                    "name": "segments_key",
+                    "type": "str",
+                    "default": "segments",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key for the segments in the manifest. Defaults to \"segments\".",
+                    "role": "segments"
+                  },
+                  {
+                    "name": "metrics_key",
+                    "type": "str",
+                    "default": "metrics",
+                    "required": false,
+                    "choices": null,
+                    "description": null,
+                    "role": "metrics"
+                  }
+                ],
+                "dispatch": "process",
+                "error_policy": "unknown",
+                "key_roles": {
+                  "text": "text",
+                  "text_ref": "reference_text",
+                  "segments": "segments",
+                  "metrics": "metrics"
+                },
+                "batch_only": false,
+                "accepts_task_type": "AudioTask",
+                "produces_task_type": "AudioTask",
+                "removes_keys": []
+              }
+            },
+            {
+              "stage": "GetPairwiseWerStage",
+              "category": "quality",
+              "card": {
+                "stage_id": "GetPairwiseWerStage",
+                "category": "quality",
+                "summary": "Compute pairwise WER (%) between reference text and ASR pred_text.",
+                "tags": [
+                  "produces_score"
+                ],
+                "model_id": null,
+                "domain": {
+                  "language": "any",
+                  "style": "any"
+                },
+                "constraints": {},
+                "resource": {
+                  "cpus": 1.0,
+                  "gpu_mem_gb": 0.0,
+                  "gpu_optional": false,
+                  "bound": "cpu",
+                  "throughput_hint": "CPU; trivial"
+                },
+                "use_cases": {
+                  "good_for": [
+                    "a quick single WER% per row for accuracy filtering"
+                  ],
+                  "avoid_for": [
+                    "data with no reference transcripts",
+                    "when you need CER/edge/PNC (use ComputeWERStage)"
+                  ]
+                },
+                "composition": {
+                  "typical_upstream": [
+                    "InferenceAsrNemoStage"
+                  ],
+                  "typical_downstream": [
+                    "PreserveByValueStage",
+                    "AudioToDocumentStage"
+                  ]
+                },
+                "params_of_note": {
+                  "text_key": "reference transcript key (default text)",
+                  "pred_text_key": "ASR prediction key (default pred_text)",
+                  "wer_key": "output key for the WER percentage (default wer_pct)"
+                },
+                "metrics": {
+                  "wer_pct": {
+                    "scale": {
+                      "min": 0.0,
+                      "max": 100.0,
+                      "direction": "lower_better"
+                    },
+                    "anchors": {
+                      "0-10": "transcription_grade",
+                      "10-25": "usable"
+                    },
+                    "valid_range": [
+                      0.0,
+                      100.0
+                    ]
+                  }
+                },
+                "param_dependencies": {
+                  "pred_text_key": "requires an upstream ASR prediction (e.g. InferenceAsrNemoStage)",
+                  "text_key": "requires reference transcripts in the source manifest"
+                },
+                "comparison": {
+                  "accuracy_hint": "single WER% (no CER/edge/PNC, no normalization)",
+                  "latency_hint": "cheapest WER option",
+                  "config_complexity": "low",
+                  "known_limitations": "no text normalization; requires references"
+                },
+                "conflicts_with": [
+                  "ComputeWERStage"
+                ],
+                "notes": [
+                  "WER is a percentage (5.0 == 5%)."
+                ],
+                "verified": {
+                  "params": "mechanical",
+                  "tags": "mechanical",
+                  "resource": "best_guess",
+                  "use_cases": "best_guess",
+                  "domain": "best_guess",
+                  "comparison": "best_guess",
+                  "metrics": "best_guess"
+                },
+                "provenance": {
+                  "model_card_url": null,
+                  "card_version": 1,
+                  "last_validated": "2026-07-20"
+                }
+              },
+              "contract": {
+                "reads": {
+                  "data_keys": [],
+                  "segment_data_keys": [],
+                  "accepts": [],
+                  "produces": []
+                },
+                "writes": {
+                  "data_keys": [],
+                  "segment_data_keys": [],
+                  "accepts": [],
+                  "produces": []
+                },
+                "reads_one_of": [],
+                "metadata_reads": [],
+                "metadata_writes": [],
+                "cardinality": "1:1",
+                "cardinality_options": [],
+                "iteration_key": null,
+                "preserves_upstream_keys": true,
+                "wrappable": true,
+                "size_envelope": {
+                  "max_input_sec": null,
+                  "allowed_sample_rates": null,
+                  "channels": "any",
+                  "memory_hint": null
+                },
+                "gates": {
+                  "writes_to_disk": false,
+                  "requires_gpu": false,
+                  "requires_internet_first_run": false,
+                  "requires_ffmpeg": false,
+                  "lifecycle_side_effects": false,
+                  "runtime_secrets": [],
+                  "requires_serializable_input": false,
+                  "sanitizes_output": false
+                },
+                "stage_id": "GetPairwiseWerStage",
+                "description": "Compute pairwise word-error-rate (WER) as a percentage for each pair of text and pred_text.",
+                "params": [
+                  {
+                    "name": "text_key",
+                    "type": "str",
+                    "default": "text",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key for the utterance transcript. Defaults to \"text\".",
+                    "role": "text"
+                  },
+                  {
+                    "name": "pred_text_key",
+                    "type": "str",
+                    "default": "pred_text",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key for the ASR predictions. Defaults to \"pred_text\".",
+                    "role": "pred_text"
+                  },
+                  {
+                    "name": "wer_key",
+                    "type": "str",
+                    "default": "wer_pct",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key to store the computed WER percentage. Defaults to \"wer_pct\".",
+                    "role": "score"
+                  }
+                ],
+                "dispatch": "process",
+                "error_policy": "unknown",
+                "key_roles": {
+                  "text": "text",
+                  "pred_text": "pred_text",
+                  "wer_pct": "score"
+                },
+                "batch_only": false,
+                "accepts_task_type": "AudioTask",
+                "produces_task_type": "AudioTask",
+                "removes_keys": []
+              }
+            },
+            {
+              "stage": "PreserveByValueStage",
+              "category": "filter",
+              "card": {
+                "stage_id": "PreserveByValueStage",
+                "category": "filter",
+                "summary": "Keep/drop rows by comparing a numeric or string field against a target value.",
+                "tags": [
+                  "is_filter",
+                  "batch_only"
+                ],
+                "model_id": null,
+                "domain": {
+                  "language": "any",
+                  "style": "any"
+                },
+                "constraints": {
+                  "batch_size": {
+                    "fixed": null,
+                    "reason": "batch-only stage; process() raises, use process_batch"
+                  }
+                },
+                "resource": {
+                  "cpus": 1.0,
+                  "gpu_mem_gb": 0.0,
+                  "gpu_optional": false,
+                  "bound": "cpu",
+                  "throughput_hint": "CPU, trivial"
+                },
+                "use_cases": {
+                  "good_for": [
+                    "thresholding on a computed metric (e.g. keep wer <= 25, duration >= 1.0)"
+                  ],
+                  "avoid_for": [
+                    "filtering before the metric field exists upstream"
+                  ]
+                },
+                "composition": {
+                  "typical_upstream": [
+                    "GetPairwiseWerStage",
+                    "GetAudioDurationStage",
+                    "ComputeWERStage"
+                  ],
+                  "typical_downstream": [
+                    "AudioToDocumentStage",
+                    "ManifestWriterStage"
+                  ]
+                },
+                "params_of_note": {
+                  "input_value_key": "the field to compare (must be produced upstream)",
+                  "target_value": "the value to compare against",
+                  "operator": "one of lt, le, eq, ne, ge, gt"
+                },
+                "param_dependencies": {
+                  "input_value_key": "must be a key produced by an upstream stage (e.g. wer, duration)"
+                },
+                "notes": [
+                  "Filter AFTER the metric it reads is produced; filtering early (before convert/write) saves downstream cost."
+                ],
+                "verified": {
+                  "params": "mechanical",
+                  "tags": "mechanical",
+                  "resource": "best_guess",
+                  "use_cases": "best_guess",
+                  "domain": "best_guess"
+                },
+                "provenance": {
+                  "model_card_url": null,
+                  "card_version": 2,
+                  "last_validated": "2026-07-20"
+                }
+              },
+              "contract": {
+                "reads": {
+                  "data_keys": [],
+                  "segment_data_keys": [],
+                  "accepts": [],
+                  "produces": []
+                },
+                "writes": {
+                  "data_keys": [],
+                  "segment_data_keys": [],
+                  "accepts": [],
+                  "produces": []
+                },
+                "reads_one_of": [],
+                "metadata_reads": [],
+                "metadata_writes": [],
+                "cardinality": "1:1",
+                "cardinality_options": [],
+                "iteration_key": null,
+                "preserves_upstream_keys": true,
+                "wrappable": true,
+                "size_envelope": {
+                  "max_input_sec": null,
+                  "allowed_sample_rates": null,
+                  "channels": "any",
+                  "memory_hint": null
+                },
+                "gates": {
+                  "writes_to_disk": false,
+                  "requires_gpu": false,
+                  "requires_internet_first_run": false,
+                  "requires_ffmpeg": false,
+                  "lifecycle_side_effects": false,
+                  "runtime_secrets": [],
+                  "requires_serializable_input": false,
+                  "sanitizes_output": false
+                },
+                "stage_id": "PreserveByValueStage",
+                "description": "Filter entries by comparing *input_value_key* against *target_value*.",
+                "params": [
+                  {
+                    "name": "input_value_key",
+                    "type": "str",
+                    "default": null,
+                    "required": true,
+                    "choices": null,
+                    "description": "The field in the dataset entries to evaluate.",
+                    "role": "unknown"
+                  },
+                  {
+                    "name": "target_value",
+                    "type": "int | str",
+                    "default": null,
+                    "required": true,
+                    "choices": null,
+                    "description": "The value to compare with.",
+                    "role": null
+                  },
+                  {
+                    "name": "operator",
+                    "type": "str",
+                    "default": "eq",
+                    "required": false,
+                    "choices": null,
+                    "description": "Comparison operator (lt, le, eq, ne, ge, gt).",
+                    "role": null
+                  }
+                ],
+                "dispatch": "process_batch",
+                "error_policy": "unknown",
+                "key_roles": {},
+                "batch_only": true,
+                "accepts_task_type": "AudioTask",
+                "produces_task_type": "AudioTask",
+                "removes_keys": []
+              }
+            }
+          ]
+        }
+      },
+      {
+        "verb": "resolve",
+        "args": {
+          "stage": "GetPairwiseWerStage",
+          "label": "usable"
+        },
+        "result": {
+          "stage": "GetPairwiseWerStage",
+          "params": {},
+          "filter_stage": {
+            "ref": "PreserveByValueStage",
+            "params": {
+              "input_value_key": "wer_pct",
+              "operator": "le",
+              "target_value": 25.0
+            }
+          },
+          "strategy": [
+            {
+              "param": "target_value",
+              "value": 25.0,
+              "metric": "wer_pct",
+              "kind": "absolute",
+              "mode": "knowledge_driven",
+              "source": {
+                "from": "card_anchor",
+                "ref": "usable"
+              },
+              "recompute_on": "none",
+              "rationale": "label 'usable' -> filter wer_pct le 25.0 (PreserveByValueStage)"
+            }
+          ],
+          "asks": []
+        }
+      },
+      {
+        "verb": "validate",
+        "args": {
+          "recipe": {
+            "stages": [
+              {
+                "ref": "ManifestReader",
+                "params": {
+                  "manifest_path": "REQUIRED"
+                }
+              },
+              {
+                "ref": "InferenceAsrNemoStage",
+                "params": {
+                  "model_name": "nvidia/parakeet-tdt-0.6b-v2"
+                }
+              },
+              {
+                "ref": "GetPairwiseWerStage",
+                "params": {}
+              },
+              {
+                "ref": "PreserveByValueStage",
+                "params": {
+                  "input_value_key": "wer_pct",
+                  "operator": "le",
+                  "target_value": 25
+                }
+              },
+              {
+                "ref": "ManifestWriterStage",
+                "params": {
+                  "output_path": "REQUIRED"
+                }
+              }
+            ]
+          },
+          "request_type": "wer_filter",
+          "acceptance_criteria": [
+            {
+              "kind": "output_completeness",
+              "field": "pred_text",
+              "requirement": "must"
+            },
+            {
+              "kind": "quality_standard",
+              "metric": "wer_pct",
+              "type": "absolute",
+              "operator": "le",
+              "target": 25,
+              "requirement": "must"
+            },
+            {
+              "kind": "yield",
+              "type": "relative",
+              "requirement": "should"
+            }
+          ]
+        },
+        "result": {
+          "ok": true,
+          "keys_ok": true,
+          "runnable": true,
+          "status": "uncertain",
+          "issues": [
+            {
+              "code": "composite",
+              "severity": "warning",
+              "message": "composite stage \u2014 decompose before validating its data flow",
+              "stage_index": 0,
+              "stage": "ManifestReader",
+              "fix": "decompose the composite (it hides its true I/O) before validating downstream",
+              "escalate_to": null
+            },
+            {
+              "code": "unsatisfied_reads_after_composite",
+              "severity": "warning",
+              "message": "requires role(s) ['text'] not visibly produced \u2014 but an upstream composite hides its writes; decompose it to validate this read",
+              "stage_index": 2,
+              "stage": "GetPairwiseWerStage",
+              "fix": null,
+              "escalate_to": "smoke"
+            },
+            {
+              "code": "missing_implied_criterion",
+              "severity": "warning",
+              "message": "a filtering/curation request should carry a 'yield' criterion (define how much to keep, e.g. retained > 0 or ~=N%)",
+              "stage_index": null,
+              "stage": null,
+              "fix": "add an acceptance criterion of this type to define success for the request",
+              "escalate_to": "user"
+            }
+          ],
+          "card_violations": [],
+          "gate_flags": [
+            {
+              "code": "internet_first_run",
+              "severity": "info",
+              "message": "InferenceAsrNemoStage downloads a model on first run",
+              "stage_index": 1,
+              "stage": "InferenceAsrNemoStage",
+              "fix": null,
+              "escalate_to": null
+            }
+          ],
+          "unproducible_roles": [],
+          "produced_roles": [
+            "audio_filepath",
+            "pred_text",
+            "score"
+          ],
+          "produced_keys": [
+            "audio_filepath",
+            "pred_text",
+            "wer_pct"
+          ],
+          "summary": "0 error(s), 3 warning(s):\n  [warning] composite [ManifestReader]: composite stage \u2014 decompose before validating its data flow -> decompose the composite (it hides its true I/O) before validating downstream\n  [warning] unsatisfied_reads_after_composite [GetPairwiseWerStage]: requires role(s) ['text'] not visibly produced \u2014 but an upstream composite hides its writes; decompose it to validate this read\n  [warning] missing_implied_criterion: a filtering/curation request should carry a 'yield' criterion (define how much to keep, e.g. retained > 0 or ~=N%) -> add an acceptance criterion of this type to define success for the request\n  [info] internet_first_run [InferenceAsrNemoStage]: InferenceAsrNemoStage downloads a model on first run"
+        }
+      }
+    ],
+    "final_recipe": {
+      "stages": [
+        {
+          "ref": "ManifestReader",
+          "params": {
+            "manifest_path": "REQUIRED"
+          }
+        },
+        {
+          "ref": "InferenceAsrNemoStage",
+          "params": {
+            "model_name": "nvidia/parakeet-tdt-0.6b-v2"
+          }
+        },
+        {
+          "ref": "GetPairwiseWerStage",
+          "params": {}
+        },
+        {
+          "ref": "PreserveByValueStage",
+          "params": {
+            "input_value_key": "wer_pct",
+            "operator": "le",
+            "target_value": 25.0
+          }
+        },
+        {
+          "ref": "ManifestWriterStage",
+          "params": {
+            "output_path": "REQUIRED"
+          }
+        }
+      ]
+    },
+    "outcome": "recipe",
+    "asked_clarification": false
+  },
+  "execution": null,
+  "grade": {
+    "overall": "pass",
+    "dimensions": {
+      "success": {
+        "pass": true,
+        "note": "outcome=recipe (wanted a recipe)"
+      },
+      "modules": {
+        "pass": true,
+        "note": "module set matches"
+      },
+      "validity": {
+        "pass": true,
+        "note": "status=uncertain runnable=True"
+      },
+      "ordering": {
+        "pass": true,
+        "note": "InferenceAsrNemoStage->wer: ok"
+      }
+    },
+    "findings": []
+  }
+}

@@ -1,0 +1,79 @@
+# Level 7 — requests satisfiable by multiple valid designs. The agent should
+# recommend one on card facts, allow override, and either design must validate.
+level: 7
+scenarios:
+  - id: L07_quality_metric_choice
+    level: 7
+    label: multi_design
+    objective: "Quality filtering has 3 valid metrics -> recommend one, allow override."
+    prompt: "Filter my audio by quality."
+    dataset: "WAVs"
+    prerequisites: []
+    expect_clarification: ["which quality level do you want (studio/general/lenient)?"]
+    clarification_required: true
+    expected_capabilities: [ingest, quality, filter]
+    expected_modules:
+      required: []
+      equivalence: {quality: [UTMOSFilterStage, SIGMOSFilterStage, TorchSquimQualityMetricsStage]}
+      forbidden: []
+    expected_order: [ingest, quality]
+    expected_params: {must_resolve: [mos_threshold], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: streaming, accepted_gt: 0}
+    expected_output_roles: [score]
+    explanation_rubric:
+      - "names the candidate metrics and the recommended one with a reason"
+      - "invites override"
+    pass_criteria: "recommends a metric; chosen design validates; threshold resolved"
+    fail_criteria: "presents no rationale; hand-picks a threshold"
+
+  - id: L07_diarizer_choice
+    level: 7
+    label: multi_design
+    objective: "Two valid diarizers -> recommend by language/speaker count."
+    prompt: "Diarize my English podcasts (2-3 speakers)."
+    dataset: "English podcasts"
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, diarize]
+    expected_modules:
+      required: []
+      equivalence: {diarize: [InferenceSortformerStage, PyAnnoteDiarizationStage]}
+      forbidden: []
+    expected_order: [ingest, diarize]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: batch, accepted_gt: 0}
+    expected_output_roles: [diar_segments]
+    explanation_rubric:
+      - "recommends a diarizer citing English + ≤4 speakers fit"
+    pass_criteria: "recommends one diarizer with a card-based reason; validates"
+    fail_criteria: "arbitrary choice with no rationale"
+
+  - id: L07_vad_choice
+    level: 7
+    label: multi_design
+    objective: "Two valid VAD stages -> pick based on downstream need."
+    prompt: "Detect speech regions in my recordings."
+    dataset: "long recordings"
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, segment]
+    expected_modules:
+      required: []
+      equivalence: {vad: [VADSegmentationStage, WhisperXVADStage]}
+      forbidden: []
+    expected_order: [ingest, vad]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: fanout
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: streaming, accepted_gt: 0}
+    expected_output_roles: [segments]
+    explanation_rubric:
+      - "explains the VAD choice vs the alternative"
+    pass_criteria: "picks a VAD with rationale; validates"
+    fail_criteria: "no rationale; validation fails"

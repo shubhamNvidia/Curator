@@ -1,0 +1,470 @@
+# User-simulation personas for the end-to-end debug harness (AGENT_TEST_PLAN.md).
+#
+# Each persona is a realistic user. The LLM user-sim opens with `opening_prompt`
+# (natural, first-person, NO stage names), then answers the curation agent's
+# clarifying questions using `persona_facts` (revealed only when asked) and
+# `preferences`. `expected` is what we GRADE the agent's built recipe against -
+# never what the user says.
+#
+# Schema:
+#   id, group (per_level|complex|pattern), level, executable, data
+#   goal, opening_prompt, persona_facts, preferences
+#   pattern_id / pattern_kind   (pattern personas only; kind mirrors composition.yaml)
+#   expected: {required[], equivalence{group:[stages]}, forbidden[],
+#              order_constraints[[before, after]], output_roles[]}
+#             order tokens are stage names or an equivalence-group key.
+#   success: {kind: executes|refuses|clarifies}
+
+personas:
+  # ------------------------------------------------------------------ per-level
+  - id: L01_duration
+    group: per_level
+    level: 1
+    executable: true
+    data: /tmp/aa_real/manifest.jsonl
+    goal: "know the length of each clip"
+    opening_prompt: "How long is each clip in my dataset?"
+    persona_facts: "I have a JSONL manifest of wav files at /tmp/aa_real/manifest.jsonl."
+    preferences: "Simple is fine; just add the durations and give them back to me."
+    expected:
+      required: [GetAudioDurationStage]
+      equivalence: {}
+      forbidden: [InferenceAsrNemoStage, UTMOSFilterStage]
+      order_constraints: []
+      output_roles: [duration]
+    success: {kind: executes}
+
+  - id: L02_transcribe_wer
+    group: per_level
+    level: 2
+    executable: true
+    data: /tmp/aa_real/manifest.jsonl
+    goal: "transcribe and drop clips where ASR disagrees a lot with the reference"
+    opening_prompt: "I have some clips with reference transcripts. Can you transcribe them and toss out the ones where the recognizer disagrees a lot with what was actually said?"
+    persona_facts: "The manifest has a 'text' reference for each clip; audio is English read speech."
+    preferences: "If asked how strict: drop anything worse than about 25% word error. Otherwise use your judgement."
+    expected:
+      required: [InferenceAsrNemoStage]
+      equivalence: {wer: [GetPairwiseWerStage, ComputeWERStage]}
+      forbidden: []
+      order_constraints: [[InferenceAsrNemoStage, wer]]
+      output_roles: [pred_text]
+    success: {kind: executes}
+
+  - id: L03_per_segment_quality
+    group: per_level
+    level: 3
+    executable: true
+    data: /tmp/aa_real/manifest.jsonl
+    goal: "quality score for each speech segment"
+    opening_prompt: "I want a quality score for each spoken segment in my recordings, not just one number per file."
+    persona_facts: "Recordings may have silence between speech; English."
+    preferences: "General quality is fine."
+    expected:
+      required: [VADSegmentationStage]
+      equivalence: {quality: [UTMOSFilterStage, SIGMOSFilterStage, TorchSquimQualityMetricsStage]}
+      forbidden: []
+      order_constraints: [[VADSegmentationStage, quality]]
+      output_roles: [score]
+    success: {kind: executes}
+
+  - id: L04_good_audio
+    group: per_level
+    level: 4
+    executable: true
+    data: /tmp/aa_real/manifest.jsonl
+    goal: "keep only good audio (ambiguous)"
+    opening_prompt: "Give me good audio."
+    persona_facts: "Folder of wavs; I care about how clean/natural they sound."
+    preferences: "When asked what quality level I want, say 'studio'. Approve once the plan filters on quality."
+    expected:
+      required: []
+      equivalence: {quality: [UTMOSFilterStage, SIGMOSFilterStage, TorchSquimQualityMetricsStage]}
+      forbidden: []
+      order_constraints: []
+      output_roles: [score]
+    success: {kind: clarifies}   # must ask the quality level first; then may build
+
+  - id: L05_wer_no_reference
+    group: per_level
+    level: 5
+    executable: false
+    goal: "filter by WER but there are no reference transcripts"
+    opening_prompt: "Can you filter my clips by word error rate?"
+    persona_facts: "My manifest has audio only - there are NO reference transcripts."
+    preferences: "If told a reference is needed, say I don't have one and ask what my options are."
+    expected:
+      required: []
+      equivalence: {}
+      forbidden: []
+      order_constraints: []
+      output_roles: []
+    success: {kind: clarifies}   # must surface the missing reference, not fake a WER
+
+  - id: L06_transcribe_no_audio
+    group: per_level
+    level: 6
+    executable: false
+    goal: "transcribe text-only files (impossible)"
+    opening_prompt: "I want to transcribe my dataset - it's a folder of text files, there's no audio."
+    persona_facts: "Really just .txt files, no audio at all."
+    preferences: "If told it's not possible, accept it and ask what else could be done."
+    expected:
+      required: []
+      equivalence: {}
+      forbidden: [InferenceAsrNemoStage]
+      order_constraints: []
+      output_roles: []
+    success: {kind: refuses}
+
+  - id: L07_quality_choice
+    group: per_level
+    level: 7
+    executable: true
+    data: /tmp/aa_real/manifest.jsonl
+    goal: "quality filter, multiple valid metrics"
+    opening_prompt: "Filter my audio by quality."
+    persona_facts: "English speech clips."
+    preferences: "Let the agent recommend a metric; when asked the level, say 'general'. Approve its recommendation."
+    expected:
+      required: []
+      equivalence: {quality: [UTMOSFilterStage, SIGMOSFilterStage, TorchSquimQualityMetricsStage]}
+      forbidden: []
+      order_constraints: []
+      output_roles: [score]
+    success: {kind: executes}
+
+  - id: L08_add_transcripts
+    group: per_level
+    level: 8
+    executable: true
+    data: /tmp/aa_real/manifest.jsonl
+    goal: "follow-up: also add transcripts to already-curated clips"
+    opening_prompt: "I already cleaned these clips by quality - now I'd also like transcripts on them."
+    persona_facts: "Same dataset as before; I just want text added now."
+    preferences: "Fine to just add transcription."
+    expected:
+      required: [InferenceAsrNemoStage]
+      equivalence: {}
+      forbidden: []
+      order_constraints: []
+      output_roles: [pred_text]
+    success: {kind: executes}   # note: no parent run exists in the sim -> reuse may be a finding
+
+  - id: L09_file_export
+    group: per_level
+    level: 9
+    executable: true
+    data: /tmp/aa_real/manifest.jsonl
+    goal: "annotate + export a new JSONL"
+    opening_prompt: "Add the duration to each row of my manifest and save it out as a new JSONL file."
+    persona_facts: "Manifest of wavs."
+    preferences: "Any standard JSONL output is fine."
+    expected:
+      required: [GetAudioDurationStage]
+      equivalence: {sink: [AudioToDocumentStage, ManifestWriterStage]}
+      forbidden: []
+      order_constraints: []
+      output_roles: [duration]
+    success: {kind: executes}
+
+  - id: L10_custom_score_key
+    group: per_level
+    level: 10
+    executable: true
+    data: /tmp/aa_real/manifest.jsonl
+    goal: "score quality into a custom field and keep the good ones"
+    opening_prompt: "Score the quality into a field I'll call 'mos', and then keep only the good ones."
+    persona_facts: "English clips; I'll read the 'mos' field downstream."
+    preferences: "When asked what counts as good, say keep MOS at least 3.5."
+    expected:
+      # A quality stage with action=filter (e.g. UTMOSFilterStage) scores into a custom key
+      # AND drops low-quality rows in ONE stage -- a valid, cleaner alternative to a separate
+      # PreserveByValueStage. Accept either design; the core validates ordering + the score
+      # output role, and execution confirms filtering actually happened.
+      required: []
+      equivalence: {quality: [UTMOSFilterStage, SIGMOSFilterStage], filter: [PreserveByValueStage, UTMOSFilterStage, SIGMOSFilterStage]}
+      forbidden: []
+      order_constraints: []
+      output_roles: [score]
+    success: {kind: executes}
+
+  - id: L11_incompatible_reorder
+    group: per_level
+    level: 11
+    executable: true
+    data: /tmp/aa_real/manifest.jsonl
+    goal: "document table + per-file duration (agent must order to avoid task-type break)"
+    opening_prompt: "Turn everything into a document table for analysis, and also give me each file's audio duration."
+    persona_facts: "Manifest of wavs; I want a tabular export plus durations."
+    preferences: "Any sensible output."
+    expected:
+      required: [GetAudioDurationStage, AudioToDocumentStage]
+      equivalence: {}
+      forbidden: []
+      order_constraints: [[GetAudioDurationStage, AudioToDocumentStage]]
+      output_roles: [duration]
+    success: {kind: executes}
+
+  - id: L12_emotion
+    group: per_level
+    level: 12
+    executable: false
+    goal: "label speaker emotion (unavailable)"
+    opening_prompt: "Label the emotion of each speaker for me."
+    persona_facts: "Just speech clips."
+    preferences: "If told it's not supported, accept and ask for alternatives."
+    expected:
+      required: []
+      equivalence: {}
+      forbidden: []
+      order_constraints: []
+      output_roles: []
+    success: {kind: refuses}
+
+  - id: L13_unknown_denoiser
+    group: per_level
+    level: 13
+    executable: false
+    goal: "denoise with a made-up stage"
+    opening_prompt: "Denoise my audio with the MagicDenoiser stage."
+    persona_facts: "Noisy recordings."
+    preferences: "If there's no such stage, ask what real options exist."
+    expected:
+      required: []
+      equivalence: {}
+      forbidden: [MagicDenoiserStage]
+      order_constraints: []
+      output_roles: []
+    success: {kind: refuses}
+
+  - id: L14_new_stage
+    group: per_level
+    level: 14
+    executable: false
+    goal: "use a stage not in the live catalog"
+    opening_prompt: "Use the new loudness-normalization stage to level out my clips."
+    persona_facts: "I heard there's a new loudness stage."
+    preferences: "If it isn't available, tell me honestly."
+    expected:
+      required: []
+      equivalence: {}
+      forbidden: [NewLoudnessNormStage]
+      order_constraints: []
+      output_roles: []
+    success: {kind: refuses}   # not in the live MCP catalog -> should not invent it
+
+  # ------------------------------------------------------------------ complex
+  - id: Cx1_tts_cleanset
+    group: complex
+    level: 3
+    executable: true
+    data: /tmp/aa_real/manifest.jsonl
+    goal: "clean, per-utterance TTS training set with quality + timestamps"
+    opening_prompt: "I'm building a voice for a text-to-speech model and I need to get my recordings ready. Honestly they're a bit of a mess - some are stereo, the levels are all over the place, and there's a lot of silence and background noise between the parts where someone's actually talking. I just want the clean spoken bits, only the good-sounding ones, each as its own little clip, and I need to know where each clip came from in the original file. Can you set that up for me?"
+    persona_facts: "Mixed stereo/mono wavs; for TTS I want 16 kHz mono; only keep clean/natural audio; each utterance separate; keep source offsets."
+    preferences: "When asked the quality level, say 'studio'. When asked the sample rate, say 16 kHz mono. Approve a plan that cleans, filters quality, splits into utterances, and keeps timestamps."
+    expected:
+      required: [VADSegmentationStage, TimestampMapperStage]
+      equivalence: {norm: [MonoConversionStage, ResampleAudioStage], quality: [UTMOSFilterStage, SIGMOSFilterStage, TorchSquimQualityMetricsStage]}
+      forbidden: []
+      order_constraints: [[norm, quality], [VADSegmentationStage, quality]]
+      output_roles: [score]
+    success: {kind: executes}
+
+  - id: Cx2_transcription_grade
+    group: complex
+    level: 2
+    executable: true
+    data: /tmp/aa_real/manifest.jsonl
+    goal: "transcription-grade corpus: low WER AND good quality"
+    opening_prompt: "I want to build a really clean transcription training set from these recordings. I've got the correct transcripts already. Keep only the clips where the machine transcription basically matches, and that also sound good."
+    persona_facts: "Manifest has reference 'text'; English read speech."
+    preferences: "When asked the WER bar, say transcription-grade (about 10% or better). When asked quality level, say general. Approve a plan that transcribes, checks WER vs the reference, and filters on both WER and quality."
+    expected:
+      required: [InferenceAsrNemoStage]
+      equivalence: {wer: [GetPairwiseWerStage, ComputeWERStage], quality: [UTMOSFilterStage, SIGMOSFilterStage], filter: [PreserveByValueStage]}
+      forbidden: []
+      order_constraints: [[InferenceAsrNemoStage, wer]]
+      output_roles: [pred_text, score]
+    success: {kind: executes}
+
+  - id: Cx3_diarized_aligned
+    group: complex
+    level: 3
+    executable: true
+    data: /tmp/aa_real/manifest.jsonl
+    goal: "who-spoke-when + word-aligned per-turn transcripts, drop low-quality turns"
+    opening_prompt: "For these recordings I want to know who spoke when, with the words lined up to each speaker's turn, and I'd like to drop any turn that sounds bad."
+    persona_facts: "Multi-party English recordings."
+    preferences: "General quality is fine for the drop threshold. Approve a plan that diarizes, aligns transcripts, merges them per turn, and filters quality."
+    expected:
+      required: [MergeAlignmentDiarizationStage]
+      equivalence: {diarize: [InferenceSortformerStage, PyAnnoteDiarizationStage], quality: [UTMOSFilterStage, SIGMOSFilterStage]}
+      forbidden: []
+      order_constraints: [[diarize, MergeAlignmentDiarizationStage], [NeMoASRAlignerStage, MergeAlignmentDiarizationStage]]
+      output_roles: [diar_segments]
+    success: {kind: executes}
+
+  # ------------------------------------------------------------------ composition patterns
+  # Graded on the BUILT RECIPE's ordering (executable: false). pattern_kind mirrors
+  # composition.yaml: enforced -> hard fail on violation; advisory -> deviation is a finding.
+  - id: Px_mono_first
+    group: pattern
+    pattern_id: mono-first
+    pattern_kind: advisory
+    executable: false
+    goal: "quality filter on mixed stereo/mono input"
+    opening_prompt: "I've got a mix of stereo and mono clips and I just want to keep the clean, good-sounding ones."
+    persona_facts: "Some files are stereo, some mono; English."
+    preferences: "When asked the quality level, say general."
+    expected:
+      required: [MonoConversionStage]
+      equivalence: {quality: [UTMOSFilterStage, SIGMOSFilterStage, TorchSquimQualityMetricsStage]}
+      forbidden: []
+      order_constraints: [[MonoConversionStage, quality]]
+      output_roles: [score]
+    success: {kind: clarifies}
+
+  - id: Px_resample_before_16k
+    group: pattern
+    pattern_id: resample-before-16k-models
+    pattern_kind: advisory
+    executable: false
+    goal: "diarize 48 kHz recordings (model is 16 kHz-only)"
+    opening_prompt: "I have a big pile of 48 kHz recordings and I want to know who spoke when in each meeting."
+    persona_facts: "All audio is 48 kHz; 2-4 speakers; English."
+    preferences: "Approve a plan that gets to who-spoke-when."
+    expected:
+      required: []
+      equivalence: {norm: [ResampleAudioStage, MonoConversionStage], diarize: [InferenceSortformerStage, PyAnnoteDiarizationStage]}
+      forbidden: []
+      order_constraints: [[norm, diarize]]
+      output_roles: [diar_segments]
+    success: {kind: executes}
+
+  - id: Px_sanitize_before_sink
+    group: pattern
+    pattern_id: sanitize-before-json-sink
+    pattern_kind: enforced
+    executable: false
+    goal: "in-memory processing then JSONL export (tensor must not reach the writer)"
+    opening_prompt: "For speed, I'd rather keep the audio loaded in memory as it goes through the steps instead of re-reading the files each time, and then save everything to a JSONL at the end."
+    persona_facts: "Performance-minded; large dataset."
+    preferences: "Any correct plan that ends in a JSONL is fine."
+    expected:
+      # The enforced sanitize-before-json-sink rule is checked by the core validator
+      # (tensor_into_sink): AudioToDocumentStage is only REQUIRED when a waveform is actually
+      # resident in rows. Grade on validity + ordering, not a blanket module requirement --
+      # a valid JSONL-export plan with no resident tensor legitimately needs no sanitizer.
+      required: [ManifestWriterStage]
+      equivalence: {}
+      forbidden: []
+      order_constraints: [[AudioToDocumentStage, ManifestWriterStage]]
+      output_roles: []
+    success: {kind: executes}
+
+  - id: Px_filter_after_metric
+    group: pattern
+    pattern_id: filter-after-metric
+    pattern_kind: advisory
+    executable: false
+    goal: "keep clips >= 5 seconds"
+    opening_prompt: "The really short clips aren't useful to me - just keep the ones that are at least 5 seconds long."
+    persona_facts: "Clips vary in length."
+    preferences: "5 seconds is the cutoff."
+    expected:
+      required: [GetAudioDurationStage, PreserveByValueStage]
+      equivalence: {}
+      forbidden: []
+      order_constraints: [[GetAudioDurationStage, PreserveByValueStage]]
+      output_roles: [duration]
+    success: {kind: executes}
+
+  - id: Px_cheap_filters_first
+    group: pattern
+    pattern_id: cheap-filters-first
+    pattern_kind: advisory
+    executable: false
+    goal: "drop narrowband AND generally bad-sounding audio"
+    opening_prompt: "I want to weed out the low-quality audio - both the tinny, telephone-sounding stuff and anything that just sounds bad overall."
+    persona_facts: "Mix of narrowband (telephone) and wideband clips."
+    preferences: "General quality bar is fine."
+    expected:
+      required: [BandFilterStage]
+      equivalence: {quality: [UTMOSFilterStage, SIGMOSFilterStage]}
+      forbidden: []
+      order_constraints: [[BandFilterStage, quality]]
+      output_roles: [prediction, score]
+    success: {kind: executes}
+
+  - id: Px_wer_needs_reference
+    group: pattern
+    pattern_id: wer-needs-reference
+    pattern_kind: enforced
+    executable: false
+    goal: "transcribe and drop high-WER clips (references provided)"
+    opening_prompt: "I have recordings together with their correct transcripts - run speech recognition on them and throw out the ones where the result is way off from the correct text."
+    persona_facts: "Reference transcripts are present in the manifest."
+    preferences: "When asked the bar, say drop worse than 25%."
+    expected:
+      required: [InferenceAsrNemoStage]
+      equivalence: {wer: [GetPairwiseWerStage, ComputeWERStage]}
+      forbidden: []
+      order_constraints: [[InferenceAsrNemoStage, wer]]
+      output_roles: [pred_text]
+    success: {kind: executes}
+
+  - id: Px_vad_per_segment
+    group: pattern
+    pattern_id: vad-changes-granularity
+    pattern_kind: advisory
+    executable: false
+    goal: "per-speech-segment quality (VAD present)"
+    opening_prompt: "For each bit of speech in my long recordings I want a quality score, not just one number for the whole file."
+    persona_facts: "Long recordings with pauses."
+    preferences: "General quality."
+    expected:
+      required: [VADSegmentationStage]
+      equivalence: {quality: [UTMOSFilterStage, SIGMOSFilterStage, TorchSquimQualityMetricsStage]}
+      forbidden: []
+      order_constraints: [[VADSegmentationStage, quality]]
+      output_roles: [score]
+    success: {kind: executes}
+
+  - id: Px_vad_whole_file
+    group: pattern
+    pattern_id: vad-changes-granularity
+    pattern_kind: advisory
+    executable: false
+    goal: "one quality score per file (VAD absent)"
+    opening_prompt: "Just give me one overall quality score per recording."
+    persona_facts: "Short clips; whole-file scoring is fine."
+    preferences: "General quality."
+    expected:
+      required: []
+      equivalence: {quality: [UTMOSFilterStage, SIGMOSFilterStage, TorchSquimQualityMetricsStage]}
+      forbidden: [VADSegmentationStage, WhisperXVADStage]
+      order_constraints: []
+      output_roles: [score]
+    success: {kind: executes}
+
+  - id: Px_diarization_continuous
+    group: pattern
+    pattern_id: diarization-needs-continuous-audio
+    pattern_kind: enforced
+    executable: false
+    goal: "clean + per-speaker audio from noisy interviews"
+    opening_prompt: "I've got long two- and three-person interview recordings with a lot of dead air and some background noise. I want clean, separate audio for each speaker - each person's parts on their own, with the silence and junk removed. How would you process these?"
+    persona_facts: "2-3 speakers, ~20-40 min files, English, background noise."
+    preferences: "Approve a plan that gives clean per-speaker audio."
+    expected:
+      required: []
+      equivalence: {diarize: [InferenceSortformerStage, PyAnnoteDiarizationStage, SpeakerSeparationStage]}
+      forbidden: []
+      # conditional: re-join is required ONLY IF VAD precedes the diarizer/separator;
+      # separating on continuous audio (before any VAD) is valid and must not be flagged.
+      order_constraints: []
+      conditional_order: {if_before: VADSegmentationStage, then_between: SegmentConcatenationStage, and_before: diarize}
+      output_roles: []
+    success: {kind: executes}

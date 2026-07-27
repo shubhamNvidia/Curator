@@ -1,0 +1,81 @@
+# Level 2 — standard multi-stage pipelines.
+level: 2
+scenarios:
+  - id: L02_readspeech_quality
+    level: 2
+    label: standard
+    objective: "Curate clean read speech by quality with a resolved threshold."
+    prompt: "I have a folder of WAVs, give me cleaner speech data (I don't know which checks to use)."
+    dataset: "folder of 48kHz WAVs, no transcripts"
+    prerequisites: []
+    expect_clarification: ["which quality level: studio, general, or lenient?"]
+    clarification_required: true
+    expected_capabilities: [ingest, preprocess, quality, filter, export]
+    expected_modules:
+      required: [MonoConversionStage]
+      equivalence: {quality: [UTMOSFilterStage, SIGMOSFilterStage, TorchSquimQualityMetricsStage]}
+      forbidden: [InferenceAsrNemoStage, ComputeWERStage]   # no transcripts requested/available
+    expected_order: [CreateInitialManifestReadSpeechStage, MonoConversionStage, quality, TimestampMapperStage]
+    expected_params: {must_resolve: [mos_threshold], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: streaming, accepted_gt: 0}
+    expected_output_roles: [score, duration]
+    explanation_rubric:
+      - "names the quality metric and what it does/doesn't capture"
+      - "states the threshold came from a named outcome (studio/general/lenient), not hand-picked"
+      - "explains why no ASR stage is present (no transcripts)"
+    pass_criteria: "validates; a quality module present; mos_threshold resolved; no ASR"
+    fail_criteria: "hand-picked threshold; missing quality; unrequested ASR; validation fails"
+
+  - id: L02_transcribe_export
+    level: 2
+    label: standard
+    objective: "Transcribe and export a JSONL manifest."
+    prompt: "Transcribe my clips and save the transcripts to JSONL."
+    dataset: "manifest with audio_filepath"
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, transcribe, export]
+    expected_modules:
+      required: [InferenceAsrNemoStage]
+      equivalence: {sink: [AudioToDocumentStage, ManifestWriterStage]}
+      forbidden: [UTMOSFilterStage]
+    expected_order: [ManifestReader, InferenceAsrNemoStage, AudioToDocumentStage]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: streaming, accepted_gt: 0}
+    expected_output_roles: [pred_text]
+    explanation_rubric:
+      - "names the ASR model and language assumption"
+      - "explains AudioToDocument before the JSON writer"
+    pass_criteria: "validates; ASR produces pred_text; JSON sink safe"
+    fail_criteria: "no ASR; tensor into JSON sink; validation fails"
+
+  - id: L02_fleurs_asr_wer
+    level: 2
+    label: standard
+    objective: "Transcribe FLEURS and drop high-WER rows against references."
+    prompt: "Transcribe FLEURS and drop rows with high WER."
+    dataset: "FLEURS (has reference text)"
+    prerequisites: []
+    expect_clarification: ["what WER bar counts as 'high' (e.g. transcription-grade vs usable)?"]
+    clarification_required: true
+    expected_capabilities: [ingest, transcribe, quality, filter, export]
+    expected_modules:
+      required: [InferenceAsrNemoStage]
+      equivalence: {wer: [GetPairwiseWerStage, ComputeWERStage]}
+      forbidden: []
+    expected_order: [CreateInitialManifestFleursStage, InferenceAsrNemoStage, wer, PreserveByValueStage]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: streaming, accepted_gt: 0}
+    expected_output_roles: [pred_text, score]
+    explanation_rubric:
+      - "explains WER needs both hypothesis and reference"
+      - "states the WER bar came from a named outcome, not invented"
+    pass_criteria: "validates; ASR + WER + a filter; WER bar resolved"
+    fail_criteria: "WER without reference; hand-picked bar; validation fails"

@@ -1,0 +1,79 @@
+# Level 8 — incremental requests that extend an already-executed pipeline.
+# The agent must reuse prior outputs (plan_continuation) and avoid re-running done work.
+level: 8
+scenarios:
+  - id: L08_add_transcripts
+    level: 8
+    label: incremental
+    objective: "Follow-up 'also add transcripts' -> reuse mono+UTMOS output, run only ASR."
+    prompt: "Now also add transcripts to the clips I just curated."
+    dataset: "same dataset as the parent run"
+    prerequisites: ["a parent run of MonoConversion + UTMOSFilter exists"]
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [transcribe]
+    expected_modules:
+      required: [InferenceAsrNemoStage]
+      equivalence: {}
+      forbidden: []
+    expected_order: [InferenceAsrNemoStage]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: streaming, accepted_gt: 0}
+    expected_output_roles: [pred_text]
+    continuation_expect: {mode: incremental, run_stages: [InferenceAsrNemoStage]}
+    explanation_rubric:
+      - "states it reuses the prior curated output and only runs ASR"
+      - "references the parent run id"
+    pass_criteria: "plan_continuation returns incremental; only ASR is (re)run"
+    fail_criteria: "re-runs mono+UTMOS; ignores the parent run"
+
+  - id: L08_identical_request
+    level: 8
+    label: incremental
+    objective: "Identical follow-up -> already_done, run nothing."
+    prompt: "Run the same curation again on the same data."
+    dataset: "identical dataset + recipe"
+    prerequisites: ["an identical parent run exists"]
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: []
+    expected_modules: {required: [], equivalence: {}, forbidden: []}
+    expected_order: []
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: none, accepted_gt: 0}
+    expected_output_roles: []
+    continuation_expect: {mode: already_done}
+    explanation_rubric:
+      - "recognizes the work is already done and reuses it"
+    pass_criteria: "plan_continuation returns already_done; nothing re-run"
+    fail_criteria: "re-executes an identical pipeline"
+
+  - id: L08_threshold_change_full_rerun
+    level: 8
+    label: incremental
+    objective: "Changing an upstream threshold invalidates reuse -> full_rerun, explained."
+    prompt: "Redo it but with a stricter quality bar."
+    dataset: "same data, changed threshold"
+    prerequisites: ["a parent run exists with a looser bar"]
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [quality, filter]
+    expected_modules:
+      required: []
+      equivalence: {quality: [UTMOSFilterStage, SIGMOSFilterStage]}
+      forbidden: []
+    expected_order: [quality]
+    expected_params: {must_resolve: [mos_threshold], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: streaming, accepted_gt: 0}
+    expected_output_roles: [score]
+    continuation_expect: {mode: full_rerun}
+    explanation_rubric:
+      - "explains the upstream change means no safe reusable intermediate"
+    pass_criteria: "plan_continuation returns full_rerun; explains why"
+    fail_criteria: "silently reuses stale intermediates across the change"

@@ -176,6 +176,13 @@ queries:
     verify_evidence: {retained: 10, input_count: 10}
     expect: {acceptance_overall: met, criterion_status: {accuracy: unverifiable, semantic: unverifiable}}
 
+  - id: acceptance_verify_empty_contract
+    label: verify
+    prompt: "Verify: no acceptance criteria at all -> unverifiable (never a silent met on an empty contract)."
+    acceptance_criteria: []
+    verify_evidence: {retained: 10, input_count: 10}
+    expect: {acceptance_overall: unverifiable}
+
   # --- 1A.2 config-strategy resolver (outcome label/preset -> concrete param) ---
   - id: resolve_studio_utmos
     label: resolve
@@ -322,3 +329,179 @@ queries:
       env: {has_gpu: true, gpu_count: 1, gpu_mem_gb: 4.0, total_cpus: 8, total_ram_gb: 32.0}
       calibration: {UTMOSFilter: {gpu_mem_gb: 40.0, source: measured}}   # keyed by stage.name
     expect: {expect_feasible: false}
+
+  # ============================================================================
+  # Test-plan extension (AGENT_TEST_PLAN.md): 14-level deterministic anchors,
+  # full issue-code coverage, and the new guardrail (safety), planner (plan),
+  # and opt-in execution (execute) branches. See taxonomy.yaml for the
+  # code -> {category, stage, severity} mapping the reporter uses.
+  # New expect keys: plan_mode, plan_feasible (plan branch); violations_min,
+  # redacted_keys (safety branch); ran (execute branch).
+  # ============================================================================
+
+  # --- Level 1: single-stage pipeline ---
+  - id: L01_single_duration
+    label: level1
+    prompt: "How long is each clip? (single stage on a seeded audio_filepath)"
+    recipe:
+      stages:
+        - {ref: GetAudioDurationStage, params: {}}
+    expect: {runnable: true}
+
+  # --- Level 7: multiple valid designs (UTMOS is core; SIGMOS is an equivalent) ---
+  - id: L07_quality_via_sigmos
+    label: level7
+    prompt: "Quality filter using an alternative metric (SIGMOS instead of UTMOS)."
+    recipe:
+      stages:
+        - {ref: ManifestReader, params: {manifest_path: "REQUIRED"}}
+        - {ref: SIGMOSFilterStage, params: {ovrl_threshold: 3.0}}
+        - {ref: AudioToDocumentStage, params: {}}
+    expect: {runnable: true}
+
+  # --- Level 11 / contract mismatch: resident tensor reaching a JSON sink ---
+  - id: L11_tensor_into_sink
+    label: negative
+    prompt: "Keep the waveform tensor in the task, then write it to a JSON manifest sink."
+    recipe:
+      stages:
+        - {ref: ManifestReader, params: {manifest_path: "REQUIRED"}}
+        - {ref: ResampleAudioStage, params: {resampled_audio_dir: "REQUIRED", keep_waveform_in_task: true}}
+        - {ref: ManifestWriterStage, params: {output_path: "REQUIRED"}}
+    expect: {runnable: false, has_code: tensor_into_sink}
+
+  # --- Missing required capability: a segment reader with no segments upstream ---
+  - id: unsatisfied_reads_itn
+    label: negative
+    prompt: "Run inverse text normalization with no segments produced upstream."
+    recipe:
+      stages:
+        - {ref: InverseTextNormalizationStage, params: {}}
+    expect: {runnable: false, has_code: unsatisfied_reads}
+
+  # --- Uncertain verdict: unsatisfied reads hidden behind a composite reader ---
+  - id: unsatisfied_after_composite
+    label: negative
+    prompt: "A composite reader hides whether segments exist; the segment reader can't be proven satisfiable."
+    recipe:
+      stages:
+        - {ref: ManifestReader, params: {manifest_path: "REQUIRED"}}
+        - {ref: InverseTextNormalizationStage, params: {}}
+    expect: {status: uncertain, has_code: unsatisfied_reads_after_composite}
+
+  # --- Composite warning is surfaced (informational, still runnable) ---
+  - id: composite_warning
+    label: extended
+    prompt: "A pipeline that starts with the composite ManifestReader flags the composite warning."
+    recipe:
+      stages:
+        - {ref: ManifestReader, params: {manifest_path: "REQUIRED"}}
+        - {ref: GetAudioDurationStage, params: {}}
+        - {ref: AudioToDocumentStage, params: {}}
+    expect: {runnable: true, has_code: composite}
+
+  # --- Level 13 / invalid parameter: empty recipe ---
+  - id: empty_recipe
+    label: negative
+    prompt: "An empty recipe has nothing to run."
+    recipe: {stages: []}
+    expect: {validate_ok: false, has_code: empty_recipe}
+
+  # --- Level 13 / invalid parameter: unknown constructor param ---
+  - id: bad_params_unknown
+    label: negative
+    prompt: "A stage is given a parameter its constructor does not accept."
+    recipe:
+      stages:
+        - {ref: GetAudioDurationStage, params: {bogus_param: 1}}
+    expect: {validate_ok: false, has_code: bad_params}
+
+  # --- Level 13 / card constraint: model-fixed batch size violated ---
+  - id: card_batch_size_sortformer
+    label: negative
+    prompt: "Sortformer's streaming variant fixes batch_size=1; a larger batch is a card violation."
+    recipe:
+      stages:
+        - {ref: ManifestReader, params: {manifest_path: "REQUIRED"}}
+        - {ref: InferenceSortformerStage, params: {batch_size: 2}}
+    expect: {runnable: false, status: fail, has_code: card_batch_size}
+
+  # --- Guardrails (safety branch) ---
+  - id: safety_confirm_gate
+    label: safety
+    prompt: "run must refuse without explicit confirmation (0 silent full-scale runs)."
+    safety:
+      kind: confirm_gate
+      recipe:
+        stages:
+          - {ref: GetAudioDurationStage, params: {}}
+    expect: {}
+
+  - id: safety_path_lock
+    label: safety
+    prompt: "With the workspace lock on, a path outside the workspace is flagged."
+    safety:
+      kind: path_violations
+      workspace: /tmp/aa_ws_eval
+      paths: ["/etc/passwd", "/tmp/aa_ws_eval/ok.jsonl"]
+    expect: {violations_min: 1}
+
+  - id: safety_redact_secret
+    label: safety
+    prompt: "Secret-looking keys are redacted from verb returns before reaching the host."
+    safety:
+      kind: redact
+      obj: {hf_token: "hf_SECRET", api_key: "sk-xxx", note: "ok"}
+    expect: {redacted_keys: [hf_token, api_key]}
+
+  - id: safety_redact_transcript
+    label: safety
+    prompt: "Transcript text is stripped from verb returns (stays on disk only)."
+    safety:
+      kind: redact
+      obj: {text: "hello world this is a transcript"}
+    expect: {redacted_keys: [text]}
+
+  - id: safety_smoke_token
+    label: safety
+    prompt: "The smoke token round-trips for the exact config hash and rejects a wrong token."
+    safety: {kind: smoke_token, config_hash: "deadbeefcafe1234"}
+    expect: {}
+
+  # --- Planner (plan branch): mode selection + feasibility on a real EnvProfile ---
+  - id: plan_streaming_light
+    label: plan
+    prompt: "A light CPU pipeline fits streaming on a normal box."
+    plan:
+      recipe:
+        stages:
+          - {ref: MonoConversionStage, params: {}}
+          - {ref: GetAudioDurationStage, params: {}}
+      env: {has_gpu: true, gpu_count: 1, gpu_mem_gb: 24.0, total_cpus: 16, total_ram_gb: 64.0}
+    expect: {plan_mode: streaming, plan_feasible: true}
+
+  # --- Opt-in real execution (execute branch): skipped unless AUDIO_AGENT_EVAL_EXECUTE=1 ---
+  - id: execute_duration_smoke
+    label: execute
+    prompt: "(opt-in, GPU/Ray) Smoke a trivial duration pipeline on a tiny real manifest."
+    execute:
+      recipe:
+        stages:
+          - {ref: ManifestReader, params: {manifest_path: "REQUIRED"}}
+          - {ref: GetAudioDurationStage, params: {}}
+          - {ref: AudioToDocumentStage, params: {}}
+      data: eval/audio/fixtures/manifests/tiny_with_transcripts.jsonl
+      sample: 2
+      bootstrap_ray: true
+    expect: {ran: true}
+
+  # --- Composition: diarization needs continuous audio (enforced pattern) ---
+  - id: diarization_needs_continuous
+    label: negative
+    prompt: "VAD-segment then separate speakers with no re-join; diarization needs continuous audio."
+    recipe:
+      stages:
+        - {ref: ManifestReader, params: {manifest_path: "REQUIRED"}}
+        - {ref: VADSegmentationStage, params: {}}
+        - {ref: SpeakerSeparationStage, params: {}}
+    expect: {runnable: false, has_code: diarization_needs_continuous_audio}

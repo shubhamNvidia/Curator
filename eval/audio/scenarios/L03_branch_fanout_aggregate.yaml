@@ -1,0 +1,79 @@
+# Level 3 — complex pipelines: branching, fan-out, segmentation, aggregation.
+level: 3
+scenarios:
+  - id: L03_per_segment_quality
+    level: 3
+    label: complex
+    objective: "Segment speech (fan-out) then score each segment's quality."
+    prompt: "Split my long recordings into speech segments and score each segment's quality."
+    dataset: "manifest of long-form recordings"
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, segment, quality, export]
+    expected_modules:
+      required: [VADSegmentationStage]
+      equivalence: {quality: [UTMOSFilterStage, SIGMOSFilterStage]}
+      forbidden: []
+    expected_order: [ManifestReader, VADSegmentationStage, quality, TimestampMapperStage]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: fanout
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: streaming, accepted_gt: 0}
+    expected_output_roles: [score]
+    explanation_rubric:
+      - "explains VAD fan-out produces one row per speech segment"
+      - "explains scores are per-segment, not per-file"
+    pass_criteria: "validates; VAD fan-out feeds a per-segment quality stage"
+    fail_criteria: "scores whole files despite a per-segment request; validation fails"
+
+  - id: L03_diarize_align_merge
+    level: 3
+    label: complex
+    objective: "Diarize, align ASR, and merge alignment with diarization."
+    prompt: "Who spoke when, with word-aligned transcripts for each speaker turn."
+    dataset: "meeting recordings"
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, diarize, transcribe, tagging, export]
+    expected_modules:
+      required: [MergeAlignmentDiarizationStage]
+      equivalence: {diarize: [InferenceSortformerStage, PyAnnoteDiarizationStage]}
+      forbidden: []
+    expected_order: [ManifestReader, diarize, NeMoASRAlignerStage, MergeAlignmentDiarizationStage]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: branch
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: batch, accepted_gt: 0}
+    expected_output_roles: [diar_segments, alignment]
+    explanation_rubric:
+      - "explains diarization + alignment are merged per turn"
+      - "notes speaker-count / language limits of the chosen diarizer"
+    pass_criteria: "validates; diarizer + aligner + merge present and correctly ordered"
+    fail_criteria: "merge before its inputs exist; wrong ordering; validation fails"
+
+  - id: L03_alm_windows
+    level: 3
+    label: complex
+    objective: "Aggregate a diarized manifest into ALM training windows, then filter overlaps."
+    prompt: "Build audio-language-model training windows from my diarized manifest."
+    dataset: "diarized manifest with segments"
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, alm, export]
+    expected_modules:
+      required: [ALMDataBuilderStage, ALMDataOverlapStage]
+      equivalence: {}
+      forbidden: []
+    expected_order: [ManifestReader, ALMDataBuilderStage, ALMDataOverlapStage, ManifestWriterStage]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: aggregate
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: batch, accepted_gt: 0}
+    expected_output_roles: [windows]
+    explanation_rubric:
+      - "explains window building then overlap filtering"
+    pass_criteria: "validates; builder then overlap filter in order"
+    fail_criteria: "overlap filter before builder; validation fails"

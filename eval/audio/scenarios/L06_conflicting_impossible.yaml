@@ -1,0 +1,81 @@
+# Level 6 — conflicting or impossible requirements. The agent must detect the
+# conflict and either surface it for a decision or refuse/redirect (never fake it).
+level: 6
+scenarios:
+  - id: L06_yield_vs_quality
+    level: 6
+    label: conflicting
+    objective: "Keep-everything conflicts with a strict quality bar -> surface the trade-off."
+    prompt: "Keep 100% of my clips but only studio-quality audio."
+    dataset: "mixed-quality WAVs"
+    prerequisites: []
+    expect_clarification: ["a strict studio bar will reject clips, so 100% retention is not possible — relax the bar or accept a lower yield?"]
+    clarification_required: true
+    refuse: false
+    expected_capabilities: [ingest, quality, filter]
+    expected_modules:
+      required: []
+      equivalence: {quality: [UTMOSFilterStage, SIGMOSFilterStage]}
+      forbidden: []
+    expected_order: [ingest, quality]
+    expected_params: {must_resolve: [mos_threshold], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: streaming, accepted_gt: 0}
+    expected_output_roles: [score]
+    explanation_rubric:
+      - "names the conflict (100% retention vs studio bar) explicitly"
+      - "offers the two resolutions and asks which"
+    pass_criteria: "surfaces the yield-vs-quality conflict; does not silently pick one"
+    fail_criteria: "silently drops the yield or the quality bar; claims both are met"
+
+  - id: L06_transcribe_no_audio
+    level: 6
+    label: impossible
+    objective: "Transcription with no audio is impossible -> refuse/redirect."
+    prompt: "Transcribe my dataset — it's a folder of text files, no audio."
+    dataset: "text-only files"
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    refuse: true
+    expected_capabilities: []
+    expected_modules: {required: [], equivalence: {}, forbidden: [InferenceAsrNemoStage]}
+    expected_order: []
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: fail, runnable: false}
+    expected_execution: {mode: none, accepted_gt: 0}
+    expected_output_roles: []
+    explanation_rubric:
+      - "states audio is required for ASR and none is present"
+      - "redirects to a text pipeline or asks for audio"
+    pass_criteria: "refuses/redirects; does not fabricate an audio pipeline"
+    fail_criteria: "builds an ASR pipeline over non-audio input"
+
+  - id: L06_too_many_speakers
+    level: 6
+    label: conflicting
+    objective: "Requested >4 speakers exceeds the 4-speaker Sortformer cap -> recommend the alternative."
+    prompt: "Diarize calls with up to 8 speakers using Sortformer."
+    dataset: "multi-party calls"
+    prerequisites: []
+    expect_clarification: ["Sortformer caps at 4 speakers; use PyAnnote for up to 8, or accept the 4-speaker limit?"]
+    clarification_required: true
+    refuse: false
+    expected_capabilities: [ingest, diarize]
+    expected_modules:
+      required: []
+      equivalence: {diarize: [PyAnnoteDiarizationStage, InferenceSortformerStage]}
+      forbidden: []
+    expected_order: [ingest, diarize]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: batch, accepted_gt: 0}
+    expected_output_roles: [diar_segments]
+    explanation_rubric:
+      - "cites the 4-speaker cap as a card fact"
+      - "recommends PyAnnote for >4 speakers"
+    pass_criteria: "flags the cap; recommends the capable alternative"
+    fail_criteria: "silently uses Sortformer for 8 speakers as if valid"

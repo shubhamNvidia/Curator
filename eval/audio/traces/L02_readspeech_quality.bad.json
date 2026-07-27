@@ -1,0 +1,19 @@
+{
+  "scenario_id": "L02_readspeech_quality",
+  "prompt": "I have a folder of WAVs, give me cleaner speech data (I don't know which checks to use).",
+  "captured_by": "example",
+  "tool_calls": [
+    {"verb": "validate", "args": {"recipe": "inline"}, "result": {"runnable": true}}
+  ],
+  "final_recipe": {
+    "stages": [
+      {"ref": "ManifestReader", "params": {"manifest_path": "REQUIRED"}},
+      {"ref": "UTMOSFilterStage", "params": {"mos_threshold": 3.7}},
+      {"ref": "InferenceAsrNemoStage", "params": {"model_name": "x"}},
+      {"ref": "AudioToDocumentStage", "params": {}}
+    ]
+  },
+  "refused": false,
+  "continuation": null,
+  "explanation": ""
+}

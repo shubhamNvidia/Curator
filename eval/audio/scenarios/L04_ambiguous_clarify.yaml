@@ -1,0 +1,76 @@
+# Level 4 — ambiguous prompts that REQUIRE a user-facing clarification.
+# The agent must ask an outcome-level question (never an internal-parameter one).
+level: 4
+scenarios:
+  - id: L04_good_audio
+    level: 4
+    label: ambiguous
+    objective: "Ambiguous quality bar -> ask an outcome-level question, then resolve."
+    prompt: "Give me good audio."
+    dataset: "folder of WAVs"
+    prerequisites: []
+    expect_clarification: ["what quality level do you need: studio, general, or lenient?"]
+    clarification_required: true
+    expected_capabilities: [ingest, preprocess, quality, filter, export]
+    expected_modules:
+      required: []
+      equivalence: {quality: [UTMOSFilterStage, SIGMOSFilterStage, TorchSquimQualityMetricsStage]}
+      forbidden: []
+    expected_order: [ingest, quality]
+    expected_params: {must_resolve: [mos_threshold], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: streaming, accepted_gt: 0}
+    expected_output_roles: [score]
+    explanation_rubric:
+      - "asks about the OUTCOME (quality level), not a raw threshold number"
+      - "after the answer, resolves the threshold via a named outcome"
+    pass_criteria: "asks the quality-level question; resolves threshold; validates"
+    fail_criteria: "picks a threshold silently; asks about an internal param; no question"
+
+  - id: L04_clean_dataset
+    level: 4
+    label: ambiguous
+    objective: "'Clean' is underspecified -> ask what cleaning means."
+    prompt: "Clean up my dataset."
+    dataset: "mixed WAVs"
+    prerequisites: []
+    expect_clarification: ["what does 'clean' mean here: quality filtering, mono/resample normalization, or dedup?"]
+    clarification_required: true
+    expected_capabilities: [ingest, preprocess, quality, filter, export]
+    expected_modules:
+      required: []
+      equivalence: {quality: [UTMOSFilterStage, SIGMOSFilterStage]}
+      forbidden: []
+    expected_order: [ingest, preprocess, quality]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: streaming, accepted_gt: 0}
+    expected_output_roles: [score]
+    explanation_rubric:
+      - "surfaces the interpretations of 'clean' and asks which"
+    pass_criteria: "asks a scoping question before building"
+    fail_criteria: "guesses a full pipeline without asking"
+
+  - id: L04_prepare_for_training
+    level: 4
+    label: ambiguous
+    objective: "'Prepare for training' depends on the target task -> ask."
+    prompt: "Prepare my audio for training."
+    dataset: "raw audio"
+    prerequisites: []
+    expect_clarification: ["training for what: ASR, TTS reference, or an audio-language model?"]
+    clarification_required: true
+    expected_capabilities: [ingest, preprocess]
+    expected_modules: {required: [], equivalence: {}, forbidden: []}
+    expected_order: [ingest]
+    expected_params: {must_resolve: [], fixed: {}}
+    expected_structure: linear
+    expected_validation: {status: pass, runnable: true}
+    expected_execution: {mode: streaming, accepted_gt: 0}
+    expected_output_roles: []
+    explanation_rubric:
+      - "asks which downstream task, since it changes the pipeline"
+    pass_criteria: "asks about the training target before committing"
+    fail_criteria: "assumes a target and builds silently"

@@ -1,0 +1,2577 @@
+{
+  "persona": {
+    "id": "L04_good_audio",
+    "group": "per_level",
+    "level": 4,
+    "executable": true,
+    "data": "/tmp/aa_real/manifest.jsonl",
+    "goal": "keep only good audio (ambiguous)",
+    "opening_prompt": "Give me good audio.",
+    "persona_facts": "Folder of wavs; I care about how clean/natural they sound.",
+    "preferences": "When asked what quality level I want, say 'studio'. Approve once the plan filters on quality.",
+    "expected": {
+      "required": [],
+      "equivalence": {
+        "quality": [
+          "UTMOSFilterStage",
+          "SIGMOSFilterStage",
+          "TorchSquimQualityMetricsStage"
+        ]
+      },
+      "forbidden": [],
+      "order_constraints": [],
+      "output_roles": [
+        "score"
+      ]
+    },
+    "success": {
+      "kind": "clarifies"
+    }
+  },
+  "conversation": {
+    "blocked": false,
+    "transcript": [
+      {
+        "turn": 0,
+        "speaker": "user",
+        "text": "Give me good audio."
+      },
+      {
+        "turn": 1,
+        "speaker": "agent",
+        "text": "This request is ambiguous on a material, preference-dependent point, so I'll ask one question rather than guess.\n\nThe catalog has several quality stages that each capture a *different* meaning of \"good,\" and picking one silently would be guessing:\n- **UTMOS** \u2014 overall naturalness / mean-opinion-score (general \"sounds good\")\n- **SIGMOS** \u2014 7-dimension signal quality (noise, coloration, distortion, etc.)\n- **Bandwidth / BandFilter** \u2014 full-band vs narrow-band fidelity\n- **WER-based** \u2014 intelligibility (needs transcripts + references)\n\nAnd \"good\" itself has no quality *level* yet. To resolve it to a real threshold via `resolve` (rather than hand-picking a number), I need your intended bar.\n\n**What quality level do you want, and in what sense?** For example: **studio** (pristine/high-fidelity), **broadcast** (clean, presentable), or **general** (usable, drop clearly-bad clips) \u2014 and is \"good\" mainly about *naturalness/overall MOS*, *noise/signal cleanliness*, or *audio fidelity (bandwidth)*?\n\n(If you can also point me at the audio data path, I'll profile it and build the recipe once you pick a level.)",
+        "tool_calls": [
+          {
+            "verb": "catalog_tree",
+            "args": {},
+            "result": {
+              "categories": [
+                {
+                  "category": "ingest",
+                  "description": "Create/read manifests and partition input files (dataset sources, manifest readers).",
+                  "stages": [
+                    "CreateInitialManifestFleursStage",
+                    "CreateInitialManifestReadSpeechStage",
+                    "ManifestReader",
+                    "ManifestReaderStage"
+                  ]
+                },
+                {
+                  "category": "preprocess",
+                  "description": "Normalize audio before models: mono conversion and sample-rate resampling.",
+                  "stages": [
+                    "MonoConversionStage",
+                    "ResampleAudioStage"
+                  ]
+                },
+                {
+                  "category": "segment",
+                  "description": "Cut audio into speech chunks: VAD, long-audio splitting, segment concatenation.",
+                  "stages": [
+                    "JoinSplitAudioMetadataStage",
+                    "SegmentConcatenationStage",
+                    "SplitASRAlignJoinStage",
+                    "SplitLongAudioStage",
+                    "VADSegmentationStage",
+                    "WhisperXVADStage"
+                  ]
+                },
+                {
+                  "category": "diarize",
+                  "description": "Who-spoke-when and per-speaker separation (Sortformer, PyAnnote, speaker separation).",
+                  "stages": [
+                    "InferenceSortformerStage",
+                    "PyAnnoteDiarizationStage",
+                    "SpeakerSeparationStage"
+                  ]
+                },
+                {
+                  "category": "transcribe",
+                  "description": "ASR transcription and forced word-alignment (NeMo ASR).",
+                  "stages": [
+                    "InferenceAsrNemoStage",
+                    "MergeAlignmentDiarizationStage",
+                    "NeMoASRAlignerStage"
+                  ]
+                },
+                {
+                  "category": "text_norm",
+                  "description": "Text post-processing on transcripts: inverse text normalization, Chinese conversion.",
+                  "stages": [
+                    "ChineseConversionStage",
+                    "InverseTextNormalizationStage"
+                  ]
+                },
+                {
+                  "category": "quality",
+                  "description": "Score/gate audio quality: UTMOS, SIGMOS, SQUIM, bandwidth, band filter.",
+                  "stages": [
+                    "BandFilterStage",
+                    "BandwidthEstimationStage",
+                    "ComputeWERStage",
+                    "GetPairwiseWerStage",
+                    "SIGMOSFilterStage",
+                    "TorchSquimQualityMetricsStage",
+                    "UTMOSFilterStage"
+                  ]
+                },
+                {
+                  "category": "filter",
+                  "description": "Generic value-based row filtering (keep/drop by a numeric or string field).",
+                  "stages": [
+                    "PreserveByValueStage"
+                  ]
+                },
+                {
+                  "category": "alm",
+                  "description": "Audio-language-model data building: windowing, overlap filtering, snippet planning.",
+                  "stages": [
+                    "ALMDataBuilderStage",
+                    "ALMDataOverlapStage",
+                    "OverlapFilterStage",
+                    "PretrainMetricsAggregatorStage",
+                    "ReadLongFormManifestStage",
+                    "SnippetCutPlannerStage",
+                    "SnippetExtractionStage",
+                    "SnippetRepetitionFilterStage"
+                  ]
+                },
+                {
+                  "category": "export",
+                  "description": "Convert/aggregate and write results: AudioToDocument, manifest/JSONL writers, timestamp mapping, segment extraction.",
+                  "stages": [
+                    "AudioDataFilterStage",
+                    "AudioToDocumentStage",
+                    "GetAudioDurationStage",
+                    "ManifestWriterStage",
+                    "PrepareModuleSegmentsStage",
+                    "SegmentExtractionStage",
+                    "SnippetManifestWriterStage",
+                    "TimestampMapperStage"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "verb": "cards",
+            "args": {
+              "category": "quality"
+            },
+            "result": {
+              "category": "quality",
+              "stages": [
+                {
+                  "stage": "BandFilterStage",
+                  "summary": "Classify audio as full_band vs narrow_band (spectral RF) and filter/annotate.",
+                  "tags": [
+                    "produces_score",
+                    "is_filter",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "BandwidthEstimationStage",
+                  "summary": "Estimate effective audio bandwidth from the power spectrum; write to metrics.",
+                  "tags": [
+                    "produces_score"
+                  ]
+                },
+                {
+                  "stage": "ComputeWERStage",
+                  "summary": "Compute WER/CER (plus edge-CER and optional PNC WER/CER) between hypothesis and reference text.",
+                  "tags": [
+                    "produces_score"
+                  ]
+                },
+                {
+                  "stage": "GetPairwiseWerStage",
+                  "summary": "Compute pairwise WER (%) between reference text and ASR pred_text.",
+                  "tags": [
+                    "produces_score"
+                  ]
+                },
+                {
+                  "stage": "SIGMOSFilterStage",
+                  "summary": "SIGMOS (ITU-T P.804) neural MOS across 7 quality dimensions; filter/annotate.",
+                  "tags": [
+                    "produces_score",
+                    "is_filter",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "TorchSquimQualityMetricsStage",
+                  "summary": "Estimate PESQ / STOI / SI-SDR with the torchaudio SQUIM model; write to metrics.",
+                  "tags": [
+                    "produces_score",
+                    "needs_internet_first_run"
+                  ]
+                },
+                {
+                  "stage": "UTMOSFilterStage",
+                  "summary": "Predict UTMOS mean-opinion-score (MOS) and filter/annotate audio by quality.",
+                  "tags": [
+                    "produces_score",
+                    "is_filter",
+                    "needs_internet_first_run"
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "turn": 1,
+        "speaker": "user",
+        "text": "I want studio quality \u2014 I'm mainly looking for recordings that sound clean and natural. The audio is in a folder of wav files."
+      },
+      {
+        "turn": 2,
+        "speaker": "agent",
+        "text": "Validated: **`runnable: true`**, no errors. Both thresholds came from `resolve` (studio anchors/preset), not hand-picked.\n\n**What each metric covers (studio = \"clean + natural\"):**\n- **UTMOS** `mos_threshold 4.0` \u2014 overall **naturalness**/MOS (studio anchor). Captures \"sounds natural,\" but *not* background-noise level.\n- **SIGMOS** `noise_threshold 4.0` + `ovrl_threshold 3.5` \u2014 the **clean** side (studio_tts preset): low-noise + overall signal quality across P.804 dimensions.\n- Order is cheap\u2192aggressive (UTMOS first, SIGMOS is the most aggressive filter, last).\n\n**Notes before you run:** (1) Both stages download a model on first run (need network once). (2) `ManifestReader` reads a **JSONL manifest**, not a raw wav folder \u2014 so `manifest_path` must point to a JSONL listing your wavs (`{\"audio_filepath\": \"...wav\"}` per line); there's no generic folder-reader stage in the catalog. (3) A studio bar is strict and will reject a lot \u2014 next step I'd run a bounded `smoke` on ~10 clips to show retained/rejected before any full run, and we should pin a **yield** target (e.g. \"keep the passing ones, expect a low retain rate\") since validate flagged it as implied-but-missing.\n\n```recipe\nstages:\n  - {ref: ManifestReader, params: {manifest_path: REQUIRED}}\n  - {ref: UTMOSFilterStage, params: {mos_threshold: 4.0, action: filter}}\n  - {ref: SIGMOSFilterStage, params: {noise_threshold: 4.0, ovrl_threshold: 3.5, action: filter}}\n```\n\nI chose **UTMOS + SIGMOS** because you asked for both \"natural\" (UTMOS overall MOS) and \"clean\" (SIGMOS noise), and UTMOS alone doesn't measure noise; both studio values were resolved from the cards' `studio` anchor / `studio_tts` preset rather than invented. Assumption: your wav folder will be referenced via a JSONL manifest (`manifest_path`), and I kept preprocessing out since UTMOS/SIGMOS resample internally \u2014 if a smoke test surfaces sample-rate or mono issues I'll insert `ResampleAudioStage`/`MonoConversionStage`. Tell me the manifest path and I'll run the smoke test and show you retained/rejected before anything full-scale.",
+        "tool_calls": [
+          {
+            "verb": "cards",
+            "args": {
+              "names": [
+                "UTMOSFilterStage",
+                "ManifestReader",
+                "SIGMOSFilterStage"
+              ]
+            },
+            "result": {
+              "cards": [
+                {
+                  "stage": "UTMOSFilterStage",
+                  "category": "quality",
+                  "card": {
+                    "stage_id": "UTMOSFilterStage",
+                    "category": "quality",
+                    "summary": "Predict UTMOS mean-opinion-score (MOS) and filter/annotate audio by quality.",
+                    "tags": [
+                      "produces_score",
+                      "is_filter",
+                      "needs_internet_first_run"
+                    ],
+                    "model_id": "tarepan/SpeechMOS:utmos22_strong (torch.hub)",
+                    "model_version": "utmos22_strong",
+                    "domain": {
+                      "language": "any",
+                      "style": "speech"
+                    },
+                    "constraints": {
+                      "supported_sample_rates": [
+                        16000
+                      ],
+                      "input_duration_sweetspot_sec": {
+                        "min": 1.0,
+                        "max": 30.0
+                      }
+                    },
+                    "resource": {
+                      "cpus": 1.0,
+                      "gpu_mem_gb": 0.7,
+                      "gpu_optional": true,
+                      "bound": "gpu",
+                      "throughput_hint": "fast on GPU; CPU fallback is slower"
+                    },
+                    "use_cases": {
+                      "good_for": [
+                        "gate speech clips by overall perceptual quality",
+                        "TTS/ASR data curation"
+                      ],
+                      "avoid_for": [
+                        "music or non-speech",
+                        "very short (<1s) clips"
+                      ]
+                    },
+                    "composition": {
+                      "typical_upstream": [
+                        "MonoConversionStage",
+                        "ResampleAudioStage",
+                        "VADSegmentationStage"
+                      ],
+                      "typical_downstream": [
+                        "SIGMOSFilterStage",
+                        "AudioToDocumentStage"
+                      ]
+                    },
+                    "params_of_note": {
+                      "mos_threshold": "minimum MOS to keep (0-5). TTS: >=4.0; ASR/general: >=3.4; max retention: >=2.5",
+                      "action": "'filter' drops below threshold; 'annotate' keeps all and only writes the score",
+                      "mode": "'task' (whole file), 'segments' (per nested segment), or 'auto'"
+                    },
+                    "metrics": {
+                      "utmos_mos": {
+                        "scale": {
+                          "min": 0.0,
+                          "max": 5.0,
+                          "direction": "higher_better"
+                        },
+                        "threshold_param": "mos_threshold",
+                        "anchors": {
+                          "4.0-5.0": "studio",
+                          "3.4-4.0": "general",
+                          "2.5-3.4": "lenient"
+                        },
+                        "valid_range": [
+                          0.0,
+                          5.0
+                        ]
+                      }
+                    },
+                    "presets": {
+                      "tts_reference": {
+                        "mos_threshold": 4.0
+                      },
+                      "asr_finetune": {
+                        "mos_threshold": 3.4
+                      },
+                      "max_retention": {
+                        "mos_threshold": 2.5
+                      }
+                    },
+                    "comparison": {
+                      "accuracy_hint": "single overall MOS predictor; coarser than SIGMOS's 7 dimensions",
+                      "latency_hint": "lighter than SIGMOS (one small model)",
+                      "config_complexity": "low (one threshold)",
+                      "known_limitations": "predictor of human MOS, not a ground-truth measurement; speech-only"
+                    },
+                    "caveats": [
+                      "Downloads the model from torch.hub on first run (needs network once).",
+                      "Score is a predictor of human MOS, not a ground-truth measurement."
+                    ],
+                    "verified": {
+                      "params": "mechanical",
+                      "tags": "mechanical",
+                      "model_version": "mechanical",
+                      "resource": "best_guess",
+                      "constraints": "best_guess",
+                      "domain": "best_guess",
+                      "use_cases": "best_guess",
+                      "comparison": "best_guess",
+                      "metrics": "best_guess"
+                    },
+                    "provenance": {
+                      "model_card_url": "https://github.com/tarepan/SpeechMOS",
+                      "card_version": 2,
+                      "last_validated": "2026-07-20"
+                    }
+                  },
+                  "contract": {
+                    "reads": {
+                      "data_keys": [],
+                      "segment_data_keys": [],
+                      "accepts": [],
+                      "produces": []
+                    },
+                    "writes": {
+                      "data_keys": [],
+                      "segment_data_keys": [],
+                      "accepts": [],
+                      "produces": []
+                    },
+                    "reads_one_of": [],
+                    "metadata_reads": [],
+                    "metadata_writes": [],
+                    "cardinality": "1:1",
+                    "cardinality_options": [],
+                    "iteration_key": null,
+                    "preserves_upstream_keys": true,
+                    "wrappable": true,
+                    "size_envelope": {
+                      "max_input_sec": null,
+                      "allowed_sample_rates": null,
+                      "channels": "any",
+                      "memory_hint": null
+                    },
+                    "gates": {
+                      "writes_to_disk": false,
+                      "requires_gpu": false,
+                      "requires_internet_first_run": false,
+                      "requires_ffmpeg": false,
+                      "lifecycle_side_effects": false,
+                      "runtime_secrets": [],
+                      "requires_serializable_input": false,
+                      "sanitizes_output": false
+                    },
+                    "stage_id": "UTMOSFilterStage",
+                    "description": "UTMOS quality assessment filter stage.",
+                    "params": [
+                      {
+                        "name": "mos_threshold",
+                        "type": "float | None",
+                        "default": 3.5,
+                        "required": false,
+                        "choices": null,
+                        "description": "Minimum MOS score to pass (None to disable)",
+                        "role": null
+                      },
+                      {
+                        "name": "sample_rate",
+                        "type": "int",
+                        "default": 16000,
+                        "required": false,
+                        "choices": null,
+                        "description": "Target sample rate for UTMOS inference (default 16000)",
+                        "role": null
+                      },
+                      {
+                        "name": "input_residency",
+                        "type": "str",
+                        "default": "auto",
+                        "required": false,
+                        "choices": [
+                          "file",
+                          "waveform",
+                          "auto"
+                        ],
+                        "description": "Which input to use \u2014 \"waveform\" (in-memory only), \"file\" (audio_filepath only), or \"auto\" (waveform first, file fallback; default).",
+                        "role": null
+                      },
+                      {
+                        "name": "mode",
+                        "type": "str",
+                        "default": "auto",
+                        "required": false,
+                        "choices": [
+                          "task",
+                          "segments",
+                          "auto"
+                        ],
+                        "description": "Where to score \u2014 \"task\" (top-level audio), \"segments\" (nested segments list), or \"auto\" (segments when segments_key is present, else task; default). Setting \"task\" or \"segments\" overrides the auto-detection.",
+                        "role": null
+                      },
+                      {
+                        "name": "action",
+                        "type": "str",
+                        "default": "filter",
+                        "required": false,
+                        "choices": [
+                          "filter",
+                          "annotate"
+                        ],
+                        "description": "\"filter\" drops items below mos_threshold; \"annotate\" keeps every item \u2014 including items that fail or cannot be scored \u2014 and only writes score_key.",
+                        "role": null
+                      },
+                      {
+                        "name": "audio_filepath_key",
+                        "type": "str",
+                        "default": "audio_filepath",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key in data dict for the input audio file path.",
+                        "role": "audio_filepath"
+                      },
+                      {
+                        "name": "waveform_key",
+                        "type": "str",
+                        "default": "waveform",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key in data dict for the in-memory waveform tensor.",
+                        "role": "waveform"
+                      },
+                      {
+                        "name": "sample_rate_key",
+                        "type": "str",
+                        "default": "sample_rate",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key in data dict for the waveform sample rate.",
+                        "role": "sample_rate"
+                      },
+                      {
+                        "name": "segments_key",
+                        "type": "str",
+                        "default": "segments",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key in data dict holding the nested segments list (segments/auto mode).",
+                        "role": "segments"
+                      },
+                      {
+                        "name": "score_key",
+                        "type": "str",
+                        "default": "utmos_mos",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key where the UTMOS MOS score is written.",
+                        "role": "score"
+                      }
+                    ],
+                    "dispatch": "process",
+                    "error_policy": "unknown",
+                    "key_roles": {
+                      "audio_filepath": "audio_filepath",
+                      "waveform": "waveform",
+                      "sample_rate": "sample_rate",
+                      "segments": "segments",
+                      "utmos_mos": "score"
+                    },
+                    "batch_only": false,
+                    "accepts_task_type": "AudioTask",
+                    "produces_task_type": "AudioTask",
+                    "removes_keys": []
+                  }
+                },
+                {
+                  "stage": "ManifestReader",
+                  "category": "ingest",
+                  "card": {
+                    "stage_id": "ManifestReader",
+                    "category": "ingest",
+                    "summary": "Read JSONL manifest(s) and emit one AudioTask per line (composite: partition + read).",
+                    "tags": [],
+                    "model_id": null,
+                    "domain": {
+                      "language": "any",
+                      "style": "any"
+                    },
+                    "constraints": {},
+                    "resource": {
+                      "cpus": 1.0,
+                      "gpu_mem_gb": 0.0,
+                      "gpu_optional": false,
+                      "bound": "io",
+                      "throughput_hint": "streaming line-by-line read (~1x file size in memory)"
+                    },
+                    "use_cases": {
+                      "good_for": [
+                        "starting a pipeline from an existing JSONL manifest (local or cloud S3/GCS)"
+                      ],
+                      "avoid_for": [
+                        "bootstrapping from a raw dataset with no manifest (use a CreateInitialManifest* stage)"
+                      ]
+                    },
+                    "composition": {
+                      "typical_upstream": [],
+                      "typical_downstream": [
+                        "MonoConversionStage",
+                        "ResampleAudioStage",
+                        "GetAudioDurationStage"
+                      ]
+                    },
+                    "params_of_note": {
+                      "manifest_path": "path or list of paths to JSONL manifests (local or cloud)",
+                      "files_per_partition": "number of manifest files per partition (default 1)",
+                      "blocksize": "target partition size (alternative to files_per_partition)",
+                      "storage_options": "fsspec storage options for cloud paths"
+                    },
+                    "notes": [
+                      "Composite of FilePartitioningStage + ManifestReaderStage; this is the stage to use directly."
+                    ],
+                    "verified": {
+                      "params": "mechanical",
+                      "tags": "mechanical",
+                      "resource": "best_guess",
+                      "use_cases": "best_guess",
+                      "domain": "best_guess"
+                    },
+                    "provenance": {
+                      "model_card_url": null,
+                      "card_version": 1,
+                      "last_validated": "2026-07-20"
+                    }
+                  },
+                  "contract": {
+                    "reads": {
+                      "data_keys": [],
+                      "segment_data_keys": [],
+                      "accepts": [],
+                      "produces": []
+                    },
+                    "writes": {
+                      "data_keys": [],
+                      "segment_data_keys": [],
+                      "accepts": [],
+                      "produces": []
+                    },
+                    "reads_one_of": [],
+                    "metadata_reads": [],
+                    "metadata_writes": [],
+                    "cardinality": "1:1",
+                    "cardinality_options": [],
+                    "iteration_key": null,
+                    "preserves_upstream_keys": true,
+                    "wrappable": true,
+                    "size_envelope": {
+                      "max_input_sec": null,
+                      "allowed_sample_rates": null,
+                      "channels": "any",
+                      "memory_hint": null
+                    },
+                    "gates": {
+                      "writes_to_disk": false,
+                      "requires_gpu": false,
+                      "requires_internet_first_run": false,
+                      "requires_ffmpeg": false,
+                      "lifecycle_side_effects": false,
+                      "runtime_secrets": [],
+                      "requires_serializable_input": false,
+                      "sanitizes_output": false
+                    },
+                    "stage_id": "ManifestReader",
+                    "description": "Composite stage for reading JSONL manifests.",
+                    "params": [
+                      {
+                        "name": "manifest_path",
+                        "type": "str | list[str]",
+                        "default": null,
+                        "required": true,
+                        "choices": null,
+                        "description": "Path or list of paths to JSONL manifests (local or cloud).",
+                        "role": null
+                      },
+                      {
+                        "name": "files_per_partition",
+                        "type": "int | None",
+                        "default": 1,
+                        "required": false,
+                        "choices": null,
+                        "description": "Number of manifest files per partition. Defaults to 1.",
+                        "role": null
+                      },
+                      {
+                        "name": "blocksize",
+                        "type": "int | str | None",
+                        "default": null,
+                        "required": false,
+                        "choices": null,
+                        "description": "Target size per partition (e.g., \"100MB\"). Ignored if files_per_partition is set.",
+                        "role": null
+                      },
+                      {
+                        "name": "file_extensions",
+                        "type": "list[str]",
+                        "default": [
+                          ".jsonl",
+                          ".json"
+                        ],
+                        "required": false,
+                        "choices": null,
+                        "description": "File extensions to filter. Defaults to [\".jsonl\", \".json\"].",
+                        "role": null
+                      },
+                      {
+                        "name": "storage_options",
+                        "type": "dict | None",
+                        "default": null,
+                        "required": false,
+                        "choices": null,
+                        "description": "Storage options for cloud paths (S3, GCS credentials, endpoints).",
+                        "role": null
+                      }
+                    ],
+                    "dispatch": "process",
+                    "error_policy": "unknown",
+                    "key_roles": {},
+                    "batch_only": false,
+                    "accepts_task_type": "EmptyTask",
+                    "produces_task_type": "AudioTask",
+                    "removes_keys": []
+                  }
+                },
+                {
+                  "stage": "SIGMOSFilterStage",
+                  "category": "quality",
+                  "card": {
+                    "stage_id": "SIGMOSFilterStage",
+                    "category": "quality",
+                    "summary": "SIGMOS (ITU-T P.804) neural MOS across 7 quality dimensions; filter/annotate.",
+                    "tags": [
+                      "produces_score",
+                      "is_filter",
+                      "needs_internet_first_run"
+                    ],
+                    "model_id": "microsoft SIGMOS (ONNX, P.804)",
+                    "model_version": "P.804-ONNX",
+                    "domain": {
+                      "language": "any",
+                      "style": "speech"
+                    },
+                    "constraints": {
+                      "supported_sample_rates": [
+                        16000,
+                        48000
+                      ]
+                    },
+                    "resource": {
+                      "cpus": 1.0,
+                      "gpu_mem_gb": 0.5,
+                      "gpu_optional": true,
+                      "bound": "gpu",
+                      "throughput_hint": "ONNX; uses GPU if available, CPU fallback"
+                    },
+                    "use_cases": {
+                      "good_for": [
+                        "fine-grained quality gating (noise, reverb, discontinuity, loudness, coloration)",
+                        "TTS data curation"
+                      ],
+                      "avoid_for": [
+                        "non-speech audio"
+                      ]
+                    },
+                    "composition": {
+                      "typical_upstream": [
+                        "MonoConversionStage",
+                        "VADSegmentationStage",
+                        "UTMOSFilterStage"
+                      ],
+                      "typical_downstream": [
+                        "AudioToDocumentStage",
+                        "ManifestWriterStage"
+                      ]
+                    },
+                    "params_of_note": {
+                      "noise_threshold": "min NOISE score to keep (0-5); 4.0 keeps only very-low-noise clips",
+                      "ovrl_threshold": "min OVRL (overall) score to keep (0-5); single best general-purpose gate",
+                      "sig_threshold": "optional min SIG (signal) score to keep (0-5)",
+                      "col_threshold": "optional min COL (coloration) score to keep (0-5)",
+                      "disc_threshold": "optional min DISC (discontinuity) score to keep (0-5)",
+                      "loud_threshold": "optional min LOUD (loudness) score to keep (0-5)",
+                      "reverb_threshold": "optional min REVERB score to keep (0-5)",
+                      "action": "'filter' drops below threshold(s); 'annotate' keeps all and writes scores",
+                      "mode": "'task' (whole file), 'segments' (per nested segment), or 'auto'"
+                    },
+                    "metrics": {
+                      "sigmos_ovrl": {
+                        "scale": {
+                          "min": 0.0,
+                          "max": 5.0,
+                          "direction": "higher_better"
+                        },
+                        "threshold_param": "ovrl_threshold",
+                        "anchors": {
+                          "3.5-5.0": "studio",
+                          "3.0-3.5": "general"
+                        },
+                        "valid_range": [
+                          0.0,
+                          5.0
+                        ]
+                      },
+                      "sigmos_noise": {
+                        "scale": {
+                          "min": 0.0,
+                          "max": 5.0,
+                          "direction": "higher_better"
+                        },
+                        "threshold_param": "noise_threshold",
+                        "anchors": {
+                          "4.0-5.0": "very_low_noise"
+                        },
+                        "valid_range": [
+                          0.0,
+                          5.0
+                        ]
+                      }
+                    },
+                    "presets": {
+                      "studio_tts": {
+                        "noise_threshold": 4.0,
+                        "ovrl_threshold": 3.5
+                      },
+                      "general": {
+                        "ovrl_threshold": 3.0
+                      }
+                    },
+                    "comparison": {
+                      "accuracy_hint": "7-dimension P.804 MOS; finer-grained than UTMOS's single score",
+                      "latency_hint": "heavier than UTMOS / BandFilter",
+                      "config_complexity": "medium-high (up to 7 per-dimension thresholds)",
+                      "known_limitations": "speech-only; empirically the most aggressive filter (drops the most rows)"
+                    },
+                    "notes": [
+                      "Writes all 7 scores (sigmos_noise, sigmos_ovrl, sigmos_sig, sigmos_col, sigmos_disc, sigmos_loud, sigmos_reverb) regardless of active thresholds, so you can post-filter.",
+                      "Empirically the most aggressive quality filter -- place last in a cheap->expensive filter chain, or first for maximum early cull."
+                    ],
+                    "caveats": [
+                      "Downloads the ONNX model on first run (needs network once)."
+                    ],
+                    "verified": {
+                      "params": "mechanical",
+                      "tags": "mechanical",
+                      "model_version": "best_guess",
+                      "resource": "best_guess",
+                      "constraints": "best_guess",
+                      "domain": "best_guess",
+                      "use_cases": "best_guess",
+                      "comparison": "best_guess",
+                      "metrics": "best_guess"
+                    },
+                    "provenance": {
+                      "model_card_url": "https://github.com/microsoft/SIG-Challenge",
+                      "card_version": 2,
+                      "last_validated": "2026-07-20"
+                    }
+                  },
+                  "contract": {
+                    "reads": {
+                      "data_keys": [],
+                      "segment_data_keys": [],
+                      "accepts": [],
+                      "produces": []
+                    },
+                    "writes": {
+                      "data_keys": [],
+                      "segment_data_keys": [],
+                      "accepts": [],
+                      "produces": []
+                    },
+                    "reads_one_of": [],
+                    "metadata_reads": [],
+                    "metadata_writes": [],
+                    "cardinality": "1:1",
+                    "cardinality_options": [],
+                    "iteration_key": null,
+                    "preserves_upstream_keys": true,
+                    "wrappable": true,
+                    "size_envelope": {
+                      "max_input_sec": null,
+                      "allowed_sample_rates": null,
+                      "channels": "any",
+                      "memory_hint": null
+                    },
+                    "gates": {
+                      "writes_to_disk": false,
+                      "requires_gpu": false,
+                      "requires_internet_first_run": false,
+                      "requires_ffmpeg": false,
+                      "lifecycle_side_effects": false,
+                      "runtime_secrets": [],
+                      "requires_serializable_input": false,
+                      "sanitizes_output": false
+                    },
+                    "stage_id": "SIGMOSFilterStage",
+                    "description": "SIGMOS quality assessment filter stage.",
+                    "params": [
+                      {
+                        "name": "model_dir",
+                        "type": "str",
+                        "default": "/localhome/local-shbhawsar/.cache/nemo_curator/sigmos_model",
+                        "required": false,
+                        "choices": null,
+                        "description": "Directory to store the downloaded model weights (default: ``~/.cache/nemo_curator/sigmos_model/``).",
+                        "role": null
+                      },
+                      {
+                        "name": "model_path",
+                        "type": "str | None",
+                        "default": null,
+                        "required": false,
+                        "choices": null,
+                        "description": "Direct path to a local SIGMOS ONNX model file. Overrides model_dir when provided.",
+                        "role": null
+                      },
+                      {
+                        "name": "noise_threshold",
+                        "type": "float | None",
+                        "default": 4.0,
+                        "required": false,
+                        "choices": null,
+                        "description": "Minimum noise score (None to disable)",
+                        "role": null
+                      },
+                      {
+                        "name": "ovrl_threshold",
+                        "type": "float | None",
+                        "default": 3.5,
+                        "required": false,
+                        "choices": null,
+                        "description": "Minimum overall score (None to disable)",
+                        "role": null
+                      },
+                      {
+                        "name": "sig_threshold",
+                        "type": "float | None",
+                        "default": null,
+                        "required": false,
+                        "choices": null,
+                        "description": "Minimum signal score (None to disable)",
+                        "role": null
+                      },
+                      {
+                        "name": "col_threshold",
+                        "type": "float | None",
+                        "default": null,
+                        "required": false,
+                        "choices": null,
+                        "description": "Minimum coloration score (None to disable)",
+                        "role": null
+                      },
+                      {
+                        "name": "disc_threshold",
+                        "type": "float | None",
+                        "default": null,
+                        "required": false,
+                        "choices": null,
+                        "description": "Minimum discontinuity score (None to disable)",
+                        "role": null
+                      },
+                      {
+                        "name": "loud_threshold",
+                        "type": "float | None",
+                        "default": null,
+                        "required": false,
+                        "choices": null,
+                        "description": "Minimum loudness score (None to disable)",
+                        "role": null
+                      },
+                      {
+                        "name": "reverb_threshold",
+                        "type": "float | None",
+                        "default": null,
+                        "required": false,
+                        "choices": null,
+                        "description": "Minimum reverb score (None to disable)",
+                        "role": null
+                      },
+                      {
+                        "name": "input_residency",
+                        "type": "str",
+                        "default": "auto",
+                        "required": false,
+                        "choices": [
+                          "file",
+                          "waveform",
+                          "auto"
+                        ],
+                        "description": "Which input to use \u2014 \"waveform\" (in-memory only), \"file\" (audio_filepath only), or \"auto\" (waveform first, file fallback; default).",
+                        "role": null
+                      },
+                      {
+                        "name": "mode",
+                        "type": "str",
+                        "default": "auto",
+                        "required": false,
+                        "choices": [
+                          "task",
+                          "segments",
+                          "auto"
+                        ],
+                        "description": "Where to score \u2014 \"task\" (top-level audio), \"segments\" (nested segments list), or \"auto\" (segments when segments_key is present, else task; default). Setting \"task\" or \"segments\" overrides the auto-detection.",
+                        "role": null
+                      },
+                      {
+                        "name": "action",
+                        "type": "str",
+                        "default": "filter",
+                        "required": false,
+                        "choices": [
+                          "filter",
+                          "annotate"
+                        ],
+                        "description": "\"filter\" drops items below the thresholds; \"annotate\" keeps every item \u2014 including items that fail or cannot be scored \u2014 and only writes the score keys.",
+                        "role": null
+                      },
+                      {
+                        "name": "audio_filepath_key",
+                        "type": "str",
+                        "default": "audio_filepath",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key in data dict for the input audio file path.",
+                        "role": "audio_filepath"
+                      },
+                      {
+                        "name": "waveform_key",
+                        "type": "str",
+                        "default": "waveform",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key in data dict for the in-memory waveform tensor.",
+                        "role": "waveform"
+                      },
+                      {
+                        "name": "sample_rate_key",
+                        "type": "str",
+                        "default": "sample_rate",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key in data dict for the waveform sample rate.",
+                        "role": "sample_rate"
+                      },
+                      {
+                        "name": "segments_key",
+                        "type": "str",
+                        "default": "segments",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key in data dict holding the nested segments list (segments/auto mode).",
+                        "role": "segments"
+                      },
+                      {
+                        "name": "noise_key",
+                        "type": "str",
+                        "default": "sigmos_noise",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key where the SIGMOS noise score is written.",
+                        "role": "score"
+                      },
+                      {
+                        "name": "ovrl_key",
+                        "type": "str",
+                        "default": "sigmos_ovrl",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key where the SIGMOS overall score is written.",
+                        "role": "score"
+                      },
+                      {
+                        "name": "sig_key",
+                        "type": "str",
+                        "default": "sigmos_sig",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key where the SIGMOS signal score is written.",
+                        "role": "score"
+                      },
+                      {
+                        "name": "col_key",
+                        "type": "str",
+                        "default": "sigmos_col",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key where the SIGMOS coloration score is written.",
+                        "role": "score"
+                      },
+                      {
+                        "name": "disc_key",
+                        "type": "str",
+                        "default": "sigmos_disc",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key where the SIGMOS discontinuity score is written.",
+                        "role": "score"
+                      },
+                      {
+                        "name": "loud_key",
+                        "type": "str",
+                        "default": "sigmos_loud",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key where the SIGMOS loudness score is written.",
+                        "role": "score"
+                      },
+                      {
+                        "name": "reverb_key",
+                        "type": "str",
+                        "default": "sigmos_reverb",
+                        "required": false,
+                        "choices": null,
+                        "description": "Key where the SIGMOS reverberation score is written.",
+                        "role": "score"
+                      }
+                    ],
+                    "dispatch": "process",
+                    "error_policy": "unknown",
+                    "key_roles": {
+                      "audio_filepath": "audio_filepath",
+                      "waveform": "waveform",
+                      "sample_rate": "sample_rate",
+                      "segments": "segments",
+                      "sigmos_noise": "score",
+                      "sigmos_ovrl": "score",
+                      "sigmos_sig": "score",
+                      "sigmos_col": "score",
+                      "sigmos_disc": "score",
+                      "sigmos_loud": "score",
+                      "sigmos_reverb": "score"
+                    },
+                    "batch_only": false,
+                    "accepts_task_type": "AudioTask",
+                    "produces_task_type": "AudioTask",
+                    "removes_keys": []
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "verb": "resolve",
+            "args": {
+              "stage": "UTMOSFilterStage",
+              "label": "studio"
+            },
+            "result": {
+              "stage": "UTMOSFilterStage",
+              "params": {
+                "mos_threshold": 4.0
+              },
+              "filter_stage": null,
+              "strategy": [
+                {
+                  "param": "mos_threshold",
+                  "value": 4.0,
+                  "metric": "utmos_mos",
+                  "kind": "absolute",
+                  "mode": "knowledge_driven",
+                  "source": {
+                    "from": "card_anchor",
+                    "ref": "studio"
+                  },
+                  "recompute_on": "none",
+                  "rationale": "label 'studio' -> utmos_mos=4.0"
+                }
+              ],
+              "asks": []
+            }
+          },
+          {
+            "verb": "resolve",
+            "args": {
+              "stage": "SIGMOSFilterStage",
+              "use_case": "studio_tts"
+            },
+            "result": {
+              "stage": "SIGMOSFilterStage",
+              "params": {
+                "noise_threshold": 4.0,
+                "ovrl_threshold": 3.5
+              },
+              "filter_stage": null,
+              "strategy": [
+                {
+                  "param": "noise_threshold",
+                  "value": 4.0,
+                  "metric": null,
+                  "kind": "absolute",
+                  "mode": "knowledge_driven",
+                  "source": {
+                    "from": "card_preset",
+                    "ref": "studio_tts"
+                  },
+                  "recompute_on": "none",
+                  "rationale": "card preset 'studio_tts'"
+                },
+                {
+                  "param": "ovrl_threshold",
+                  "value": 3.5,
+                  "metric": null,
+                  "kind": "absolute",
+                  "mode": "knowledge_driven",
+                  "source": {
+                    "from": "card_preset",
+                    "ref": "studio_tts"
+                  },
+                  "recompute_on": "none",
+                  "rationale": "card preset 'studio_tts'"
+                }
+              ],
+              "asks": []
+            }
+          },
+          {
+            "verb": "validate",
+            "args": {
+              "recipe": {
+                "stages": [
+                  {
+                    "ref": "ManifestReader",
+                    "params": {
+                      "manifest_path": "REQUIRED"
+                    }
+                  },
+                  {
+                    "ref": "UTMOSFilterStage",
+                    "params": {
+                      "mos_threshold": 4,
+                      "action": "filter"
+                    }
+                  },
+                  {
+                    "ref": "SIGMOSFilterStage",
+                    "params": {
+                      "noise_threshold": 4,
+                      "ovrl_threshold": 3.5,
+                      "action": "filter"
+                    }
+                  }
+                ]
+              },
+              "request_type": "quality_filter",
+              "acceptance_criteria": [
+                {
+                  "kind": "output_completeness",
+                  "outputs": [
+                    "retained_audio_manifest"
+                  ]
+                },
+                {
+                  "kind": "quality_standard",
+                  "metric": "utmos_mos",
+                  "target": "studio",
+                  "classification": "absolute",
+                  "level": "must"
+                },
+                {
+                  "kind": "yield",
+                  "level": "should"
+                }
+              ]
+            },
+            "result": {
+              "ok": true,
+              "keys_ok": true,
+              "runnable": true,
+              "status": "uncertain",
+              "issues": [
+                {
+                  "code": "composite",
+                  "severity": "warning",
+                  "message": "composite stage \u2014 decompose before validating its data flow",
+                  "stage_index": 0,
+                  "stage": "ManifestReader",
+                  "fix": "decompose the composite (it hides its true I/O) before validating downstream",
+                  "escalate_to": null
+                },
+                {
+                  "code": "missing_implied_criterion",
+                  "severity": "warning",
+                  "message": "a filtering/curation request should carry a 'yield' criterion (define how much to keep, e.g. retained > 0 or ~=N%)",
+                  "stage_index": null,
+                  "stage": null,
+                  "fix": "add an acceptance criterion of this type to define success for the request",
+                  "escalate_to": "user"
+                }
+              ],
+              "card_violations": [],
+              "gate_flags": [
+                {
+                  "code": "internet_first_run",
+                  "severity": "info",
+                  "message": "UTMOSFilterStage downloads a model on first run",
+                  "stage_index": 1,
+                  "stage": "UTMOSFilterStage",
+                  "fix": null,
+                  "escalate_to": null
+                },
+                {
+                  "code": "internet_first_run",
+                  "severity": "info",
+                  "message": "SIGMOSFilterStage downloads a model on first run",
+                  "stage_index": 2,
+                  "stage": "SIGMOSFilterStage",
+                  "fix": null,
+                  "escalate_to": null
+                }
+              ],
+              "unproducible_roles": [],
+              "produced_roles": [
+                "audio_filepath",
+                "score"
+              ],
+              "produced_keys": [
+                "audio_filepath",
+                "sigmos_col",
+                "sigmos_disc",
+                "sigmos_loud",
+                "sigmos_noise",
+                "sigmos_ovrl",
+                "sigmos_reverb",
+                "sigmos_sig",
+                "utmos_mos"
+              ],
+              "summary": "0 error(s), 2 warning(s):\n  [warning] composite [ManifestReader]: composite stage \u2014 decompose before validating its data flow -> decompose the composite (it hides its true I/O) before validating downstream\n  [warning] missing_implied_criterion: a filtering/curation request should carry a 'yield' criterion (define how much to keep, e.g. retained > 0 or ~=N%) -> add an acceptance criterion of this type to define success for the request\n  [info] internet_first_run [UTMOSFilterStage]: UTMOSFilterStage downloads a model on first run\n  [info] internet_first_run [SIGMOSFilterStage]: SIGMOSFilterStage downloads a model on first run"
+            }
+          }
+        ]
+      }
+    ],
+    "tool_calls": [
+      {
+        "verb": "catalog_tree",
+        "args": {},
+        "result": {
+          "categories": [
+            {
+              "category": "ingest",
+              "description": "Create/read manifests and partition input files (dataset sources, manifest readers).",
+              "stages": [
+                "CreateInitialManifestFleursStage",
+                "CreateInitialManifestReadSpeechStage",
+                "ManifestReader",
+                "ManifestReaderStage"
+              ]
+            },
+            {
+              "category": "preprocess",
+              "description": "Normalize audio before models: mono conversion and sample-rate resampling.",
+              "stages": [
+                "MonoConversionStage",
+                "ResampleAudioStage"
+              ]
+            },
+            {
+              "category": "segment",
+              "description": "Cut audio into speech chunks: VAD, long-audio splitting, segment concatenation.",
+              "stages": [
+                "JoinSplitAudioMetadataStage",
+                "SegmentConcatenationStage",
+                "SplitASRAlignJoinStage",
+                "SplitLongAudioStage",
+                "VADSegmentationStage",
+                "WhisperXVADStage"
+              ]
+            },
+            {
+              "category": "diarize",
+              "description": "Who-spoke-when and per-speaker separation (Sortformer, PyAnnote, speaker separation).",
+              "stages": [
+                "InferenceSortformerStage",
+                "PyAnnoteDiarizationStage",
+                "SpeakerSeparationStage"
+              ]
+            },
+            {
+              "category": "transcribe",
+              "description": "ASR transcription and forced word-alignment (NeMo ASR).",
+              "stages": [
+                "InferenceAsrNemoStage",
+                "MergeAlignmentDiarizationStage",
+                "NeMoASRAlignerStage"
+              ]
+            },
+            {
+              "category": "text_norm",
+              "description": "Text post-processing on transcripts: inverse text normalization, Chinese conversion.",
+              "stages": [
+                "ChineseConversionStage",
+                "InverseTextNormalizationStage"
+              ]
+            },
+            {
+              "category": "quality",
+              "description": "Score/gate audio quality: UTMOS, SIGMOS, SQUIM, bandwidth, band filter.",
+              "stages": [
+                "BandFilterStage",
+                "BandwidthEstimationStage",
+                "ComputeWERStage",
+                "GetPairwiseWerStage",
+                "SIGMOSFilterStage",
+                "TorchSquimQualityMetricsStage",
+                "UTMOSFilterStage"
+              ]
+            },
+            {
+              "category": "filter",
+              "description": "Generic value-based row filtering (keep/drop by a numeric or string field).",
+              "stages": [
+                "PreserveByValueStage"
+              ]
+            },
+            {
+              "category": "alm",
+              "description": "Audio-language-model data building: windowing, overlap filtering, snippet planning.",
+              "stages": [
+                "ALMDataBuilderStage",
+                "ALMDataOverlapStage",
+                "OverlapFilterStage",
+                "PretrainMetricsAggregatorStage",
+                "ReadLongFormManifestStage",
+                "SnippetCutPlannerStage",
+                "SnippetExtractionStage",
+                "SnippetRepetitionFilterStage"
+              ]
+            },
+            {
+              "category": "export",
+              "description": "Convert/aggregate and write results: AudioToDocument, manifest/JSONL writers, timestamp mapping, segment extraction.",
+              "stages": [
+                "AudioDataFilterStage",
+                "AudioToDocumentStage",
+                "GetAudioDurationStage",
+                "ManifestWriterStage",
+                "PrepareModuleSegmentsStage",
+                "SegmentExtractionStage",
+                "SnippetManifestWriterStage",
+                "TimestampMapperStage"
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "verb": "cards",
+        "args": {
+          "category": "quality"
+        },
+        "result": {
+          "category": "quality",
+          "stages": [
+            {
+              "stage": "BandFilterStage",
+              "summary": "Classify audio as full_band vs narrow_band (spectral RF) and filter/annotate.",
+              "tags": [
+                "produces_score",
+                "is_filter",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "BandwidthEstimationStage",
+              "summary": "Estimate effective audio bandwidth from the power spectrum; write to metrics.",
+              "tags": [
+                "produces_score"
+              ]
+            },
+            {
+              "stage": "ComputeWERStage",
+              "summary": "Compute WER/CER (plus edge-CER and optional PNC WER/CER) between hypothesis and reference text.",
+              "tags": [
+                "produces_score"
+              ]
+            },
+            {
+              "stage": "GetPairwiseWerStage",
+              "summary": "Compute pairwise WER (%) between reference text and ASR pred_text.",
+              "tags": [
+                "produces_score"
+              ]
+            },
+            {
+              "stage": "SIGMOSFilterStage",
+              "summary": "SIGMOS (ITU-T P.804) neural MOS across 7 quality dimensions; filter/annotate.",
+              "tags": [
+                "produces_score",
+                "is_filter",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "TorchSquimQualityMetricsStage",
+              "summary": "Estimate PESQ / STOI / SI-SDR with the torchaudio SQUIM model; write to metrics.",
+              "tags": [
+                "produces_score",
+                "needs_internet_first_run"
+              ]
+            },
+            {
+              "stage": "UTMOSFilterStage",
+              "summary": "Predict UTMOS mean-opinion-score (MOS) and filter/annotate audio by quality.",
+              "tags": [
+                "produces_score",
+                "is_filter",
+                "needs_internet_first_run"
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "verb": "cards",
+        "args": {
+          "names": [
+            "UTMOSFilterStage",
+            "ManifestReader",
+            "SIGMOSFilterStage"
+          ]
+        },
+        "result": {
+          "cards": [
+            {
+              "stage": "UTMOSFilterStage",
+              "category": "quality",
+              "card": {
+                "stage_id": "UTMOSFilterStage",
+                "category": "quality",
+                "summary": "Predict UTMOS mean-opinion-score (MOS) and filter/annotate audio by quality.",
+                "tags": [
+                  "produces_score",
+                  "is_filter",
+                  "needs_internet_first_run"
+                ],
+                "model_id": "tarepan/SpeechMOS:utmos22_strong (torch.hub)",
+                "model_version": "utmos22_strong",
+                "domain": {
+                  "language": "any",
+                  "style": "speech"
+                },
+                "constraints": {
+                  "supported_sample_rates": [
+                    16000
+                  ],
+                  "input_duration_sweetspot_sec": {
+                    "min": 1.0,
+                    "max": 30.0
+                  }
+                },
+                "resource": {
+                  "cpus": 1.0,
+                  "gpu_mem_gb": 0.7,
+                  "gpu_optional": true,
+                  "bound": "gpu",
+                  "throughput_hint": "fast on GPU; CPU fallback is slower"
+                },
+                "use_cases": {
+                  "good_for": [
+                    "gate speech clips by overall perceptual quality",
+                    "TTS/ASR data curation"
+                  ],
+                  "avoid_for": [
+                    "music or non-speech",
+                    "very short (<1s) clips"
+                  ]
+                },
+                "composition": {
+                  "typical_upstream": [
+                    "MonoConversionStage",
+                    "ResampleAudioStage",
+                    "VADSegmentationStage"
+                  ],
+                  "typical_downstream": [
+                    "SIGMOSFilterStage",
+                    "AudioToDocumentStage"
+                  ]
+                },
+                "params_of_note": {
+                  "mos_threshold": "minimum MOS to keep (0-5). TTS: >=4.0; ASR/general: >=3.4; max retention: >=2.5",
+                  "action": "'filter' drops below threshold; 'annotate' keeps all and only writes the score",
+                  "mode": "'task' (whole file), 'segments' (per nested segment), or 'auto'"
+                },
+                "metrics": {
+                  "utmos_mos": {
+                    "scale": {
+                      "min": 0.0,
+                      "max": 5.0,
+                      "direction": "higher_better"
+                    },
+                    "threshold_param": "mos_threshold",
+                    "anchors": {
+                      "4.0-5.0": "studio",
+                      "3.4-4.0": "general",
+                      "2.5-3.4": "lenient"
+                    },
+                    "valid_range": [
+                      0.0,
+                      5.0
+                    ]
+                  }
+                },
+                "presets": {
+                  "tts_reference": {
+                    "mos_threshold": 4.0
+                  },
+                  "asr_finetune": {
+                    "mos_threshold": 3.4
+                  },
+                  "max_retention": {
+                    "mos_threshold": 2.5
+                  }
+                },
+                "comparison": {
+                  "accuracy_hint": "single overall MOS predictor; coarser than SIGMOS's 7 dimensions",
+                  "latency_hint": "lighter than SIGMOS (one small model)",
+                  "config_complexity": "low (one threshold)",
+                  "known_limitations": "predictor of human MOS, not a ground-truth measurement; speech-only"
+                },
+                "caveats": [
+                  "Downloads the model from torch.hub on first run (needs network once).",
+                  "Score is a predictor of human MOS, not a ground-truth measurement."
+                ],
+                "verified": {
+                  "params": "mechanical",
+                  "tags": "mechanical",
+                  "model_version": "mechanical",
+                  "resource": "best_guess",
+                  "constraints": "best_guess",
+                  "domain": "best_guess",
+                  "use_cases": "best_guess",
+                  "comparison": "best_guess",
+                  "metrics": "best_guess"
+                },
+                "provenance": {
+                  "model_card_url": "https://github.com/tarepan/SpeechMOS",
+                  "card_version": 2,
+                  "last_validated": "2026-07-20"
+                }
+              },
+              "contract": {
+                "reads": {
+                  "data_keys": [],
+                  "segment_data_keys": [],
+                  "accepts": [],
+                  "produces": []
+                },
+                "writes": {
+                  "data_keys": [],
+                  "segment_data_keys": [],
+                  "accepts": [],
+                  "produces": []
+                },
+                "reads_one_of": [],
+                "metadata_reads": [],
+                "metadata_writes": [],
+                "cardinality": "1:1",
+                "cardinality_options": [],
+                "iteration_key": null,
+                "preserves_upstream_keys": true,
+                "wrappable": true,
+                "size_envelope": {
+                  "max_input_sec": null,
+                  "allowed_sample_rates": null,
+                  "channels": "any",
+                  "memory_hint": null
+                },
+                "gates": {
+                  "writes_to_disk": false,
+                  "requires_gpu": false,
+                  "requires_internet_first_run": false,
+                  "requires_ffmpeg": false,
+                  "lifecycle_side_effects": false,
+                  "runtime_secrets": [],
+                  "requires_serializable_input": false,
+                  "sanitizes_output": false
+                },
+                "stage_id": "UTMOSFilterStage",
+                "description": "UTMOS quality assessment filter stage.",
+                "params": [
+                  {
+                    "name": "mos_threshold",
+                    "type": "float | None",
+                    "default": 3.5,
+                    "required": false,
+                    "choices": null,
+                    "description": "Minimum MOS score to pass (None to disable)",
+                    "role": null
+                  },
+                  {
+                    "name": "sample_rate",
+                    "type": "int",
+                    "default": 16000,
+                    "required": false,
+                    "choices": null,
+                    "description": "Target sample rate for UTMOS inference (default 16000)",
+                    "role": null
+                  },
+                  {
+                    "name": "input_residency",
+                    "type": "str",
+                    "default": "auto",
+                    "required": false,
+                    "choices": [
+                      "file",
+                      "waveform",
+                      "auto"
+                    ],
+                    "description": "Which input to use \u2014 \"waveform\" (in-memory only), \"file\" (audio_filepath only), or \"auto\" (waveform first, file fallback; default).",
+                    "role": null
+                  },
+                  {
+                    "name": "mode",
+                    "type": "str",
+                    "default": "auto",
+                    "required": false,
+                    "choices": [
+                      "task",
+                      "segments",
+                      "auto"
+                    ],
+                    "description": "Where to score \u2014 \"task\" (top-level audio), \"segments\" (nested segments list), or \"auto\" (segments when segments_key is present, else task; default). Setting \"task\" or \"segments\" overrides the auto-detection.",
+                    "role": null
+                  },
+                  {
+                    "name": "action",
+                    "type": "str",
+                    "default": "filter",
+                    "required": false,
+                    "choices": [
+                      "filter",
+                      "annotate"
+                    ],
+                    "description": "\"filter\" drops items below mos_threshold; \"annotate\" keeps every item \u2014 including items that fail or cannot be scored \u2014 and only writes score_key.",
+                    "role": null
+                  },
+                  {
+                    "name": "audio_filepath_key",
+                    "type": "str",
+                    "default": "audio_filepath",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key in data dict for the input audio file path.",
+                    "role": "audio_filepath"
+                  },
+                  {
+                    "name": "waveform_key",
+                    "type": "str",
+                    "default": "waveform",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key in data dict for the in-memory waveform tensor.",
+                    "role": "waveform"
+                  },
+                  {
+                    "name": "sample_rate_key",
+                    "type": "str",
+                    "default": "sample_rate",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key in data dict for the waveform sample rate.",
+                    "role": "sample_rate"
+                  },
+                  {
+                    "name": "segments_key",
+                    "type": "str",
+                    "default": "segments",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key in data dict holding the nested segments list (segments/auto mode).",
+                    "role": "segments"
+                  },
+                  {
+                    "name": "score_key",
+                    "type": "str",
+                    "default": "utmos_mos",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key where the UTMOS MOS score is written.",
+                    "role": "score"
+                  }
+                ],
+                "dispatch": "process",
+                "error_policy": "unknown",
+                "key_roles": {
+                  "audio_filepath": "audio_filepath",
+                  "waveform": "waveform",
+                  "sample_rate": "sample_rate",
+                  "segments": "segments",
+                  "utmos_mos": "score"
+                },
+                "batch_only": false,
+                "accepts_task_type": "AudioTask",
+                "produces_task_type": "AudioTask",
+                "removes_keys": []
+              }
+            },
+            {
+              "stage": "ManifestReader",
+              "category": "ingest",
+              "card": {
+                "stage_id": "ManifestReader",
+                "category": "ingest",
+                "summary": "Read JSONL manifest(s) and emit one AudioTask per line (composite: partition + read).",
+                "tags": [],
+                "model_id": null,
+                "domain": {
+                  "language": "any",
+                  "style": "any"
+                },
+                "constraints": {},
+                "resource": {
+                  "cpus": 1.0,
+                  "gpu_mem_gb": 0.0,
+                  "gpu_optional": false,
+                  "bound": "io",
+                  "throughput_hint": "streaming line-by-line read (~1x file size in memory)"
+                },
+                "use_cases": {
+                  "good_for": [
+                    "starting a pipeline from an existing JSONL manifest (local or cloud S3/GCS)"
+                  ],
+                  "avoid_for": [
+                    "bootstrapping from a raw dataset with no manifest (use a CreateInitialManifest* stage)"
+                  ]
+                },
+                "composition": {
+                  "typical_upstream": [],
+                  "typical_downstream": [
+                    "MonoConversionStage",
+                    "ResampleAudioStage",
+                    "GetAudioDurationStage"
+                  ]
+                },
+                "params_of_note": {
+                  "manifest_path": "path or list of paths to JSONL manifests (local or cloud)",
+                  "files_per_partition": "number of manifest files per partition (default 1)",
+                  "blocksize": "target partition size (alternative to files_per_partition)",
+                  "storage_options": "fsspec storage options for cloud paths"
+                },
+                "notes": [
+                  "Composite of FilePartitioningStage + ManifestReaderStage; this is the stage to use directly."
+                ],
+                "verified": {
+                  "params": "mechanical",
+                  "tags": "mechanical",
+                  "resource": "best_guess",
+                  "use_cases": "best_guess",
+                  "domain": "best_guess"
+                },
+                "provenance": {
+                  "model_card_url": null,
+                  "card_version": 1,
+                  "last_validated": "2026-07-20"
+                }
+              },
+              "contract": {
+                "reads": {
+                  "data_keys": [],
+                  "segment_data_keys": [],
+                  "accepts": [],
+                  "produces": []
+                },
+                "writes": {
+                  "data_keys": [],
+                  "segment_data_keys": [],
+                  "accepts": [],
+                  "produces": []
+                },
+                "reads_one_of": [],
+                "metadata_reads": [],
+                "metadata_writes": [],
+                "cardinality": "1:1",
+                "cardinality_options": [],
+                "iteration_key": null,
+                "preserves_upstream_keys": true,
+                "wrappable": true,
+                "size_envelope": {
+                  "max_input_sec": null,
+                  "allowed_sample_rates": null,
+                  "channels": "any",
+                  "memory_hint": null
+                },
+                "gates": {
+                  "writes_to_disk": false,
+                  "requires_gpu": false,
+                  "requires_internet_first_run": false,
+                  "requires_ffmpeg": false,
+                  "lifecycle_side_effects": false,
+                  "runtime_secrets": [],
+                  "requires_serializable_input": false,
+                  "sanitizes_output": false
+                },
+                "stage_id": "ManifestReader",
+                "description": "Composite stage for reading JSONL manifests.",
+                "params": [
+                  {
+                    "name": "manifest_path",
+                    "type": "str | list[str]",
+                    "default": null,
+                    "required": true,
+                    "choices": null,
+                    "description": "Path or list of paths to JSONL manifests (local or cloud).",
+                    "role": null
+                  },
+                  {
+                    "name": "files_per_partition",
+                    "type": "int | None",
+                    "default": 1,
+                    "required": false,
+                    "choices": null,
+                    "description": "Number of manifest files per partition. Defaults to 1.",
+                    "role": null
+                  },
+                  {
+                    "name": "blocksize",
+                    "type": "int | str | None",
+                    "default": null,
+                    "required": false,
+                    "choices": null,
+                    "description": "Target size per partition (e.g., \"100MB\"). Ignored if files_per_partition is set.",
+                    "role": null
+                  },
+                  {
+                    "name": "file_extensions",
+                    "type": "list[str]",
+                    "default": [
+                      ".jsonl",
+                      ".json"
+                    ],
+                    "required": false,
+                    "choices": null,
+                    "description": "File extensions to filter. Defaults to [\".jsonl\", \".json\"].",
+                    "role": null
+                  },
+                  {
+                    "name": "storage_options",
+                    "type": "dict | None",
+                    "default": null,
+                    "required": false,
+                    "choices": null,
+                    "description": "Storage options for cloud paths (S3, GCS credentials, endpoints).",
+                    "role": null
+                  }
+                ],
+                "dispatch": "process",
+                "error_policy": "unknown",
+                "key_roles": {},
+                "batch_only": false,
+                "accepts_task_type": "EmptyTask",
+                "produces_task_type": "AudioTask",
+                "removes_keys": []
+              }
+            },
+            {
+              "stage": "SIGMOSFilterStage",
+              "category": "quality",
+              "card": {
+                "stage_id": "SIGMOSFilterStage",
+                "category": "quality",
+                "summary": "SIGMOS (ITU-T P.804) neural MOS across 7 quality dimensions; filter/annotate.",
+                "tags": [
+                  "produces_score",
+                  "is_filter",
+                  "needs_internet_first_run"
+                ],
+                "model_id": "microsoft SIGMOS (ONNX, P.804)",
+                "model_version": "P.804-ONNX",
+                "domain": {
+                  "language": "any",
+                  "style": "speech"
+                },
+                "constraints": {
+                  "supported_sample_rates": [
+                    16000,
+                    48000
+                  ]
+                },
+                "resource": {
+                  "cpus": 1.0,
+                  "gpu_mem_gb": 0.5,
+                  "gpu_optional": true,
+                  "bound": "gpu",
+                  "throughput_hint": "ONNX; uses GPU if available, CPU fallback"
+                },
+                "use_cases": {
+                  "good_for": [
+                    "fine-grained quality gating (noise, reverb, discontinuity, loudness, coloration)",
+                    "TTS data curation"
+                  ],
+                  "avoid_for": [
+                    "non-speech audio"
+                  ]
+                },
+                "composition": {
+                  "typical_upstream": [
+                    "MonoConversionStage",
+                    "VADSegmentationStage",
+                    "UTMOSFilterStage"
+                  ],
+                  "typical_downstream": [
+                    "AudioToDocumentStage",
+                    "ManifestWriterStage"
+                  ]
+                },
+                "params_of_note": {
+                  "noise_threshold": "min NOISE score to keep (0-5); 4.0 keeps only very-low-noise clips",
+                  "ovrl_threshold": "min OVRL (overall) score to keep (0-5); single best general-purpose gate",
+                  "sig_threshold": "optional min SIG (signal) score to keep (0-5)",
+                  "col_threshold": "optional min COL (coloration) score to keep (0-5)",
+                  "disc_threshold": "optional min DISC (discontinuity) score to keep (0-5)",
+                  "loud_threshold": "optional min LOUD (loudness) score to keep (0-5)",
+                  "reverb_threshold": "optional min REVERB score to keep (0-5)",
+                  "action": "'filter' drops below threshold(s); 'annotate' keeps all and writes scores",
+                  "mode": "'task' (whole file), 'segments' (per nested segment), or 'auto'"
+                },
+                "metrics": {
+                  "sigmos_ovrl": {
+                    "scale": {
+                      "min": 0.0,
+                      "max": 5.0,
+                      "direction": "higher_better"
+                    },
+                    "threshold_param": "ovrl_threshold",
+                    "anchors": {
+                      "3.5-5.0": "studio",
+                      "3.0-3.5": "general"
+                    },
+                    "valid_range": [
+                      0.0,
+                      5.0
+                    ]
+                  },
+                  "sigmos_noise": {
+                    "scale": {
+                      "min": 0.0,
+                      "max": 5.0,
+                      "direction": "higher_better"
+                    },
+                    "threshold_param": "noise_threshold",
+                    "anchors": {
+                      "4.0-5.0": "very_low_noise"
+                    },
+                    "valid_range": [
+                      0.0,
+                      5.0
+                    ]
+                  }
+                },
+                "presets": {
+                  "studio_tts": {
+                    "noise_threshold": 4.0,
+                    "ovrl_threshold": 3.5
+                  },
+                  "general": {
+                    "ovrl_threshold": 3.0
+                  }
+                },
+                "comparison": {
+                  "accuracy_hint": "7-dimension P.804 MOS; finer-grained than UTMOS's single score",
+                  "latency_hint": "heavier than UTMOS / BandFilter",
+                  "config_complexity": "medium-high (up to 7 per-dimension thresholds)",
+                  "known_limitations": "speech-only; empirically the most aggressive filter (drops the most rows)"
+                },
+                "notes": [
+                  "Writes all 7 scores (sigmos_noise, sigmos_ovrl, sigmos_sig, sigmos_col, sigmos_disc, sigmos_loud, sigmos_reverb) regardless of active thresholds, so you can post-filter.",
+                  "Empirically the most aggressive quality filter -- place last in a cheap->expensive filter chain, or first for maximum early cull."
+                ],
+                "caveats": [
+                  "Downloads the ONNX model on first run (needs network once)."
+                ],
+                "verified": {
+                  "params": "mechanical",
+                  "tags": "mechanical",
+                  "model_version": "best_guess",
+                  "resource": "best_guess",
+                  "constraints": "best_guess",
+                  "domain": "best_guess",
+                  "use_cases": "best_guess",
+                  "comparison": "best_guess",
+                  "metrics": "best_guess"
+                },
+                "provenance": {
+                  "model_card_url": "https://github.com/microsoft/SIG-Challenge",
+                  "card_version": 2,
+                  "last_validated": "2026-07-20"
+                }
+              },
+              "contract": {
+                "reads": {
+                  "data_keys": [],
+                  "segment_data_keys": [],
+                  "accepts": [],
+                  "produces": []
+                },
+                "writes": {
+                  "data_keys": [],
+                  "segment_data_keys": [],
+                  "accepts": [],
+                  "produces": []
+                },
+                "reads_one_of": [],
+                "metadata_reads": [],
+                "metadata_writes": [],
+                "cardinality": "1:1",
+                "cardinality_options": [],
+                "iteration_key": null,
+                "preserves_upstream_keys": true,
+                "wrappable": true,
+                "size_envelope": {
+                  "max_input_sec": null,
+                  "allowed_sample_rates": null,
+                  "channels": "any",
+                  "memory_hint": null
+                },
+                "gates": {
+                  "writes_to_disk": false,
+                  "requires_gpu": false,
+                  "requires_internet_first_run": false,
+                  "requires_ffmpeg": false,
+                  "lifecycle_side_effects": false,
+                  "runtime_secrets": [],
+                  "requires_serializable_input": false,
+                  "sanitizes_output": false
+                },
+                "stage_id": "SIGMOSFilterStage",
+                "description": "SIGMOS quality assessment filter stage.",
+                "params": [
+                  {
+                    "name": "model_dir",
+                    "type": "str",
+                    "default": "/localhome/local-shbhawsar/.cache/nemo_curator/sigmos_model",
+                    "required": false,
+                    "choices": null,
+                    "description": "Directory to store the downloaded model weights (default: ``~/.cache/nemo_curator/sigmos_model/``).",
+                    "role": null
+                  },
+                  {
+                    "name": "model_path",
+                    "type": "str | None",
+                    "default": null,
+                    "required": false,
+                    "choices": null,
+                    "description": "Direct path to a local SIGMOS ONNX model file. Overrides model_dir when provided.",
+                    "role": null
+                  },
+                  {
+                    "name": "noise_threshold",
+                    "type": "float | None",
+                    "default": 4.0,
+                    "required": false,
+                    "choices": null,
+                    "description": "Minimum noise score (None to disable)",
+                    "role": null
+                  },
+                  {
+                    "name": "ovrl_threshold",
+                    "type": "float | None",
+                    "default": 3.5,
+                    "required": false,
+                    "choices": null,
+                    "description": "Minimum overall score (None to disable)",
+                    "role": null
+                  },
+                  {
+                    "name": "sig_threshold",
+                    "type": "float | None",
+                    "default": null,
+                    "required": false,
+                    "choices": null,
+                    "description": "Minimum signal score (None to disable)",
+                    "role": null
+                  },
+                  {
+                    "name": "col_threshold",
+                    "type": "float | None",
+                    "default": null,
+                    "required": false,
+                    "choices": null,
+                    "description": "Minimum coloration score (None to disable)",
+                    "role": null
+                  },
+                  {
+                    "name": "disc_threshold",
+                    "type": "float | None",
+                    "default": null,
+                    "required": false,
+                    "choices": null,
+                    "description": "Minimum discontinuity score (None to disable)",
+                    "role": null
+                  },
+                  {
+                    "name": "loud_threshold",
+                    "type": "float | None",
+                    "default": null,
+                    "required": false,
+                    "choices": null,
+                    "description": "Minimum loudness score (None to disable)",
+                    "role": null
+                  },
+                  {
+                    "name": "reverb_threshold",
+                    "type": "float | None",
+                    "default": null,
+                    "required": false,
+                    "choices": null,
+                    "description": "Minimum reverb score (None to disable)",
+                    "role": null
+                  },
+                  {
+                    "name": "input_residency",
+                    "type": "str",
+                    "default": "auto",
+                    "required": false,
+                    "choices": [
+                      "file",
+                      "waveform",
+                      "auto"
+                    ],
+                    "description": "Which input to use \u2014 \"waveform\" (in-memory only), \"file\" (audio_filepath only), or \"auto\" (waveform first, file fallback; default).",
+                    "role": null
+                  },
+                  {
+                    "name": "mode",
+                    "type": "str",
+                    "default": "auto",
+                    "required": false,
+                    "choices": [
+                      "task",
+                      "segments",
+                      "auto"
+                    ],
+                    "description": "Where to score \u2014 \"task\" (top-level audio), \"segments\" (nested segments list), or \"auto\" (segments when segments_key is present, else task; default). Setting \"task\" or \"segments\" overrides the auto-detection.",
+                    "role": null
+                  },
+                  {
+                    "name": "action",
+                    "type": "str",
+                    "default": "filter",
+                    "required": false,
+                    "choices": [
+                      "filter",
+                      "annotate"
+                    ],
+                    "description": "\"filter\" drops items below the thresholds; \"annotate\" keeps every item \u2014 including items that fail or cannot be scored \u2014 and only writes the score keys.",
+                    "role": null
+                  },
+                  {
+                    "name": "audio_filepath_key",
+                    "type": "str",
+                    "default": "audio_filepath",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key in data dict for the input audio file path.",
+                    "role": "audio_filepath"
+                  },
+                  {
+                    "name": "waveform_key",
+                    "type": "str",
+                    "default": "waveform",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key in data dict for the in-memory waveform tensor.",
+                    "role": "waveform"
+                  },
+                  {
+                    "name": "sample_rate_key",
+                    "type": "str",
+                    "default": "sample_rate",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key in data dict for the waveform sample rate.",
+                    "role": "sample_rate"
+                  },
+                  {
+                    "name": "segments_key",
+                    "type": "str",
+                    "default": "segments",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key in data dict holding the nested segments list (segments/auto mode).",
+                    "role": "segments"
+                  },
+                  {
+                    "name": "noise_key",
+                    "type": "str",
+                    "default": "sigmos_noise",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key where the SIGMOS noise score is written.",
+                    "role": "score"
+                  },
+                  {
+                    "name": "ovrl_key",
+                    "type": "str",
+                    "default": "sigmos_ovrl",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key where the SIGMOS overall score is written.",
+                    "role": "score"
+                  },
+                  {
+                    "name": "sig_key",
+                    "type": "str",
+                    "default": "sigmos_sig",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key where the SIGMOS signal score is written.",
+                    "role": "score"
+                  },
+                  {
+                    "name": "col_key",
+                    "type": "str",
+                    "default": "sigmos_col",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key where the SIGMOS coloration score is written.",
+                    "role": "score"
+                  },
+                  {
+                    "name": "disc_key",
+                    "type": "str",
+                    "default": "sigmos_disc",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key where the SIGMOS discontinuity score is written.",
+                    "role": "score"
+                  },
+                  {
+                    "name": "loud_key",
+                    "type": "str",
+                    "default": "sigmos_loud",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key where the SIGMOS loudness score is written.",
+                    "role": "score"
+                  },
+                  {
+                    "name": "reverb_key",
+                    "type": "str",
+                    "default": "sigmos_reverb",
+                    "required": false,
+                    "choices": null,
+                    "description": "Key where the SIGMOS reverberation score is written.",
+                    "role": "score"
+                  }
+                ],
+                "dispatch": "process",
+                "error_policy": "unknown",
+                "key_roles": {
+                  "audio_filepath": "audio_filepath",
+                  "waveform": "waveform",
+                  "sample_rate": "sample_rate",
+                  "segments": "segments",
+                  "sigmos_noise": "score",
+                  "sigmos_ovrl": "score",
+                  "sigmos_sig": "score",
+                  "sigmos_col": "score",
+                  "sigmos_disc": "score",
+                  "sigmos_loud": "score",
+                  "sigmos_reverb": "score"
+                },
+                "batch_only": false,
+                "accepts_task_type": "AudioTask",
+                "produces_task_type": "AudioTask",
+                "removes_keys": []
+              }
+            }
+          ]
+        }
+      },
+      {
+        "verb": "resolve",
+        "args": {
+          "stage": "UTMOSFilterStage",
+          "label": "studio"
+        },
+        "result": {
+          "stage": "UTMOSFilterStage",
+          "params": {
+            "mos_threshold": 4.0
+          },
+          "filter_stage": null,
+          "strategy": [
+            {
+              "param": "mos_threshold",
+              "value": 4.0,
+              "metric": "utmos_mos",
+              "kind": "absolute",
+              "mode": "knowledge_driven",
+              "source": {
+                "from": "card_anchor",
+                "ref": "studio"
+              },
+              "recompute_on": "none",
+              "rationale": "label 'studio' -> utmos_mos=4.0"
+            }
+          ],
+          "asks": []
+        }
+      },
+      {
+        "verb": "resolve",
+        "args": {
+          "stage": "SIGMOSFilterStage",
+          "use_case": "studio_tts"
+        },
+        "result": {
+          "stage": "SIGMOSFilterStage",
+          "params": {
+            "noise_threshold": 4.0,
+            "ovrl_threshold": 3.5
+          },
+          "filter_stage": null,
+          "strategy": [
+            {
+              "param": "noise_threshold",
+              "value": 4.0,
+              "metric": null,
+              "kind": "absolute",
+              "mode": "knowledge_driven",
+              "source": {
+                "from": "card_preset",
+                "ref": "studio_tts"
+              },
+              "recompute_on": "none",
+              "rationale": "card preset 'studio_tts'"
+            },
+            {
+              "param": "ovrl_threshold",
+              "value": 3.5,
+              "metric": null,
+              "kind": "absolute",
+              "mode": "knowledge_driven",
+              "source": {
+                "from": "card_preset",
+                "ref": "studio_tts"
+              },
+              "recompute_on": "none",
+              "rationale": "card preset 'studio_tts'"
+            }
+          ],
+          "asks": []
+        }
+      },
+      {
+        "verb": "validate",
+        "args": {
+          "recipe": {
+            "stages": [
+              {
+                "ref": "ManifestReader",
+                "params": {
+                  "manifest_path": "REQUIRED"
+                }
+              },
+              {
+                "ref": "UTMOSFilterStage",
+                "params": {
+                  "mos_threshold": 4,
+                  "action": "filter"
+                }
+              },
+              {
+                "ref": "SIGMOSFilterStage",
+                "params": {
+                  "noise_threshold": 4,
+                  "ovrl_threshold": 3.5,
+                  "action": "filter"
+                }
+              }
+            ]
+          },
+          "request_type": "quality_filter",
+          "acceptance_criteria": [
+            {
+              "kind": "output_completeness",
+              "outputs": [
+                "retained_audio_manifest"
+              ]
+            },
+            {
+              "kind": "quality_standard",
+              "metric": "utmos_mos",
+              "target": "studio",
+              "classification": "absolute",
+              "level": "must"
+            },
+            {
+              "kind": "yield",
+              "level": "should"
+            }
+          ]
+        },
+        "result": {
+          "ok": true,
+          "keys_ok": true,
+          "runnable": true,
+          "status": "uncertain",
+          "issues": [
+            {
+              "code": "composite",
+              "severity": "warning",
+              "message": "composite stage \u2014 decompose before validating its data flow",
+              "stage_index": 0,
+              "stage": "ManifestReader",
+              "fix": "decompose the composite (it hides its true I/O) before validating downstream",
+              "escalate_to": null
+            },
+            {
+              "code": "missing_implied_criterion",
+              "severity": "warning",
+              "message": "a filtering/curation request should carry a 'yield' criterion (define how much to keep, e.g. retained > 0 or ~=N%)",
+              "stage_index": null,
+              "stage": null,
+              "fix": "add an acceptance criterion of this type to define success for the request",
+              "escalate_to": "user"
+            }
+          ],
+          "card_violations": [],
+          "gate_flags": [
+            {
+              "code": "internet_first_run",
+              "severity": "info",
+              "message": "UTMOSFilterStage downloads a model on first run",
+              "stage_index": 1,
+              "stage": "UTMOSFilterStage",
+              "fix": null,
+              "escalate_to": null
+            },
+            {
+              "code": "internet_first_run",
+              "severity": "info",
+              "message": "SIGMOSFilterStage downloads a model on first run",
+              "stage_index": 2,
+              "stage": "SIGMOSFilterStage",
+              "fix": null,
+              "escalate_to": null
+            }
+          ],
+          "unproducible_roles": [],
+          "produced_roles": [
+            "audio_filepath",
+            "score"
+          ],
+          "produced_keys": [
+            "audio_filepath",
+            "sigmos_col",
+            "sigmos_disc",
+            "sigmos_loud",
+            "sigmos_noise",
+            "sigmos_ovrl",
+            "sigmos_reverb",
+            "sigmos_sig",
+            "utmos_mos"
+          ],
+          "summary": "0 error(s), 2 warning(s):\n  [warning] composite [ManifestReader]: composite stage \u2014 decompose before validating its data flow -> decompose the composite (it hides its true I/O) before validating downstream\n  [warning] missing_implied_criterion: a filtering/curation request should carry a 'yield' criterion (define how much to keep, e.g. retained > 0 or ~=N%) -> add an acceptance criterion of this type to define success for the request\n  [info] internet_first_run [UTMOSFilterStage]: UTMOSFilterStage downloads a model on first run\n  [info] internet_first_run [SIGMOSFilterStage]: SIGMOSFilterStage downloads a model on first run"
+        }
+      }
+    ],
+    "final_recipe": {
+      "stages": [
+        {
+          "ref": "ManifestReader",
+          "params": {
+            "manifest_path": "REQUIRED"
+          }
+        },
+        {
+          "ref": "UTMOSFilterStage",
+          "params": {
+            "mos_threshold": 4.0,
+            "action": "filter"
+          }
+        },
+        {
+          "ref": "SIGMOSFilterStage",
+          "params": {
+            "noise_threshold": 4.0,
+            "ovrl_threshold": 3.5,
+            "action": "filter"
+          }
+        }
+      ]
+    },
+    "outcome": "recipe",
+    "asked_clarification": true
+  },
+  "execution": {
+    "attempted": true,
+    "smoke": {
+      "ran": true,
+      "retained": 0,
+      "errors": 0
+    },
+    "status": "completed",
+    "accepted": 0,
+    "input_count": 12,
+    "failures": [],
+    "metrics": {},
+    "verify_overall": "not_met"
+  },
+  "grade": {
+    "overall": "pass",
+    "dimensions": {
+      "success": {
+        "pass": true,
+        "note": "asked=True (wanted clarify)"
+      },
+      "modules": {
+        "pass": true,
+        "note": "module set matches"
+      },
+      "validity": {
+        "pass": true,
+        "note": "status=pass runnable=True"
+      },
+      "execution": {
+        "pass": true,
+        "note": "status=completed accepted=0/12"
+      }
+    },
+    "findings": []
+  }
+}
