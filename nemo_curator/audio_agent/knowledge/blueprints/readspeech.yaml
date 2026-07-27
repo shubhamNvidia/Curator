@@ -26,6 +26,7 @@ pitfalls:
   - "no transcripts here -> cannot add ASR/WER; use the fleurs blueprint for that"
   - "all filters at default ~= 23% pass rate; SIGMOS dominates the drop"
   - "don't skip resample/mono on 48k stereo data"
+  - "the `stages` list above is the DECOMPOSED/logical view; the runnable recipe (recipes/readspeech_quality.yaml) wires them via the AudioDataFilterStage composite, which also runs TimestampMapperStage to strip non-serializable keys before the sink -- so expect 3 top-level recipe stages (CreateInitialManifestReadSpeech -> AudioDataFilterStage -> ManifestWriter), not one-per-filter"
 presets:
   tts_reference: {utmos_mos_threshold: 4.0}
   asr_finetune: {utmos_mos_threshold: 3.4}

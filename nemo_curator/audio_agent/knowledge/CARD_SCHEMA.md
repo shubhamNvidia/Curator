@@ -49,6 +49,8 @@ verified: {params: mechanical, resource: best_guess, model_version: measured, us
 | `composition` | rec. | `{typical_upstream: [...], typical_downstream: [...]}` — idiomatic ordering. |
 | `params_of_note` | rec. | `{param: description}` — **keys must be real constructor params** (gate-checked). |
 | `presets` | opt. | `{name: {param: value}}` — **keys must be real params** (gate-checked). |
+| `metrics` | opt. | `{metric: {scale:{min,max,direction}, threshold_param, valid_range:[lo,hi], presets}}` — the deterministic source of score directions/targets (1A.2) that keeps a filter from being inverted. `scale.direction` must be `higher_better`/`lower_better`; `threshold_param` (if set) must be a real param; `valid_range` must be `[lo, hi]` (all gate-checked). Omit `threshold_param` for annotate-only stages that are filtered downstream (e.g. `ComputeWERStage` → `PreserveByValueStage`). |
+| `versions` | opt. | model-backed stages only: `{model_id: "when-to-use"}` for checkpoints verified interchangeable via `model_name`/`model_path` (same output structure, no module code change). Any version-selecting `preset` (one that sets `model_name`/`model_path`) **must list its model id here** (gate-checked). Mark `verified.versions` `measured` when empirically tested. |
 | `conflicts_with` | opt. | stage_ids that are alternatives / shouldn't co-occur. |
 | `param_dependencies` | opt. | notes on params that depend on each other or on upstream data. |
 | `comparison` | opt. | disambiguation fields for overlapping modules: `{language_support, accuracy_hint, latency_hint, config_complexity, known_limitations}`. |
@@ -75,6 +77,8 @@ default, not a hard truth.
 - lists a `params_of_note` / `presets` key that isn't a real constructor param;
 - uses an unknown `resource` key / non-numeric numeric / bad `bound`;
 - sets `model_id` without a `model_version`;
+- declares a `versions` block that isn't a `{model_id: string}` map, sets it without a `model_id`, or has a model-selecting `preset` (sets `model_name`/`model_path`) whose model id isn't documented in `versions`;
+- declares a `metrics` block with a bad `scale.direction`, a `threshold_param` that isn't a real param, or a `valid_range` that isn't `[lo, hi]`;
 - uses a `verified` tier outside `{mechanical, measured, best_guess}`.
 
 Coverage gaps (stages with no card) are **reported, not failed** — they name the authoring backlog.

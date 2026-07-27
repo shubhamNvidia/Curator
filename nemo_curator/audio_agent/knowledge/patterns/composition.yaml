@@ -1,7 +1,10 @@
 # Abstracted composition/ordering rules distilled from blueprints. These teach
 # the host router/planner idiomatic ordering that neither contracts nor cards
-# reveal. `kind: enforced` rules are ALSO checked by the validator (source of
-# truth); `kind: advisory` rules are expert judgment the planner may adapt.
+# reveal. `kind: enforced` rules are ALSO enforced by the validator's own Python
+# checks in checks.py (the source of truth). NOTE: this file is NOT parsed by the
+# validator -- it is a teaching layer kept in sync with checks.py by hand, so editing
+# a rule here does not change enforcement. `kind: advisory` rules are expert judgment
+# the planner may adapt.
 
 patterns:
   - id: mono-first

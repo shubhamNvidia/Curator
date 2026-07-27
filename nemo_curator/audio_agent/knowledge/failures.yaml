@@ -1,7 +1,13 @@
-# Failure taxonomy (symptom -> cause -> fix). The classifier (failures.py) matches
-# a raw error string against `symptom_signature` (substring or regex, lowercased)
-# and returns the entry. Feeds both the Critic (structured re-plan directive) and
-# the run report (triage). `auto_fix` is a machine-actionable hint when available.
+# Failure taxonomy (symptom -> cause -> fix). The classifier (failures.py) matches a
+# raw error string against each `symptom_signature` as a CASE-INSENSITIVE REGEX (a
+# signature that is not a valid regex falls back to a case-insensitive substring).
+# Short/ambiguous tokens are anchored with \b so they don't collide with unrelated
+# words -- e.g. "\bray\b" must fire on "ray::Worker" but NOT on "array", and
+# "\b0 rows\b" must not fire on "100 rows". Entries are ordered specific-before-
+# generic: the classifier returns the FIRST entry whose signature matches, so the
+# narrow/high-signal codes (OOM, executor) precede the broader model/download code.
+# Feeds both the Critic (structured re-plan directive) and the run report (triage).
+# `auto_fix` is a machine-actionable hint when available.
 
 failures:
   - code: unreadable_file
@@ -11,11 +17,18 @@ failures:
     auto_fix: null
     user_guidance: "drop or re-encode the offending files; check the manifest paths point to valid audio"
 
+  - code: stage_input_validation
+    symptom_signature: ["failed validation for stage", "failed input validation", "missing required attributes", "missing required .* (key|attribute)"]
+    likely_cause: "a stage's required input key/role is missing -- an upstream stage did not produce it (composition/wiring gap)"
+    layer: recipe
+    auto_fix: "ensure an upstream stage produces the required key (align *_key params), or use the composite that emits it (e.g. SplitASRAlignJoinStage for word-level alignment before MergeAlignmentDiarizationStage)"
+    user_guidance: "check the failing stage's required inputs against what upstream actually produces (describe/cards); for word-level alignment feeding MergeAlignmentDiarizationStage use SplitASRAlignJoinStage -- a standalone NeMoASRAlignerStage needs that split/join scaffolding to populate a usable 'alignment'"
+
   - code: sample_rate_mismatch
-    symptom_signature: ["sample rate", "sampling rate", "expected .* hz", "resample"]
+    symptom_signature: ["sample rate mismatch", "unsupported sample rate", "expected .* hz", "sampling rate .* not supported", "must be 16000 ?hz", "sr must be"]
     likely_cause: "input sample rate not supported by a model stage"
     layer: data
-    auto_fix: "insert ResampleAudioStage/MonoConversionStage(output_sample_rate=<supported>) upstream"
+    auto_fix: "insert ResampleAudioStage(target_sample_rate=<supported>) or MonoConversionStage(output_sample_rate=<supported>) upstream"
     user_guidance: "resample the corpus to the model's supported rate (see the stage card)"
 
   - code: missing_dependency
@@ -25,26 +38,26 @@ failures:
     auto_fix: "install the audio extra (audio_cpu or audio_cuda12)"
     user_guidance: "uv sync --extra audio_cuda12 (GPU) or audio_cpu (CPU)"
 
-  - code: model_auth_or_download
-    symptom_signature: ["401", "403", "unauthorized", "gated", "huggingface", "hf_token", "connection error", "failed to download", "could not reach"]
-    likely_cause: "model download blocked (no network on first run, or a gated/authenticated checkpoint)"
-    layer: model
-    auto_fix: null
-    user_guidance: "ensure network on first run and set HF_TOKEN for gated models; models cache after first download"
-
   - code: out_of_memory
-    symptom_signature: ["out of memory", "cuda out of memory", "oom", "cublas_status_alloc_failed"]
+    symptom_signature: ["out of memory", "cuda out of memory", "\\boom\\b", "cublas_status_alloc_failed"]
     likely_cause: "GPU/host memory exhausted for the batch or model"
     layer: exec
     auto_fix: "lower batch_size (or reduce sample/max_samples), or use a smaller model"
     user_guidance: "reduce batch_size, process fewer files at once, or move to a larger-VRAM GPU"
 
   - code: executor_error
-    symptom_signature: ["ray", "actor", "xenna", "worker died", "af_unix path length", "raylet"]
+    symptom_signature: ["\\bray\\b", "\\bactor\\b", "xenna", "worker died", "af_unix path length", "raylet"]
     likely_cause: "Ray/Xenna executor or worker failure"
     layer: exec
     auto_fix: "export RAY_TMPDIR=/tmp (for AF_UNIX path length); retry"
     user_guidance: "check the Ray dashboard/logs; set RAY_TMPDIR=/tmp; ensure enough resources for all concurrent stages"
+
+  - code: model_auth_or_download
+    symptom_signature: ["unauthorized", "forbidden", "\\bgated\\b", "huggingface", "hf_token", "connection error", "failed to download", "could not reach"]
+    likely_cause: "model download blocked (no network on first run, or a gated/authenticated checkpoint)"
+    layer: model
+    auto_fix: null
+    user_guidance: "ensure network on first run and set HF_TOKEN for gated models; models cache after first download"
 
   - code: bad_path
     symptom_signature: ["no such file", "filenotfounderror", "does not exist", "path .* not found", "no audio files found"]
@@ -54,14 +67,14 @@ failures:
     user_guidance: "verify raw_data_dir / manifest_path / output_path; enable auto_download or point at existing data"
 
   - code: empty_vad_output
-    symptom_signature: ["no speech segments", "empty vad", "no segments detected", "0 segments"]
+    symptom_signature: ["no speech segments", "empty vad", "no segments detected", "\\b0 segments\\b"]
     likely_cause: "VAD found no speech (threshold too strict, or non-speech/silent audio)"
     layer: data
     auto_fix: "lower vad threshold or min_duration_sec"
     user_guidance: "lower --vad-threshold / min_duration_sec, or verify the audio actually contains speech"
 
   - code: zero_rows_retained
-    symptom_signature: ["0 rows", "zero retained", "empty output", "all filtered"]
+    symptom_signature: ["\\b0 rows\\b", "zero retained", "empty output", "all filtered"]
     likely_cause: "filters too aggressive -- everything was dropped"
     layer: data
     auto_fix: "relax the most aggressive threshold (often SIGMOS ovrl/noise or UTMOS mos)"
