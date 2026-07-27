@@ -13,9 +13,11 @@ resource:
   throughput_hint: "CPU; pure metadata merge"
 use_cases:
   good_for: ["attaching aligned transcript text/words to diarization segments"]
-  avoid_for: ["when either alignment or diarization is missing (both are required inputs)"]
+  avoid_for:
+    - "when either alignment or diarization is missing (both are required inputs)"
+    - "directly after a raw NeMoASRAlignerStage -- it does NOT emit a top-level 'alignment' key; use SplitASRAlignJoinStage (or Split -> Align -> Join) to produce one"
 composition:
-  typical_upstream: [NeMoASRAlignerStage, InferenceSortformerStage, PyAnnoteDiarizationStage]
+  typical_upstream: [SplitASRAlignJoinStage, JoinSplitAudioMetadataStage, InferenceSortformerStage, PyAnnoteDiarizationStage]
   typical_downstream: [TimestampMapperStage, AudioToDocumentStage]
 params_of_note:
   text_key: "key to write merged segment text"
@@ -23,7 +25,7 @@ params_of_note:
   alignment_key: "key holding the input alignment"
   segments_key: "key holding the diarization segments to merge into"
 param_dependencies:
-  alignment_key: "requires an upstream aligner (e.g. NeMoASRAlignerStage)"
-  segments_key: "requires upstream diarization segments"
+  alignment_key: "requires a TOP-LEVEL word alignment from the split/align/join flow (SplitASRAlignJoinStage, or SplitLongAudioStage -> NeMoASRAlignerStage -> JoinSplitAudioMetadataStage). A raw NeMoASRAlignerStage alone does NOT emit a top-level 'alignment', so feeding it directly here fails input validation."
+  segments_key: "requires upstream diarization segments; set to the diarizer's key (e.g. diar_segments from InferenceSortformerStage)"
 verified: {params: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess}
-provenance: {model_card_url: null, card_version: 1, last_validated: "2026-07-20"}
+provenance: {model_card_url: null, card_version: 2, last_validated: "2026-07-23"}

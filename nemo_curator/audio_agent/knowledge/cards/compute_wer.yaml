@@ -26,6 +26,17 @@ params_of_note:
 param_dependencies:
   hypothesis_text_key: "requires an upstream ASR prediction"
   reference_text_key: "requires reference transcripts in the source manifest"
+metrics:
+  # ComputeWER writes nested dicts under metrics_key (metrics.wer.wer, metrics.cer.cer,
+  # plus edge/PNC variants). There is NO inline threshold param -- filter downstream with
+  # PreserveByValueStage. Directions are declared so the planner never inverts the filter:
+  # WER/CER are error rates, so LOWER is better (drop clips ABOVE the threshold).
+  wer:
+    scale: {min: 0.0, max: 1.0, direction: lower_better}
+    valid_range: [0.0, 2.0]          # WER can exceed 1.0 when insertions dominate
+  cer:
+    scale: {min: 0.0, max: 1.0, direction: lower_better}
+    valid_range: [0.0, 2.0]
 comparison:
   accuracy_hint: "normalized, multi-metric (WER/CER/edge/PNC), operates on segments"
   config_complexity: "medium (language + PNC + thresholds)"
@@ -34,4 +45,4 @@ conflicts_with: [GetPairwiseWerStage]   # overlapping WER computation
 notes:
   - "Cleans/normalizes text via NeMo text processing before scoring. Writes results under metrics_key."
 verified: {params: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess, comparison: best_guess}
-provenance: {model_card_url: null, card_version: 1, last_validated: "2026-07-20"}
+provenance: {model_card_url: null, card_version: 2, last_validated: "2026-07-25"}

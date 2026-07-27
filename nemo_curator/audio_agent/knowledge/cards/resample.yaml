@@ -22,10 +22,12 @@ params_of_note:
   target_sample_rate: "target rate in Hz (default 16000)"
   target_format: "output container/codec (e.g. wav)"
   target_nchannels: "output channel count (1 = mono)"
-  resampled_audio_dir: "directory for the converted files"
+  resampled_audio_dir: "(REQUIRED, no default) directory for the converted files -- the stage has no default and creates it at setup"
+param_dependencies:
+  resampled_audio_dir: "required: the stage writes converted files here (needs write_to_disk, the default). Not optional."
 notes:
   - "Requires ffmpeg on PATH. Placing resample once, upstream, avoids each model stage re-resampling."
 caveats:
   - "Writes converted files to disk."
 verified: {params: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess}
-provenance: {model_card_url: null, card_version: 2, last_validated: "2026-07-20"}
+provenance: {model_card_url: null, card_version: 3, last_validated: "2026-07-26"}

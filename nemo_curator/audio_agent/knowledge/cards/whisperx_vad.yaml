@@ -1,9 +1,9 @@
 stage_id: WhisperXVADStage
 category: segment
-summary: "Voice Activity Detection with WhisperX's VAD model; emit speech segments."
-tags: [needs_internet_first_run, fanout]
-model_id: "WhisperX VAD (pyannote-based segmentation)"
-model_version: "whisperx-vad"   # TODO(fill): pin the WhisperX VAD model revision
+summary: "Voice Activity Detection with WhisperX's pyannote-based VAD model; emits speech segments."
+tags: [fanout]
+model_id: "WhisperX VAD (pyannote-based segmentation model)"
+model_version: "whisperx-vad (whisperx==3.8.5, bundled weights)"
 domain: {language: any, style: speech}
 constraints:
   input_duration_sweetspot_sec: {min: 0.5, max: 40.0}   # min_length / max_length defaults
@@ -12,27 +12,31 @@ resource:
   gpu_mem_gb: 0.1   # measured on RTX 4090 (~0.03 GB load-only; small pyannote segmentation model)
   gpu_optional: true
   bound: gpu
-  throughput_hint: "model-based VAD; GPU optional"
+  throughput_hint: "model-based VAD; GPU optional (default resources request 1 GPU -- set Resources(gpus=0) for CPU)"
 use_cases:
   good_for: ["VAD within a WhisperX-style pipeline", "onset/offset-tunable speech detection"]
-  avoid_for: ["lightweight silence removal (Silero VADSegmentationStage is cheaper)"]
+  avoid_for: ["lightweight silence removal (Silero VADSegmentationStage is cheaper / CPU-friendly)"]
 composition:
   typical_upstream: [MonoConversionStage, ResampleAudioStage]
   typical_downstream: [BandFilterStage, UTMOSFilterStage, SegmentExtractionStage]
 params_of_note:
-  min_length: "minimum segment length (s); shorter entries are skipped"
-  max_length: "maximum segment length (s)"
-  vad_onset: "speech onset threshold"
-  vad_offset: "speech offset threshold"
+  min_length: "minimum WHOLE-FILE duration in s to process; shorter inputs are skipped (default 0.5)"
+  max_length: "max chunk duration for merge/binarization in s (default 40) -- NOT a cap on input file length"
+  vad_onset: "speech onset threshold (default 0.5)"
+  vad_offset: "speech offset threshold (default 0.363)"
   fanout: "emit one task per segment (default False)"
-  segments_key: "output key for segments (default vad_segments)"
+  segments_key: "output key for the segments list (default vad_segments)"
 comparison:
-  language_support: "language-agnostic"
+  language_support: "language-agnostic (VAD)"
   latency_hint: "heavier than Silero VAD (model-based)"
   config_complexity: "medium (onset/offset thresholds)"
-  known_limitations: "downloads a model; heavier than Silero VAD"
+  choose_when: "you want a model-based VAD (onset/offset tunable), e.g. in a WhisperX/pyannote-style flow. For cheap CPU silence removal use VADSegmentationStage (Silero)."
+  known_limitations: "GPU by default; metadata-only segments (no waveform); missing audio raises ValueError (unlike Silero's silent skip); whisperx dep is x86_64 / non-Darwin only"
 conflicts_with: [VADSegmentationStage]   # alternative VAD
 notes:
-  - "Downloads the WhisperX VAD model on first run."
-verified: {params: mechanical, tags: best_guess, model_version: best_guess, resource: best_guess, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess}
-provenance: {model_card_url: "https://github.com/m-bain/whisperX", card_version: 1, last_validated: "2026-07-20"}
+  - "Sample rate: the stage does not resample; it reads audio at its native rate and passes it (with the rate) to the WhisperX/pyannote VAD model, which resamples to its internal 16 kHz target (whisperx_vad.py:99-105,306-308). The default input key `resampled_audio_filepath` reflects the WhisperX 16 kHz convention, but any input rate is accepted."
+  - "Output is metadata-only: segment dicts with start/end in SECONDS (fan-out also adds start_ms/end_ms/duration/segment_num/original_file). No per-segment waveform -- compatible with SegmentExtractionStage, NOT with SegmentConcatenationStage."
+  - "Network: the stage's contract declares only requires_gpu (whisperx_vad.py:184), not internet; whisperx 3.8.5 ships the VAD weights bundled, so the default load is local (verify for your whisperx version)."
+  - "GPU is optional, but the default resources request 1 GPU and the model raises if device='cuda' is requested without CUDA -- set Resources(gpus=0) for CPU."
+verified: {params: mechanical, tags: best_guess, model_version: best_guess, resource: measured, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess}
+provenance: {model_card_url: "https://github.com/m-bain/whisperX", card_version: 3, last_validated: "2026-07-23"}

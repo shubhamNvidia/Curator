@@ -1,7 +1,7 @@
 stage_id: MonoConversionStage
 category: preprocess
-summary: "Convert to mono and (optionally) verify/resample to a target sample rate."
-tags: [writes_disk]
+summary: "Convert audio to mono. Optionally VERIFY the sample rate (drops non-matching rows) -- it does NOT resample; use ResampleAudioStage to change the rate."
+tags: []   # default keeps the mono waveform in-task; disk output is opt-in (write_to_disk), so no writes_disk tag
 model_id: null
 domain: {language: any, style: any}
 constraints: {}
@@ -12,13 +12,23 @@ resource:
   bound: cpu
   throughput_hint: "CPU (scipy/soundfile)"
 use_cases:
-  good_for: ["normalizing stereo/multi-channel input to mono before models", "first step of a quality-filter chain"]
-  avoid_for: ["data already mono at the target rate"]
+  good_for: ["normalizing stereo/multi-channel input to mono before models", "first step of a quality-filter chain when data is already at the target rate"]
+  avoid_for:
+    - "changing the sample rate -- this stage only VERIFIES and DROPS mismatches; use ResampleAudioStage to actually resample"
+    - "data already mono at the target rate"
 composition:
-  typical_upstream: [ManifestReader, CreateInitialManifestReadSpeechStage]
+  typical_upstream: [ManifestReader, CreateInitialManifestReadSpeechStage, ResampleAudioStage]
   typical_downstream: [VADSegmentationStage, BandFilterStage, UTMOSFilterStage, SIGMOSFilterStage]
 params_of_note:
-  output_sample_rate: "target rate (e.g. 48000 or 16000)"
-  strict_sample_rate: "if True, enforce the target rate"
+  output_sample_rate: "sample rate to VERIFY against (default 48000). NOT a resample target -- the stage never resamples."
+  strict_sample_rate: "if True (DEFAULT), any row whose rate != output_sample_rate is DROPPED (process returns []); set False to skip the check and keep all rows. WARNING: with the defaults (48000 / True), 16 kHz input is silently dropped -- resample first with ResampleAudioStage or set output_sample_rate to match your data."
+  keep_waveform_in_task: "keep the mono waveform in the task for the next stage (default True; in-memory, no disk)."
+  write_to_disk: "OPT-IN (default False): also write the mono WAV to disk (pair with output_dir). Off by default -- that is why this card is not tagged writes_disk."
+param_dependencies:
+  strict_sample_rate: "when True, requires input already at output_sample_rate (this stage does not resample) -- insert ResampleAudioStage upstream to convert."
+  write_to_disk: "set output_dir when True; leave keep_waveform_in_task=True to also hand the waveform to the next stage."
+notes:
+  - "Mono conversion only (channel mixdown). It does NOT resample: with strict_sample_rate=True (default) a rate != output_sample_rate is DROPPED, not converted. For actual rate conversion use ResampleAudioStage."
+  - "Disk output is OPT-IN (write_to_disk=False by default); the default keeps the mono waveform in the task, so the card carries no writes_disk tag (matching SpeakerSeparation/SegmentConcatenation)."
 verified: {params: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess}
-provenance: {model_card_url: null, card_version: 2, last_validated: "2026-07-20"}
+provenance: {model_card_url: null, card_version: 4, last_validated: "2026-07-26"}

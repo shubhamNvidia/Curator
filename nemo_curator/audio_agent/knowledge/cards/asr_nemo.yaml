@@ -1,37 +1,58 @@
+# Capability card: model/semantic facts a stage's Python source cannot reveal.
 stage_id: InferenceAsrNemoStage
 category: transcribe
-summary: "Batched ASR transcription with a NeMo model; writes pred_text."
-tags: [needs_gpu, needs_internet_first_run]
-model_id: "nvidia/parakeet-tdt-0.6b-v2 (or any NeMo ASR checkpoint, incl. language-specific FastConformer)"
-model_version: "user-specified via model_name (default preset: nvidia/parakeet-tdt-0.6b-v2)"
-domain: {language: "model-dependent (e.g. en for parakeet)", style: read+conversational}
+summary: "Batched ASR transcription with a NeMo model; writes pred_text (choose the checkpoint per language)."
+tags: [needs_gpu, needs_internet_first_run, batch_only]
+model_id: "nvidia/parakeet-tdt-0.6b-v2 (default preset; any NeMo ASR checkpoint works, incl. language-specific FastConformer)"
+model_version: "user-specified via model_name (no code default; the english_parakeet preset pins nvidia/parakeet-tdt-0.6b-v2)"
+domain: {language: "checkpoint-dependent (default preset = English)", style: read+conversational}
 constraints:
-  supported_sample_rates: [16000]
+  supported_sample_rates: [16000]   # stage does NOT resample -- feed 16 kHz mono (put ResampleAudioStage upstream)
   input_duration_sweetspot_sec: {min: 0.5, max: 40.0}
 resource:
   cpus: 1.0
-  gpu_mem_gb: 5.0   # measured on RTX 4090 (parakeet-tdt-0.6b-v2, ~5.0 GB reserved, batch_size 4, 6 s clips); other checkpoints vary
+  gpu_mem_gb: 5.0   # measured on RTX 4090 (parakeet-tdt-0.6b-v2, ~5.0 GB reserved, batch 4, 6 s clips); larger checkpoints need more
   gpu_optional: false
   bound: gpu
   throughput_hint: "batched GPU inference"
 use_cases:
-  good_for: ["transcribing speech to text", "producing pred_text for WER/CER filtering"]
-  avoid_for: ["languages the chosen checkpoint was not trained on", "non-16kHz input without an upstream resample"]
+  good_for:
+    - "transcribing speech to text (pred_text)"
+    - "producing pred_text for WER/CER filtering (needs reference transcripts in the manifest)"
+    - "high-throughput English transcription with the default Parakeet checkpoint"
+  avoid_for:
+    - "languages the chosen checkpoint was not trained on (pick a matching model_name)"
+    - "non-16 kHz input without an upstream ResampleAudioStage (this stage does not resample)"
+    - "word-level alignments/timestamps -- use NeMoASRAlignerStage instead"
 composition:
   typical_upstream: [ResampleAudioStage, VADSegmentationStage, SplitLongAudioStage]
   typical_downstream: [GetPairwiseWerStage, ComputeWERStage, InverseTextNormalizationStage]
 params_of_note:
-  model_name: "the ASR checkpoint id (choose per language)"
+  model_name: "the NeMo ASR checkpoint id -- REQUIRED (no code default). Choose per language; apply the english_parakeet preset for English."
+  cache_dir: "optional model-download cache dir (for offline / air-gapped reuse)"
+  pred_text_key: "output key for the transcription (default 'pred_text', NOT 'text') -- the WER stages read this key"
+  input_residency: "'file' (default), 'waveform', or 'auto' -- can consume an in-memory waveform instead of a file"
 comparison:
-  language_support: "checkpoint-dependent (parakeet: en); pick model_name to match data language"
-  accuracy_hint: "checkpoint-dependent (model-card fact)"
-  config_complexity: "low (pick model_name)"
-  known_limitations: "no batch_size stage param (batching is an executor knob); needs 16 kHz input"
+  language_support: "checkpoint-dependent. Default preset nvidia/parakeet-tdt-0.6b-v2 is English-only; nvidia/parakeet-tdt-0.6b-v3 covers 25 European languages; other NeMo FastConformer checkpoints exist per language. (external: HF / NGC model cards)"
+  accuracy_hint: "checkpoint-dependent; parakeet-tdt-0.6b-v2 = 6.05% avg WER on the HF Open-ASR leaderboard (external)"
+  latency_hint: "very high throughput on GPU (parakeet-tdt-0.6b-v2 RTFx ~3386 at batch 128); slow on CPU"
+  config_complexity: "low (pick model_name / a preset)"
+  choose_when: "you need plain transcripts. For word timestamps/alignments use NeMoASRAlignerStage or SplitASRAlignJoinStage; for who-said-what add a diarizer + MergeAlignmentDiarizationStage."
+  known_limitations: "needs 16 kHz mono input (no internal resample); GPU required; output key is pred_text (not text)"
 notes:
-  - "Language coverage is a checkpoint property (model-card fact), not derivable from source; pick the checkpoint to match the data's language."
+  - "No code default checkpoint: model_name defaults to '' and the stage raises unless model_name or asr_model is set -- apply the english_parakeet preset or choose a checkpoint."
+  - "GPU: the stage now defaults to Resources(cpus=1.0, gpus=1.0) (bound: gpu, not gpu_optional) so it runs on the GPU and the executor caps it to one actor per GPU. Set Resources(gpus=0) only to force CPU inference, which is extremely slow."
+  - "batch_size IS a real constructor field (default 16) but is excluded from the discovery param surface, so it is not listed in params_of_note; tune it via the stage/executor."
+  - "Language coverage is a checkpoint (model-card) fact, not derivable from source; match the checkpoint to the data language."
   - "WER/CER filtering requires reference transcripts in the source manifest; if absent, WER is unproducible."
-  - "batch_size is an executor/runtime knob, not a stage constructor param."
+  - "(external) nvidia/parakeet-tdt-0.6b-v2: English, FastConformer-TDT, 16 kHz mono, native punctuation + capitalization + word/char/segment timestamps, up to 24 min per pass, CC-BY-4.0. Because it already emits written-form punctuated text, a downstream InverseTextNormalizationStage is usually redundant for Parakeet output (ITN targets spoken-form ASR)."
 presets:
   english_parakeet: {model_name: "nvidia/parakeet-tdt-0.6b-v2"}
-verified: {params: mechanical, tags: mechanical, model_version: best_guess, resource: best_guess, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess}
-provenance: {model_card_url: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2", card_version: 2, last_validated: "2026-07-20"}
+  multilingual_parakeet_v3: {model_name: "nvidia/parakeet-tdt-0.6b-v3"}
+  longform_english_1_1b: {model_name: "nvidia/parakeet-tdt_ctc-1.1b"}
+versions:   # verified interchangeable via model_name -- load + run + IDENTICAL pred_text output structure, no module code change (tested 2026-07-23, RTX 4090)
+  "nvidia/parakeet-tdt-0.6b-v2": "WHEN: English audio. Best English accuracy (6.05% avg WER on Open ASR) and highest throughput; up to 24 min/pass. Default preset (english_parakeet)."
+  "nvidia/parakeet-tdt-0.6b-v3": "WHEN: multilingual European audio. 25 European languages (auto language ID). Preset: multilingual_parakeet_v3."
+  "nvidia/parakeet-tdt_ctc-1.1b": "WHEN: very long English audio, or you need a CTC decoder. Larger hybrid FastConformer TDT+CTC (~1.1B), up to ~11 h/pass; heavier VRAM. Preset: longform_english_1_1b."
+verified: {params: mechanical, tags: mechanical, model_version: best_guess, resource: measured, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess, versions: measured}
+provenance: {model_card_url: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2", card_version: 4, last_validated: "2026-07-27"}

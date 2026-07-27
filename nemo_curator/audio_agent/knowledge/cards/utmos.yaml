@@ -1,13 +1,14 @@
 # Capability card: model/semantic facts a stage's Python source cannot reveal.
 stage_id: UTMOSFilterStage
 category: quality
-summary: "Predict UTMOS mean-opinion-score (MOS) and filter/annotate audio by quality."
+summary: "Predict UTMOS mean-opinion-score (MOS) and filter/annotate audio by overall perceptual quality."
 tags: [produces_score, is_filter, needs_internet_first_run]
 model_id: "tarepan/SpeechMOS:utmos22_strong (torch.hub)"
 model_version: "utmos22_strong"   # torch.hub entrypoint pins the checkpoint
 domain: {language: any, style: speech}
 constraints:
-  supported_sample_rates: [16000]   # audio is internally resampled to 16 kHz for inference
+  # No supported_sample_rates constraint: the stage accepts ANY input rate and resamples
+  # internally to 16 kHz (the `sample_rate` param) for inference, so no upstream resample is needed.
   input_duration_sweetspot_sec: {min: 1.0, max: 30.0}
 resource:
   cpus: 1.0
@@ -16,35 +17,59 @@ resource:
   bound: gpu
   throughput_hint: "fast on GPU; CPU fallback is slower"
 use_cases:
-  good_for: ["gate speech clips by overall perceptual quality", "TTS/ASR data curation"]
-  avoid_for: ["music or non-speech", "very short (<1s) clips"]
+  good_for:
+    - "gate speech clips by overall perceptual quality"
+    - "TTS/ASR data curation"
+    - "a cheap first-pass overall-quality gate before the finer-grained SIGMOS"
+  avoid_for:
+    - "music or non-speech"
+    - "very short (<1s) clips"
+    - "targeting a SPECIFIC degradation (noise vs reverb vs clicks) -- use SIGMOSFilterStage for that"
 composition:
   typical_upstream: [MonoConversionStage, ResampleAudioStage, VADSegmentationStage]
   typical_downstream: [SIGMOSFilterStage, AudioToDocumentStage]
 params_of_note:
-  mos_threshold: "minimum MOS to keep (0-5). TTS: >=4.0; ASR/general: >=3.4; max retention: >=2.5"
-  action: "'filter' drops below threshold; 'annotate' keeps all and only writes the score"
-  mode: "'task' (whole file), 'segments' (per nested segment), or 'auto'"
+  mos_threshold: "Minimum MOS to KEEP (scale 0-5, higher = better; set None to disable gating). Recommended bars: >=4.0 highly-clean / TTS-reference; >=3.5 studio; >=3.0 good; >=2.5 usable (decent, minor noise). See metrics.utmos_mos.quality_bands for what a raw score means."
+  action: "'annotate' keeps every clip and only writes the utmos_mos score -- use this FIRST to audit the score distribution on your data, then pick a threshold. 'filter' drops clips below mos_threshold (and also drops clips that could not be scored). Default 'filter'."
+  mode: "'task' (score the whole file), 'segments' (score each nested segment), or 'auto' (segments if a segments list is present, else task)."
+  sample_rate: "Internal UTMOS inference rate in Hz (default 16000). Input of ANY sample rate is resampled to this automatically, so this stage does NOT require an upstream ResampleAudioStage."
 metrics:
   utmos_mos:                                    # the score_key this stage writes
     scale: {min: 0.0, max: 5.0, direction: higher_better}
     threshold_param: mos_threshold              # this stage gates on the metric itself
-    anchors:                                    # value range -> outcome label (best_guess)
-      "4.0-5.0": studio                         # TTS-reference quality
-      "3.4-4.0": general                        # ASR / general-purpose
-      "2.5-3.4": lenient                        # maximum retention
+    # Outcome labels the config-strategy resolver maps to a concrete mos_threshold
+    # (higher_better -> the low bound of the matched range). These labels are a stable
+    # agent-facing vocabulary; see quality_bands for the perceptual meaning of a raw score.
+    anchors:
+      "4.0-5.0": studio                         # 'studio' outcome -> keep >=4.0 (pristine / highly-clean band)
+      "3.4-4.0": general                        # 'general' outcome -> keep >=3.4 (good / usable speech)
+      "2.5-3.4": lenient                        # 'lenient' outcome -> keep >=2.5 (max retention; drops only poor)
+    quality_bands:                              # what a raw utmos_mos value means (best_guess, curated)
+      "4.0-5.0": "highly clean -- essentially noise-free, TTS-reference quality"
+      "3.5-4.0": "studio quality -- professional, clean speech"
+      "3.0-3.5": "good -- minor artifacts, fine for most ASR / training"
+      "2.5-3.0": "decent -- usable but with a little audible noise"
+      "0.0-2.5": "poor -- observable noise / degradation, usually rejected"
     valid_range: [0.0, 5.0]
 presets:
-  tts_reference: {mos_threshold: 4.0}
-  asr_finetune: {mos_threshold: 3.4}
-  max_retention: {mos_threshold: 2.5}
+  tts_reference: {mos_threshold: 4.0}           # highly-clean bar for TTS-grade data
+  asr_finetune: {mos_threshold: 3.4}            # good/usable bar for ASR fine-tuning
+  max_retention: {mos_threshold: 3.0}           # keep everything except clearly-poor clips
 comparison:
-  accuracy_hint: "single overall MOS predictor; coarser than SIGMOS's 7 dimensions"
+  language_support: "language-agnostic (acoustic naturalness MOS; speech only)"
+  accuracy_hint: "single overall naturalness MOS predictor; coarser than SIGMOS's 7 dimensions"
   latency_hint: "lighter than SIGMOS (one small model)"
   config_complexity: "low (one threshold)"
-  known_limitations: "predictor of human MOS, not a ground-truth measurement; speech-only"
+  known_limitations: "predictor of human MOS, not a ground-truth measurement; speech-only; trained on synthetic (TTS/VC) speech, so treat it as a naturalness proxy"
+  choose_when: "you need ONE overall 'is this clip good enough' gate. For a specific defect (noise, reverb, clicks) use SIGMOSFilterStage; for objective PESQ/STOI/SI-SDR estimates use TorchSquimQualityMetricsStage."
+notes:
+  - "Sample rate: accepts any input rate and resamples internally to 16 kHz (the `sample_rate` param); no upstream ResampleAudioStage is required (unlike the ASR/diarization stages, which do require 16 kHz input)."
+  - "Workflow: run once with action='annotate' to inspect the utmos_mos distribution on YOUR data, then set mos_threshold (or a preset) and re-run with action='filter'."
+  - "Threshold guidance (utmos_mos, 0-5): >=4.0 highly clean; 3.5-4.0 studio; 3.0-3.5 good; 2.5-3.0 decent with a little noise; <2.5 poor with observable noise."
+  - "UTMOS vs SIGMOS vs SQUIM: UTMOS = one cheap overall MOS (use first, or when a single bar suffices); SIGMOS = 7 independent P.804 dimensions (use to accept/reject a specific degradation); SQUIM = objective PESQ/STOI/SI-SDR estimates (a different, non-MOS family)."
 caveats:
   - "Downloads the model from torch.hub on first run (needs network once)."
   - "Score is a predictor of human MOS, not a ground-truth measurement."
+  - "In 'filter' mode, clips that fail to score are dropped as well -- audit with 'annotate' first."
 verified: {params: mechanical, tags: mechanical, model_version: mechanical, resource: best_guess, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess, metrics: best_guess}
-provenance: {model_card_url: "https://github.com/tarepan/SpeechMOS", card_version: 2, last_validated: "2026-07-20"}
+provenance: {model_card_url: "https://github.com/tarepan/SpeechMOS", card_version: 3, last_validated: "2026-07-23"}
