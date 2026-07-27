@@ -30,10 +30,13 @@ Example:
     )
 """
 
+import os
+import tempfile
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
+import soundfile as sf
 import torch
 from loguru import logger
 from pydub import AudioSegment
@@ -86,11 +89,18 @@ class SpeakerSeparationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         diar_segments_key: Key where each child's diarization segments are written.
         input_residency: Which input to use — "waveform" (in-memory only), "file"
             (audio_filepath only), or "auto" (waveform first, file fallback; default).
+        keep_waveform_in_task: Keep each per-speaker waveform in the task (default True,
+            today's behavior). Set False to emit only on-disk paths (requires write_to_disk).
+        write_to_disk: Also write each per-speaker track to ``separated_audio_dir`` and set
+            ``audio_filepath_key`` to it, so file-based downstream stages can consume it.
+            Defaults to False (in-memory only, unchanged).
+        separated_audio_dir: Directory for per-speaker WAVs (required when write_to_disk=True).
 
     Note:
-        Per-speaker child tasks DROP the parent's audio_filepath (it points at the
-        full multi-speaker file) and carry ``original_file`` for provenance instead;
-        downstream stages consume the per-speaker waveform.
+        By default (write_to_disk=False) per-speaker child tasks DROP the parent's
+        audio_filepath (it points at the full multi-speaker file) and carry
+        ``original_file`` for provenance; downstream consumes the per-speaker waveform.
+        With write_to_disk=True, each child instead gets its own audio_filepath.
 
         GPU assignment is handled by the executor via _resources.
         Use .with_(resources=Resources(gpus=X)) to configure GPU allocation.
@@ -109,6 +119,10 @@ class SpeakerSeparationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     duration_key: str = "duration"
     diar_segments_key: str = "diar_segments"
     input_residency: InputResidency = "auto"
+    # Output residency (both default to today's behavior: in-memory waveform only, no disk).
+    keep_waveform_in_task: bool = True
+    write_to_disk: bool = False
+    separated_audio_dir: str | None = None
 
     name: str = "SpeakerSeparation"
     batch_size: int = 1
@@ -117,19 +131,24 @@ class SpeakerSeparationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     def __post_init__(self):
         super().__init__()
         self._separator = None
+        if not (self.keep_waveform_in_task or self.write_to_disk):
+            msg = "At least one of keep_waveform_in_task or write_to_disk must be True"
+            raise ValueError(msg)
+        if self.write_to_disk and not self.separated_audio_dir:
+            msg = "separated_audio_dir is required when write_to_disk=True"
+            raise ValueError(msg)
 
     def inputs(self) -> tuple[list[str], list[str]]:
         return [], []
 
     def outputs(self) -> tuple[list[str], list[str]]:
-        return [], [
-            self.waveform_key,
-            self.sample_rate_key,
-            self.speaker_id_key,
-            self.num_speakers_key,
-            self.duration_key,
-            self.diar_segments_key,
-        ]
+        outs: list[str] = []
+        if self.keep_waveform_in_task:
+            outs.extend([self.waveform_key, self.sample_rate_key])
+        outs.extend([self.speaker_id_key, self.num_speakers_key, self.duration_key, self.diar_segments_key])
+        if self.write_to_disk:
+            outs.append(self.audio_filepath_key)
+        return [], outs
 
     def describe(self) -> StageContract:
         forms = accepts_for_residency(self.input_residency)
@@ -138,27 +157,31 @@ class SpeakerSeparationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             reads_one_of.append(IOSpec(data_keys=[self.waveform_key, self.sample_rate_key], accepts=["waveform"]))
         if "file" in forms:
             reads_one_of.append(IOSpec(data_keys=[self.audio_filepath_key], accepts=["file"]))
+        writes: list[str] = []
+        produces: list[str] = []
+        if self.keep_waveform_in_task:
+            writes.extend([self.waveform_key, self.sample_rate_key])
+            produces.append("tensor")
+        writes.extend(
+            [self.speaker_id_key, self.num_speakers_key, self.duration_key, self.diar_segments_key, "original_file"]
+        )
+        if self.write_to_disk:
+            writes.append(self.audio_filepath_key)
+            produces.append("disk")
         return StageContract(
             reads_one_of=reads_one_of,
-            writes=IOSpec(
-                data_keys=[
-                    self.waveform_key,
-                    self.sample_rate_key,
-                    self.speaker_id_key,
-                    self.num_speakers_key,
-                    self.duration_key,
-                    self.diar_segments_key,
-                    "original_file",
-                ],
-                produces=["tensor"],
-            ),
+            writes=IOSpec(data_keys=writes, produces=produces),
             # children drop the parent's audio_filepath (and blob keys)
             preserves_upstream_keys=False,
             cardinality="1:N fan-out",
             # One child per detected speaker; speaker_id is the per-child key that
             # identifies which slice of the iteration a child is (role-resolvable).
             iteration_key=self.speaker_id_key,
-            gates=Gates(requires_gpu=self.resources.gpus > 0, requires_internet_first_run=True),
+            gates=Gates(
+                requires_gpu=self.resources.gpus > 0,
+                requires_internet_first_run=True,
+                writes_to_disk=self.write_to_disk,
+            ),
         )
 
     def ray_stage_spec(self) -> dict[str, Any]:
@@ -223,6 +246,17 @@ class SpeakerSeparationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     # each child gets its own duration from the diarization result.
     _INHERITED_DROP_KEYS = frozenset({"audio", "waveform", "duration", "num_samples"})
 
+    def _write_speaker_wav(self, waveform: torch.Tensor, sr: int, original_file: str, speaker_id: str) -> str:
+        """Write one per-speaker waveform to ``separated_audio_dir`` and return the path."""
+        os.makedirs(self.separated_audio_dir, exist_ok=True)
+        stem = os.path.splitext(os.path.basename(str(original_file)))[0] or "audio"
+        audio = waveform.detach().cpu()
+        arr = audio[0].numpy() if audio.shape[0] == 1 else audio.T.numpy()
+        fd, path = tempfile.mkstemp(prefix=f"{stem}_{speaker_id}_", suffix=".wav", dir=self.separated_audio_dir)
+        os.close(fd)
+        sf.write(path, arr, int(sr))
+        return path
+
     def _build_speaker_tasks(
         self,
         speaker_audio_data: dict,
@@ -251,8 +285,6 @@ class SpeakerSeparationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             }
             speaker_data = {
                 **{k: v for k, v in item.items() if k not in drop_keys},
-                self.waveform_key: spk_waveform,
-                self.sample_rate_key: spk_sr,
                 self.speaker_id_key: speaker_id,
                 self.num_speakers_key: num_speakers,
                 self.duration_key: result.duration,
@@ -264,6 +296,15 @@ class SpeakerSeparationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 or item.get("audio_filepath")
                 or "unknown",
             }
+            # Output residency: keep the in-memory waveform (default) and/or persist a
+            # per-speaker WAV and point audio_filepath at it (opt-in write_to_disk).
+            if self.keep_waveform_in_task:
+                speaker_data[self.waveform_key] = spk_waveform
+                speaker_data[self.sample_rate_key] = spk_sr
+            if self.write_to_disk:
+                speaker_data[self.audio_filepath_key] = self._write_speaker_wav(
+                    spk_waveform, spk_sr, speaker_data["original_file"], speaker_id
+                )
             spk_task = AudioTask(
                 data=speaker_data,
                 dataset_name=task.dataset_name,

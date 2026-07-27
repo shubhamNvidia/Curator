@@ -22,6 +22,8 @@ import numpy as np
 from loguru import logger
 
 from nemo_curator.stages.audio._agent_ready import AgentReady, IOSpec, StageContract
+from nemo_curator.stages.audio._residency import InputResidency, residency_read_specs
+from nemo_curator.stages.audio.common import ensure_mono, ensure_waveform_2d
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.tasks import AudioTask
 
@@ -42,6 +44,10 @@ class BandwidthEstimationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
         frequency_threshold: Threshold in dB below peak for bandwidth estimation. Defaults to -50.0.
         audio_filepath_key: Key for the audio file path in the manifest. Defaults to "audio_filepath".
         segments_key: Key for the segments in the manifest. Defaults to "segments".
+        waveform_key: Key for an in-memory waveform tensor. Defaults to "waveform".
+        sample_rate_key: Key for the in-memory waveform sample rate. Defaults to "sample_rate".
+        input_residency: Which input to use — "file" (audio_filepath only; default, unchanged),
+            "waveform" (in-memory only), or "auto" (waveform first, file fallback).
 
     Returns:
         The same data as in the input data, but with bandwidth estimates added to each segment.
@@ -55,6 +61,9 @@ class BandwidthEstimationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
     segments_key: str = "segments"
     duration_key: str = "duration"
     metrics_key: str = "metrics"
+    waveform_key: str = "waveform"
+    sample_rate_key: str = "sample_rate"
+    input_residency: InputResidency = "file"
 
     # Stage metadata
     name: str = "BandwidthEstimation"
@@ -66,19 +75,42 @@ class BandwidthEstimationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
         return [], [self.audio_filepath_key, self.metrics_key]
 
     def describe(self) -> StageContract:
+        # An audio source (file or in-memory waveform, per input_residency) AND
+        # (segments OR duration). Each audio-source shape is paired with both refinements.
+        reads_one_of = []
+        for spec in residency_read_specs(
+            self.input_residency,
+            audio_filepath_key=self.audio_filepath_key,
+            waveform_key=self.waveform_key,
+            sample_rate_key=self.sample_rate_key,
+        ):
+            reads_one_of.append(IOSpec(data_keys=[*spec.data_keys, self.segments_key], accepts=list(spec.accepts)))
+            reads_one_of.append(IOSpec(data_keys=[*spec.data_keys, self.duration_key], accepts=list(spec.accepts)))
         return StageContract(
-            reads_one_of=[
-                IOSpec(data_keys=[self.audio_filepath_key, self.segments_key], accepts=["file"]),
-                IOSpec(data_keys=[self.audio_filepath_key, self.duration_key], accepts=["file"]),
-            ],
+            reads_one_of=reads_one_of,
             writes=IOSpec(data_keys=[self.metrics_key], segment_data_keys=[self.metrics_key]),
         )
 
     def validate_input(self, task: AudioTask) -> bool:
-        """OR-shaped: needs audio_filepath AND (segments OR duration)."""
+        """Needs an audio source AND (segments OR duration).
+
+        The audio source is ``audio_filepath_key`` (default) or, when ``input_residency``
+        allows it, an in-memory ``waveform_key``+``sample_rate_key``.
+        """
         data = task.data
-        if self.audio_filepath_key not in data:
-            logger.error(f"Task {task.task_id} missing '{self.audio_filepath_key}'")
+        has_waveform = data.get(self.waveform_key) is not None and data.get(self.sample_rate_key) is not None
+        has_file = self.audio_filepath_key in data
+        if self.input_residency == "waveform":
+            has_audio = has_waveform
+        elif self.input_residency == "file":
+            has_audio = has_file
+        else:  # auto
+            has_audio = has_waveform or has_file
+        if not has_audio:
+            logger.error(
+                f"Task {task.task_id} missing audio input for input_residency={self.input_residency!r}: "
+                f"need '{self.audio_filepath_key}' or '{self.waveform_key}'+'{self.sample_rate_key}'"
+            )
             return False
         if self.segments_key in data or self.duration_key in data:
             return True
@@ -131,9 +163,24 @@ class BandwidthEstimationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
 
         audio_segment[self.metrics_key]["bandwidth"] = int(bandwidth)
 
-    def process(self, task: AudioTask) -> AudioTask:
-        """Estimate bandwidth for audio entry."""
-        data_entry = task.data
+    def _resolve_entry_audio(self, data_entry: dict[str, Any]) -> tuple["np.ndarray", int]:
+        """Return ``(mono_1d_audio, sample_rate)`` from a waveform or the file.
+
+        When ``input_residency`` allows it and an in-memory waveform is present, it is used
+        directly; otherwise the audio file is loaded at its native rate (default, unchanged).
+        """
+        if self.input_residency != "file":
+            waveform = data_entry.get(self.waveform_key)
+            sr = data_entry.get(self.sample_rate_key)
+            if waveform is not None and sr is not None:
+                audio = ensure_mono(ensure_waveform_2d(waveform)).squeeze(0)
+                return audio.detach().cpu().numpy(), int(sr)
+            if self.input_residency == "waveform":
+                msg = (
+                    f"[{self.name}] Missing '{self.waveform_key}'+'{self.sample_rate_key}' for entry: "
+                    f"{data_entry.get('audio_item_id', 'unknown')} (input_residency='waveform')"
+                )
+                raise ValueError(msg)
         audio_path = data_entry.get(self.audio_filepath_key)
         if not audio_path:
             msg = (
@@ -146,6 +193,12 @@ class BandwidthEstimationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
         except Exception as ex:
             msg = f"[{self.name}] Failed to load audio: {audio_path}"
             raise RuntimeError(msg) from ex
+        return audio, sample_rate
+
+    def process(self, task: AudioTask) -> AudioTask:
+        """Estimate bandwidth for audio entry."""
+        data_entry = task.data
+        audio, sample_rate = self._resolve_entry_audio(data_entry)
 
         if self.segments_key in data_entry:
             for segment in data_entry[self.segments_key]:

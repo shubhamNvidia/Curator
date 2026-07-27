@@ -17,7 +17,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from operator import eq, ge, gt, le, lt, ne
-from typing import Any
+from typing import Any, Literal
 
 import soundfile
 import torch
@@ -49,11 +49,18 @@ class GetAudioDurationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     Args:
         audio_filepath_key: Key to get path to wav file.
         duration_key: Key to put audio duration.
+        waveform_key: Key for an in-memory waveform tensor.
+        sample_rate_key: Key for the in-memory waveform sample rate.
+        input_residency: Which input to use — "file" (audio_filepath only; default,
+            unchanged), "waveform" (in-memory only), or "auto" (waveform first, file fallback).
     """
 
     name: str = "GetAudioDurationStage"
     audio_filepath_key: str = "audio_filepath"
     duration_key: str = "duration"
+    waveform_key: str = "waveform"
+    sample_rate_key: str = "sample_rate"
+    input_residency: Literal["file", "waveform", "auto"] = "file"
 
     def setup(self, _worker_metadata: WorkerMetadata | None = None) -> None:
         import soundfile
@@ -61,21 +68,56 @@ class GetAudioDurationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         self._soundfile = soundfile
 
     def inputs(self) -> tuple[list[str], list[str]]:
+        if self.input_residency == "waveform":
+            return [], [self.waveform_key, self.sample_rate_key]
         return [], [self.audio_filepath_key]
 
     def outputs(self) -> tuple[list[str], list[str]]:
         return [], [self.duration_key]
 
     def describe(self) -> StageContract:
+        # Lazy import avoids a module-level cycle (_residency imports from common).
+        from nemo_curator.stages.audio._residency import residency_read_specs
+
         return StageContract(
-            reads=IOSpec(data_keys=[self.audio_filepath_key], accepts=["file"]),
+            reads_one_of=residency_read_specs(
+                self.input_residency,
+                audio_filepath_key=self.audio_filepath_key,
+                waveform_key=self.waveform_key,
+                sample_rate_key=self.sample_rate_key,
+            ),
             writes=IOSpec(data_keys=[self.duration_key]),
         )
 
+    def validate_input(self, task: AudioTask) -> bool:
+        """Require the audio source implied by ``input_residency`` (default: file)."""
+        data = task.data
+        has_waveform = data.get(self.waveform_key) is not None and data.get(self.sample_rate_key) is not None
+        has_file = self.audio_filepath_key in data
+        if self.input_residency == "waveform":
+            return has_waveform
+        if self.input_residency == "file":
+            return has_file
+        return has_waveform or has_file  # auto
+
+    def _resolve_duration(self, data: dict[str, Any]) -> float:
+        """Duration from an in-memory waveform (samples / sample_rate) or the file.
+
+        Default (``input_residency="file"``) reads the file exactly as before.
+        """
+        if self.input_residency != "file":
+            waveform = data.get(self.waveform_key)
+            sr = data.get(self.sample_rate_key)
+            if waveform is not None and sr is not None and int(sr) > 0:
+                return ensure_waveform_2d(waveform).shape[-1] / float(sr)
+            if self.input_residency == "waveform":
+                logger.warning(f"Missing '{self.waveform_key}'+'{self.sample_rate_key}' (input_residency='waveform')")
+                return -1.0
+        return get_audio_duration(data[self.audio_filepath_key])
+
     def process(self, task: AudioTask) -> AudioTask:
         t0 = time.perf_counter()
-        audio_filepath = task.data[self.audio_filepath_key]
-        duration = get_audio_duration(audio_filepath)
+        duration = self._resolve_duration(task.data)
         task.data[self.duration_key] = duration
         self._log_metrics({"process_time": time.perf_counter() - t0, "duration": max(duration, 0.0)})
         return task
@@ -251,6 +293,98 @@ class ManifestReader(AgentReady, CompositeStage[EmptyTask, AudioTask]):
 
     def describe(self) -> StageContract:
         return StageContract(cardinality="1:N fan-out", wrappable=False)
+
+
+@dataclass
+class CreateInitialManifestAudioFolderStage(AgentReady, ProcessingStage[EmptyTask, AudioTask]):
+    """Create an initial manifest from any local folder of audio files.
+
+    Recursively scans ``data_dir`` for audio files and emits one AudioTask per file with its
+    path under ``audio_filepath_key`` (plus a filename-derived ``audio_item_id``). A generic,
+    dataset-agnostic source: no download, no transcripts, and no dataset-specific filename
+    parsing -- unlike ``CreateInitialManifest{ReadSpeech,Fleurs}Stage``. Use it to start a
+    pipeline from a plain folder of WAV/FLAC/MP3/... when there is no JSONL manifest (use
+    ``ManifestReader`` when a manifest already exists).
+
+    Args:
+        data_dir: Local folder to scan for audio files.
+        extensions: Audio file extensions to include (case-insensitive).
+        recursive: Recurse into subfolders (default True).
+        max_samples: Maximum number of files to include (-1 for all).
+    """
+
+    data_dir: str
+    extensions: list[str] = field(default_factory=lambda: [".wav", ".flac", ".mp3", ".ogg", ".opus", ".m4a"])
+    recursive: bool = True
+    max_samples: int = -1
+    audio_filepath_key: str = "audio_filepath"
+    audio_item_id_key: str = "audio_item_id"
+    name: str = "CreateInitialManifestAudioFolder"
+    batch_size: int = 1
+
+    def __post_init__(self) -> None:
+        super().__init__()
+        if not self.data_dir:
+            msg = "data_dir is required for CreateInitialManifestAudioFolderStage"
+            raise ValueError(msg)
+
+    def inputs(self) -> tuple[list[str], list[str]]:
+        return [], []
+
+    def outputs(self) -> tuple[list[str], list[str]]:
+        return [], [self.audio_filepath_key, self.audio_item_id_key]
+
+    def describe(self) -> StageContract:
+        return StageContract(
+            writes=IOSpec(data_keys=[self.audio_filepath_key, self.audio_item_id_key], produces=["disk"]),
+            cardinality="1:N fan-out",
+            gates=Gates(),  # scans existing files -- no download, no disk writes
+        )
+
+    def ray_stage_spec(self) -> dict[str, Any]:
+        return {"is_fanout_stage": True}
+
+    def num_workers(self) -> int | None:
+        return 1
+
+    def _collect_audio_files(self) -> list[str]:
+        exts = tuple((e if e.startswith(".") else f".{e}").lower() for e in self.extensions)
+        if not os.path.isdir(self.data_dir):
+            logger.error(f"[{self.name}] data_dir not found: {self.data_dir}")
+            return []
+        found: list[str] = []
+        if self.recursive:
+            for root, _dirs, files in os.walk(self.data_dir):
+                found.extend(os.path.join(root, f) for f in files if f.lower().endswith(exts))
+        else:
+            found = [
+                os.path.join(self.data_dir, f)
+                for f in os.listdir(self.data_dir)
+                if f.lower().endswith(exts) and os.path.isfile(os.path.join(self.data_dir, f))
+            ]
+        return sorted(found)
+
+    def process(self, _: EmptyTask) -> list[AudioTask]:
+        """Emit one AudioTask per audio file found under ``data_dir``."""
+        paths = self._collect_audio_files()
+        if self.max_samples is not None and self.max_samples >= 0:
+            paths = paths[: self.max_samples]
+        if not paths:
+            logger.warning(f"[{self.name}] no audio files {self.extensions} under {self.data_dir}")
+            return []
+        tasks: list[AudioTask] = []
+        for path in paths:
+            abspath = os.path.abspath(path)
+            item_id = os.path.splitext(os.path.basename(path))[0]
+            tasks.append(
+                AudioTask(
+                    dataset_name="local-audio-folder",
+                    data={self.audio_filepath_key: abspath, self.audio_item_id_key: item_id},
+                    filepath_key=self.audio_filepath_key,
+                )
+            )
+        logger.info(f"[{self.name}] created {len(tasks)} AudioTask(s) from {self.data_dir}")
+        return tasks
 
 
 @dataclass

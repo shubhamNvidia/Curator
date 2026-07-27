@@ -41,7 +41,7 @@ class ComputeWERStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     Args:
         language: Language of the text. Defaults to "en".
         hypothesis_text_key: Key to the hypothesis text. Defaults to "text".
-        reference_text_key: Key to the reference text. Defaults to "text".
+        reference_text_key: Key to the reference text. Defaults to "text_ref".
         num_words_threshold: Number of words to use for normalization. Defaults to 200.
         num_words_look_back: Number of words to look back for normalization. Defaults to 5.
         compute_pnc_wer: Whether to compute PNC WER/CER. Defaults to False.

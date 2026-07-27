@@ -32,13 +32,16 @@ Example:
     stage = SegmentConcatenationStage(silence_duration_sec=0.5)
 """
 
+import os
+import tempfile
 from dataclasses import dataclass, field
 from typing import Any
 
+import soundfile as sf
 import torch
 from loguru import logger
 
-from nemo_curator.stages.audio._agent_ready import AgentReady, IOSpec, StageContract
+from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, StageContract
 from nemo_curator.stages.audio.common import ensure_waveform_2d
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.stages.resources import Resources
@@ -82,6 +85,13 @@ class SegmentConcatenationStage(AgentReady, ProcessingStage[AudioTask, AudioTask
     Args:
         silence_duration_sec: Duration of silence inserted between
             consecutive segments (seconds).
+        keep_waveform_in_task: Keep the combined waveform in the task (default True,
+            today's behavior). Set False to emit only an on-disk path (requires write_to_disk).
+        write_to_disk: Also write the combined waveform to ``output_dir`` and set
+            ``audio_filepath_key`` to it, so file-based downstream stages can consume it.
+            Defaults to False (in-memory only, unchanged).
+        output_dir: Directory for combined WAVs (required when write_to_disk=True).
+        audio_filepath_key: Key set to the written combined-audio path (write_to_disk).
     """
 
     silence_duration_sec: float = 0.5
@@ -91,6 +101,11 @@ class SegmentConcatenationStage(AgentReady, ProcessingStage[AudioTask, AudioTask
     original_file_key: str = "original_file"
     num_segments_key: str = "num_segments"
     total_duration_sec_key: str = "total_duration_sec"
+    audio_filepath_key: str = "audio_filepath"
+    # Output residency (both default to today's behavior: in-memory waveform only, no disk).
+    keep_waveform_in_task: bool = True
+    write_to_disk: bool = False
+    output_dir: str | None = None
 
     name: str = "SegmentConcatenation"
     batch_size: int = 1
@@ -98,35 +113,41 @@ class SegmentConcatenationStage(AgentReady, ProcessingStage[AudioTask, AudioTask
 
     def __post_init__(self):
         super().__init__()
+        if not (self.keep_waveform_in_task or self.write_to_disk):
+            msg = "At least one of keep_waveform_in_task or write_to_disk must be True"
+            raise ValueError(msg)
+        if self.write_to_disk and not self.output_dir:
+            msg = "output_dir is required when write_to_disk=True"
+            raise ValueError(msg)
 
     def inputs(self) -> tuple[list[str], list[str]]:
         return [], []
 
     def outputs(self) -> tuple[list[str], list[str]]:
-        return [], [
-            self.waveform_key,
-            self.sample_rate_key,
-            self.num_segments_key,
-            self.total_duration_sec_key,
-            self.original_file_key,
-        ]
+        outs: list[str] = []
+        if self.keep_waveform_in_task:
+            outs.extend([self.waveform_key, self.sample_rate_key])
+        outs.extend([self.num_segments_key, self.total_duration_sec_key, self.original_file_key])
+        if self.write_to_disk:
+            outs.append(self.audio_filepath_key)
+        return [], outs
 
     def describe(self) -> StageContract:
+        writes = [self.original_file_key, self.num_segments_key, self.total_duration_sec_key]
+        produces: list[str] = []
+        if self.keep_waveform_in_task:
+            writes[:0] = [self.waveform_key, self.sample_rate_key]  # preserve original key order
+            produces.append("tensor")
+        if self.write_to_disk:
+            writes.append(self.audio_filepath_key)
+            produces.append("disk")
         return StageContract(
             reads=IOSpec(data_keys=[self.segments_key]),
-            writes=IOSpec(
-                data_keys=[
-                    self.waveform_key,
-                    self.sample_rate_key,
-                    self.original_file_key,
-                    self.num_segments_key,
-                    self.total_duration_sec_key,
-                ],
-                produces=["tensor"],
-            ),
+            writes=IOSpec(data_keys=writes, produces=produces),
             metadata_writes=["segment_mappings"],
             cardinality="N:1",
             iteration_key=self.segments_key,
+            gates=Gates(writes_to_disk=self.write_to_disk),
         )
 
     def process(self, task: AudioTask) -> AudioTask | list[AudioTask]:
@@ -176,6 +197,17 @@ class SegmentConcatenationStage(AgentReady, ProcessingStage[AudioTask, AudioTask
             logger.warning(f"[SegmentConcat] Skipping segment {seg_id}: invalid sample_rate={sr}")
             return None
         return ensure_waveform_2d(waveform), sr
+
+    def _write_wav(self, waveform: torch.Tensor, sr: int, original_file: str) -> str:
+        """Write the combined waveform to ``output_dir`` and return the path."""
+        os.makedirs(self.output_dir, exist_ok=True)
+        stem = os.path.splitext(os.path.basename(str(original_file)))[0] or "audio"
+        audio = waveform.detach().cpu()
+        arr = audio[0].numpy() if audio.shape[0] == 1 else audio.T.numpy()
+        fd, path = tempfile.mkstemp(prefix=f"{stem}_concat_", suffix=".wav", dir=self.output_dir)
+        os.close(fd)
+        sf.write(path, arr, int(sr))
+        return path
 
     def _concatenate(
         self,
@@ -248,12 +280,16 @@ class SegmentConcatenationStage(AgentReady, ProcessingStage[AudioTask, AudioTask
         total_duration_sec = current_pos_ms / 1000.0
 
         output_data = {
-            self.waveform_key: combined,
-            self.sample_rate_key: sample_rate,
             self.original_file_key: original_file,
             self.num_segments_key: len(mappings),
             self.total_duration_sec_key: total_duration_sec,
         }
+        # Output residency: keep the combined waveform in-task (default) and/or persist it.
+        if self.keep_waveform_in_task:
+            output_data[self.waveform_key] = combined
+            output_data[self.sample_rate_key] = sample_rate
+        if self.write_to_disk:
+            output_data[self.audio_filepath_key] = self._write_wav(combined, sample_rate, original_file)
 
         logger.info(f"[SegmentConcat] {original_file}: {len(mappings)} segments -> {total_duration_sec:.2f}s combined")
 

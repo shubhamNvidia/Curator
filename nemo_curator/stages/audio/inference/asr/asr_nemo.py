@@ -53,7 +53,7 @@ class InferenceAsrNemoStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     sample_rate_key: str = "sample_rate"
     input_residency: InputResidency = "file"
     pred_text_key: str = "pred_text"
-    resources: Resources = field(default_factory=lambda: Resources(cpus=1.0))
+    resources: Resources = field(default_factory=lambda: Resources(cpus=1.0, gpus=1.0))
     batch_size: int = 16
 
     def __post_init__(self) -> None:
