@@ -40,9 +40,9 @@ scenarios:
     expected_capabilities: [ingest, preprocess, export]
     expected_modules:
       required: []
-      equivalence: {sink: [AudioToDocumentStage, ManifestWriterStage]}
+      equivalence: {sink: [ManifestWriterStage, DocumentBatchJsonlWriterStage]}
       forbidden: []
-    expected_order: [ManifestReader, ResampleAudioStage, AudioToDocumentStage, ManifestWriterStage]
+    expected_order: [ManifestReader, ResampleAudioStage]
     expected_params: {must_resolve: [], fixed: {}}
     expected_structure: linear
     expected_validation: {status: pass, runnable: true}

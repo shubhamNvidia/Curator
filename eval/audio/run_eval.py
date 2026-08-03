@@ -111,6 +111,159 @@ def _check_safety(query: dict) -> tuple[bool | None, str]:
     return False, f"unknown safety kind {kind!r}"
 
 
+def _seed_source(root: str, rows: int) -> str:
+    """A tiny manifest over tiny files — enough for a real (stat-tier) dataset key."""
+    audio = os.path.join(root, "audio")
+    os.makedirs(audio, exist_ok=True)
+    lines = []
+    for i in range(rows):
+        wav = os.path.join(audio, f"clip{i}.wav")
+        with open(wav, "wb") as f:
+            f.write(b"RIFF" + bytes(40))
+        lines.append(json.dumps({"audio_filepath": wav}))
+    src = os.path.join(root, "source.jsonl")
+    with open(src, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    return src
+
+
+def _expand(obj: object, root: str, src: str) -> object:
+    """Substitute ``{root}``/``{src}`` in a scenario recipe so it points at the temp store."""
+    if isinstance(obj, str):
+        return obj.replace("{root}", root).replace("{src}", src)
+    if isinstance(obj, list):
+        return [_expand(v, root, src) for v in obj]
+    if isinstance(obj, dict):
+        return {k: _expand(v, root, src) for k, v in obj.items()}
+    return obj
+
+
+def _materialize(uri: str, kind: str) -> None:
+    """Create the output an artifact will claim to have produced."""
+    if kind == "manifest" or uri.endswith((".jsonl", ".json")):
+        os.makedirs(os.path.dirname(uri) or ".", exist_ok=True)
+        with open(uri, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"audio_filepath": "clip0.wav", "duration": 1.0}) + "\n")
+        return
+    os.makedirs(uri, exist_ok=True)
+    with open(os.path.join(uri, "clip0.wav"), "wb") as f:
+        f.write(b"RIFF" + bytes(40))
+
+
+def _publish_prefix(recipe: object, dataset_key: str, *, prefix: int, duration_sec: float) -> list:
+    """Publish artifacts for the first ``prefix`` steps, as a finished run would have."""
+    from nemo_curator.audio_agent import artifacts as art_mod
+
+    published = []
+    for plan in art_mod.plan_steps(recipe, dataset_key)[:prefix]:
+        if not plan.persists():
+            continue
+        _materialize(plan.uri, plan.kind)
+        published.append(
+            art_mod.publish(
+                art_mod.Artifact(
+                    step_key=plan.step_key,
+                    input_key=plan.input_key,
+                    stage_ref=plan.stage_ref,
+                    stage_index=plan.index,
+                    semantic_params=plan.semantic_params,
+                    uri=plan.uri,
+                    kind=plan.kind,
+                    produced_roles=["audio_filepath"],
+                    produced_keys=["audio_filepath"],
+                    duration_sec=duration_sec,
+                    dataset_key=dataset_key,
+                    fingerprint_tier="stat",
+                    code_version=art_mod.code_version(),
+                    deterministic=plan.deterministic,
+                    ttl_sec=plan.ttl_sec,
+                )
+            )
+        )
+    return published
+
+
+def _break(kind: str | None, *, published: list, src: str, root: str) -> None:
+    """Damage the world the way reality does, to prove the scan refuses to reuse."""
+    import shutil
+
+    from nemo_curator.audio_agent import artifacts as art_mod
+
+    if not kind or kind == "none":
+        return
+    last = published[-1] if published else None
+    if kind == "delete_output" and last:
+        shutil.rmtree(last.uri) if os.path.isdir(last.uri) else os.remove(last.uri)
+    elif kind == "delete_marker" and last:  # what a crashed run leaves behind
+        os.remove(art_mod.marker_path(last.uri))
+    elif kind == "mutate_data":
+        extra = os.path.join(root, "audio", "clip_new.wav")
+        with open(extra, "wb") as f:
+            f.write(b"RIFF" + bytes(40))
+        with open(src, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"audio_filepath": extra}) + "\n")
+    elif kind == "republish":
+        for art in published:
+            art_mod.publish(art)
+
+
+def _check_reuse(query: dict) -> tuple[bool, str]:
+    """Reuse decisions on a throwaway store: publish a prefix, then assert what a rescan concludes.
+
+    Covers what must never regress — serve as-is, extend, no candidate — and the three ways a
+    candidate has to be REJECTED: the data moved on, the output vanished, or the output was
+    never marked complete.
+    """
+    import tempfile
+
+    from nemo_curator import audio_agent as aa
+    from nemo_curator.audio_agent import artifacts as art_mod
+    from nemo_curator.audio_agent.profiler import profile_data
+    from nemo_curator.audio_agent.recipe import Recipe
+
+    spec = query["reuse"]
+    expect = query.get("expect", {})
+    old_runs = os.environ.get("AUDIO_AGENT_RUNS_DIR")
+    with tempfile.TemporaryDirectory(prefix="aa-eval-reuse-") as root:
+        os.environ["AUDIO_AGENT_RUNS_DIR"] = os.path.join(root, ".audio_agent_runs")
+        try:
+            src = _seed_source(root, int(spec.get("rows", 3)))
+            recipe_dict = _expand(spec["recipe"], root, src)
+            recipe = Recipe.from_dict(recipe_dict).freeze()
+            published = _publish_prefix(
+                recipe,
+                profile_data(src).dataset_key(),
+                prefix=int(spec.get("publish_prefix", 0)),
+                duration_sec=float(spec.get("duration_sec", 120.0)),
+            )
+            _break(spec.get("break"), published=published, src=src, root=root)
+            scan = aa.reuse_scan(recipe_dict, data=src)
+            n_artifacts = len(art_mod.list_artifacts())
+        finally:
+            if old_runs is None:
+                os.environ.pop("AUDIO_AGENT_RUNS_DIR", None)
+            else:
+                os.environ["AUDIO_AGENT_RUNS_DIR"] = old_runs
+
+    actual = {
+        "reuse_decision": scan["decision"],
+        "reuse_stages": scan.get("reuse_stages", []),
+        "run_stages": scan.get("run_stages", []),
+        "prompt_user": scan["prompt_user"],
+        "recommended": scan["recommended"],
+        "artifact_count": n_artifacts,
+    }
+    for field, got in actual.items():
+        if field in expect and got != expect[field]:
+            return False, f"{field}={got} expected={expect[field]} ({scan['rationale']})"
+    if "rationale_contains" in expect and expect["rationale_contains"] not in scan["rationale"]:
+        return False, f"rationale={scan['rationale']!r} missing {expect['rationale_contains']!r}"
+    return True, (
+        f"decision={scan['decision']} reuse={scan.get('reuse_stages', [])} "
+        f"prompt={scan['prompt_user']} rec={scan['recommended']} artifacts={n_artifacts}"
+    )
+
+
 def _check_plan(query: dict) -> tuple[bool, str]:
     """Planner mode-selection + feasibility on a real EnvProfile."""
     from nemo_curator.audio_agent import planner
@@ -180,6 +333,10 @@ def _check(query: dict) -> tuple[bool | None, str, str]:  # noqa: C901 - one lin
     if "plan" in query:  # planner mode selection + feasibility
         passed, detail = _check_plan(query)
         return passed, detail, "plan"
+
+    if "reuse" in query:  # content-addressed reuse: serve / extend / refuse (REUSE_ARCHITECTURE.md)
+        passed, detail = _check_reuse(query)
+        return passed, detail, "reuse"
 
     if "execute" in query:  # opt-in real smoke (GPU/Ray)
         passed, detail = _check_execute(query)

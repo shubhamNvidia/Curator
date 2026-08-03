@@ -104,6 +104,7 @@ codes:
 # LLM-plane judgements (not deterministic codes; scored by trace_check.py / judge.py).
 llm_signals:
   intent_misunderstanding: {category: User-intent misunderstanding, stage: intent, severity: P1}
+  semantic_critique_missing: {category: User-intent misunderstanding, stage: intent, severity: P1, note: "mechanically valid recipe reached the gate without a grounded host semantic critique"}
   missing_clarification:   {category: Missing clarification,         stage: clarify, severity: P1}
   over_clarification:      {category: Missing clarification,         stage: clarify, severity: P3, note: "asked when it should have inferred"}
   wrong_capability:        {category: Incorrect capability selection, stage: select, severity: P1}

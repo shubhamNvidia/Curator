@@ -162,7 +162,7 @@ personas:
     preferences: "Any standard JSONL output is fine."
     expected:
       required: [GetAudioDurationStage]
-      equivalence: {sink: [AudioToDocumentStage, ManifestWriterStage]}
+      equivalence: {sink: [ManifestWriterStage, DocumentBatchJsonlWriterStage]}
       forbidden: []
       order_constraints: []
       output_roles: [duration]
@@ -357,10 +357,10 @@ personas:
       # (tensor_into_sink): AudioToDocumentStage is only REQUIRED when a waveform is actually
       # resident in rows. Grade on validity + ordering, not a blanket module requirement --
       # a valid JSONL-export plan with no resident tensor legitimately needs no sanitizer.
-      required: [ManifestWriterStage]
-      equivalence: {}
+      required: []
+      equivalence: {sink: [ManifestWriterStage, DocumentBatchJsonlWriterStage]}
       forbidden: []
-      order_constraints: [[AudioToDocumentStage, ManifestWriterStage]]
+      order_constraints: [[AudioToDocumentStage, DocumentBatchJsonlWriterStage]]
       output_roles: []
     success: {kind: executes}
 

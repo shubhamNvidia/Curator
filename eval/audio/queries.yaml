@@ -505,3 +505,120 @@ queries:
         - {ref: VADSegmentationStage, params: {}}
         - {ref: SpeakerSeparationStage, params: {}}
     expect: {runnable: false, has_code: diarization_needs_continuous_audio}
+
+  # --- Reuse (reuse branch): content-addressed artifacts; see REUSE_ARCHITECTURE.md.
+  # Each case publishes a prefix into a throwaway store, then asserts what a rescan concludes.
+  - id: reuse_already_done
+    label: reuse
+    prompt: "Same request as yesterday: add duration to my manifest and write JSONL."
+    reuse:
+      publish_prefix: 3
+      duration_sec: 120
+      recipe:
+        stages:
+          - {ref: ManifestReader, params: {manifest_path: "{src}"}}
+          - {ref: GetAudioDurationStage, params: {}}
+          - {ref: ManifestWriterStage, params: {output_path: "{root}/out/durations.jsonl"}}
+    expect:
+      reuse_decision: already_done
+      prompt_user: true
+      recommended: as_is
+      reuse_stages: [ManifestReader, GetAudioDurationStage, ManifestWriterStage]
+
+  - id: reuse_incremental_extend
+    label: reuse
+    prompt: "You already resampled these clips — now also give me their durations."
+    reuse:
+      publish_prefix: 2
+      duration_sec: 300
+      recipe:
+        stages:
+          - {ref: ManifestReader, params: {manifest_path: "{src}"}}
+          - {ref: ResampleAudioStage, params: {target_sample_rate: 16000, resampled_audio_dir: "{root}/resampled"}}
+          - {ref: GetAudioDurationStage, params: {}}
+          - {ref: ManifestWriterStage, params: {output_path: "{root}/out/durations.jsonl"}}
+    expect:
+      reuse_decision: incremental
+      prompt_user: true
+      recommended: extend
+      reuse_stages: [ManifestReader, ResampleAudioStage]
+      run_stages: [GetAudioDurationStage, ManifestWriterStage]
+
+  - id: reuse_no_candidate_no_prompt
+    label: reuse
+    prompt: "A pipeline never run before must not ask the user anything about reuse."
+    reuse:
+      publish_prefix: 0
+      recipe:
+        stages:
+          - {ref: ManifestReader, params: {manifest_path: "{src}"}}
+          - {ref: GetAudioDurationStage, params: {}}
+          - {ref: ManifestWriterStage, params: {output_path: "{root}/out/durations.jsonl"}}
+    expect:
+      reuse_decision: fresh
+      prompt_user: false
+      recommended: fresh
+      rationale_contains: "no prior artifact"
+
+  - id: reuse_stale_data_rejected
+    label: reuse
+    prompt: "The folder gained a file since that run, so yesterday's output must not be served."
+    reuse:
+      publish_prefix: 3
+      break: mutate_data
+      recipe:
+        stages:
+          - {ref: ManifestReader, params: {manifest_path: "{src}"}}
+          - {ref: GetAudioDurationStage, params: {}}
+          - {ref: ManifestWriterStage, params: {output_path: "{root}/out/durations.jsonl"}}
+    expect:
+      reuse_decision: fresh
+      prompt_user: false
+      rationale_contains: "source data changed"
+
+  - id: reuse_partial_output_rejected
+    label: reuse
+    prompt: "A crashed run leaves a plausible-looking JSONL and no completion marker; never reuse it."
+    reuse:
+      publish_prefix: 3
+      break: delete_marker
+      recipe:
+        stages:
+          - {ref: ManifestReader, params: {manifest_path: "{src}"}}
+          - {ref: GetAudioDurationStage, params: {}}
+          - {ref: ManifestWriterStage, params: {output_path: "{root}/out/durations.jsonl"}}
+    expect:
+      reuse_decision: fresh
+      prompt_user: false
+      rationale_contains: "_COMPLETE"
+
+  - id: reuse_missing_output_rejected
+    label: reuse
+    prompt: "Someone deleted the output directory; the registry entry alone is not enough."
+    reuse:
+      publish_prefix: 3
+      break: delete_output
+      recipe:
+        stages:
+          - {ref: ManifestReader, params: {manifest_path: "{src}"}}
+          - {ref: GetAudioDurationStage, params: {}}
+          - {ref: ManifestWriterStage, params: {output_path: "{root}/out/durations.jsonl"}}
+    expect:
+      reuse_decision: fresh
+      prompt_user: false
+      rationale_contains: "no longer exists"
+
+  - id: reuse_duplicate_publish_is_idempotent
+    label: reuse
+    prompt: "Publishing the same completed step twice must not create a second artifact."
+    reuse:
+      publish_prefix: 3
+      break: republish
+      recipe:
+        stages:
+          - {ref: ManifestReader, params: {manifest_path: "{src}"}}
+          - {ref: GetAudioDurationStage, params: {}}
+          - {ref: ManifestWriterStage, params: {output_path: "{root}/out/durations.jsonl"}}
+    expect:
+      reuse_decision: already_done
+      artifact_count: 1

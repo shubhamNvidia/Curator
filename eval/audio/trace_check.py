@@ -49,6 +49,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(os.path.dirname(_HERE))
 _TAXONOMY = os.path.join(_HERE, "taxonomy.yaml")
 _SCENARIOS_DIR = os.path.join(_HERE, "scenarios")
 _TRACES_DIR = os.path.join(_HERE, "traces")
@@ -155,6 +156,488 @@ def _is_refused(trace: dict) -> bool:
         return True
     rec = trace.get("final_recipe")
     return not rec or not rec.get("stages")
+
+
+_SEMANTIC_EVIDENCE_PREFIXES = (
+    "card:",
+    "contract:",
+    "goal:",
+    "recipe:",
+    "validate:",
+    "data:",
+    "smoke:",
+)
+_SEMANTIC_CRITIQUE_SECTIONS = (
+    "stage_reviews",
+    "field_reviews",
+    "behavior_checks",
+    "transform_checks",
+    "model_checks",
+    "assumptions_or_questions",
+)
+
+
+def _semantic_critique(trace: dict) -> dict:
+    """Return the structured host-LLM judgement, or an empty mapping.
+
+    ``validate.semantic_review`` is the deterministic evidence packet and is
+    normally nested in a tool result. The top-level ``semantic_critique`` is the
+    host's distinct intent judgement. The legacy key is accepted only when it
+    carries the critique contract, not the deterministic packet.
+    """
+    for key in ("semantic_critique", "semantic_review"):
+        value = trace.get(key)
+        if isinstance(value, dict) and (key == "semantic_critique" or "intent_status" in value):
+            return value
+    return {}
+
+
+def _tool_calls(trace: dict, *verbs: str) -> list[dict]:
+    wanted = set(verbs)
+    return [
+        call
+        for call in trace.get("tool_calls", [])
+        if isinstance(call, dict) and call.get("verb") in wanted
+    ]
+
+
+def _artifact_mentions(value: object, locator: str) -> bool:
+    try:
+        return locator.casefold() in json.dumps(value, default=str).casefold()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _successful_tool_results(trace: dict, *verbs: str) -> list[object]:
+    """Return only inspectable, non-error result payloads for the requested tools.
+
+    Tool arguments prove what the host asked for, not what evidence it received.
+    In particular, ``cards(names=["X"])`` must not make ``card:X`` a grounded
+    citation when lookup failed or the SDK did not capture the result.
+    """
+    results: list[object] = []
+    for call in _tool_calls(trace, *verbs):
+        result = call.get("result")
+        if result is None or result == "<result>":
+            continue
+        if isinstance(result, str):
+            continue
+        if isinstance(result, dict):
+            status = str(result.get("status") or "").casefold()
+            if (
+                result.get("error")
+                or result.get("is_error") is True
+                or result.get("isError") is True
+                or status in {"error", "failed", "fail", "refused", "blocked"}
+            ):
+                continue
+        results.append(result)
+    return results
+
+
+def _evidence_token_grounded(token: object, scenario: dict, trace: dict) -> bool:
+    """Check that a generic ``source:locator`` citation has a trace artifact.
+
+    This verifies provenance of the citation, not truth of the semantic claim.
+    The model judge/human rubric remains responsible for meaning.
+    """
+    if not isinstance(token, str) or ":" not in token:
+        return False
+    source, locator = token.split(":", 1)
+    source = source.casefold().strip()
+    locator = locator.strip()
+    if not locator or f"{source}:" not in _SEMANTIC_EVIDENCE_PREFIXES:
+        return False
+
+    if source == "goal":
+        prompt = scenario.get("prompt") or trace.get("prompt") or ""
+        return bool(prompt.strip()) and (
+            locator in {"user-request", "prompt", "objective"}
+            or _artifact_mentions(prompt, locator)
+        )
+    if source == "recipe":
+        recipe = trace.get("final_recipe")
+        return bool(recipe) and (
+            locator in {"draft", "final", "pipeline"}
+            or _artifact_mentions(recipe, locator)
+        )
+    if source == "card":
+        results = _successful_tool_results(trace, "cards", "describe")
+        return bool(results) and _artifact_mentions(results, locator)
+    if source == "contract":
+        artifacts: list[object] = []
+        for result in _successful_tool_results(trace, "describe"):
+            artifacts.append(result)
+        for result in _successful_tool_results(trace, "validate"):
+            if isinstance(result, dict) and isinstance(
+                result.get("semantic_review"), dict
+            ):
+                artifacts.append(result["semantic_review"])
+        return bool(artifacts) and _artifact_mentions(artifacts, locator)
+    if source == "validate":
+        result = _latest_tool_result(trace, "validate")
+        return result in _successful_tool_results(trace, "validate") and (
+            locator
+            in {
+                "result",
+                "runnable",
+                "mechanically-runnable",
+                "semantic-review",
+                "config-hash",
+            }
+            or _artifact_mentions(result, locator)
+        )
+    if source == "data":
+        results = _successful_tool_results(trace, "context")
+        return bool(results) and (
+            locator in {"profile", "input", "dataset"}
+            or _artifact_mentions(results, locator)
+        )
+    if source == "smoke":
+        results = _successful_tool_results(trace, "smoke")
+        return bool(results) and (
+            locator in {"result", "sample", "evidence"}
+            or _artifact_mentions(results, locator)
+        )
+    return False
+
+
+def _latest_tool_result(trace: dict, verb: str) -> object:
+    for call in reversed(_tool_calls(trace, verb)):
+        if "result" in call:
+            return call.get("result")
+    return None
+
+
+def _latest_tool_call(trace: dict, verb: str) -> dict | None:
+    calls = _tool_calls(trace, verb)
+    return calls[-1] if calls else None
+
+
+def _ordered_refs(refs: list[str], expected: list[str]) -> tuple[bool, str]:
+    """Check an exact stage-id subsequence without any module-specific aliases."""
+    cursor = 0
+    positions: list[int] = []
+    for wanted in expected:
+        try:
+            pos = refs.index(wanted, cursor)
+        except ValueError:
+            return False, f"required order token {wanted!r} is missing after position {cursor - 1}"
+        positions.append(pos)
+        cursor = pos + 1
+    return True, f"required stage subsequence present at {positions}"
+
+
+def _stage_params_match(recipe: dict, expectation: dict) -> tuple[bool, str]:
+    """Match explicit params on one occurrence of a stage.
+
+    Semantic regressions intentionally require explicit values where relying on
+    a default would obscure the decision under test. This matcher is generic
+    over stage ids and parameter names; all domain meaning stays in YAML.
+    """
+    stage_id = expectation.get("stage")
+    occurrence = expectation.get("occurrence", 0)
+    if not isinstance(stage_id, str) or not isinstance(occurrence, int) or occurrence < 0:
+        return False, f"invalid stage-param expectation {expectation!r}"
+    matches = [
+        stage for stage in recipe.get("stages", [])
+        if isinstance(stage, dict) and stage.get("ref") == stage_id
+    ]
+    if occurrence >= len(matches):
+        return False, f"{stage_id} occurrence {occurrence} is missing"
+    actual = matches[occurrence].get("params") or {}
+    expected = expectation.get("params") or {}
+    if not isinstance(actual, dict) or not isinstance(expected, dict):
+        return False, f"{stage_id} params/expectation is not a mapping"
+    wrong = [
+        f"{name}={actual.get(name)!r} expected {value!r}"
+        for name, value in expected.items()
+        if name not in actual or actual.get(name) != value
+    ]
+    return (not wrong), ("; ".join(wrong) or f"{stage_id} explicit semantic params match")
+
+
+def _contains_subset(actual: object, expected: object) -> bool:
+    """Recursive unordered subset matcher for generic recipe expectations."""
+    if isinstance(expected, dict):
+        return isinstance(actual, dict) and all(
+            key in actual and _contains_subset(actual[key], value)
+            for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return isinstance(actual, list) and all(
+            any(_contains_subset(candidate, wanted) for candidate in actual)
+            for wanted in expected
+        )
+    return actual == expected
+
+
+def _live_fixture_path(scenario: dict) -> str | None:
+    live = scenario.get("live_capture") or {}
+    rel = live.get("fixture") if isinstance(live, dict) else None
+    if not isinstance(rel, str) or not rel.strip():
+        return None
+    path = os.path.realpath(os.path.join(_ROOT, rel))
+    root = os.path.realpath(_ROOT)
+    if os.path.commonpath([root, path]) != root or not os.path.isfile(path):
+        return None
+    return path
+
+
+def _recipe_binds_fixture(recipe: object, fixture: str) -> bool:
+    """Require the concrete manifest on a source stage, not merely in tool args."""
+    if not isinstance(recipe, dict):
+        return False
+    for stage in recipe.get("stages", []) or []:
+        if not isinstance(stage, dict) or stage.get("ref") != "ManifestReader":
+            continue
+        params = stage.get("params") or {}
+        configured = params.get("manifest_path") if isinstance(params, dict) else None
+        if not isinstance(configured, str) or not configured.strip():
+            continue
+        candidate = os.path.realpath(
+            configured
+            if os.path.isabs(configured)
+            else os.path.join(_ROOT, configured)
+        )
+        if candidate == fixture:
+            return True
+    return False
+
+
+def _grade_semantic_expectations(scenario: dict, trace: dict) -> tuple[bool, list[str], bool]:
+    """Grade the generic host critique structure plus its recipe consequence.
+
+    Returns ``(ok, problems, critique_missing)``. The grader never knows what
+    ``num_speakers`` or any other domain field means; scenarios state the gold
+    sections and recipe consequences, while the host must cite actual trace
+    artifacts. A model judge separately evaluates whether the prose is correct.
+    """
+    spec = scenario.get("semantic_expectations") or {}
+    if not isinstance(spec, dict) or not spec:
+        return True, [], False
+
+    problems: list[str] = []
+    workflow_spec = spec.get("workflow") or {}
+    live_fixture = _live_fixture_path(scenario)
+    if scenario.get("live_capture") and live_fixture is None:
+        problems.append("semantic live-capture fixture is missing or unsafe")
+    if live_fixture is not None:
+        doctor_result = _latest_tool_result(trace, "doctor")
+        if workflow_spec.get("require_doctor", True) and not isinstance(
+            doctor_result, dict
+        ):
+            problems.append(
+                "semantic live-capture workflow did not inspect the real host with doctor"
+            )
+    if workflow_spec.get("require_card_inspection", True) and not _tool_calls(
+        trace, "cards", "describe"
+    ):
+        problems.append("semantic workflow did not inspect cards or stage descriptions")
+
+    validate_call = _latest_tool_call(trace, "validate")
+    validate_result = _latest_tool_result(trace, "validate")
+    if workflow_spec.get("require_validate", True) and validate_call is None:
+        problems.append("semantic workflow did not validate the candidate recipe")
+    if workflow_spec.get("require_green_validate", True):
+        if not isinstance(validate_result, dict):
+            problems.append("semantic workflow has no inspectable validate result")
+        elif (
+            validate_result.get("runnable") is not True
+            or validate_result.get("status") != "pass"
+        ):
+            problems.append(
+                "semantic workflow did not reach status=pass and runnable=true"
+            )
+    if workflow_spec.get("require_evidence_packet", True):
+        if not isinstance(validate_result, dict) or not isinstance(
+            validate_result.get("semantic_review"), dict
+        ):
+            problems.append(
+                "validate result did not expose the deterministic semantic_review packet"
+            )
+    if workflow_spec.get("require_final_recipe_validated", True) and validate_call:
+        validated_recipe = (validate_call.get("args") or {}).get("recipe")
+        if not isinstance(validated_recipe, dict):
+            problems.append("cannot prove that validate checked the final recipe")
+        elif validated_recipe != (trace.get("final_recipe") or {}):
+            problems.append("the final recipe differs from the recipe last validated")
+    if live_fixture is not None:
+        if not _recipe_binds_fixture(trace.get("final_recipe"), live_fixture):
+            problems.append(
+                "final recipe is not bound to the scenario's concrete input fixture"
+            )
+        if validate_call and not _recipe_binds_fixture(
+            (validate_call.get("args") or {}).get("recipe"), live_fixture
+        ):
+            problems.append(
+                "validate did not check a recipe bound to the concrete input fixture"
+            )
+    if workflow_spec.get("forbid_execution_before_critique", True) and _tool_calls(
+        trace, "smoke", "run"
+    ):
+        problems.append(
+            "semantic workflow executed smoke/run before the captured intent critique"
+        )
+
+    critique_spec = spec.get("critique") or spec.get("review") or {}
+    critique = _semantic_critique(trace)
+    critique_missing = not critique
+    if critique_spec.get("required", True) and critique_missing:
+        problems.append("semantic critique artifact is missing")
+    if critique:
+        packet_recipe = (
+            validate_result.get("semantic_review", {}).get("recipe", {})
+            if isinstance(validate_result, dict)
+            and isinstance(validate_result.get("semantic_review"), dict)
+            else {}
+        )
+        packet_hash = (
+            packet_recipe.get("config_hash")
+            if isinstance(packet_recipe, dict)
+            else None
+        )
+        critique_hash = critique.get("recipe_config_hash")
+        if not isinstance(packet_hash, str) or not packet_hash:
+            problems.append(
+                "validate semantic_review packet has no recipe config_hash"
+            )
+        if not isinstance(critique_hash, str) or not critique_hash:
+            problems.append("semantic critique has no recipe_config_hash")
+        elif isinstance(packet_hash, str) and critique_hash != packet_hash:
+            problems.append(
+                "semantic critique recipe_config_hash disagrees with the validated recipe"
+            )
+        wanted_status = critique_spec.get("intent_status", critique_spec.get("status"))
+        if wanted_status is not None and critique.get("intent_status") != wanted_status:
+            problems.append(
+                f"semantic critique intent_status={critique.get('intent_status')!r} "
+                f"expected {wanted_status!r}"
+            )
+        wanted_runnable = critique_spec.get("mechanically_runnable")
+        if (
+            wanted_runnable is not None
+            and critique.get("mechanically_runnable") is not wanted_runnable
+        ):
+            problems.append(
+                "semantic critique mechanically_runnable="
+                f"{critique.get('mechanically_runnable')!r} expected {wanted_runnable!r}"
+            )
+        if (
+            isinstance(validate_result, dict)
+            and "runnable" in validate_result
+            and critique.get("mechanically_runnable") != validate_result["runnable"]
+        ):
+            problems.append(
+                "semantic critique mechanically_runnable disagrees with the validate result"
+            )
+
+        required_sections = (
+            critique_spec.get("required_sections") or _SEMANTIC_CRITIQUE_SECTIONS
+        )
+        sections: dict[str, list] = {}
+        for section in required_sections:
+            value = critique.get(section)
+            if not isinstance(value, list):
+                problems.append(f"semantic critique section {section!r} must be a list")
+                sections[section] = []
+            else:
+                sections[section] = value
+
+        minimums = critique_spec.get("min_items_by_section") or {}
+        for section, minimum in minimums.items():
+            values = sections.get(section)
+            if values is None:
+                value = critique.get(section)
+                values = value if isinstance(value, list) else []
+            if len(values) < int(minimum):
+                problems.append(
+                    f"semantic critique section {section!r} has {len(values)} item(s), "
+                    f"expected at least {minimum}"
+                )
+        for section in critique_spec.get("empty_sections", []) or []:
+            value = critique.get(section)
+            if isinstance(value, list) and value:
+                problems.append(f"semantic critique section {section!r} must be empty")
+
+        if critique_spec.get("cover_all_recipe_stages"):
+            reviewed = {
+                item.get("stage")
+                for item in sections.get("stage_reviews", [])
+                if isinstance(item, dict)
+            }
+            missing_stages = [ref for ref in _recipe_refs(trace) if ref not in reviewed]
+            if missing_stages:
+                problems.append(
+                    f"semantic critique omitted stage review(s) for {missing_stages}"
+                )
+
+        evidence_sections = (
+            critique_spec.get("evidence_sections")
+            or list((critique_spec.get("min_items_by_section") or {}).keys())
+        )
+        min_finding_chars = int(critique_spec.get("min_finding_chars", 16))
+        for section in evidence_sections:
+            value = critique.get(section)
+            if not isinstance(value, list):
+                continue
+            for index, item in enumerate(value):
+                if not isinstance(item, dict):
+                    problems.append(
+                        f"semantic critique {section}[{index}] must be a mapping"
+                    )
+                    continue
+                finding = item.get("finding")
+                if (
+                    not isinstance(finding, str)
+                    or len(finding.strip()) < min_finding_chars
+                ):
+                    problems.append(
+                        f"semantic critique {section}[{index}] has no substantive finding"
+                    )
+                evidence = item.get("evidence")
+                if not isinstance(evidence, list) or not evidence:
+                    problems.append(
+                        f"semantic critique {section}[{index}] has no evidence citations"
+                    )
+                else:
+                    ungrounded = [
+                        token
+                        for token in evidence
+                        if not _evidence_token_grounded(token, scenario, trace)
+                    ]
+                    if ungrounded:
+                        problems.append(
+                            f"semantic critique {section}[{index}] has ungrounded "
+                            f"evidence {ungrounded!r}"
+                        )
+
+    recipe_spec = spec.get("recipe") or {}
+    recipe = trace.get("final_recipe") or {}
+    refs = _recipe_refs(trace)
+    required_order = recipe_spec.get("required_order") or []
+    if required_order:
+        order_ok, note = _ordered_refs(refs, required_order)
+        if not order_ok:
+            problems.append(note)
+    for stage_id in recipe_spec.get("absent_stages", []) or []:
+        if stage_id in refs:
+            problems.append(f"stage {stage_id!r} must be absent for this intent")
+    for stage_id in recipe_spec.get("required_stages", []) or []:
+        if stage_id not in refs:
+            problems.append(f"stage {stage_id!r} is required for this intent")
+    for expectation in recipe_spec.get("stage_params", []) or []:
+        if not isinstance(expectation, dict):
+            problems.append(f"invalid stage-param expectation {expectation!r}")
+            continue
+        params_ok, note = _stage_params_match(recipe, expectation)
+        if not params_ok:
+            problems.append(note)
+    contains = recipe_spec.get("contains")
+    if contains is not None and not _contains_subset(recipe, contains):
+        problems.append("final recipe is missing required semantic intent fields")
+
+    return not problems, problems, critique_missing
 
 
 # --------------------------------------------------------------------------- #
@@ -297,7 +780,26 @@ def grade(scenario: dict, trace: dict) -> dict:  # noqa: C901 - one linear score
     else:
         dims["explainable"] = {"pass": True, "note": "no rubric"}
 
-    # 8) Continuation (Efficient) — only when the scenario expects a reuse plan
+    # 8) Semantic critic: generic structured host judgement + intent-specific recipe
+    # consequence. Mechanical validation can pass for every counterexample in
+    # this suite, so this is intentionally a separate hard dimension.
+    if scenario.get("semantic_expectations"):
+        sem_ok, sem_problems, critique_missing = _grade_semantic_expectations(
+            scenario, trace
+        )
+        dims["semantic_critique"] = {
+            "pass": sem_ok,
+            "note": "; ".join(sem_problems)
+            or "grounded semantic critique and recipe consequence match",
+        }
+        if not sem_ok:
+            add(
+                "semantic_critique_missing"
+                if critique_missing
+                else "intent_misunderstanding"
+            )
+
+    # 9) Continuation (Efficient) — only when the scenario expects a reuse plan
     cont_exp = scenario.get("continuation_expect")
     if cont_exp:
         got = _continuation(trace)
@@ -306,7 +808,7 @@ def grade(scenario: dict, trace: dict) -> dict:  # noqa: C901 - one linear score
         if not mode_ok:
             add("missed_reuse")
 
-    # 9) Safe — agent-trace safety signals derived from the captured tool calls
+    # 10) Safe — agent-trace safety signals derived from the captured tool calls
     run_call = next((tc for tc in trace.get("tool_calls", []) if tc.get("verb") == "run"), None)
     if run_call is not None:
         confirmed = bool((run_call.get("args") or {}).get("confirm"))
@@ -349,34 +851,45 @@ def classify_violations(violations: list[str]) -> list[dict]:
 # --------------------------------------------------------------------------- #
 
 _GOOD_TRACE = {
-    "scenario_id": "L02_readspeech_quality",
+    "scenario_id": "L01_duration",
     "tool_calls": [
-        {"verb": "context", "args": {"goal": {"task": "quality_filter", "domain": "read"}}},
-        {"verb": "cards", "args": {"category": "quality"}},
-        {"clarification": "which quality level: studio, general, or lenient?"},
-        {"verb": "resolve", "args": {"stage": "UTMOSFilterStage", "label": "studio"}, "result": {"params": {"mos_threshold": 4.0}}},
+        {"verb": "context", "args": {"goal": {"task": "duration"}}},
+        {"verb": "cards", "args": {"names": ["GetAudioDurationStage"]}},
         {"verb": "validate", "args": {}, "result": {"runnable": True, "status": "pass"}},
     ],
     "final_recipe": {"stages": [
-        {"ref": "ManifestReader", "params": {"manifest_path": "REQUIRED"}},
-        {"ref": "MonoConversionStage", "params": {}},
-        {"ref": "UTMOSFilterStage", "params": {"mos_threshold": 4.0}},
-        {"ref": "AudioToDocumentStage", "params": {}},
+        {
+            "ref": "ManifestReader",
+            "params": {
+                "manifest_path": os.path.join(
+                    _ROOT, "tests", "fixtures", "audio", "alm", "sample_input.jsonl"
+                )
+            },
+        },
+        {"ref": "GetAudioDurationStage", "params": {}},
     ]},
     "refused": False,
-    "explanation": "UTMOS is the quality metric; it captures perceived naturalness, not noise specifically. The 4.0 threshold came from the named 'studio' outcome, not hand-picked. No ASR stage is present because there are no transcripts to score against.",
+    "explanation": (
+        "Duration is computed independently for each clip. No filtering or "
+        "transcription was added because neither was requested."
+    ),
 }
 
 _BAD_TRACE = {
-    "scenario_id": "L02_readspeech_quality",
+    "scenario_id": "L01_duration",
     "tool_calls": [
         {"verb": "validate", "args": {}, "result": {"runnable": True}},
     ],
     "final_recipe": {"stages": [
-        {"ref": "ManifestReader", "params": {"manifest_path": "REQUIRED"}},
-        {"ref": "UTMOSFilterStage", "params": {"mos_threshold": 3.7}},   # hand-picked, no resolve
-        {"ref": "InferenceAsrNemoStage", "params": {"model_name": "x"}},  # forbidden (no transcripts)
-        {"ref": "AudioToDocumentStage", "params": {}},
+        {
+            "ref": "ManifestReader",
+            "params": {
+                "manifest_path": os.path.join(
+                    _ROOT, "tests", "fixtures", "audio", "alm", "sample_input.jsonl"
+                )
+            },
+        },
+        {"ref": "MonoConversionStage", "params": {}},
     ]},
     "refused": False,
     "explanation": "",
@@ -384,7 +897,7 @@ _BAD_TRACE = {
 
 
 def _selftest() -> int:
-    scenario = find_scenario("L02_readspeech_quality")
+    scenario = find_scenario("L01_duration")
     good = grade(scenario, _GOOD_TRACE)
     bad = grade(scenario, _BAD_TRACE)
     print("[selftest] good trace:", good["overall"], "| bad trace:", bad["overall"])

@@ -1,0 +1,478 @@
+# Level 15 — semantic-intent regressions.
+#
+# Each pair changes the user's intended meaning while keeping a counterexample
+# mechanically composable.  The deterministic core is therefore not the oracle:
+# the host critic must connect card/contract facts to intent and produce the
+# corresponding order/params.  `trace_check.py` interprets only the generic
+# `semantic_expectations` schema; all audio-specific meaning stays here.
+level: 15
+semantic_critique_defaults: &semantic_critique_defaults
+  required: true
+  mechanically_runnable: true
+  intent_status: pass
+  required_sections:
+    - stage_reviews
+    - field_reviews
+    - behavior_checks
+    - transform_checks
+    - model_checks
+    - assumptions_or_questions
+  cover_all_recipe_stages: true
+  min_finding_chars: 16
+  empty_sections: [assumptions_or_questions]
+scenarios:
+  - id: S15_parent_count_filter
+    level: 15
+    label: semantic_intent
+    objective: "After speaker fan-out, select children by a property of their source recording."
+    prompt: "Separate each recording by speaker, then keep only tracks whose source recording was detected as having exactly one speaker."
+    dataset: "manifest of mixed single- and multi-speaker recordings"
+    live_capture: {fixture: eval/audio/fixtures/manifests/multi_speaker.jsonl, environment: gpu_required_real_host}
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, diarize, filter]
+    expected_modules:
+      required: [SpeakerSeparationStage, PreserveByValueStage]
+      equivalence: {}
+      forbidden: []
+    expected_validation: {status: pass, runnable: true}
+    semantic_pair:
+      id: parent_vs_child_field
+      side: parent
+      mechanically_valid_counterexample:
+        note: "Filtering speaker_id selects a child identity, not the requested parent-recording count."
+        initial_roles: [audio_filepath]
+        initial_keys: [audio_filepath]
+        stages:
+          - {ref: SpeakerSeparationStage, params: {}}
+          - {ref: PreserveByValueStage, params: {input_value_key: speaker_id, target_value: speaker_0, operator: eq}}
+    semantic_expectations:
+      critique:
+        <<: *semantic_critique_defaults
+        min_items_by_section: {stage_reviews: 2, field_reviews: 1, behavior_checks: 1}
+        evidence_sections: [stage_reviews, field_reviews, behavior_checks]
+      recipe:
+        required_order: [SpeakerSeparationStage, PreserveByValueStage]
+        stage_params:
+          - stage: PreserveByValueStage
+            params: {input_value_key: num_speakers, target_value: 1, operator: eq}
+    explanation_rubric:
+      - "explains num_speakers describes the detected count for the source recording and is copied to each separated child"
+      - "explains this filter intentionally selects children by parent-recording provenance rather than testing whether a child track is single-speaker"
+    pass_criteria: "grounded semantic critique; filter explicitly reads num_speakers == 1 after separation"
+    fail_criteria: "treats num_speakers as a per-child count or filters a child-only field"
+
+  - id: S15_child_track_filter
+    level: 15
+    label: semantic_intent
+    objective: "Select a child track by child identity rather than a parent aggregate copied through fan-out."
+    prompt: "Separate each recording by speaker, then keep speaker_0 from every recording regardless of how many speakers were detected in its source."
+    dataset: "manifest of mixed single- and multi-speaker recordings"
+    live_capture: {fixture: eval/audio/fixtures/manifests/multi_speaker.jsonl, environment: gpu_required_real_host}
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, diarize, filter]
+    expected_modules:
+      required: [SpeakerSeparationStage, PreserveByValueStage]
+      equivalence: {}
+      forbidden: []
+    expected_validation: {status: pass, runnable: true}
+    semantic_pair:
+      id: parent_vs_child_field
+      side: child
+      mechanically_valid_counterexample:
+        note: "This validates and runs, but drops every child whose parent recording had more than one detected speaker."
+        initial_roles: [audio_filepath]
+        initial_keys: [audio_filepath]
+        stages:
+          - {ref: SpeakerSeparationStage, params: {}}
+          - {ref: PreserveByValueStage, params: {input_value_key: num_speakers, target_value: 1, operator: eq}}
+    semantic_expectations:
+      critique:
+        <<: *semantic_critique_defaults
+        min_items_by_section: {stage_reviews: 2, field_reviews: 1, behavior_checks: 1}
+        evidence_sections: [stage_reviews, field_reviews, behavior_checks]
+      recipe:
+        required_order: [SpeakerSeparationStage, PreserveByValueStage]
+        stage_params:
+          - stage: PreserveByValueStage
+            params: {input_value_key: speaker_id, target_value: speaker_0, operator: eq}
+    explanation_rubric:
+      - "explains speaker_id identifies the emitted child while num_speakers remains a source-recording count copied to each child"
+      - "explains num_speakers == 1 would wrongly discard speaker_0 children from multi-speaker sources"
+    pass_criteria: "grounded semantic critique; child filter explicitly reads speaker_id"
+    fail_criteria: "uses the copied parent count to implement a child-identity request"
+
+  - id: S15_segment_quality
+    level: 15
+    label: semantic_intent
+    objective: "Score nested speech segments rather than their parent recording."
+    prompt: "Detect speech as a nested segment list and annotate every segment with its own UTMOS score; do not substitute one whole-recording score."
+    dataset: "manifest of long recordings"
+    live_capture: {fixture: eval/audio/fixtures/manifests/longform.jsonl, environment: real_host_card_resources}
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, segment, quality]
+    expected_modules:
+      required: [VADSegmentationStage, UTMOSFilterStage]
+      equivalence: {}
+      forbidden: []
+    expected_validation: {status: pass, runnable: true}
+    semantic_pair:
+      id: segment_vs_recording_quality
+      side: segment
+      mechanically_valid_counterexample:
+        note: "Task mode is mechanically valid but produces one recording-level score instead of per-segment scores."
+        initial_roles: [audio_filepath]
+        initial_keys: [audio_filepath]
+        stages:
+          - {ref: VADSegmentationStage, params: {nested: true}}
+          - {ref: UTMOSFilterStage, params: {mode: task, action: annotate, mos_threshold: null}}
+    semantic_expectations:
+      critique:
+        <<: *semantic_critique_defaults
+        min_items_by_section: {stage_reviews: 2, field_reviews: 1, model_checks: 1}
+        evidence_sections: [stage_reviews, field_reviews, model_checks]
+      recipe:
+        required_order: [VADSegmentationStage, UTMOSFilterStage]
+        stage_params:
+          - stage: VADSegmentationStage
+            params: {nested: true}
+          - stage: UTMOSFilterStage
+            params: {mode: segments, action: annotate, mos_threshold: null}
+    explanation_rubric:
+      - "explains nested VAD retains one recording row containing segments"
+      - "explains UTMOS mode=segments writes a score for each nested segment, not one score for the recording"
+    pass_criteria: "grounded semantic critique; nested VAD followed by explicit segment-mode annotation"
+    fail_criteria: "uses task/recording mode or assumes validate proves the score scope"
+
+  - id: S15_recording_quality
+    level: 15
+    label: semantic_intent
+    objective: "Keep VAD metadata but score the parent recording as a whole."
+    prompt: "Detect speech as nested metadata, but annotate one UTMOS score for each original recording; do not score the individual segments."
+    dataset: "manifest of long recordings"
+    live_capture: {fixture: eval/audio/fixtures/manifests/longform.jsonl, environment: real_host_card_resources}
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, segment, quality]
+    expected_modules:
+      required: [VADSegmentationStage, UTMOSFilterStage]
+      equivalence: {}
+      forbidden: []
+    expected_validation: {status: pass, runnable: true}
+    semantic_pair:
+      id: segment_vs_recording_quality
+      side: recording
+      mechanically_valid_counterexample:
+        note: "Segment mode composes but answers a different granularity question."
+        initial_roles: [audio_filepath]
+        initial_keys: [audio_filepath]
+        stages:
+          - {ref: VADSegmentationStage, params: {nested: true}}
+          - {ref: UTMOSFilterStage, params: {mode: segments, action: annotate, mos_threshold: null}}
+    semantic_expectations:
+      critique:
+        <<: *semantic_critique_defaults
+        min_items_by_section: {stage_reviews: 2, field_reviews: 1, model_checks: 1}
+        evidence_sections: [stage_reviews, field_reviews, model_checks]
+      recipe:
+        required_order: [VADSegmentationStage, UTMOSFilterStage]
+        stage_params:
+          - stage: VADSegmentationStage
+            params: {nested: true}
+          - stage: UTMOSFilterStage
+            params: {mode: task, action: annotate, mos_threshold: null}
+    explanation_rubric:
+      - "explains nested segments may coexist with a recording-level score"
+      - "explains explicit UTMOS mode=task prevents auto mode from switching to per-segment scoring"
+    pass_criteria: "grounded semantic critique; explicit recording/task scope despite nested segments"
+    fail_criteria: "leaves mode=auto/segments and silently changes the requested score granularity"
+
+  - id: S15_row_quality_gate
+    level: 15
+    label: semantic_intent
+    objective: "Apply a quality threshold independently to every row."
+    prompt: "Keep each recording only when that recording's UTMOS score is at least 3.4."
+    dataset: "manifest of recordings"
+    live_capture: {fixture: eval/audio/fixtures/manifests/tiny_no_transcripts.jsonl, environment: real_host_card_resources}
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, quality, filter]
+    expected_modules:
+      required: [UTMOSFilterStage, AudioToDocumentStage, DocumentBatchJsonlWriterStage]
+      equivalence: {}
+      forbidden: []
+    expected_validation: {status: pass, runnable: true}
+    semantic_pair:
+      id: aggregate_vs_row_metric
+      side: row
+      mechanically_valid_counterexample:
+        note: "The paired aggregate recipe is valid, but it keeps every row and checks only the corpus mean."
+        initial_roles: [audio_filepath]
+        initial_keys: [audio_filepath]
+        acceptance_criteria:
+          - id: corpus_mean_quality
+            type: quality_standard
+            kind: absolute
+            severity: must
+            check: {scope: aggregate, field: utmos_mos, op: ">=", value: 3.4}
+        stages:
+          - {ref: UTMOSFilterStage, params: {action: annotate, mos_threshold: null, mode: task}}
+          - {ref: AudioToDocumentStage, params: {}}
+          - {ref: DocumentBatchJsonlWriterStage, params: {output_path: /tmp/audio-agent-semantic-quality.jsonl}}
+    semantic_expectations:
+      critique:
+        <<: *semantic_critique_defaults
+        min_items_by_section: {stage_reviews: 3, field_reviews: 1, behavior_checks: 1, model_checks: 1}
+        evidence_sections: [stage_reviews, field_reviews, behavior_checks, model_checks]
+      recipe:
+        required_order: [UTMOSFilterStage, AudioToDocumentStage, DocumentBatchJsonlWriterStage]
+        stage_params:
+          - stage: UTMOSFilterStage
+            params: {action: filter, mos_threshold: 3.4, mode: task}
+    explanation_rubric:
+      - "explains the threshold is evaluated independently for every recording"
+      - "distinguishes a per-row filter from a corpus-average acceptance check"
+    pass_criteria: "grounded semantic critique; explicit row-level filter"
+    fail_criteria: "reports only an aggregate or annotates without implementing keep/drop"
+
+  - id: S15_aggregate_quality_gate
+    level: 15
+    label: semantic_intent
+    objective: "Evaluate a corpus-average success criterion without dropping rows individually."
+    prompt: "Keep every recording, annotate UTMOS, and report whether the arithmetic mean across all retained rows is at least 3.4; do not filter individual rows at 3.4."
+    dataset: "manifest of recordings"
+    live_capture: {fixture: eval/audio/fixtures/manifests/tiny_no_transcripts.jsonl, environment: real_host_card_resources}
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, quality, verify]
+    expected_modules:
+      required: [UTMOSFilterStage, AudioToDocumentStage, DocumentBatchJsonlWriterStage]
+      equivalence: {}
+      forbidden: [PreserveByValueStage]
+    expected_validation: {status: pass, runnable: true}
+    semantic_pair:
+      id: aggregate_vs_row_metric
+      side: aggregate
+      mechanically_valid_counterexample:
+        note: "The row filter validates but changes both membership and the population whose mean would be reported."
+        initial_roles: [audio_filepath]
+        initial_keys: [audio_filepath]
+        stages:
+          - {ref: UTMOSFilterStage, params: {action: filter, mos_threshold: 3.4, mode: task}}
+          - {ref: AudioToDocumentStage, params: {}}
+          - {ref: DocumentBatchJsonlWriterStage, params: {output_path: /tmp/audio-agent-semantic-quality.jsonl}}
+    semantic_expectations:
+      critique:
+        <<: *semantic_critique_defaults
+        min_items_by_section: {stage_reviews: 3, field_reviews: 1, behavior_checks: 1, model_checks: 1}
+        evidence_sections: [stage_reviews, field_reviews, behavior_checks, model_checks]
+      recipe:
+        required_order: [UTMOSFilterStage, AudioToDocumentStage, DocumentBatchJsonlWriterStage]
+        stage_params:
+          - stage: UTMOSFilterStage
+            params: {action: annotate, mos_threshold: null, mode: task}
+        absent_stages: [PreserveByValueStage]
+        contains:
+          acceptance_criteria:
+            - id: corpus_mean_quality
+              type: quality_standard
+              kind: absolute
+              severity: must
+              check: {scope: aggregate, field: utmos_mos, op: ">=", value: 3.4}
+    explanation_rubric:
+      - "explains an aggregate mean is computed across all retained rows and is not a per-row keep/drop rule"
+      - "explains filtering first would change the population and manufacture a different aggregate"
+    pass_criteria: "grounded semantic critique; annotate-only stage plus aggregate acceptance criterion"
+    fail_criteria: "uses a row filter or omits the aggregate criterion"
+
+  - id: S15_resample_copy
+    level: 15
+    label: semantic_intent
+    objective: "Persist converted copies while deliberately keeping downstream reads on originals."
+    prompt: "Create 16 kHz copies for later, but transcribe the original files now. Keep audio_filepath pointing to the originals and retain resampled_audio_filepath as the copy."
+    dataset: "manifest of recordings"
+    live_capture: {fixture: eval/audio/fixtures/manifests/bad_sample_rate.jsonl, environment: gpu_required_real_host}
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, preprocess, transcribe]
+    expected_modules:
+      required: [ResampleAudioStage, InferenceAsrNemoStage, AudioToDocumentStage, DocumentBatchJsonlWriterStage]
+      equivalence: {}
+      forbidden: []
+    expected_validation: {status: pass, runnable: true}
+    semantic_pair:
+      id: used_vs_unused_transform
+      side: persisted_copy
+      mechanically_valid_counterexample:
+        note: "Repointing audio_filepath is valid but makes ASR consume the conversion, contrary to the request."
+        initial_roles: [audio_filepath]
+        initial_keys: [audio_filepath]
+        stages:
+          - ref: ResampleAudioStage
+            params: {resampled_audio_dir: /tmp/audio-agent-semantic-resampled, target_sample_rate: 16000, write_to_disk: true, update_audio_filepath: true}
+          - {ref: InferenceAsrNemoStage, params: {model_name: nvidia/parakeet-tdt-0.6b-v2}}
+          - {ref: AudioToDocumentStage, params: {}}
+          - {ref: DocumentBatchJsonlWriterStage, params: {output_path: /tmp/audio-agent-semantic-asr.jsonl}}
+    semantic_expectations:
+      critique:
+        <<: *semantic_critique_defaults
+        min_items_by_section: {stage_reviews: 4, transform_checks: 1, model_checks: 1}
+        evidence_sections: [stage_reviews, transform_checks, model_checks]
+      recipe:
+        required_order: [ResampleAudioStage, InferenceAsrNemoStage, AudioToDocumentStage, DocumentBatchJsonlWriterStage]
+        stage_params:
+          - stage: ResampleAudioStage
+            params: {target_sample_rate: 16000, write_to_disk: true, update_audio_filepath: false}
+    explanation_rubric:
+      - "explains the conversion is intentionally persisted under resampled_audio_filepath for later use"
+      - "explains ASR still reads the unchanged original audio_filepath in this intent"
+    pass_criteria: "grounded semantic critique; persisted transform has a declared use while downstream stays on originals"
+    fail_criteria: "silently repoints ASR to the copy or calls the unused downstream path an error despite the explicit later-use intent"
+
+  - id: S15_resample_for_asr
+    level: 15
+    label: semantic_intent
+    objective: "Ensure downstream ASR consumes the transformed audio."
+    prompt: "Resample every file to 16 kHz and transcribe those converted files, not the originals."
+    dataset: "manifest of mixed-rate recordings"
+    live_capture: {fixture: eval/audio/fixtures/manifests/bad_sample_rate.jsonl, environment: gpu_required_real_host}
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, preprocess, transcribe]
+    expected_modules:
+      required: [ResampleAudioStage, InferenceAsrNemoStage, AudioToDocumentStage, DocumentBatchJsonlWriterStage]
+      equivalence: {}
+      forbidden: []
+    expected_validation: {status: pass, runnable: true}
+    semantic_pair:
+      id: used_vs_unused_transform
+      side: consumed_transform
+      mechanically_valid_counterexample:
+        note: "Default update_audio_filepath=False writes a valid copy, but ASR continues to read the original path."
+        initial_roles: [audio_filepath]
+        initial_keys: [audio_filepath]
+        stages:
+          - ref: ResampleAudioStage
+            params: {resampled_audio_dir: /tmp/audio-agent-semantic-resampled, target_sample_rate: 16000, write_to_disk: true, update_audio_filepath: false}
+          - {ref: InferenceAsrNemoStage, params: {model_name: nvidia/parakeet-tdt-0.6b-v2}}
+          - {ref: AudioToDocumentStage, params: {}}
+          - {ref: DocumentBatchJsonlWriterStage, params: {output_path: /tmp/audio-agent-semantic-asr.jsonl}}
+    semantic_expectations:
+      critique:
+        <<: *semantic_critique_defaults
+        min_items_by_section: {stage_reviews: 4, transform_checks: 1, model_checks: 1}
+        evidence_sections: [stage_reviews, transform_checks, model_checks]
+      recipe:
+        required_order: [ResampleAudioStage, InferenceAsrNemoStage, AudioToDocumentStage, DocumentBatchJsonlWriterStage]
+        stage_params:
+          - stage: ResampleAudioStage
+            params: {target_sample_rate: 16000, write_to_disk: true, update_audio_filepath: true}
+    explanation_rubric:
+      - "explains writing resampled_audio_filepath alone does not make a default file consumer use it"
+      - "explains update_audio_filepath repoints downstream ASR to the converted 16 kHz file"
+    pass_criteria: "grounded semantic critique; transformed path is actually consumed"
+    fail_criteria: "validates a written-but-unused conversion and claims ASR reads it"
+
+  - id: S15_filter_sigmos_key
+    level: 15
+    label: semantic_intent
+    objective: "Choose the intended producer when multiple valid score keys exist."
+    prompt: "Annotate both UTMOS and SIGMOS, then keep rows using SIGMOS overall score sigmos_ovrl >= 3.0, not UTMOS."
+    dataset: "manifest of recordings"
+    live_capture: {fixture: eval/audio/fixtures/manifests/tiny_no_transcripts.jsonl, environment: real_host_card_resources}
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, quality, filter]
+    expected_modules:
+      required: [UTMOSFilterStage, SIGMOSFilterStage, PreserveByValueStage]
+      equivalence: {}
+      forbidden: []
+    expected_validation: {status: pass, runnable: true}
+    semantic_pair:
+      id: explicit_wrong_key
+      side: sigmos
+      mechanically_valid_counterexample:
+        note: "Both keys exist, so explicitly filtering utmos_mos validates while selecting the wrong metric."
+        initial_roles: [audio_filepath]
+        initial_keys: [audio_filepath]
+        stages:
+          - {ref: UTMOSFilterStage, params: {action: annotate, mos_threshold: null, mode: task}}
+          - {ref: SIGMOSFilterStage, params: {action: annotate, mode: task}}
+          - {ref: PreserveByValueStage, params: {input_value_key: utmos_mos, target_value: 3.0, operator: ge}}
+    semantic_expectations:
+      critique:
+        <<: *semantic_critique_defaults
+        min_items_by_section: {stage_reviews: 3, field_reviews: 1, behavior_checks: 1, model_checks: 2}
+        evidence_sections: [stage_reviews, field_reviews, behavior_checks, model_checks]
+      recipe:
+        required_order: [UTMOSFilterStage, SIGMOSFilterStage, PreserveByValueStage]
+        stage_params:
+          - stage: UTMOSFilterStage
+            params: {action: annotate, mos_threshold: null}
+          - stage: SIGMOSFilterStage
+            params: {action: annotate}
+          - stage: PreserveByValueStage
+            params: {input_value_key: sigmos_ovrl, target_value: 3.0, operator: ge}
+    explanation_rubric:
+      - "traces sigmos_ovrl to SIGMOS rather than choosing another available score key"
+      - "explains an explicit but wrong key can remain mechanically valid when both producers ran"
+    pass_criteria: "grounded semantic critique; generic filter explicitly reads sigmos_ovrl"
+    fail_criteria: "filters utmos_mos merely because it is also available"
+
+  - id: S15_filter_utmos_key
+    level: 15
+    label: semantic_intent
+    objective: "Choose the other intended producer under the same mechanically valid topology."
+    prompt: "Annotate both UTMOS and SIGMOS, then keep rows using UTMOS utmos_mos >= 3.0, not SIGMOS overall."
+    dataset: "manifest of recordings"
+    live_capture: {fixture: eval/audio/fixtures/manifests/tiny_no_transcripts.jsonl, environment: real_host_card_resources}
+    prerequisites: []
+    expect_clarification: []
+    clarification_required: false
+    expected_capabilities: [ingest, quality, filter]
+    expected_modules:
+      required: [UTMOSFilterStage, SIGMOSFilterStage, PreserveByValueStage]
+      equivalence: {}
+      forbidden: []
+    expected_validation: {status: pass, runnable: true}
+    semantic_pair:
+      id: explicit_wrong_key
+      side: utmos
+      mechanically_valid_counterexample:
+        note: "Both keys exist, so explicitly filtering sigmos_ovrl validates while selecting the wrong metric."
+        initial_roles: [audio_filepath]
+        initial_keys: [audio_filepath]
+        stages:
+          - {ref: UTMOSFilterStage, params: {action: annotate, mos_threshold: null, mode: task}}
+          - {ref: SIGMOSFilterStage, params: {action: annotate, mode: task}}
+          - {ref: PreserveByValueStage, params: {input_value_key: sigmos_ovrl, target_value: 3.0, operator: ge}}
+    semantic_expectations:
+      critique:
+        <<: *semantic_critique_defaults
+        min_items_by_section: {stage_reviews: 3, field_reviews: 1, behavior_checks: 1, model_checks: 2}
+        evidence_sections: [stage_reviews, field_reviews, behavior_checks, model_checks]
+      recipe:
+        required_order: [UTMOSFilterStage, SIGMOSFilterStage, PreserveByValueStage]
+        stage_params:
+          - stage: UTMOSFilterStage
+            params: {action: annotate, mos_threshold: null}
+          - stage: SIGMOSFilterStage
+            params: {action: annotate}
+          - stage: PreserveByValueStage
+            params: {input_value_key: utmos_mos, target_value: 3.0, operator: ge}
+    explanation_rubric:
+      - "traces utmos_mos to UTMOS rather than choosing another available score key"
+      - "explains an explicit key is a semantic decision, not proof it matches the requested metric"
+    pass_criteria: "grounded semantic critique; generic filter explicitly reads utmos_mos"
+    fail_criteria: "filters sigmos_ovrl merely because it is also available"

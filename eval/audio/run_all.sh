@@ -8,11 +8,13 @@
 #   bash eval/audio/run_all.sh --e2e           # + GPU/Ray E2E on /tmp/aa_real
 #   bash eval/audio/run_all.sh --sim           # + end-to-end user-simulation personas (needs CURSOR_API_KEY + GPU)
 #   bash eval/audio/run_all.sh --llm --e2e --sim   # everything
-# Env: MODEL / MODEL_SUT / MODEL_USER (SDK models), RAY_ADDRESS, AUDIO_AGENT_WORKSPACE.
+# Env: MODEL / MODEL_JUDGE / MODEL_SUT / MODEL_USER (SDK models), RAY_ADDRESS,
+# AUDIO_AGENT_WORKSPACE.
 set -u
 cd "$(dirname "$0")/../.." || exit 2          # repo root
 PY="${PY:-.venv/bin/python}"
 MODEL="${MODEL:-claude-opus-4-8}"
+MODEL_JUDGE="${MODEL_JUDGE:-$MODEL}"
 DO_LLM=0; DO_E2E=0; DO_SIM=0
 for a in "$@"; do
   case "$a" in
@@ -44,11 +46,24 @@ $PY -m eval.audio.snapshot --check \
 if [ "$DO_LLM" = "1" ]; then
   echo "== [6] LLM plane: capture traces ($MODEL) + aggregate =="
   if [ -z "${CURSOR_API_KEY:-}" ]; then
-    echo "  CURSOR_API_KEY not set - skipping SDK capture (grading existing traces only)"
+    echo "  CURSOR_API_KEY not set - authoritative LLM regression cannot run"
+    echo "  Use 'python -m eval.audio.aggregate_traces --non-llm' explicitly for diagnostics only"
+    rc=1
   else
-    $PY -m eval.audio.agent_runner --batch --mode sdk --model "$MODEL" || true
+    TRACE_DIR="$(mktemp -d eval/audio/reports/llm-traces.XXXXXX)" || TRACE_DIR=""
+    if [ -z "$TRACE_DIR" ]; then
+      echo "  could not create an isolated trace directory"
+      rc=1
+    else
+      $PY -m eval.audio.agent_runner --batch --mode sdk --model "$MODEL" \
+        --trace-dir "$TRACE_DIR" || rc=1
+      $PY -m eval.audio.agent_runner --semantic --mode sdk --model "$MODEL" \
+        --trace-dir "$TRACE_DIR" || rc=1
+      $PY -m eval.audio.aggregate_traces --judge-model "$MODEL_JUDGE" \
+        --traces-dir "$TRACE_DIR" \
+        --report eval/audio/reports/llm_plane.json || rc=1
+    fi
   fi
-  $PY -m eval.audio.aggregate_traces --report eval/audio/reports/llm_plane.json || rc=1
 else
   echo "== [6] LLM plane: skipped (pass --llm) =="
 fi

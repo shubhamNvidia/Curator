@@ -40,9 +40,9 @@ scenarios:
     expected_capabilities: [ingest, transcribe, export]
     expected_modules:
       required: [InferenceAsrNemoStage]
-      equivalence: {sink: [AudioToDocumentStage, ManifestWriterStage]}
+      equivalence: {sink: [ManifestWriterStage, DocumentBatchJsonlWriterStage]}
       forbidden: [UTMOSFilterStage]
-    expected_order: [ManifestReader, InferenceAsrNemoStage, AudioToDocumentStage]
+    expected_order: [ManifestReader, InferenceAsrNemoStage]
     expected_params: {must_resolve: [], fixed: {}}
     expected_structure: linear
     expected_validation: {status: pass, runnable: true}
@@ -50,7 +50,7 @@ scenarios:
     expected_output_roles: [pred_text]
     explanation_rubric:
       - "names the ASR model and language assumption"
-      - "explains AudioToDocument before the JSON writer"
+      - "explains the selected JSON writer and its task-carrier compatibility"
     pass_criteria: "validates; ASR produces pred_text; JSON sink safe"
     fail_criteria: "no ASR; tensor into JSON sink; validation fails"
 

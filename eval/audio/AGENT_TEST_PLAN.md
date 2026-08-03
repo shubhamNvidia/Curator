@@ -57,7 +57,7 @@ Execution success is **necessary but not sufficient**.
 | L-Component | planning / selection / config / validation | multi-stage `validate` → `Verdict.status` + issue codes; `card_conformance.audit`; planner mode/feasibility | no |
 | L-Integration | real modules, structure only | `build_stages` + `validate` + `planner.plan` on real contracts / `EnvProfile` | no |
 | L-E2E | real datasets | `smoke`→`run`→`report`→`verify` on FLEURS (Ray :6457, RTX 4090) | yes (opt-in) |
-| L-Regression | existing behavior | current `queries.yaml` (32) + card gate 44/44 + snapshots of `config_hash`/`resolve`/verdicts | no |
+| L-Regression | existing behavior | deterministic queries/card gate/snapshots plus paired host semantic-intent traces | no* |
 | L-Stress/scale | large / many-stage | big synthetic manifests; many-GPU-stage recipes forcing `batch`/infeasible; throughput via `calibrate` | mixed |
 | L-Adversarial/edge | hostile / boundary | conflicting/impossible prompts, goalpost-moving, path traversal, secret/transcript leakage, `tensor_into_sink`, composite blind spots | no |
 | L-Human | reasoning & quality | rubric review on a sampled subset | n/a |
@@ -153,6 +153,10 @@ clarification, selection, ordering, explanation rubric) live in `scenarios/`.
 | 12 | Capability unavailable | "label emotion / accent" | refuse (`no_stage_for`) | refusal |
 | 13 | Failure scenarios | invalid params, missing deps, runtime, partial | `bad_params`, `card_max_speakers`, `missing_secret`, smoke `errors`, `rejected>0` | seeded fault |
 | 14 | New unseen module/card | "use the NewFooStage" (card added post-hoc) | discover via `discover`/`cards`; conform via `check_card` | generalization |
+| 15 | Mechanically valid, semantically wrong | paired parent/child, segment/recording, aggregate/row, transform-use, and key-selection intents | same valid topology/config family; host critic must derive the intent-specific order/params | deterministic evidence packet + structured host critique + model judge |
+
+\* Level 15's checked-in scenario definitions and trace-grader unit tests are
+CPU-only. Capturing fresh host traces requires an LLM endpoint.
 
 ---
 
@@ -199,6 +203,37 @@ A trace is:
   "final_recipe": {"stages": [ ... ]}
 }
 ```
+
+Level-15 semantic regressions additionally carry:
+
+```json
+{
+  "semantic_critique": {
+    "mechanically_runnable": true,
+    "intent_status": "pass",
+    "stage_reviews": [
+      {
+        "stage": "MetricStage",
+        "finding": "This stage implements the requested metric operation.",
+        "evidence": ["goal:user-request", "card:MetricStage", "recipe:MetricStage"]
+      }
+    ],
+    "field_reviews": [],
+    "behavior_checks": [],
+    "transform_checks": [],
+    "model_checks": [],
+    "assumptions_or_questions": []
+  }
+}
+```
+
+The validate tool result must separately contain the deterministic
+`semantic_review` evidence packet. `trace_check.py` requires card inspection, a
+green validation of the exact final recipe, required critique sections,
+substantive findings, resolvable citation tokens, and the intent-specific recipe
+consequence declared in scenario YAML. It contains no field- or module-specific
+semantic rules. `judge.py --model ...`/human review remains responsible for
+whether the critique's meaning is correct.
 
 ---
 
@@ -381,10 +416,12 @@ Thresholds marked "proposed" are tunable once a baseline exists.
 # deterministic suite (GPU-free) + card gate, with a JSON report
 python -m eval.audio.run_eval --report eval/audio/reports/latest.json
 
-# LLM plane: drive a real agent (Opus 4.8) over the scenarios, then grade
+# LLM plane: fresh isolated traces + complete authoritative Level-15 gate
 export CURSOR_API_KEY=cursor_...
-python -m eval.audio.agent_runner --batch --mode sdk --model claude-opus-4-8
-python -m eval.audio.aggregate_traces --report eval/audio/reports/llm_plane.json
+bash eval/audio/run_all.sh --llm
+# Existing-trace fallback is deliberately diagnostic and cannot certify semantics:
+python -m eval.audio.aggregate_traces --non-llm \
+  --report eval/audio/reports/llm_plane_diagnostic.json
 # (grade a single captured trace)
 python -m eval.audio.trace_check --id L04_good_audio --trace eval/audio/traces/L04_good_audio.json
 python -m eval.audio.judge --id L04_good_audio --trace eval/audio/traces/L04_good_audio.json

@@ -14,9 +14,9 @@ scenarios:
     expected_capabilities: [ingest, preprocess, export]
     expected_modules:
       required: [GetAudioDurationStage]
-      equivalence: {sink: [AudioToDocumentStage, ManifestWriterStage]}
+      equivalence: {sink: [ManifestWriterStage, DocumentBatchJsonlWriterStage]}
       forbidden: []
-    expected_order: [ManifestReader, GetAudioDurationStage, AudioToDocumentStage]
+    expected_order: [ManifestReader, GetAudioDurationStage]
     expected_params: {must_resolve: [], fixed: {}}
     expected_structure: linear
     expected_validation: {status: pass, runnable: true}
@@ -64,10 +64,10 @@ scenarios:
     refuse: false
     expected_capabilities: [ingest, preprocess, export]
     expected_modules:
-      required: [AudioToDocumentStage]     # the fix: sanitize before the writer
+      required: [AudioToDocumentStage, DocumentBatchJsonlWriterStage]
       equivalence: {}
       forbidden: []
-    expected_order: [ManifestReader, ResampleAudioStage, AudioToDocumentStage, ManifestWriterStage]
+    expected_order: [ManifestReader, ResampleAudioStage, AudioToDocumentStage, DocumentBatchJsonlWriterStage]
     expected_params: {must_resolve: [], fixed: {}}
     expected_structure: linear
     expected_validation: {status: pass, runnable: true}
