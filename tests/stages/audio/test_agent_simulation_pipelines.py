@@ -301,6 +301,7 @@ from nemo_curator.stages.audio.alm.pretrain.planning import (
     SnippetRepetitionFilterStage,
 )
 from nemo_curator.stages.audio.common import (
+    CreateInitialManifestAudioFolderStage,
     GetAudioDurationStage,
     ManifestReader,
     ManifestReaderStage,
@@ -318,8 +319,9 @@ from nemo_curator.stages.audio.inference.asr.asr_nemo import InferenceAsrNemoSta
 from nemo_curator.stages.audio.inference.speaker_diarization.pyannote import PyAnnoteDiarizationStage
 from nemo_curator.stages.audio.inference.speaker_diarization.sortformer import InferenceSortformerStage
 from nemo_curator.stages.audio.inference.vad.whisperx_vad import WhisperXVADStage
-from nemo_curator.stages.audio.io.convert import AudioToDocumentStage
+from nemo_curator.stages.audio.io.convert import AudioToDocumentStage, DocumentBatchJsonlWriterStage
 from nemo_curator.stages.audio.io.extract_segments import SegmentExtractionStage
+from nemo_curator.stages.audio.io.group_export import ManifestGroupExportStage
 from nemo_curator.stages.audio.metrics.bandwidth import BandwidthEstimationStage
 from nemo_curator.stages.audio.metrics.squim import TorchSquimQualityMetricsStage
 from nemo_curator.stages.audio.metrics.wer import ComputeWERStage, GetPairwiseWerStage
@@ -353,7 +355,7 @@ class StageCase:
     scenario: str
 
 
-EXPECTED_AUDIO_AGENT_READY_STAGE_COUNT = 44
+EXPECTED_AUDIO_AGENT_READY_STAGE_COUNT = 47
 VALID_AGENT_SCENARIOS = {
     "alm",
     "alm_pretrain",
@@ -622,6 +624,16 @@ def _coverage_cases(tmp_path: Path) -> list[StageCase]:
             "dataset_contract",
         ),
         StageCase(ComputeWERStage, ComputeWERStage, "speech_tagging"),
+        StageCase(
+            CreateInitialManifestAudioFolderStage,
+            lambda: CreateInitialManifestAudioFolderStage(data_dir=str(audio_dir)),
+            "dataset_contract",
+        ),
+        StageCase(
+            DocumentBatchJsonlWriterStage,
+            lambda: DocumentBatchJsonlWriterStage(output_path=str(output_dir / "documents.jsonl")),
+            "ingress_transform",
+        ),
         StageCase(GetAudioDurationStage, GetAudioDurationStage, "ingress_transform"),
         StageCase(GetPairwiseWerStage, GetPairwiseWerStage, "speech_tagging"),
         StageCase(
@@ -632,6 +644,11 @@ def _coverage_cases(tmp_path: Path) -> list[StageCase]:
         StageCase(InferenceSortformerStage, lambda: InferenceSortformerStage(diar_model=object()), "speech_tagging"),
         StageCase(InverseTextNormalizationStage, InverseTextNormalizationStage, "speech_tagging"),
         StageCase(JoinSplitAudioMetadataStage, JoinSplitAudioMetadataStage, "split_join_extract"),
+        StageCase(
+            ManifestGroupExportStage,
+            lambda: ManifestGroupExportStage(output_dir=str(output_dir / "groups")),
+            "ingress_transform",
+        ),
         StageCase(ManifestReader, lambda: ManifestReader(manifest_path=str(manifest)), "composite"),
         StageCase(ManifestReaderStage, ManifestReaderStage, "ingress_transform"),
         StageCase(ManifestWriterStage, lambda: ManifestWriterStage(output_path=str(output_dir / "out.jsonl")), "ingress_transform"),
@@ -675,12 +692,15 @@ def _discover_agent_ready_classes() -> set[type]:
         CreateInitialManifestFleursStage,
         CreateInitialManifestReadSpeechStage,
         ComputeWERStage,
+        CreateInitialManifestAudioFolderStage,
+        DocumentBatchJsonlWriterStage,
         GetAudioDurationStage,
         GetPairwiseWerStage,
         InferenceAsrNemoStage,
         InferenceSortformerStage,
         InverseTextNormalizationStage,
         JoinSplitAudioMetadataStage,
+        ManifestGroupExportStage,
         ManifestReader,
         ManifestReaderStage,
         ManifestWriterStage,
@@ -775,7 +795,7 @@ def test_agent_stage_registry_contracts_and_coverage_matrix(tmp_path: Path) -> N
         assert contract.wrappable is (case.cls.__name__ not in composite_names)
 
 
-def test_agent_all_44_stage_contracts_are_planner_safe(tmp_path: Path) -> None:
+def test_agent_every_stage_contract_is_planner_safe(tmp_path: Path) -> None:
     cases = _coverage_cases(tmp_path)
     assert len(cases) == EXPECTED_AUDIO_AGENT_READY_STAGE_COUNT
 
@@ -2465,7 +2485,7 @@ def test_agent_or_shaped_stages_accept_each_declared_input_shape(tmp_path: Path)
 def test_agent_contract_self_consistency_meta_invariants(tmp_path: Path) -> None:
     """Cross-stage contract invariants every AgentReady stage must satisfy.
 
-    A meta-test over all 44 contracts: declaring a disk output implies the disk gate,
+    A meta-test over every agent-ready contract: declaring a disk output implies the disk gate,
     declaring a tensor output implies at least one declared write key, and every
     reads_one_of alternative is a non-empty key set.
     """

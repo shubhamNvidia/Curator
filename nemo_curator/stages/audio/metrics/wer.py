@@ -23,7 +23,7 @@ from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo_text_processing.text_normalization import Normalizer
 
 from nemo_curator.backends.base import WorkerMetadata
-from nemo_curator.stages.audio._agent_ready import AgentReady, IOSpec, StageContract
+from nemo_curator.stages.audio._agent_ready import AgentReady, ConditionalWrite, IOSpec, StageContract
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.tasks import AudioTask
 
@@ -94,6 +94,34 @@ class ComputeWERStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 IOSpec(data_keys=[self.hypothesis_text_key, self.reference_text_key]),
             ],
             writes=IOSpec(data_keys=[self.metrics_key], segment_data_keys=[self.metrics_key]),
+            conditional_writes=[
+                ConditionalWrite(
+                    writes=IOSpec(data_keys=[self.metrics_key]),
+                    condition=(
+                        f"'{self.segments_key}' is absent and the top-level "
+                        f"'{self.hypothesis_text_key}' and '{self.reference_text_key}' values are valid text; "
+                        "normalization completes and either empty-reference diagnostics or WER metrics are assigned"
+                    ),
+                    value_origin="augments_upstream_same_key",
+                ),
+                ConditionalWrite(
+                    writes=IOSpec(segment_data_keys=[self.metrics_key]),
+                    condition=(
+                        f"'{self.segments_key}' is present and an individual segment has valid text in "
+                        f"'{self.hypothesis_text_key}' and '{self.reference_text_key}'; normalization completes "
+                        "and either empty-reference diagnostics or WER metrics are assigned"
+                    ),
+                    value_origin="augments_upstream_same_key",
+                ),
+                ConditionalWrite(
+                    writes=IOSpec(segment_data_keys=[self.metrics_key]),
+                    condition=(
+                        f"'{self.segments_key}' is present, segment computation raises a caught KeyError "
+                        f"or ValueError, and '{self.metrics_key}.metric_skip_reason' is assigned"
+                    ),
+                    value_origin="augments_upstream_same_key",
+                ),
+            ],
         )
 
     def validate_input(self, task: AudioTask) -> bool:
@@ -357,6 +385,15 @@ class GetPairwiseWerStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         return StageContract(
             reads=IOSpec(data_keys=[self.text_key, self.pred_text_key]),
             writes=IOSpec(data_keys=[self.wer_key]),
+            conditional_writes=[
+                ConditionalWrite(
+                    writes=IOSpec(data_keys=[self.wer_key]),
+                    condition=(
+                        f"both '{self.text_key}' and '{self.pred_text_key}' resolve to valid non-null text "
+                        "and pairwise WER computation completes"
+                    ),
+                )
+            ],
         )
 
     def process(self, task: AudioTask) -> AudioTask:

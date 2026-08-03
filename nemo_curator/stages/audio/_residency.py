@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import soundfile as sf
 
-from nemo_curator.stages.audio._agent_ready import AudioForm, IOSpec
+from nemo_curator.stages.audio._agent_ready import AudioForm, ConditionalWrite, IOSpec
 from nemo_curator.stages.audio.common import ensure_waveform_2d, load_audio_file
 
 if TYPE_CHECKING:
@@ -67,6 +67,101 @@ def residency_read_specs(
     if "file" in forms:
         specs.append(IOSpec(data_keys=[audio_filepath_key], accepts=["file"]))
     return specs
+
+
+def scoped_audio_io_specs(
+    input_residency: str,
+    *,
+    mode: Literal["task", "segments", "auto"],
+    audio_filepath_key: str,
+    waveform_key: str,
+    sample_rate_key: str,
+    segments_key: str,
+    output_keys: list[str],
+) -> tuple[IOSpec, list[IOSpec], IOSpec]:
+    """Build mode-accurate reads/writes for task-or-nested audio stages.
+
+    ``task`` exposes only top-level residency alternatives and outputs;
+    ``segments`` requires the top-level segment container while locating audio
+    and outputs inside each segment; and ``auto`` conservatively advertises the
+    complete alternatives for either runtime branch.
+
+    This is contract assembly only. It does not select a runtime branch or
+    change a stage's processing behavior.
+    """
+    task_reads = residency_read_specs(
+        input_residency,
+        audio_filepath_key=audio_filepath_key,
+        waveform_key=waveform_key,
+        sample_rate_key=sample_rate_key,
+    )
+    segment_reads = [
+        IOSpec(
+            data_keys=[segments_key] if mode == "auto" else [],
+            segment_data_keys=list(spec.data_keys),
+            accepts=list(spec.accepts),
+        )
+        for spec in task_reads
+    ]
+
+    if mode == "task":
+        return IOSpec(), task_reads, IOSpec(data_keys=list(output_keys))
+    if mode == "segments":
+        return (
+            IOSpec(data_keys=[segments_key]),
+            segment_reads,
+            IOSpec(segment_data_keys=list(output_keys)),
+        )
+    return (
+        IOSpec(),
+        [*task_reads, *segment_reads],
+        IOSpec(data_keys=list(output_keys), segment_data_keys=list(output_keys)),
+    )
+
+
+def scoped_audio_conditional_writes(
+    mode: Literal["task", "segments", "auto"],
+    *,
+    segments_key: str,
+    output_keys: list[str],
+    assignment_condition: str,
+) -> list[ConditionalWrite]:
+    """Describe data-dependent writes for task-or-segment audio stages.
+
+    ``assignment_condition`` is stage-authored factual prose for the common
+    success path that actually assigns the advertised keys.  The helper adds
+    configured scope/auto-branch context without interpreting the stage or
+    changing execution.
+    """
+    conditional: list[ConditionalWrite] = []
+    if mode in {"task", "auto"}:
+        branch = (
+            "task mode is configured"
+            if mode == "task"
+            else f"'{segments_key}' is absent, so the task-level branch runs"
+        )
+        conditional.append(
+            ConditionalWrite(
+                writes=IOSpec(data_keys=list(output_keys)),
+                condition=f"{branch}; {assignment_condition}",
+            )
+        )
+    if mode in {"segments", "auto"}:
+        branch = (
+            "segments mode is configured and an individual segment exists"
+            if mode == "segments"
+            else (
+                f"'{segments_key}' is present, so the per-segment branch runs, "
+                "and an individual segment exists"
+            )
+        )
+        conditional.append(
+            ConditionalWrite(
+                writes=IOSpec(segment_data_keys=list(output_keys)),
+                condition=f"{branch}; {assignment_condition}",
+            )
+        )
+    return conditional
 
 
 def resolve_audio(  # noqa: PLR0913 (complexity accepted: keyword-only residency/key knobs mirror the stage fields)

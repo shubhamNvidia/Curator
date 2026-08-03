@@ -10,7 +10,7 @@ the framework auto-derives the rest, and one test tells you if anything is missi
 
 ---
 
-## TL;DR — the whole job is 3 things
+## TL;DR — the mechanical contract is 3 things
 
 1. Inherit `AgentReady` and implement **`describe()`** returning a `StageContract` with
    **`reads`, `writes`, `cardinality`** (+ honest **`gates`**).
@@ -18,7 +18,10 @@ the framework auto-derives the rest, and one test tells you if anything is missi
    literals in `process()`).
 3. Add one test: **`assert_agent_ready(MyStage(...), fixture_factory=...)`**.
 
-Everything else is auto-derived or optional. If `assert_agent_ready` passes, you're done.
+Those three items make the stage mechanically composable. Also update its capability card
+with the meaning of externally consumed outputs (especially filterable fields and anything
+crossing a fan-out/aggregation boundary). `assert_agent_ready` can prove keys and
+cardinality; it cannot prove that a reasoner will interpret a value correctly.
 
 ---
 
@@ -26,7 +29,13 @@ Everything else is auto-derived or optional. If `assert_agent_ready` passes, you
 
 ```python
 from dataclasses import dataclass
-from nemo_curator.stages.audio._agent_ready import AgentReady, StageContract, IOSpec, Gates
+from nemo_curator.stages.audio._agent_ready import (
+    AgentReady,
+    ConditionalWrite,
+    Gates,
+    IOSpec,
+    StageContract,
+)
 from nemo_curator.stages.base import ProcessingStage
 
 @dataclass
@@ -59,6 +68,60 @@ class MyStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
   `requires_internet_first_run`, `requires_ffmpeg`. Serializability (both exist on `Gates`): a sink
   that `json.dumps` `task.data` as-is must set `requires_serializable_input=True`; a converter that
   strips tensors/audio blobs sets `sanitizes_output=True`.
+
+### Conditional/data-dependent writes
+
+Keep `writes` as the existing mechanical output declaration. When a listed
+field is only written on a runtime branch—or a non-preserving stage may copy an
+upstream field only when it is present—add factual possibility metadata:
+
+```python
+return StageContract(
+    writes=IOSpec(data_keys=[self.score_key], segment_data_keys=[self.score_key]),
+    conditional_writes=[
+        ConditionalWrite(
+            writes=IOSpec(data_keys=[self.score_key]),
+            condition=f"'{self.segments_key}' is absent, so the task-level branch runs",
+        ),
+        ConditionalWrite(
+            writes=IOSpec(segment_data_keys=[self.score_key]),
+            condition=f"'{self.segments_key}' is present, so the per-segment branch runs",
+        ),
+        ConditionalWrite(
+            writes=IOSpec(data_keys=list(self.passthrough_keys)),
+            condition="the same input key is present, non-null, and allowed by the output whitelist",
+            value_origin="upstream_same_key",
+        ),
+        ConditionalWrite(
+            metadata_writes=[self.metadata_key],
+            condition="the metadata value is computed and attached to the emitted task",
+        ),
+    ],
+)
+```
+
+`ConditionalWrite` does not execute a predicate and does not change processing,
+defaults, or the validator's legacy mechanical interpretation of `writes`. It
+labels output possibility and value provenance for `validate.semantic_review`.
+The `upstream_same_key` origin is important for allowlist/rebuild stages: it
+keeps the original producer's meaning visible instead of falsely presenting the
+copier as a new metric producer.
+
+Use `metadata_writes` for a conditional `task._metadata` output. Unconditional
+metadata inputs/outputs remain declared through
+`StageContract.metadata_reads`/`metadata_writes`; semantic review traces all
+three scopes (`task`, `segment`, and `metadata`) independently.
+
+Use `augments_upstream_same_key` when the stage adds entries to an existing
+mapping (for example a shared metrics mapping), and
+`transforms_upstream_same_key` when it replaces the same key with a derived
+value. These are objective lineage facts, not claims about whether the value is
+appropriate for the user's goal.
+
+Conditions must describe actual code branches using configured key values. They
+are not an intent checker, a module-specific validator, or a centralized
+field-scope ontology. The host LLM still decides whether a conditional field's
+meaning and granularity fit the request.
 
 ## What is AUTO-DERIVED — do NOT hand-write these
 
@@ -104,6 +167,42 @@ resolved automatically from your `*_key` **field name** via `nemo_curator/stages
   truly stage-internal key, list it in `INTERNAL_KEY_FIELDS`). The conformance test fails if you
   forget — it won't let a key silently fall through.
 
+## Output meaning — the reasoning contract
+
+Roles answer “can these stages connect?” They do not answer “what does this
+value mean here?” A pipeline can connect perfectly and still apply a valid
+filter to the wrong entity. Put that semantic knowledge in the capability card,
+where the host LLM can reason over it; do not add a per-field rule or a hard
+`field_scope` ontology to the Python core.
+
+For each output that another stage may select, aggregate, compare or filter,
+document:
+
+- **meaning** — what the value actually represents, not merely “the key where it
+  is written”;
+- **unit/range** — seconds, Hz, speakers, MOS range, category vocabulary, etc.;
+- **provenance** — which input/entity and computation produced it;
+- **scope/granularity** — file, original parent item, emitted child, segment,
+  speaker, batch or corpus, written as factual prose rather than an enum;
+- **propagation** — whether fan-out copies a parent value to every child, nesting
+  moves it into segments, aggregation summarizes many rows, or a transform
+  recomputes it;
+- **counterexample** — at least one plausible but wrong interpretation and its
+  pipeline consequence.
+
+Use the card's optional `semantic_facts` mapping for structured prose, or
+`notes`/`caveats` when the fact spans several outputs. For example, if a
+speaker-separation stage computes the original clip's detected-speaker count
+once and copies it to every per-speaker child, say so explicitly: filtering that
+child field to `== 1` selects children whose **parent source** had one detected
+speaker; it does not test whether each already-separated child track is
+single-speaker.
+
+Only document facts grounded in code, a measured run or an authoritative model
+source, and mark their honesty tier in the card's `verified` block. Missing
+meaning should remain an explicit TODO; the host must ask rather than invent it.
+See `nemo_curator/audio_agent/knowledge/CARD_SCHEMA.md`.
+
 ## Discovery — how the agent finds your stage
 
 Nothing to do: your stage auto-registers (via `StageMeta`) and appears in the catalog. Consumers
@@ -145,8 +244,11 @@ memorize the rules — if the test passes, the contract is honest.
 - [ ] `AgentReady` + `describe()` with `reads`, `writes`, `cardinality`, honest `gates`
 - [ ] every read/written `task.data` key is a `*_key` constructor field (no bare literals)
 - [ ] new `*_key` concepts have a `_roles.KEY_ROLES` entry (or `INTERNAL_KEY_FIELDS`)
+- [ ] capability card explains each externally consumed output's meaning, unit,
+      provenance, scope/granularity, propagation and a counterexample
 - [ ] new `AudioTask`s preserve `_metadata` and `list(_stage_perf)` (manual — not covered by `assert_agent_ready`)
 - [ ] `assert_agent_ready(...)` test added and green
 - [ ] defaults unchanged → existing pipelines behave exactly as before
 
-That's it. Auto-derivation handles params/roles/dispatch/description; the test enforces the rest.
+Auto-derivation handles params/roles/dispatch/description; the card supplies meaning only the
+stage author knows. Neither documentation step changes runtime defaults.

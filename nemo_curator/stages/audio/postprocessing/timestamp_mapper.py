@@ -35,12 +35,13 @@ Output control uses two layers:
   always blocked, even if accidentally added to ``passthrough_keys``.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from loguru import logger
 
-from nemo_curator.stages.audio._agent_ready import AgentReady, IOSpec, StageContract
+from nemo_curator.stages.audio._agent_ready import AgentReady, ConditionalWrite, Gates, IOSpec, StageContract
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.stages.resources import Resources
 from nemo_curator.tasks import AudioTask
@@ -54,6 +55,45 @@ _NEVER_PASS_KEYS = frozenset(
         "segments",
     }
 )
+
+def _segment_bounds(seg: Any) -> tuple[float, float] | None:  # noqa: ANN401 - shape is the point
+    """``(start_sec, end_sec)`` from either segment shape, or ``None`` if unreadable.
+
+    Two producers, two shapes. VAD and SpeakerSep emit ``[start, end]`` pairs; the diarizers
+    emit ``{start, end, speaker}`` dicts (``InferenceSortformerStage.diarize`` is typed
+    ``list[list[dict[str, Any]]]``). Reading only pairs raised ``KeyError: 0`` on real
+    diarizer output, so a diarize->map pipeline died where it should merely have worked.
+
+    Unreadable segments return ``None`` rather than raising: one malformed entry should be
+    skipped, not take down a whole batch.
+    """
+    if isinstance(seg, Mapping):
+        start, end = seg.get("start"), seg.get("end")
+    else:
+        try:
+            start, end = seg[0], seg[1]
+        except (TypeError, IndexError, KeyError):
+            return None
+    try:
+        return float(start), float(end)
+    except (TypeError, ValueError):
+        return None
+
+
+def _ordered_segments(diar_segments: Any) -> list[tuple[Any, float, float]]:  # noqa: ANN401 - shape is the point
+    """``(original_segment, start, end)`` for each readable segment, earliest first.
+
+    The original is carried alongside its bounds so the output can echo the shape it was
+    given -- rewriting a diarizer's ``{start, end, speaker}`` as a bare pair would throw away
+    the speaker label, which is the one thing a diarization pipeline is run for.
+    """
+    out = []
+    for seg in diar_segments or []:
+        bounds = _segment_bounds(seg)
+        if bounds is not None:
+            out.append((seg, bounds[0], bounds[1]))
+    return sorted(out, key=lambda t: t[1])
+
 
 _DEFAULT_PASSTHROUGH_KEYS: list[str] = [
     "speaker_id",
@@ -165,6 +205,64 @@ class TimestampMapperStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         ]
 
     def describe(self) -> StageContract:
+        always_constructed = {
+            self.original_file_key,
+            self.original_start_ms_key,
+            self.original_end_ms_key,
+            self.duration_ms_key,
+            self.duration_key,
+        }
+        passthrough_keys = list(
+            dict.fromkeys(
+                key
+                for key in (self.passthrough_keys or [])
+                if key not in _NEVER_PASS_KEYS and key not in always_constructed
+            )
+        )
+        conditional_writes = [
+            ConditionalWrite(
+                writes=IOSpec(
+                    data_keys=[
+                        self.original_file_key,
+                        self.original_start_ms_key,
+                        self.original_end_ms_key,
+                        self.duration_ms_key,
+                        self.duration_key,
+                    ]
+                ),
+                condition=(
+                    "the mapper resolves a valid mapping/timing branch or its no-mapping fallback "
+                    "and successfully emits an output row"
+                ),
+            ),
+            ConditionalWrite(
+                writes=IOSpec(data_keys=[self.diar_segments_key]),
+                condition=(
+                    "mappings are absent or empty, no valid start/end branch takes priority, "
+                    "at least one readable diarization segment exists, and the mapper emits an output row"
+                ),
+                value_origin="transforms_upstream_same_key",
+            ),
+            ConditionalWrite(
+                writes=IOSpec(data_keys=[self.speaking_duration_key]),
+                condition=(
+                    "mappings are absent or empty, no valid start/end branch takes priority, "
+                    "at least one readable diarization segment exists, and speaking duration is assigned"
+                ),
+            ),
+        ]
+        if passthrough_keys:
+            conditional_writes.append(
+                ConditionalWrite(
+                    writes=IOSpec(data_keys=passthrough_keys),
+                    condition=(
+                        "the same input key is present, non-null, allowed by passthrough_keys, "
+                        "not safety-blocked, not already constructed as a core output, "
+                        "and the mapper successfully emits an output row"
+                    ),
+                    value_origin="upstream_same_key",
+                )
+            )
         return StageContract(
             # original_file is optional-with-fallback in every branch (process()
             # falls back to audio_filepath / 'unknown'), so it must NOT gate
@@ -185,8 +283,15 @@ class TimestampMapperStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                     self.speaking_duration_key,
                 ]
             ),
+            # This stage builds its output from an allowlist (``passthrough_keys``) and hard-
+            # blocks _NEVER_PASS_KEYS, so no waveform or audio blob can leave it -- exactly what
+            # ``sanitizes_output`` means. Leaving it unset made the validator report
+            # ``tensor_into_sink`` against a JSON sink placed after this stage, i.e. it refused a
+            # pipeline that was already safe.
+            gates=Gates(sanitizes_output=True),
             metadata_reads=[self.mappings_key],
             preserves_upstream_keys=False,
+            conditional_writes=conditional_writes,
         )
 
     def process(self, task: AudioTask) -> AudioTask | list[AudioTask]:
@@ -288,11 +393,7 @@ class TimestampMapperStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         Returns ``None`` if no segment overlaps any mapping.
         """
         ranges: list[dict[str, Any]] = []
-        for seg in diar_segments:
-            try:
-                start_sec, end_sec = float(seg[0]), float(seg[1])
-            except (TypeError, IndexError, ValueError):
-                continue
+        for _seg, start_sec, end_sec in _ordered_segments(diar_segments):
             ranges.extend(_translate_to_original(mappings, int(start_sec * 1000), int(end_sec * 1000)))
         if not ranges:
             return None
@@ -322,18 +423,24 @@ class TimestampMapperStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             self._copy_passthrough(item, result)
             return result
 
-        diar_segments = item.get(self.diar_segments_key)
-        if diar_segments and len(diar_segments) > 0:
-            diar_segments = sorted(diar_segments, key=lambda x: x[0])
-            first_start = diar_segments[0][0]
-            last_end = diar_segments[-1][1]
+        ordered = _ordered_segments(item.get(self.diar_segments_key))
+        if ordered:
+            first_start = ordered[0][1]
+            # max, not the last segment's end: diarized speech overlaps, so the segment that
+            # starts last does not necessarily finish last.
+            last_end = max(end for _s, _st, end in ordered)
             result[self.original_start_ms_key] = int(first_start * 1000)
             result[self.original_end_ms_key] = int(last_end * 1000)
             result[self.duration_ms_key] = int((last_end - first_start) * 1000)
             result[self.duration_key] = last_end - first_start
-            speaking = sum(end - start for start, end in diar_segments)
-            result[self.speaking_duration_key] = round(speaking, 3)
-            result[self.diar_segments_key] = [[round(s, 3), round(e, 3)] for s, e in diar_segments]
+            result[self.speaking_duration_key] = round(sum(end - start for _s, start, end in ordered), 3)
+            # Echo the shape we were handed, so a diarizer's speaker labels survive.
+            result[self.diar_segments_key] = [
+                {**seg, "start": round(start, 3), "end": round(end, 3)}
+                if isinstance(seg, Mapping)
+                else [round(start, 3), round(end, 3)]
+                for seg, start, end in ordered
+            ]
             self._copy_passthrough(item, result)
             return result
 

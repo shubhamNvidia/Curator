@@ -37,17 +37,20 @@ The intended loop::
     # 4. VALIDATE (before ever running)
     report = agent.validate_pipeline([stage, ...], initial_keys={"audio_filepath", "text"})
     report.ok        # role-level composability (necessary condition)
-    report.keys_ok   # literal keys actually connect (strong "will flow data" signal)
+    report.keys_ok   # literal keys connect (mechanical flow, not intent meaning)
     report.summary() # human/agent-readable issues incl. dangling_key / tensor_into_sink
 
-``describe_stage(name)`` returns the static contract; pass an instance for the
-dynamic contract with resolved key values. ``StageContract.to_dict()`` is
-JSON-safe by construction.
+``describe_stage(name)`` returns a contract marked
+``static_params_and_hints``; pass an instance to ``build_contract`` for the
+configured dynamic contract with resolved I/O/key values.
+``StageContract.to_dict()`` is JSON-safe by construction. Open-ended intent fit
+is reviewed by the host LLM over ``audio_agent.validate(...).semantic_review``.
 """
 
 from __future__ import annotations
 
 from nemo_curator.stages.audio._agent_ready import (
+    ConditionalWrite,
     Gates,
     IOSpec,
     ParamSpec,
@@ -75,6 +78,7 @@ from nemo_curator.stages.audio._conformance import (
 from nemo_curator.stages.audio._planning import PipelineIssue, PipelineReport, validate_pipeline
 
 __all__ = [
+    "ConditionalWrite",
     "Gates",
     "IOSpec",
     "ParamSpec",

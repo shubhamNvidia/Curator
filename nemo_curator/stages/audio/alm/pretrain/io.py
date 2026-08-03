@@ -29,12 +29,12 @@ import json
 import os
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from loguru import logger
 
 from nemo_curator.backends.utils import RayStageSpecKeys
-from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, StageContract
+from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, StageContract, StaticHints
 from nemo_curator.stages.audio.alm.pretrain.utils import (
     _AUDIO_PATH_RESOLUTION_MODES,
     _MANIFEST_SHARD_EXT,
@@ -250,6 +250,13 @@ class SnippetManifestWriterStage(AgentReady, ProcessingStage[AudioTask, AudioTas
     name: str = "SnippetManifestWriter"
     batch_size: int = 1
     resources: Resources = field(default_factory=lambda: Resources(cpus=1.0))
+    AGENT_STATIC: ClassVar[StaticHints] = StaticHints(
+        gates=Gates(
+            writes_to_disk=True,
+            lifecycle_side_effects=True,
+            requires_serializable_input=True,
+        )
+    )
 
     def __post_init__(self) -> None:
         self._shard_path: str | None = None
@@ -261,7 +268,13 @@ class SnippetManifestWriterStage(AgentReady, ProcessingStage[AudioTask, AudioTas
         return [], []
 
     def describe(self) -> StageContract:
-        return StageContract(gates=Gates(writes_to_disk=True, lifecycle_side_effects=True))
+        return StageContract(
+            gates=Gates(
+                writes_to_disk=True,
+                lifecycle_side_effects=True,
+                requires_serializable_input=True,
+            )
+        )
 
     def setup_on_node(
         self,

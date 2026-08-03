@@ -36,6 +36,7 @@ from nemo_curator.stages.audio._agent_ready import (
     ProducedForm,
     Role,
     StageContract,
+    WriteValueOrigin,
     to_json_schema,
 )
 from nemo_curator.stages.audio._agent_registry import build_contract, static_contract
@@ -49,6 +50,7 @@ _VALID_CARDINALITY: frozenset[str] = frozenset(get_args(Cardinality))
 _VALID_ROLES: frozenset[str] = frozenset(get_args(Role))
 _VALID_ACCEPTS: frozenset[str] = frozenset(get_args(AudioForm))
 _VALID_PRODUCES: frozenset[str] = frozenset(get_args(ProducedForm))
+_VALID_WRITE_VALUE_ORIGINS: frozenset[str] = frozenset(get_args(WriteValueOrigin))
 
 
 # --------------------------------------------------------------------------- #
@@ -114,6 +116,36 @@ def _check_shape(c: StageContract, name: str) -> None:
             assert a in _VALID_ACCEPTS, f"{name}: {label}.accepts has invalid form {a!r}"
         for p in spec.produces:
             assert p in _VALID_PRODUCES, f"{name}: {label}.produces has invalid form {p!r}"
+    for index, conditional in enumerate(c.conditional_writes):
+        label = f"conditional_writes[{index}]"
+        assert conditional.condition.strip(), f"{name}: {label}.condition must be non-empty"
+        assert conditional.value_origin in _VALID_WRITE_VALUE_ORIGINS, (
+            f"{name}: {label}.value_origin has invalid value {conditional.value_origin!r}"
+        )
+        assert (
+            conditional.writes.data_keys
+            or conditional.writes.segment_data_keys
+            or conditional.metadata_writes
+        ), (
+            f"{name}: {label} must name at least one task, segment, or metadata key"
+        )
+        for a in conditional.writes.accepts:
+            assert a in _VALID_ACCEPTS, f"{name}: {label}.writes.accepts has invalid form {a!r}"
+        for p in conditional.writes.produces:
+            assert p in _VALID_PRODUCES, f"{name}: {label}.writes.produces has invalid form {p!r}"
+        assert len(conditional.writes.data_keys) == len(set(conditional.writes.data_keys)), (
+            f"{name}: duplicate {label}.writes.data_keys"
+        )
+        assert len(conditional.writes.segment_data_keys) == len(set(conditional.writes.segment_data_keys)), (
+            f"{name}: duplicate {label}.writes.segment_data_keys"
+        )
+        assert len(conditional.metadata_writes) == len(set(conditional.metadata_writes)), (
+            f"{name}: duplicate {label}.metadata_writes"
+        )
+        assert all(
+            isinstance(key, str) and key
+            for key in conditional.metadata_writes
+        ), f"{name}: {label}.metadata_writes must contain non-empty strings"
     # no duplicate keys within a single spec list
     for spec, label in [(c.reads, "reads"), (c.writes, "writes")]:
         assert len(spec.data_keys) == len(set(spec.data_keys)), f"{name}: duplicate {label}.data_keys"

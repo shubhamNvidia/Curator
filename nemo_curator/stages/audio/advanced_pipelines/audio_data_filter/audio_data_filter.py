@@ -53,11 +53,12 @@ from nemo_curator.stages.audio.preprocessing import MonoConversionStage, Segment
 from nemo_curator.stages.audio.segmentation import SpeakerSeparationStage, VADSegmentationStage
 from nemo_curator.stages.base import CompositeStage, ProcessingStage
 from nemo_curator.stages.resources import Resources
+from nemo_curator.tasks import AudioTask
 
 from .config import _deep_merge, get_enabled_stages, load_config
 
 
-class AudioDataFilterStage(AgentReady, CompositeStage):
+class AudioDataFilterStage(AgentReady, CompositeStage[AudioTask, AudioTask]):
     """Complete audio data filtering and curation pipeline (CompositeStage).
 
     Decomposes into independent stages that the executor can schedule with

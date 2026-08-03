@@ -183,6 +183,264 @@ class TestPrepareAndFinalize:
             payload = t.extractfile("previous.flac").read()
         assert payload == b"previous-good"
 
+    def test_successful_empty_run_replaces_stale_output_bundle(self, tmp_path: Path) -> None:
+        """Success mode must make an all-filtered rerun visibly empty.
+
+        The realistic zero-snippet shape has no manifest shard, one metrics
+        stub, and an empty tar shard opened by the extractor.
+        """
+        manifest = tmp_path / "snippets.jsonl"
+        metrics = tmp_path / "metrics.json"
+        tar_path = tmp_path / "snippets.tar"
+
+        manifest.write_text(
+            json.dumps(
+                {
+                    "id": "OLD",
+                    "snippet_id": "OLD-0_000-1_000",
+                    "audio_filepath": "old.flac",
+                    "duration": 1.0,
+                    "segments": [],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        metrics.write_text(
+            json.dumps({"num_input_audios": 1, "num_output_snippets": 1, "sentinel": "old"}),
+            encoding="utf-8",
+        )
+        with tarfile.open(tar_path, "w") as old_tar:
+            body = b"previous-good"
+            info = tarfile.TarInfo(name="old.flac")
+            info.size = len(body)
+            old_tar.addfile(info, io.BytesIO(body))
+
+        metrics_shard = Path(_make_shard_path(str(metrics), "jsonl"))
+        metrics_shard.write_text(
+            json.dumps(
+                {
+                    "id": "NEW",
+                    "in_segments": 1,
+                    "in_duration_sec": 1.0,
+                    "dropped": {"empty": 1},
+                    "is_stub": True,
+                    "out_segments": 0,
+                    "out_duration_sec": 0.0,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        empty_tar_shard = _make_shard_path(str(tar_path), "tar")
+        with tarfile.open(empty_tar_shard, "w"):
+            pass
+
+        finalize_audio_pretrain_outputs(
+            str(manifest),
+            str(metrics),
+            str(tar_path),
+            replace_empty=True,
+        )
+
+        assert manifest.read_text(encoding="utf-8") == ""
+        summary = json.loads(metrics.read_text(encoding="utf-8"))
+        assert summary["num_input_audios"] == 1
+        assert summary["num_output_snippets"] == 0
+        assert [entry["id"] for entry in summary["per_original"]] == ["NEW"]
+        assert "sentinel" not in summary
+        with tarfile.open(tar_path, "r") as output_tar:
+            assert output_tar.getnames() == []
+        assert list(tmp_path.glob("*.shard-*")) == []
+
+    def test_successful_metadata_only_run_keeps_preview_and_removes_stale_tar(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Dry-run manifests reference planned members, not a physical tar."""
+        manifest = tmp_path / "snippets.jsonl"
+        metrics = tmp_path / "metrics.json"
+        tar_path = tmp_path / "snippets.tar"
+        with tarfile.open(tar_path, "w") as stale_tar:
+            body = b"old"
+            info = tarfile.TarInfo(name="old.flac")
+            info.size = len(body)
+            stale_tar.addfile(info, io.BytesIO(body))
+
+        snippet_id = "PREVIEW-0_000-1_000"
+        manifest_shard = Path(_make_shard_path(str(manifest), "jsonl"))
+        manifest_shard.write_text(
+            json.dumps(
+                {
+                    "id": "PREVIEW",
+                    "snippet_id": snippet_id,
+                    "audio_filepath": f"{snippet_id}.flac",
+                    "duration": 1.0,
+                    "segments": [{"start": 0.0, "end": 1.0, "text": "preview"}],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        metrics_shard = Path(_make_shard_path(str(metrics), "jsonl"))
+        metrics_shard.write_text(
+            json.dumps(
+                {
+                    "id": "PREVIEW",
+                    "in_segments": 1,
+                    "in_duration_sec": 1.0,
+                    "dropped": {},
+                    "is_stub": False,
+                    "out_segments": 1,
+                    "out_duration_sec": 1.0,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        finalize_audio_pretrain_outputs(
+            str(manifest),
+            str(metrics),
+            str(tar_path),
+            replace_empty=True,
+            audio_tar_expected=False,
+        )
+
+        rows = [
+            json.loads(line)
+            for line in manifest.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        assert [row["id"] for row in rows] == ["PREVIEW"]
+        assert json.loads(metrics.read_text(encoding="utf-8"))[
+            "num_output_snippets"
+        ] == 1
+        assert not tar_path.exists()
+        assert list(tmp_path.glob("*.shard-*")) == []
+
+    def test_failed_no_shard_recovery_preserves_existing_bundle_byte_for_byte(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A failed attempt that wrote nothing must not reconcile old files."""
+        manifest = tmp_path / "snippets.jsonl"
+        metrics = tmp_path / "metrics.json"
+        tar_path = tmp_path / "snippets.tar"
+
+        # Deliberately mismatched prior files prove recovery returns before
+        # reconciliation; preserving a failed run's predecessor is not the
+        # finalizer's opportunity to rewrite that predecessor.
+        manifest.write_text(
+            json.dumps(
+                {
+                    "id": "OLD",
+                    "audio_filepath": "not-in-old-tar.flac",
+                    "duration": 1.0,
+                    "segments": [],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        metrics.write_text(
+            json.dumps({"num_input_audios": 1, "num_output_snippets": 1, "sentinel": "old"}),
+            encoding="utf-8",
+        )
+        with tarfile.open(tar_path, "w") as old_tar:
+            body = b"previous-good"
+            info = tarfile.TarInfo(name="other.flac")
+            info.size = len(body)
+            old_tar.addfile(info, io.BytesIO(body))
+        before = {
+            manifest: manifest.read_bytes(),
+            metrics: metrics.read_bytes(),
+            tar_path: tar_path.read_bytes(),
+        }
+
+        finalize_audio_pretrain_outputs(str(manifest), str(metrics), str(tar_path))
+
+        assert {path: path.read_bytes() for path in before} == before
+
+    def test_failed_run_recovers_coherent_partial_shards(self, tmp_path: Path) -> None:
+        """Recovery mode merges work completed before the pipeline failed."""
+        manifest = tmp_path / "snippets.jsonl"
+        metrics = tmp_path / "metrics.json"
+        tar_path = tmp_path / "snippets.tar"
+
+        manifest.write_text('{"id":"OLD","audio_filepath":"old.flac"}\n', encoding="utf-8")
+        metrics.write_text('{"sentinel":"old"}', encoding="utf-8")
+        with tarfile.open(tar_path, "w") as old_tar:
+            body = b"old"
+            info = tarfile.TarInfo(name="old.flac")
+            info.size = len(body)
+            old_tar.addfile(info, io.BytesIO(body))
+
+        snippet_id = "NEW-0_000-1_000"
+        member_name = f"{snippet_id}.flac"
+        manifest_shard = Path(_make_shard_path(str(manifest), "jsonl"))
+        manifest_shard.write_text(
+            json.dumps(
+                {
+                    "id": "NEW",
+                    "snippet_id": snippet_id,
+                    "audio_filepath": member_name,
+                    "duration": 1.0,
+                    "segments": [{"start": 0.0, "end": 1.0, "text": "new"}],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        metrics_shard = Path(_make_shard_path(str(metrics), "jsonl"))
+        metrics_shard.write_text(
+            json.dumps(
+                {
+                    "id": "NEW",
+                    "in_segments": 1,
+                    "in_duration_sec": 1.0,
+                    "dropped": {},
+                    "is_stub": False,
+                    "out_segments": 1,
+                    "out_duration_sec": 1.0,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        flac_buffer = io.BytesIO()
+        sf.write(
+            flac_buffer,
+            np.zeros(16000, dtype=np.float32),
+            16000,
+            format="FLAC",
+        )
+        tar_shard = _make_shard_path(str(tar_path), "tar")
+        with tarfile.open(tar_shard, "w") as partial_tar:
+            body = flac_buffer.getvalue()
+            info = tarfile.TarInfo(name=member_name)
+            info.size = len(body)
+            partial_tar.addfile(info, io.BytesIO(body))
+
+        # Default mode is failure recovery: merge recoverable shards, but do
+        # not manufacture empty outputs for shard types with no work.
+        finalize_audio_pretrain_outputs(str(manifest), str(metrics), str(tar_path))
+
+        rows = [
+            json.loads(line)
+            for line in manifest.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        assert [row["id"] for row in rows] == ["NEW"]
+        summary = json.loads(metrics.read_text(encoding="utf-8"))
+        assert summary["num_input_audios"] == 1
+        assert summary["num_output_snippets"] == 1
+        assert [entry["id"] for entry in summary["per_original"]] == ["NEW"]
+        assert "sentinel" not in summary
+        with tarfile.open(tar_path, "r") as output_tar:
+            assert output_tar.getnames() == [member_name]
+        assert list(tmp_path.glob("*.shard-*")) == []
+
     def test_finalize_drops_manifest_rows_missing_from_tar(self, tmp_path: Path) -> None:
         """Manifest reconciliation: rows whose tar member is missing get dropped
         and surfaced as `dropped.missing_audio` in the merged metrics."""

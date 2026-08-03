@@ -102,7 +102,10 @@ class PipelineReport:
 
     def summary(self) -> str:
         if not self.issues:
-            return "pipeline OK (all reads satisfied by role)"
+            return (
+                "pipeline mechanically composable (all reads satisfied by role); "
+                "this does not certify intent or field meaning"
+            )
         lines = [f"{len(self.errors)} error(s), {len(self.warnings)} warning(s):"]
         for i in self.issues:
             lines.append(f"  [{i.severity}] stage {i.stage_index} {i.stage_name}: {i.message}")
@@ -135,16 +138,135 @@ def _write_key_values(contract: StageContract) -> set[str]:
     return {*contract.writes.data_keys, *contract.writes.segment_data_keys}
 
 
+def _key_family(key: str) -> str:
+    """The trailing token of a key name -- ``diar_segments`` and ``segments`` share ``segments``.
+
+    A crude but load-bearing notion of "these two keys hold the same KIND of thing". Producers
+    qualify a shared noun with a prefix (``diar_``, ``vad_``, ``pred_``), so the bare noun and
+    its qualified siblings are exactly the set a consumer might have meant.
+    """
+    return key.rsplit("_", 1)[-1]
+
+
+def _ambiguous_default_reads(
+    stage: Any,  # noqa: ANN401 - any built stage
+    contract: StageContract,
+    available_keys: set[str],
+    key_producer: dict[str, str],
+) -> list[tuple[str, str, list[tuple[str, str]]]]:
+    """``(key, attribute, rivals)`` for read keys left at a default while a sibling key exists.
+
+    The failure this catches is silence. ``MergeAlignmentDiarizationStage`` documents itself as
+    merging into DIARIZATION segments, yet its ``segments_key`` defaults to ``"segments"`` --
+    the key VAD writes. In a VAD+diarization pipeline both keys exist, so the read is satisfied
+    and every other check passes: transcripts get merged into the wrong segments and the output
+    is plausible, complete, and wrong.
+
+    Deliberately narrow, because a warning nobody trusts is worse than none. It fires only when
+    the key is still at its CLASS DEFAULT (an explicit setting is a decision, not an accident),
+    the key IS available (an unavailable one is already reported as dangling), and some other
+    available key of the same family was written by a DIFFERENT upstream stage -- so a real
+    choice existed and was made by a default rather than by anyone.
+    """
+    fields = getattr(type(stage), "__dataclass_fields__", {})
+    reads = {*contract.reads.data_keys, *contract.reads.segment_data_keys}
+    found: list[tuple[str, str, list[tuple[str, str]]]] = []
+    for attr, spec in fields.items():
+        value = getattr(stage, attr, None)
+        if not (isinstance(value, str) and value in reads and value in available_keys and value == spec.default):
+            continue
+        rivals = sorted(
+            (k, key_producer[k])
+            for k in available_keys
+            if k != value
+            # If the consumer reads both siblings (for example reference
+            # ``text`` and ASR ``pred_text`` for WER), they are independent
+            # operands rather than competing choices.
+            and k not in reads
+            and k in key_producer
+            and _key_family(k) == _key_family(value)
+            and key_producer[k] != key_producer.get(value)
+        )
+        if rivals:
+            found.append((value, attr, rivals))
+    return found
+
+
+def _gate_issues(
+    index: int,
+    name: str,
+    contract: StageContract,
+    available_gpus: float | None,
+    *,
+    tensor_resident: bool,
+) -> list[PipelineIssue]:
+    """Environment/serialization gate problems for one stage.
+
+    These reason about GPUs and serialization rather than roles, so they apply to every concrete
+    stage even downstream of a composite that hides its writes.
+    """
+    out = []
+    if available_gpus is not None and contract.gates.requires_gpu and available_gpus <= 0:
+        out.append(
+            PipelineIssue(index, name, "warning", "gpu_unavailable", "declares requires_gpu but available_gpus <= 0")
+        )
+    # A resident tensor (e.g. a waveform) reaching a serialize-as-is sink (raw json.dumps)
+    # crashes at runtime. A sanitizing stage upstream clears the flag before we get here.
+    if contract.gates.requires_serializable_input and tensor_resident:
+        out.append(
+            PipelineIssue(
+                index, name, "error", "tensor_into_sink",
+                "a resident tensor/audio blob from an upstream stage reaches this "
+                "serialize-as-JSON sink; it WILL fail at json.dumps — drop the tensor "
+                "upstream (e.g. keep_segment_waveform_in_task=False) or route through "
+                "a sanitizing stage before the sink",
+            )
+        )
+    return out
+
+
+def _ambiguity_issues(  # noqa: PLR0913 - an ambiguity message must name the stage, key and producers
+    index: int,
+    name: str,
+    stage: Any,  # noqa: ANN401 - any built stage
+    contract: StageContract,
+    available_keys: set[str],
+    key_producer: dict[str, str],
+) -> list[PipelineIssue]:
+    """``ambiguous_default_key`` warnings for this stage, naming who wrote each candidate."""
+    out = []
+    for key, attr, rivals in _ambiguous_default_reads(stage, contract, available_keys, key_producer):
+        others = ", ".join(f"{k!r} from {p}" for k, p in rivals)
+        out.append(
+            PipelineIssue(
+                index, name, "warning", "ambiguous_default_key",
+                f"reads {key!r} (the default for {attr}), but upstream also produced {others}. "
+                f"The default silently picks {key!r} "
+                f"({key_producer.get(key, 'the source manifest')}); if you meant the other, "
+                f"set {attr} explicitly.",
+            )
+        )
+    return out
+
+
 def _dangling_read_keys(contract: StageContract, available_keys: set[str]) -> set[str]:
-    """Primary-read key VALUES whose role is known but whose exact value was not
+    """Read key VALUES whose role is known but whose exact value was not
     produced upstream nor seeded — the renamed-producer dangle the role check misses.
 
-    Scoped to primary ``reads`` (not ``reads_one_of`` alternatives) and to
-    role-bearing keys (``unknown``/internal bookkeeping keys are excluded — a
-    separate value-identity check for those is tracked in the backlog).
+    Covers primary ``reads`` plus a ``reads_one_of`` that offers a *single*
+    alternative: one option is not a choice, so its keys are as mandatory as a
+    primary read (this is how a residency-derived contract expresses
+    ``input_residency="file"``). A genuine multi-way ``reads_one_of`` is skipped —
+    the stage may legitimately take the other branch. Role-bearing keys only
+    (``unknown``/internal bookkeeping keys are excluded — a separate
+    value-identity check for those is tracked in the backlog).
     """
+    reads = [*contract.reads.data_keys, *contract.reads.segment_data_keys]
+    if len(contract.reads_one_of) == 1:
+        only = contract.reads_one_of[0]
+        reads += [*only.data_keys, *only.segment_data_keys]
     dangling: set[str] = set()
-    for k in [*contract.reads.data_keys, *contract.reads.segment_data_keys]:
+    for k in reads:
         role = contract.key_roles.get(k, "unknown")
         if role == "unknown":
             continue
@@ -185,6 +307,7 @@ def validate_pipeline(  # noqa: C901 (complexity accepted: sequential per-stage 
     tensor_resident = False  # an upstream stage left a non-serializable tensor in task.data
     past_composite = False  # a composite hides its true writes; downstream reads can't be judged
     removed_roles: set[str] = set()  # roles whose carrier key an upstream stage deleted (removes_keys)
+    key_producer: dict[str, str] = {}  # key value -> the stage that wrote it (for ambiguity messages)
     issues: list[PipelineIssue] = []
 
     for index, stage in enumerate(stages):
@@ -252,37 +375,21 @@ def validate_pipeline(  # noqa: C901 (complexity accepted: sequential per-stage 
                         f"available keys: {sorted(available_keys)}",
                     )
                 )
+            issues.extend(_ambiguity_issues(index, name, stage, contract, available_keys, key_producer))
 
         # The checks below reason about serialization / GPU / key-flow, NOT the
         # composite's hidden roles, so they run for every concrete stage even after
         # a composite (fixes the tensor_into_sink blind spot: ManifestReader is a
         # composite, so a start-with-reader pipeline used to skip these entirely).
-        if available_gpus is not None and contract.gates.requires_gpu and available_gpus <= 0:
-            issues.append(
-                PipelineIssue(
-                    index, name, "warning", "gpu_unavailable",
-                    "declares requires_gpu but available_gpus <= 0",
-                )
-            )
-
-        # Serializability: a resident tensor (e.g. a waveform) reaching a
-        # serialize-as-is sink (raw json.dumps) crashes at runtime. Warn before
-        # the sink; a sanitizing stage (AudioToDocumentStage) clears the flag.
-        if contract.gates.requires_serializable_input and tensor_resident:
-            issues.append(
-                PipelineIssue(
-                    index, name, "error", "tensor_into_sink",
-                    "a resident tensor/audio blob from an upstream stage reaches this "
-                    "serialize-as-JSON sink; it WILL fail at json.dumps — drop the tensor "
-                    "upstream (e.g. keep_segment_waveform_in_task=False) or route through "
-                    "a sanitizing stage before the sink",
-                )
-            )
+        issues.extend(_gate_issues(index, name, contract, available_gpus, tensor_resident=tensor_resident))
 
         produced = produced_roles(contract)
         available |= produced
         removed_roles -= produced  # a re-produced role is no longer "removed"
-        available_keys |= _write_key_values(contract)
+        written = _write_key_values(contract)
+        # Most recent writer wins -- that is who a downstream reader would actually get.
+        key_producer.update(dict.fromkeys(written, name))
+        available_keys |= written
         for rk in contract.removes_keys:
             available_keys.discard(rk)
             role = role_for_value(rk)

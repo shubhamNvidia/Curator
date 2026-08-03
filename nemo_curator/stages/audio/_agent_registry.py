@@ -317,6 +317,12 @@ def _contract_referenced_keys(contract: StageContract) -> set[str]:
     for spec in [contract.reads, contract.writes, *contract.reads_one_of]:
         keys.update(spec.data_keys)
         keys.update(spec.segment_data_keys)
+    keys.update(contract.metadata_reads)
+    keys.update(contract.metadata_writes)
+    for conditional in contract.conditional_writes:
+        keys.update(conditional.writes.data_keys)
+        keys.update(conditional.writes.segment_data_keys)
+        keys.update(conditional.metadata_writes)
     return keys
 
 
@@ -401,6 +407,7 @@ def static_contract(cls: type) -> StageContract:
     hints: StaticHints = getattr(cls, "AGENT_STATIC", None) or StaticHints()
     accepts_tt, produces_tt = _task_types(cls)
     return StageContract(
+        contract_resolution="static_params_and_hints",
         cardinality_options=list(hints.cardinality_options),
         gates=hints.gates,
         dispatch=_derived_dispatch(cls, hints.dispatch),

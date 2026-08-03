@@ -28,6 +28,13 @@ Dispatch = Literal["process", "process_batch", "auto"]
 # How a stage handles per-item failures at runtime. "unknown" means the stage
 # has not declared a uniform policy (the default for most stages today).
 ErrorPolicy = Literal["skip", "fail", "annotate", "unknown"]
+ContractResolution = Literal["configured", "static_params_and_hints"]
+WriteValueOrigin = Literal[
+    "stage_generated",
+    "upstream_same_key",
+    "augments_upstream_same_key",
+    "transforms_upstream_same_key",
+]
 
 # Semantic role vocabulary. Because key *names* are agent-configurable
 # (config-knobs-only standardization: every read/written key is a ``*_key``
@@ -98,6 +105,35 @@ class IOSpec:
     segment_data_keys: list[str] = field(default_factory=list)
     accepts: list[AudioForm] = field(default_factory=list)
     produces: list[ProducedForm] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ConditionalWrite:
+    """A possible write whose presence or value origin depends on runtime data.
+
+    ``writes`` uses the same task/segment key vocabulary as
+    :class:`IOSpec`.  ``condition`` is factual, agent-facing prose grounded in
+    the runtime branch; it is deliberately not an executable predicate or an
+    intent/scope ontology.  ``value_origin`` records only objective dataflow:
+    a new value, an unchanged pass-through, an in-place mapping augmentation,
+    or a transformed replacement of the same upstream key.  This lets semantic
+    lineage preserve the original producer where it remains relevant.
+
+    ``metadata_writes`` is the equivalent advisory surface for ``task._metadata``
+    keys.  It stays separate from :class:`IOSpec` because those keys are not
+    task-data/audio-form inputs.
+
+    This metadata is additive.  Mechanical planners continue to use
+    :attr:`StageContract.writes`; ``conditional_writes`` supplies the host
+    critic with possibility/provenance evidence and may also describe
+    conditional pass-through keys omitted from the legacy ``writes`` superset.
+    """
+
+    writes: IOSpec = field(default_factory=IOSpec)
+    condition: str = ""
+    value_origin: WriteValueOrigin = "stage_generated"
+    # Appended for positional compatibility with the original three fields.
+    metadata_writes: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -186,10 +222,20 @@ class StageContract:
     # waveform-stripper" key-flow class). Declared in describe(), verified by the
     # conformance key-diff.
     removes_keys: list[str] = field(default_factory=list)
+    # ``describe``/``cards`` can inspect a class without constructing it.  That
+    # static view knows parameters and class hints but cannot honestly resolve
+    # configured reads, writes, cardinality, or removed keys.  Appended here to
+    # preserve every existing positional constructor argument.
+    contract_resolution: ContractResolution = "configured"
+    # Runtime-data-dependent output possibilities.  Appended for positional
+    # compatibility; this never changes stage execution or the legacy
+    # mechanical interpretation of ``writes``.
+    conditional_writes: list[ConditionalWrite] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-safe dict of this contract (``json.dumps`` never raises)."""
         return {
+            "contract_resolution": self.contract_resolution,
             "reads": asdict(self.reads),
             "writes": asdict(self.writes),
             "reads_one_of": [asdict(spec) for spec in self.reads_one_of],
@@ -212,6 +258,15 @@ class StageContract:
             "accepts_task_type": self.accepts_task_type,
             "produces_task_type": self.produces_task_type,
             "removes_keys": list(self.removes_keys),
+            "conditional_writes": [
+                {
+                    "writes": asdict(item.writes),
+                    "condition": item.condition,
+                    "value_origin": item.value_origin,
+                    "metadata_writes": list(item.metadata_writes),
+                }
+                for item in self.conditional_writes
+            ],
         }
 
 

@@ -105,8 +105,13 @@ def build_audio_pretrain_pipeline(  # noqa: PLR0913
        :func:`prepare_audio_pretrain_outputs` once before
        :func:`Pipeline.run` and :func:`finalize_audio_pretrain_outputs`
        once after, on the driver, to clean up stale shards and merge
-       this run's shards into the final user-visible files.  ``run.py``
-       wires both calls automatically.
+       this run's shards into the final user-visible files. Pass
+       ``replace_empty=True`` only after a successful run; use the default
+       recovery mode after an exception so a no-shard failure preserves
+       prior outputs while recoverable partial shards are still merged. For
+       ``dry_run=True``, also pass ``audio_tar_expected=False`` so the preview
+       manifest is not reconciled against an intentionally absent tar.
+       ``run.py`` wires both outcomes automatically.
 
     Args:
         input_manifest: Path to the input JSONL manifest, one row per

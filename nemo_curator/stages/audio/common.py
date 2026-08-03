@@ -336,7 +336,9 @@ class CreateInitialManifestAudioFolderStage(AgentReady, ProcessingStage[EmptyTas
 
     def describe(self) -> StageContract:
         return StageContract(
-            writes=IOSpec(data_keys=[self.audio_filepath_key, self.audio_item_id_key], produces=["disk"]),
+            # No ``produces``: the audio already exists on disk, this stage only points at it
+            # (unlike the dataset CreateInitialManifest*Stage sources, which download and write).
+            writes=IOSpec(data_keys=[self.audio_filepath_key, self.audio_item_id_key]),
             cardinality="1:N fan-out",
             gates=Gates(),  # scans existing files -- no download, no disk writes
         )
@@ -455,8 +457,9 @@ class ManifestWriterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 writes_to_disk=True,
                 lifecycle_side_effects=True,
                 # Serializes task.data as-is via json.dumps; a resident tensor
-                # (e.g. a waveform) will crash it. Route through
-                # AudioToDocumentStage (which sanitizes) if one may be present.
+                # (e.g. a waveform) will crash it. Stop carrying the tensor
+                # before this AudioTask sink, or convert to a DocumentBatch and
+                # use DocumentBatchJsonlWriterStage instead.
                 requires_serializable_input=True,
             ),
         )

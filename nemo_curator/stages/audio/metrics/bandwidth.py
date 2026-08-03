@@ -21,7 +21,7 @@ import librosa
 import numpy as np
 from loguru import logger
 
-from nemo_curator.stages.audio._agent_ready import AgentReady, IOSpec, StageContract
+from nemo_curator.stages.audio._agent_ready import AgentReady, ConditionalWrite, IOSpec, StageContract
 from nemo_curator.stages.audio._residency import InputResidency, residency_read_specs
 from nemo_curator.stages.audio.common import ensure_mono, ensure_waveform_2d
 from nemo_curator.stages.base import ProcessingStage
@@ -89,6 +89,32 @@ class BandwidthEstimationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
         return StageContract(
             reads_one_of=reads_one_of,
             writes=IOSpec(data_keys=[self.metrics_key], segment_data_keys=[self.metrics_key]),
+            conditional_writes=[
+                ConditionalWrite(
+                    writes=IOSpec(data_keys=[self.metrics_key]),
+                    condition=(
+                        f"audio resolves, '{self.segments_key}' is absent, the top-level item is not skipped "
+                        "for speaker/text, its time range is valid, and bandwidth estimation completes"
+                    ),
+                    value_origin="augments_upstream_same_key",
+                ),
+                ConditionalWrite(
+                    writes=IOSpec(segment_data_keys=[self.metrics_key]),
+                    condition=(
+                        f"audio resolves, '{self.segments_key}' is present, and an individual segment is not "
+                        "skipped for speaker/text, has a valid range, and bandwidth estimation completes"
+                    ),
+                    value_origin="augments_upstream_same_key",
+                ),
+                ConditionalWrite(
+                    writes=IOSpec(segment_data_keys=[self.metrics_key]),
+                    condition=(
+                        f"'{self.segments_key}' is present, an individual segment raises a caught ValueError, "
+                        f"and '{self.metrics_key}.metric_skip_reason' is assigned"
+                    ),
+                    value_origin="augments_upstream_same_key",
+                ),
+            ],
         )
 
     def validate_input(self, task: AudioTask) -> bool:

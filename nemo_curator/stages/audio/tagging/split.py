@@ -18,6 +18,7 @@ Audio Splitting and Joining Stages.
 """
 
 import math
+import posixpath
 import time
 from dataclasses import dataclass
 
@@ -42,6 +43,8 @@ class SplitLongAudioStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     Args:
         suggested_max_len: Target maximum length for audio segments in seconds
         min_len: Minimum length for any split segment
+        output_dir: Optional directory for written split audio. When unset,
+            split files remain beside the source audio for backward compatibility.
     """
 
     # Split parameters
@@ -58,6 +61,9 @@ class SplitLongAudioStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
 
     # Stage metadata
     name: str = "SplitLongAudio"
+    # Additive agent-only routing knob. Keep it after every legacy field so
+    # positional construction retains its historical argument order.
+    output_dir: str | None = None
 
     def inputs(self) -> tuple[list[str], list[str]]:
         return [], [self.duration_key, self.segments_key, self.audio_filepath_key]
@@ -108,6 +114,28 @@ class SplitLongAudioStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
 
         return splits
 
+    def _prepare_output_dir(self) -> str:
+        """Create and resolve an explicit output directory."""
+        if self.output_dir is None:
+            return ""
+        output_fs, resolved_output_dir = url_to_fs(self.output_dir)
+        output_fs.makedirs(resolved_output_dir, exist_ok=True)
+        return resolved_output_dir
+
+    def _split_paths(
+        self,
+        split_name: str,
+        parent_url: str,
+        resolved_parent: str,
+        resolved_output_dir: str,
+    ) -> tuple[str, str]:
+        """Build the stored and resolved paths for one split."""
+        if self.output_dir is None:
+            split_filepath = f"{parent_url}/{split_name}" if parent_url else split_name
+            split_resolved = f"{resolved_parent}/{split_name}" if resolved_parent else split_name
+            return split_filepath, split_resolved
+        return posixpath.join(self.output_dir, split_name), posixpath.join(resolved_output_dir, split_name)
+
     def process(self, task: AudioTask) -> AudioTask:
         """Process entry to split long audio files."""
         with self._time_metric("process_time"):
@@ -143,6 +171,8 @@ class SplitLongAudioStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         resolved_parent = resolved_path.rsplit("/", 1)[0] if "/" in resolved_path else ""
         stem = filename.rsplit(".", 1)[0] if "." in filename else filename
 
+        resolved_output_dir = self._prepare_output_dir()
+
         audio, sr = torchaudio.load(resolved_path)
 
         split_start = 0
@@ -150,8 +180,12 @@ class SplitLongAudioStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
 
         for k, split in enumerate(splits):
             split_name = f"{stem}.{k + 1}_of_{1 + len(splits)}.wav"
-            split_filepath = f"{parent_url}/{split_name}" if parent_url else split_name
-            split_resolved = f"{resolved_parent}/{split_name}" if resolved_parent else split_name
+            split_filepath, split_resolved = self._split_paths(
+                split_name,
+                parent_url,
+                resolved_parent,
+                resolved_output_dir,
+            )
             split_end = math.ceil(split * sr)
 
             if split_end - split_start > self.min_len * sr:
@@ -162,8 +196,12 @@ class SplitLongAudioStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 split_start = split_end
 
         split_name = f"{stem}.{1 + len(splits)}_of_{1 + len(splits)}.wav"
-        split_filepath = f"{parent_url}/{split_name}" if parent_url else split_name
-        split_resolved = f"{resolved_parent}/{split_name}" if resolved_parent else split_name
+        split_filepath, split_resolved = self._split_paths(
+            split_name,
+            parent_url,
+            resolved_parent,
+            resolved_output_dir,
+        )
         last_frame = len(audio[0])
         remaining_frames = last_frame - split_start
 
@@ -348,6 +386,8 @@ class SplitASRAlignJoinStage(AgentReady, CompositeStage[AudioTask, AudioTask]):
     Args:
         suggested_max_len: Target max length for audio segments (seconds).
         min_len: Minimum length for any split segment (also used by ASR).
+        output_dir: Optional directory for split audio chunks. When unset,
+            chunks are written beside their source audio.
         max_len: Maximum length of audio segments for ASR processing (seconds).
         model_name: Pretrained NeMo ASR model name.
         model_path: Local model file path (overrides ``model_name`` if set).
@@ -398,6 +438,9 @@ class SplitASRAlignJoinStage(AgentReady, CompositeStage[AudioTask, AudioTask]):
     segments_key: str = "segments"
 
     name: str = "SplitASRAlignJoin"
+    # Additive agent-only routing knob. Keep it after every legacy field so
+    # positional construction retains its historical argument order.
+    output_dir: str | None = None
 
     def __post_init__(self) -> None:
         super().__init__()
@@ -410,6 +453,11 @@ class SplitASRAlignJoinStage(AgentReady, CompositeStage[AudioTask, AudioTask]):
             SplitLongAudioStage(
                 suggested_max_len=self.suggested_max_len,
                 min_len=self.min_len,
+                output_dir=self.output_dir,
+                # Forwarded, or configuring the composite would silently not reach the splitter:
+                # it would keep reading "segments" while the aligner read the configured key,
+                # which is what blocks feeding diarization segments into ASR.
+                segments_key=self.segments_key,
             ),
             NeMoASRAlignerStage(
                 model_name=self.model_name,

@@ -172,7 +172,13 @@ def _run_pipeline_inline(  # noqa: PLR0913
             aggregator.process(snippet_task)
     extractor.teardown()
 
-    finalize_audio_pretrain_outputs(str(output_manifest), str(metrics_path), str(output_audio_tar_path))
+    finalize_audio_pretrain_outputs(
+        str(output_manifest),
+        str(metrics_path),
+        str(output_audio_tar_path),
+        replace_empty=True,
+        audio_tar_expected=not dry_run,
+    )
 
 
 class TestPipelineEndToEndOnLocalManifest:

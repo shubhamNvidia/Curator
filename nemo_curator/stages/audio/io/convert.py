@@ -12,12 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, ClassVar
+
 import pandas as pd
+from fsspec.core import url_to_fs
 from loguru import logger
 
-from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, StageContract
+from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, StageContract, StaticHints
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.tasks import AudioTask, DocumentBatch
+
+if TYPE_CHECKING:
+    from nemo_curator.backends.base import NodeInfo, WorkerMetadata
 
 _NON_SERIALIZABLE_KEYS = frozenset(
     {
@@ -140,3 +149,83 @@ class AudioToDocumentStage(AgentReady, ProcessingStage[AudioTask, DocumentBatch]
                 _stage_perf=perf,
             )
         ]
+
+
+@dataclass
+class DocumentBatchJsonlWriterStage(AgentReady, ProcessingStage[DocumentBatch, DocumentBatch]):
+    """Append every row in a DocumentBatch to one JSONL manifest.
+
+    This is the task-type-compatible terminal sink for
+    :class:`AudioToDocumentStage`. The output file is truncated once in
+    ``setup()`` (called on the driver), while ``setup_on_node()`` only
+    creates its parent directory. Within one run, successive batches append
+    to the same file. The input ``DocumentBatch`` is returned unchanged so
+    its dataset name, metadata, and performance records are preserved.
+
+    Supports local and cloud paths via fsspec.
+
+    Args:
+        output_path: Destination JSONL path (local or cloud).
+    """
+
+    output_path: str
+    name: str = "document_batch_jsonl_writer"
+
+    AGENT_STATIC: ClassVar[StaticHints] = StaticHints(
+        gates=Gates(
+            writes_to_disk=True,
+            lifecycle_side_effects=True,
+            requires_serializable_input=True,
+        ),
+        description="Write each DocumentBatch row to one JSONL manifest",
+    )
+
+    def __post_init__(self) -> None:
+        if not self.output_path:
+            msg = "output_path is required for DocumentBatchJsonlWriterStage"
+            raise ValueError(msg)
+
+    def setup(self, _worker_metadata: WorkerMetadata | None = None) -> None:
+        """Truncate the output once on the driver before processing starts."""
+        self._fs, self._path = url_to_fs(self.output_path)
+        parent_dir = "/".join(self._path.split("/")[:-1])
+        if parent_dir:
+            self._fs.makedirs(parent_dir, exist_ok=True)
+        with self._fs.open(self._path, "w", encoding="utf-8"):
+            pass
+        logger.info(f"DocumentBatchJsonlWriterStage: writing to {self.output_path}")
+
+    def setup_on_node(
+        self,
+        _node_info: NodeInfo | None = None,
+        _worker_metadata: WorkerMetadata | None = None,
+    ) -> None:
+        """Ensure the parent exists on each node without truncating."""
+        self._fs, self._path = url_to_fs(self.output_path)
+        parent_dir = "/".join(self._path.split("/")[:-1])
+        if parent_dir:
+            self._fs.makedirs(parent_dir, exist_ok=True)
+
+    def process(self, task: DocumentBatch) -> DocumentBatch:
+        dataframe = task.to_pandas()
+        if not dataframe.empty:
+            with self._fs.open(self._path, "a", encoding="utf-8") as stream:
+                dataframe.to_json(
+                    stream,
+                    orient="records",
+                    lines=True,
+                    force_ascii=False,
+                )
+        return task
+
+    def num_workers(self) -> int | None:
+        return 1
+
+    def describe(self) -> StageContract:
+        return StageContract(
+            gates=Gates(
+                writes_to_disk=True,
+                lifecycle_side_effects=True,
+                requires_serializable_input=True,
+            ),
+        )

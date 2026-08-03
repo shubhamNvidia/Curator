@@ -146,6 +146,7 @@ def test_docstring_args_parser_handles_continuations_and_sections():
 # --------------------------------------------------------------------------- #
 def test_build_contract_fills_params_and_key_roles():
     contract = build_contract(_ToyDataclassStage(score_key="renamed_score"))
+    assert contract.contract_resolution == "configured"
     assert contract.params, "params should be auto-derived"
     assert contract.key_roles.get("renamed_score") == "score"
     assert contract.key_roles.get("audio_filepath") == "audio_filepath"
@@ -154,6 +155,7 @@ def test_build_contract_fills_params_and_key_roles():
 
 def test_static_contract_is_instance_free_for_required_arg_stage():
     contract = static_contract(_ToyInitStage)  # no instantiation needed
+    assert contract.contract_resolution == "static_params_and_hints"
     names = {p.name for p in contract.params}
     assert {"input_value_key", "target_value", "operator"} <= names
     assert contract.stage_id == "_ToyInitStage"

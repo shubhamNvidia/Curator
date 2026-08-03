@@ -71,6 +71,16 @@ def _parse_sortformer_segments(raw_segments: list) -> list[dict[str, Any]]:
     return segments
 
 
+def _count_distinct_speakers(segments: list[dict[str, Any]]) -> int:
+    """Number of distinct speaker labels in diarization output.
+
+    Sortformer emits no explicit speaker count; it is derived as the number of
+    distinct cluster labels across turns. Parse-failure placeholders ("unknown")
+    are not counted as a real speaker.
+    """
+    return len({seg.get("speaker") for seg in segments} - {None, "unknown"})
+
+
 def _write_rttm(segments: list[dict[str, Any]], sess_name: str, rttm_out_dir: str) -> None:
     """Write diarization segments to an RTTM file."""
     os.makedirs(rttm_out_dir, exist_ok=True)
@@ -99,6 +109,8 @@ class InferenceSortformerStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
         diar_model: Pre-loaded SortformerEncLabelModel; if provided, setup() is a no-op.
         filepath_key: Key in data for path to audio file. Defaults to "audio_filepath".
         diar_segments_key: Key in output data for diarization segments list. Defaults to "diar_segments".
+        num_speakers_key: Key in output data for the distinct-speaker count derived
+            from diar_segments (passthrough mode only). Defaults to "num_speakers".
         rttm_out_dir: Optional directory to write RTTM files. Defaults to None.
         chunk_len: Streaming chunk size in 80 ms frames. Defaults to 340 (~30.4 s latency).
         chunk_left_context: Left context frames. Defaults to 1.
@@ -118,6 +130,7 @@ class InferenceSortformerStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
     waveform_key: str = "waveform"
     sample_rate_key: str = "sample_rate"
     diar_segments_key: str = "diar_segments"
+    num_speakers_key: str = "num_speakers"
     input_residency: InputResidency = "file"
     fanout: bool = False
     start_key: str = "start"
@@ -224,7 +237,7 @@ class InferenceSortformerStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
                 self.speaker_key,
                 self.original_file_key,
             ]
-        return ["data"], [self.filepath_key, self.diar_segments_key]
+        return ["data"], [self.filepath_key, self.diar_segments_key, self.num_speakers_key]
 
     def describe(self) -> StageContract:
         if self.fanout:
@@ -241,7 +254,7 @@ class InferenceSortformerStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
             ]
             cardinality = "1:N fan-out"
         else:
-            writes = [self.filepath_key, self.diar_segments_key]
+            writes = [self.filepath_key, self.diar_segments_key, self.num_speakers_key]
             cardinality = "1:1"
         return StageContract(
             reads_one_of=residency_read_specs(
@@ -368,6 +381,7 @@ class InferenceSortformerStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
 
             output_data = dict(task.data)
             output_data[self.diar_segments_key] = segments
+            output_data[self.num_speakers_key] = _count_distinct_speakers(segments)
 
             return AudioTask(
                 dataset_name=task.dataset_name,

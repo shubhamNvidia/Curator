@@ -67,14 +67,17 @@ def finalize_audio_pretrain_outputs(
     metrics_path: str,
     output_audio_tar_path: str,
     audio_filepath_key: str = "audio_filepath",
+    *,
+    replace_empty: bool = False,
+    audio_tar_expected: bool = True,
 ) -> None:
     """Merge per-worker shards into the final manifest, metrics JSON, and audio tar.
 
-    Call once on the driver, AFTER ``pipeline.run()`` returns
-    successfully.  Reads all manifest + metrics + tar shards written by
-    the writer / aggregator / extractor stages, concatenates / combines
-    them, writes the final user-facing files at the user-provided paths,
-    and removes the shards.
+    Call once on the driver after each ``pipeline.run()`` attempt. Reads all
+    manifest + metrics + tar shards written by the writer / aggregator /
+    extractor stages, concatenates / combines them, writes the final
+    user-facing files at the user-provided paths, and removes merged shards.
+    The keyword flags distinguish a successful attempt from failure recovery.
 
     After the audio tar is built, reconciles the manifest against the
     tar.  A manifest row is dropped if either:
@@ -95,10 +98,39 @@ def finalize_audio_pretrain_outputs(
     ``dropped.missing_audio`` (check 1) and ``dropped.corrupted_audio``
     (check 2), so the user can attribute post-pipeline integrity drops
     separately from worker-side filters (``empty``, ``overlap``, ...).
+
+    ``replace_empty`` is for a driver that knows the pipeline returned
+    successfully. It replaces stale final outputs with truthful empty outputs
+    when the run produced no shards/members. Keep the default ``False`` when
+    recovering after an exception: partial shards are merged when present, but
+    a failed attempt that produced no shards leaves the prior output bundle
+    byte-for-byte unchanged.
+
+    Set ``audio_tar_expected=False`` for a metadata-only dry run. On success,
+    any stale final tar is removed, manifest/metrics outputs are still replaced,
+    and manifest-to-tar reconciliation is skipped. On failure, tar outputs are
+    left untouched while recoverable manifest/metrics shards are merged.
     """
-    _merge_manifest_shards(output_manifest_path)
-    _merge_metrics_shards(metrics_path)
-    _merge_tar_shards(output_audio_tar_path)
+    if not replace_empty and not _has_output_shards(
+        output_manifest_path,
+        metrics_path,
+        output_audio_tar_path,
+        include_audio_tar=audio_tar_expected,
+    ):
+        logger.info(
+            "no audio-pretrain shards found; preserving the existing output "
+            "bundle during failure recovery"
+        )
+        return
+
+    _merge_manifest_shards(output_manifest_path, replace_empty=replace_empty)
+    _merge_metrics_shards(metrics_path, replace_empty=replace_empty)
+    if not audio_tar_expected:
+        if replace_empty:
+            _remove_stale_audio_tar(output_audio_tar_path)
+        return
+
+    _merge_tar_shards(output_audio_tar_path, replace_empty=replace_empty)
     dropped_missing, dropped_unreadable = _reconcile_manifest_with_tar(
         output_manifest_path, output_audio_tar_path, audio_filepath_key
     )
@@ -107,7 +139,47 @@ def finalize_audio_pretrain_outputs(
     )
 
 
-def _merge_manifest_shards(output_path: str) -> None:
+def _has_output_shards(
+    output_manifest_path: str,
+    metrics_path: str,
+    output_audio_tar_path: str,
+    *,
+    include_audio_tar: bool,
+) -> bool:
+    """Whether this attempt left any shard that finalization can inspect.
+
+    This is deliberately a bundle-level check. In recovery mode, reconciling
+    an old manifest against an old tar when the failed attempt wrote nothing
+    would mutate the prior result even though there is no new work to recover.
+    """
+    return bool(
+        _glob_shards(output_manifest_path, _MANIFEST_SHARD_EXT)
+        or _glob_shards(metrics_path, _METRICS_SHARD_EXT)
+        or (
+            include_audio_tar
+            and _glob_shards(output_audio_tar_path, _TAR_SHARD_EXT)
+        )
+    )
+
+
+def _remove_stale_audio_tar(output_path: str) -> None:
+    """Make a successful metadata-only run truthful: it produced no audio tar."""
+    shards = _glob_shards(output_path, _TAR_SHARD_EXT)
+    for shard in shards:
+        try:
+            os.remove(shard)
+        except OSError as exc:
+            logger.warning(f"failed to remove unexpected tar shard {shard}: {exc}")
+    try:
+        os.remove(output_path)
+    except FileNotFoundError:
+        pass
+    logger.info(
+        f"metadata-only audio-pretrain run: ensured no audio tar exists at {output_path}"
+    )
+
+
+def _merge_manifest_shards(output_path: str, *, replace_empty: bool = False) -> None:
     shards = _glob_shards(output_path, _MANIFEST_SHARD_EXT)
     # Skip the merge when there are no shards.  This guards against silent
     # data loss on re-runs: with finalize_audio_pretrain_outputs called from
@@ -115,6 +187,14 @@ def _merge_manifest_shards(output_path: str) -> None:
     # would otherwise truncate a previous successful run's manifest to
     # zero bytes via the "w"-mode open below.
     if not shards:
+        if replace_empty:
+            parent = os.path.dirname(output_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(output_path, "w", encoding="utf-8"):
+                pass
+            logger.info(f"no manifest shards found for {output_path}; wrote an empty manifest")
+            return
         logger.info(f"no manifest shards found for {output_path}; skipping merge")
         return
     parent = os.path.dirname(output_path)
@@ -144,12 +224,20 @@ def _merge_manifest_shards(output_path: str) -> None:
     logger.info(f"merged {len(shards)} manifest shard(s) into {output_path}")
 
 
-def _merge_metrics_shards(metrics_path: str) -> None:  # noqa: C901
+def _merge_metrics_shards(metrics_path: str, *, replace_empty: bool = False) -> None:  # noqa: C901
     shards = _glob_shards(metrics_path, _METRICS_SHARD_EXT)
     # Same re-run-safety guard as _merge_manifest_shards: skip when no
     # shards exist so an early failure on a re-run can't overwrite a
     # previous successful run's metrics summary with an all-zero JSON.
     if not shards:
+        if replace_empty:
+            parent = os.path.dirname(metrics_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(metrics_path, "w", encoding="utf-8") as f:
+                json.dump(_build_final_summary({}, [], []), f, indent=2, ensure_ascii=False)
+            logger.info(f"no metrics shards found for {metrics_path}; wrote an empty summary")
+            return
         logger.info(f"no metrics shards found for {metrics_path}; skipping merge")
         return
     per_original: dict[str, dict[str, Any]] = {}
@@ -216,7 +304,11 @@ def _merge_metrics_shards(metrics_path: str) -> None:  # noqa: C901
     logger.info(f"merged {len(shards)} metrics shard(s) into {metrics_path}")
 
 
-def _merge_tar_shards(output_path: str) -> None:  # noqa: C901, PLR0912, PLR0915
+def _merge_tar_shards(
+    output_path: str,
+    *,
+    replace_empty: bool = False,
+) -> None:  # noqa: C901, PLR0912, PLR0915
     """Merge per-replica audio tar shards into ``output_path``.
 
     Reads every ``<output_path>.shard-*.tar`` written by the extractor
@@ -234,6 +326,14 @@ def _merge_tar_shards(output_path: str) -> None:  # noqa: C901, PLR0912, PLR0915
     # shards exist so an early failure on a re-run can't overwrite a
     # previous successful run's tar with an empty archive.
     if not shards:
+        if replace_empty:
+            parent = os.path.dirname(output_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with tarfile.open(output_path, "w"):
+                pass
+            logger.info(f"no tar shards found for {output_path}; wrote an empty tar")
+            return
         logger.info(f"no tar shards found for {output_path}; skipping merge")
         return
     parent = os.path.dirname(output_path)
@@ -282,9 +382,23 @@ def _merge_tar_shards(output_path: str) -> None:  # noqa: C901, PLR0912, PLR0915
             in_tar.close()
     index.sort(key=lambda e: e[0])
     if not index:
-        logger.info(
-            f"no readable tar members found in {len(shards)} tar shard(s) for {output_path}; skipping merge"
-        )
+        if replace_empty:
+            with tarfile.open(output_path, "w"):
+                pass
+            for s in shards:
+                try:
+                    os.remove(s)
+                except OSError as e:
+                    logger.warning(f"failed to remove tar shard {s}: {e}")
+            logger.info(
+                f"no readable tar members found in {len(shards)} tar shard(s) "
+                f"for {output_path}; wrote an empty tar"
+            )
+        else:
+            logger.info(
+                f"no readable tar members found in {len(shards)} tar shard(s) "
+                f"for {output_path}; skipping merge"
+            )
         return
 
     # Pass 2: keep one open TarFile per source shard so we don't pay

@@ -26,7 +26,7 @@ from loguru import logger
 from torchaudio.pipelines import SQUIM_OBJECTIVE
 
 from nemo_curator.backends.base import NodeInfo, WorkerMetadata
-from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, StageContract
+from nemo_curator.stages.audio._agent_ready import AgentReady, ConditionalWrite, Gates, IOSpec, StageContract
 from nemo_curator.stages.audio._residency import InputResidency, residency_read_specs
 from nemo_curator.stages.audio.common import ensure_mono, ensure_waveform_2d
 from nemo_curator.stages.base import ProcessingStage
@@ -91,6 +91,25 @@ class TorchSquimQualityMetricsStage(AgentReady, ProcessingStage[AudioTask, Audio
                 sample_rate_key=self.sample_rate_key,
             ),
             writes=IOSpec(data_keys=[self.metrics_key], segment_data_keys=[self.metrics_key]),
+            conditional_writes=[
+                ConditionalWrite(
+                    writes=IOSpec(data_keys=[self.metrics_key]),
+                    condition=(
+                        f"'{self.segments_key}' is absent, top-level audio resolves to a waveform, "
+                        "and whole-batch model inference completes"
+                    ),
+                    value_origin="augments_upstream_same_key",
+                ),
+                ConditionalWrite(
+                    writes=IOSpec(segment_data_keys=[self.metrics_key]),
+                    condition=(
+                        f"'{self.segments_key}' is present; an individual segment is not marked no-speaker, "
+                        "has non-blank text and a positive requested frame span, its waveform is collected, "
+                        "and whole-batch model inference completes"
+                    ),
+                    value_origin="augments_upstream_same_key",
+                ),
+            ],
             gates=Gates(requires_gpu=self.resources.gpus > 0, requires_internet_first_run=True),
         )
 

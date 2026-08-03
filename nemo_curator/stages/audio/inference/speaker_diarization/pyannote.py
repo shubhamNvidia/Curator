@@ -88,6 +88,8 @@ class PyAnnoteDiarizationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
         embedding_batch_size: Batch size for speaker embeddings
         min_length: Minimum segment length in seconds
         max_length: Maximum segment length in seconds
+        num_speakers_key: Key in output data for the distinct-speaker count derived
+            from the diarization result (passthrough mode only). Defaults to "num_speakers".
         xenna_num_workers: If set, caps workers cluster-wide. Prefer ``with_(num_workers=...)`` for new code.
     """
 
@@ -109,6 +111,7 @@ class PyAnnoteDiarizationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
     sample_rate_key: str = "sample_rate"
     segments_key: str = "segments"
     overlap_segments_key: str = "overlap_segments"
+    num_speakers_key: str = "num_speakers"
     input_residency: InputResidency = "file"
     write_rttm: bool = True
     vad_onset: float = 0.5
@@ -151,7 +154,7 @@ class PyAnnoteDiarizationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
                 self.speaker_key,
                 self.original_file_key,
             ]
-        return [], [self.audio_filepath_key, self.segments_key, self.overlap_segments_key]
+        return [], [self.audio_filepath_key, self.segments_key, self.overlap_segments_key, self.num_speakers_key]
 
     def describe(self) -> StageContract:
         if self.fanout:
@@ -168,7 +171,7 @@ class PyAnnoteDiarizationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
             ]
             cardinality = "1:N fan-out"
         else:
-            writes = [self.segments_key, self.overlap_segments_key]
+            writes = [self.segments_key, self.overlap_segments_key, self.num_speakers_key]
             cardinality = "1:1"
         return StageContract(
             reads_one_of=residency_read_specs(
@@ -446,7 +449,14 @@ class PyAnnoteDiarizationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
         data_entry[self.segments_key] = segments
         data_entry[self.overlap_segments_key] = overlap_segments
 
-        speakers = {seg["speaker"] for seg in segments if seg.get("speaker") != "no-speaker"}
+        # Distinct speakers across turns AND overlap-only turns; "no-speaker" is a
+        # silence/VAD placeholder, not a real speaker.
+        speakers = {
+            seg["speaker"]
+            for seg in (*segments, *overlap_segments)
+            if seg.get("speaker") != "no-speaker"
+        }
+        data_entry[self.num_speakers_key] = len(speakers)
         self._log_metrics(
             {
                 "process_time": time.perf_counter() - t0,
