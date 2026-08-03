@@ -23,11 +23,28 @@ params_of_note:
   target_format: "output container/codec (e.g. wav)"
   target_nchannels: "output channel count (1 = mono)"
   resampled_audio_dir: "(REQUIRED, no default) directory for the converted files -- the stage has no default and creates it at setup"
+semantic_facts:
+  resampled_audio_filepath:
+    meaning: "Path to a NEW file written at target_sample_rate/target_format -- a transformed copy, not the original."
+    unit: "file path (string)"
+    provenance: "ffmpeg-converted output written to resampled_audio_dir; the original file is left untouched."
+    scope: "the converted copy for this task; a genuinely new artifact on disk"
+    propagation: "Written each run; file-based downstream stages should read this key (not the original audio_filepath) to consume the resampled audio."
+    counterexamples:
+      - "This stage TRANSFORMS the audio (rate/format/channels) -- do not use it when the intent is to keep the original samples unchanged; it is not a filter."
+  sample_rate:
+    meaning: "The TARGET rate the audio was converted to (present only with keep_waveform_in_task)."
+    unit: "Hz (integer)"
+    provenance: "Equals target_sample_rate (default 16000) -- the rate produced, not a measurement of the input."
+    scope: "the resampled output"
+    propagation: "Only present when keep_waveform_in_task=True."
+    counterexamples:
+      - "It reflects the configured target, so a sample_rate == 16000 check verifies the resample target, not the source rate."
 param_dependencies:
   resampled_audio_dir: "required: the stage writes converted files here (needs write_to_disk, the default). Not optional."
 notes:
   - "Requires ffmpeg on PATH. Placing resample once, upstream, avoids each model stage re-resampling."
 caveats:
   - "Writes converted files to disk."
-verified: {params: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess}
-provenance: {model_card_url: null, card_version: 3, last_validated: "2026-07-26"}
+verified: {params: mechanical, semantic_facts: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess}
+provenance: {model_card_url: null, card_version: 4, last_validated: "2026-07-30"}

@@ -35,6 +35,16 @@ params_of_note:
   keep_waveform_in_task: "keep each per-speaker waveform in the task (default True, today's behavior). Set False for on-disk-only output (requires write_to_disk)."
   write_to_disk: "also write each per-speaker track to separated_audio_dir and set audio_filepath_key to it (default False). Enables file-based downstream stages."
   separated_audio_dir: "directory for per-speaker WAVs (REQUIRED when write_to_disk=True)."
+  num_speakers_key: "field carrying the original clip's detected-speaker count; see semantic_facts before filtering it on child tasks"
+semantic_facts:
+  num_speakers:
+    meaning: "Number of speakers returned by separation for the original input clip, computed before children shorter than min_duration may be skipped."
+    unit: "detected speakers (integer)"
+    provenance: "Computed once as the size of the original clip's speaker_audio_data result before the per-speaker child loop."
+    scope: "original input clip; parent-level aggregate, not a count recomputed from an emitted child track"
+    propagation: "Copied unchanged onto every emitted per-speaker AudioTask; each child track is already the audio for one speaker."
+    counterexamples:
+      - "After fan-out, filtering num_speakers == 1 keeps children whose original source had one detected speaker. It does not mean 'keep single-speaker child tracks' and will drop children separated from multi-speaker sources."
 param_dependencies:
   write_to_disk: "requires separated_audio_dir; sets each child's audio_filepath to its per-speaker WAV."
   keep_waveform_in_task: "at least one of keep_waveform_in_task or write_to_disk must be True."
@@ -50,5 +60,5 @@ notes:
   - "Uses the OFFLINE non-streaming checkpoint nvidia/diar_sortformer_4spk-v1 (loaded via from_pretrained), distinct from InferenceSortformerStage's streaming v2.1."
   - "GPU required; downloads the NeMo model from HuggingFace Hub on first run. On OOM, split the audio or reduce load."
   - "(external) Sortformer end-to-end diarizer (arXiv 2409.06656): 4-speaker cap, 16 kHz mono, English-primary."
-verified: {params: mechanical, tags: best_guess, model_version: mechanical, resource: measured, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess}
-provenance: {model_card_url: "https://huggingface.co/nvidia/diar_sortformer_4spk-v1", card_version: 3, last_validated: "2026-07-24"}
+verified: {params: mechanical, semantic_facts: mechanical, tags: best_guess, model_version: mechanical, resource: measured, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess}
+provenance: {model_card_url: "https://huggingface.co/nvidia/diar_sortformer_4spk-v1", card_version: 4, last_validated: "2026-07-30"}

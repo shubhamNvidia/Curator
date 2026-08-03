@@ -1,9 +1,13 @@
 stage_id: PyAnnoteDiarizationStage
 category: diarize
-summary: "Speaker diarization + overlap detection with pyannote 3.1 (no fixed speaker cap; needs an HF token)."
+summary: "Speaker diarization + overlap detection with pyannote 3.1 (no fixed speaker cap; needs an HF token). Passthrough writes segments, overlap_segments, and a num_speakers count. Annotates only -- does NOT separate audio."
 tags: [needs_gpu, needs_internet_first_run, needs_hf_token, writes_disk]
 model_id: "pyannote/speaker-diarization-3.1"
 model_version: "pyannote/speaker-diarization-3.1"   # stage default model_name
+# The internal long-turn VAD re-segments with randomized chunk sizes and the stage exposes no
+# seed (see notes), so the same audio can yield different segment boundaries. Reuse of a stored
+# result is therefore offered with that stated, not taken silently.
+deterministic: false
 domain: {language: any, style: conversational}   # pyannote is largely language-agnostic
 constraints:
   input_duration_sweetspot_sec: {min: 0.5, max: 40.0}   # min_length / max_length defaults
@@ -33,12 +37,37 @@ params_of_note:
   embedding_batch_size: "batch size for speaker embeddings (default 128)"
   write_rttm: "also write RTTM files beside the audio (default True)"
   fanout: "False (default) = passthrough with segments; True = one task per segment"
+semantic_facts:
+  segments:
+    meaning: "Speaker turns for one recording: a list of {start, end, speaker}. Paired with overlap_segments for overlapping speech."
+    unit: "list of {start: s, end: s, speaker: label} dicts (times in seconds)"
+    provenance: "pyannote 3.1 diarization; boundaries can vary run-to-run (internal randomized VAD, no seed exposed)."
+    scope: "the whole recording (passthrough); fanout=True emits one task per segment"
+    propagation: "Emitted with overlap_segments; downstream (Merge/TimestampMapper) must handle both lists."
+    counterexamples:
+      - "This stage ANNOTATES (labels who-spoke-when + overlaps); it does NOT separate/split audio into per-speaker tracks. Use SpeakerSeparationStage for that."
+  num_speakers:
+    meaning: "Total distinct speakers detected in the recording (passthrough mode only)."
+    unit: "int (distinct speaker labels across segments AND overlap_segments, excluding the 'no-speaker' silence placeholder)"
+    provenance: "Derived from the diarization result after clustering -- written under num_speakers so a downstream PreserveByValueStage can filter single-speaker clips without a separation stage. This is the OBSERVED count, not an input constraint."
+    scope: "the whole recording; written only in passthrough mode (fanout=True emits per-segment children and does not attach this count)"
+    propagation: "Written under num_speakers alongside segments/overlap_segments; no fixed speaker cap (unlike Sortformer)."
+    counterexamples:
+      - "num_speakers is the DETECTED count, not a min_speakers/max_speakers knob -- the stage still cannot be told how many speakers to find."
+  speaker:
+    meaning: "A RELATIVE per-recording speaker label from clustering -- not a global/person identity; unlike Sortformer there is no fixed speaker cap."
+    unit: "string label"
+    provenance: "pyannote speaker-embedding clustering for this clip."
+    scope: "per recording; labels are not comparable across files"
+    propagation: "Attached per turn (or per fan-out child)."
+    counterexamples:
+      - "'Single-speaker' is a whole-clip property (exactly one distinct label), not something a per-segment speaker field filters."
 comparison:
   language_support: "language-agnostic. (external: pyannote model card)"
   accuracy_hint: "detects overlapping speech; no fixed speaker cap. DER approx AMI 12-14%, VoxConverse 9-11%, DIHARD III 17-19% (external, 'Full' setup)"
   config_complexity: "medium-high (needs token + license; onset/offset/batch knobs)"
   choose_when: "you need overlap detection, >4 speakers, or non-English, and can supply an HF token. Use InferenceSortformerStage for a local <=4-speaker English diarizer with no token."
-  known_limitations: "requires an HF token and accepting TWO gated licenses; does NOT expose num_speakers/min_speakers/max_speakers, so the speaker count cannot be constrained through this card"
+  known_limitations: "requires an HF token and accepting TWO gated licenses; exposes the DETECTED num_speakers count (passthrough) but has NO min_speakers/max_speakers knob, so the speaker count cannot be CONSTRAINED as an input"
 conflicts_with: [InferenceSortformerStage]   # alternative diarizer
 notes:
   - "Emits BOTH `segments` and `overlap_segments`; downstream (MergeAlignmentDiarizationStage / TimestampMapperStage) should handle the overlap list too."
@@ -52,5 +81,5 @@ caveats:
   - "Writes RTTM files to disk when write_rttm=True."
 versions:   # verified in the Curator env (has onnxruntime) -- load + run + segments/overlap_segments structure (tested 2026-07-23, RTX 4090)
   "pyannote/speaker-diarization-3.1": "WHEN: overlap detection, >4 speakers, or non-English (with an HF token). Pure PyTorch (no onnxruntime needed); no fixed speaker cap. Stage default and the only pyannote version verified here."
-verified: {params: mechanical, tags: best_guess, model_version: mechanical, resource: measured, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess, versions: measured}
-provenance: {model_card_url: "https://huggingface.co/pyannote/speaker-diarization-3.1", card_version: 2, last_validated: "2026-07-23"}
+verified: {params: mechanical, semantic_facts: mechanical, tags: best_guess, model_version: mechanical, resource: measured, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess, versions: measured}
+provenance: {model_card_url: "https://huggingface.co/pyannote/speaker-diarization-3.1", card_version: 4, last_validated: "2026-07-30"}

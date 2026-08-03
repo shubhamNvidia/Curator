@@ -26,6 +26,31 @@ params_of_note:
   speech_pad_ms: "padding added before/after each speech segment in ms (default 300)"
   nested: "True = one task with all segments under segments_key; False (default) = fan-out one task per segment"
   keep_segment_waveform_in_task: "keep each segment's waveform in-task (default True); REQUIRED for SegmentConcatenationStage"
+semantic_facts:
+  duration:
+    meaning: "Length of ONE detected speech segment (fan-out mode) -- not the original file."
+    unit: "seconds (float)"
+    provenance: "Derived per segment from its start_ms/end_ms speech span."
+    scope: "per emitted speech-segment child; the fan-out changes granularity from file to segment"
+    propagation: "Written on each per-segment child; a child carries no original-file duration."
+    counterexamples:
+      - "After VAD fan-out, a length filter (duration > 5s) keeps SEGMENTS longer than 5s, NOT files longer than 5s."
+  original_file:
+    meaning: "Identity/path of the ORIGINAL recording each speech segment was cut from."
+    unit: "string (source identifier)"
+    provenance: "Copied from the parent task onto every child so provenance survives the fan-out."
+    scope: "original parent recording; a parent-level identity broadcast unchanged to every child segment"
+    propagation: "Identical on all children from the same source file."
+    counterexamples:
+      - "Many children share one original_file; grouping/deduping by it groups all segments of one recording, not distinct outputs."
+  segments:
+    meaning: "In nested mode (nested=True), the full list of detected speech segments for one file."
+    unit: "list of segment dicts (start_ms, end_ms, segment_num, duration, original_file)"
+    provenance: "Silero VAD speech timestamps for the whole input, mapped back to the original rate."
+    scope: "one original file (nested mode keeps 1:1 granularity); in fan-out mode this list is exploded into per-segment children instead"
+    propagation: "Present only in nested mode; consumed by SegmentConcatenationStage."
+    counterexamples:
+      - "nested=True does NOT fan out; nested=False (default) emits one task per segment -- the same stage yields different granularities."
 presets:
   conversational: {threshold: 0.5, min_duration_sec: 1.0, max_duration_sec: 30.0}
   read_speech: {threshold: 0.5, min_duration_sec: 2.0, max_duration_sec: 60.0}
@@ -41,5 +66,5 @@ notes:
   - "Segment schema: each segment dict has start_ms, end_ms, segment_num, duration, original_file (times in MILLISECONDS, not start/end seconds). This is INCOMPATIBLE with SplitLongAudioStage, which reads start/end in seconds -- use diarization segments for splitting."
   - "For SegmentConcatenationStage, run with nested=True AND keep_segment_waveform_in_task=True (it needs per-segment waveforms)."
   - "(external) Silero VAD: enterprise-grade, ~2 MB, bundled with the pip package (no download), 8/16 kHz native (fixed 256/512-sample windows in v5). Source: https://github.com/snakers4/silero-vad"
-verified: {params: mechanical, tags: mechanical, model_version: best_guess, resource: measured, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess}
-provenance: {model_card_url: "https://github.com/snakers4/silero-vad", card_version: 4, last_validated: "2026-07-23"}
+verified: {params: mechanical, semantic_facts: mechanical, tags: mechanical, model_version: best_guess, resource: measured, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess}
+provenance: {model_card_url: "https://github.com/snakers4/silero-vad", card_version: 5, last_validated: "2026-07-30"}

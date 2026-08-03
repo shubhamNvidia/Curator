@@ -20,7 +20,7 @@ patterns:
   - id: sanitize-before-json-sink
     kind: enforced
     when: "a tensor/audio-producing stage precedes a JSON/JSONL writer"
-    then: "insert AudioToDocumentStage before the writer (it strips tensors); the validator also flags this as tensor_into_sink"
+    then: "insert AudioToDocumentStage followed by DocumentBatchJsonlWriterStage (the converter strips tensors and the sink accepts its DocumentBatch carrier); ManifestWriterStage remains AudioTask-only"
 
   - id: filter-after-metric
     kind: advisory

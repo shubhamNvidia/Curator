@@ -1,6 +1,6 @@
 stage_id: InferenceSortformerStage
 category: diarize
-summary: "Speaker diarization (who spoke when) with NVIDIA Sortformer; passthrough (diar_segments) or fan-out per segment."
+summary: "Speaker diarization (who spoke when) with NVIDIA Sortformer; passthrough (diar_segments + num_speakers count) or fan-out per segment. Annotates only -- does NOT separate audio."
 tags: [needs_gpu, needs_internet_first_run]
 model_id: "nvidia/diar_streaming_sortformer_4spk-v2.1 (streaming; offline variant: nvidia/diar_sortformer_4spk-v1)"
 model_version: "nvidia/diar_streaming_sortformer_4spk-v2.1"   # stage default model_name
@@ -35,6 +35,31 @@ params_of_note:
   chunk_len: "streaming chunk size in 80 ms frames (default 340 ~= 27.2 s); larger = more context/accuracy but higher latency + VRAM"
   inference_batch_size: "internal batch size passed to diarize() (default 1; streaming state is per-clip)"
   rttm_out_dir: "optional dir to also write RTTM files (sets writes_to_disk when provided)"
+semantic_facts:
+  diar_segments:
+    meaning: "Who-spoke-when: a list of speaker turns, each {start, end, speaker}, for ONE recording."
+    unit: "list of {start: s, end: s, speaker: label} dicts (times in seconds)"
+    provenance: "Sortformer neural-diarization output over the whole clip; labels are the model's clustered turn assignments."
+    scope: "the whole recording (passthrough); with fanout=True the same turns become one task per segment"
+    propagation: "Written under diar_segments (NOT 'segments' -- set MergeAlignmentDiarizationStage.segments_key=diar_segments when chaining)."
+    counterexamples:
+      - "This stage ANNOTATES (labels who-spoke-when); it does NOT separate/split audio. To get per-speaker audio tracks use SpeakerSeparationStage instead."
+  num_speakers:
+    meaning: "Total distinct speakers detected in the recording (passthrough mode only)."
+    unit: "int (count of distinct speaker labels in diar_segments, excluding the 'unknown' parse-failure placeholder)"
+    provenance: "Derived from diar_segments after diarization -- written under num_speakers so a downstream PreserveByValueStage can filter single-speaker clips without a separation/fan-out stage."
+    scope: "the whole recording; written only in passthrough mode (fanout=True emits per-segment children and does not attach this count)"
+    propagation: "Written under num_speakers alongside diar_segments; bounded by the 4-speaker model cap."
+    counterexamples:
+      - "num_speakers counts distinct speakers in the WHOLE clip; it is not a per-segment field and does not exist on fan-out children."
+  speaker:
+    meaning: "A RELATIVE speaker label within one recording (speaker_0, speaker_1, ...) -- an arrival-time-ordered cluster id, not a global/person identity."
+    unit: "string label (or 'unknown')"
+    provenance: "Assigned by the diarizer's clustering for this clip only."
+    scope: "per recording; speaker_0 in one file is unrelated to speaker_0 in another"
+    propagation: "Attached per turn (or per fan-out child); at most 4 distinct speakers (model constraint)."
+    counterexamples:
+      - "Do not treat speaker_0 as a person across files, and do not filter for 'single speaker' via a per-segment speaker field -- 'one speaker' means the whole clip has exactly one distinct label."
 comparison:
   language_support: "English (training domain); degrades on non-English. (external: NVIDIA model card)"
   accuracy_hint: "up to 4 speakers; offline v1 reports DER 14.76 on DIHARD3-eval (external); degrades on >4 speakers or non-English"
@@ -55,5 +80,5 @@ presets:
 versions:   # verified interchangeable via model_name -- load + run + IDENTICAL diar_segments structure, no module code change (tested 2026-07-23, RTX 4090)
   "nvidia/diar_sortformer_4spk-v1": "WHEN: batch/offline diarization of short-to-medium clips (non-streaming). Also the checkpoint used by SpeakerSeparationStage. Preset: offline_v1."
   "nvidia/diar_streaming_sortformer_4spk-v2": "WHEN: long or streaming audio / low-latency. Tune chunk_len for latency vs accuracy. Preset: streaming_v2. (The stage's default model_name is the -v2.1 point-release of this same streaming family -- not independently tested here.)"
-verified: {params: mechanical, tags: mechanical, model_version: mechanical, resource: measured, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess, versions: measured}
-provenance: {model_card_url: "https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2", card_version: 4, last_validated: "2026-07-26"}
+verified: {params: mechanical, semantic_facts: mechanical, tags: mechanical, model_version: mechanical, resource: measured, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess, versions: measured}
+provenance: {model_card_url: "https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2", card_version: 6, last_validated: "2026-07-30"}

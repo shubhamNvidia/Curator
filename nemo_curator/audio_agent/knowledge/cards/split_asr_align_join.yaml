@@ -24,7 +24,7 @@ composition:
 params_of_note:
   suggested_max_len: "target chunk length for the internal split (s, default 3600 -> only hour-plus files split; tune down to ~600-1200 for memory-bound ASR)"
   model_name: "the NeMo ASR checkpoint id (default nvidia/parakeet-tdt_ctc-1.1b)"
-  decoder_type: "'rnnt' (default; the TDT head) or 'ctc'"
+  decoder_type: "'rnnt' (default; the TDT head) or 'ctc'. CTC avoids CUDA graphs, so it is the safer fallback if RNNT decode crashes with a CUDA-graph error."
   max_len: "max aligned segment length (s) for the inner aligner"
   transcribe_batch_size: "files per GPU inference batch (default 32)"
 param_dependencies:
@@ -39,6 +39,7 @@ notes:
   - "Composite of SplitLongAudioStage + NeMoASRAlignerStage + JoinSplitAudioMetadataStage (always run together); the inner split writes chunk WAV files to disk."
   - "Requires upstream `segments` (e.g. VADSegmentationStage) and `duration`; emits a top-level `alignment` that MergeAlignmentDiarizationStage consumes."
   - "decoder_type default 'rnnt' = the hybrid checkpoint's TDT head; use 'ctc' for CTC-style timestamps / LM biasing."
+  - "If the inner aligner crashes with a CUDA-graph / NVRTC error (e.g. CUDA error 222), the usual cause is a GPU-driver vs CUDA-toolkit mismatch, not this stage -- run the `doctor` verb for the diagnosis and fix steps. Stage-level quick unblock: decoder_type='ctc' (this hybrid tdt_ctc checkpoint has a CTC head; no CUDA graphs, no model change)."
   - "(external) nvidia/parakeet-tdt_ctc-1.1b: English, hybrid FastConformer TDT-CTC, 16 kHz mono, punctuation + capitalization, up to ~11 h per pass, CC-BY-4.0."
 verified: {params: mechanical, tags: best_guess, model_version: mechanical, resource: measured, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess}
-provenance: {model_card_url: "https://huggingface.co/nvidia/parakeet-tdt_ctc-1.1b", card_version: 3, last_validated: "2026-07-23"}
+provenance: {model_card_url: "https://huggingface.co/nvidia/parakeet-tdt_ctc-1.1b", card_version: 4, last_validated: "2026-07-27"}

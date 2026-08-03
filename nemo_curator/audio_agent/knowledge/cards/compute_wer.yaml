@@ -26,6 +26,16 @@ params_of_note:
 param_dependencies:
   hypothesis_text_key: "requires an upstream ASR prediction"
   reference_text_key: "requires reference transcripts in the source manifest"
+semantic_facts:
+  metrics:
+    meaning: "Error-rate scores comparing an ASR HYPOTHESIS against a REFERENCE transcript (nested: metrics.wer.wer, metrics.cer.cer, plus edge/PNC variants)."
+    unit: "fractions; WER/CER are error rates in [0, ~2] (can exceed 1.0 when insertions dominate)"
+    provenance: "word_error_rate_detail over the NORMALIZED hypothesis_text_key vs reference_text_key text; REQUIRES both to be present."
+    scope: "per segment when segments_key is present, else the top-level row"
+    propagation: "Written under metrics_key; there is no inline threshold -- filter downstream with PreserveByValueStage."
+    counterexamples:
+      - "WER is unproducible without reference transcripts (reference_text_key, default text_ref) -- it measures transcript accuracy, NOT an audio property, and cannot be computed from audio alone."
+      - "WER/CER are LOWER-better error rates: to keep accurate clips, DROP those ABOVE the threshold (a >= cut), not below."
 metrics:
   # ComputeWER writes nested dicts under metrics_key (metrics.wer.wer, metrics.cer.cer,
   # plus edge/PNC variants). There is NO inline threshold param -- filter downstream with
@@ -44,5 +54,5 @@ comparison:
 conflicts_with: [GetPairwiseWerStage]   # overlapping WER computation
 notes:
   - "Cleans/normalizes text via NeMo text processing before scoring. Writes results under metrics_key."
-verified: {params: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess, comparison: best_guess}
-provenance: {model_card_url: null, card_version: 2, last_validated: "2026-07-25"}
+verified: {params: mechanical, semantic_facts: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess, comparison: best_guess}
+provenance: {model_card_url: null, card_version: 3, last_validated: "2026-07-30"}

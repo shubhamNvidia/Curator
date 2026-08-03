@@ -13,12 +13,12 @@ resource:
   bound: cpu
   throughput_hint: "CPU; aggregates a batch into one DataFrame"
 use_cases:
-  good_for: ["the sanctioned bridge before a JSON/JSONL writer", "making task data serialization-safe"]
+  good_for: ["the sanctioned bridge before DocumentBatchJsonlWriterStage", "making task data serialization-safe"]
   avoid_for: ["mid-pipeline (place it just before the writer)"]
 composition:
   typical_upstream: [UTMOSFilterStage, SIGMOSFilterStage, GetAudioDurationStage, TimestampMapperStage]
-  typical_downstream: [ManifestWriterStage]
+  typical_downstream: [DocumentBatchJsonlWriterStage]
 notes:
-  - "Sanitizes output: strips torch tensors / audio arrays / segments, so it is the correct thing to place before a serialize-as-JSON sink when a resident waveform may be present (avoids tensor_into_sink at json.dumps)."
+  - "Sanitizes output: strips torch tensors / audio arrays / segments, then emits a DocumentBatch. Follow it with DocumentBatchJsonlWriterStage, not the AudioTask-only ManifestWriterStage."
 verified: {tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess}
-provenance: {model_card_url: null, card_version: 2, last_validated: "2026-07-20"}
+provenance: {model_card_url: null, card_version: 3, last_validated: "2026-07-28"}
