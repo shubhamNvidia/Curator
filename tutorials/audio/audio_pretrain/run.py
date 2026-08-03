@@ -252,19 +252,25 @@ def main() -> None:
     logger.info(f"Running on backend={args.backend}")
     prepare_audio_pretrain_outputs(args.output_manifest, args.metrics_path, args.output_audio_tar_path)
     t0 = time.monotonic()
+    run_succeeded = False
     try:
         pipeline.run(executor)
+        run_succeeded = True
     finally:
         # Always merge whatever shards the writer + aggregator managed to produce,
         # even on pipeline failure (OOM, network partition, Ctrl+C, stage exception).
         # Without this, partial shards would be silently deleted by the next
         # prepare_audio_pretrain_outputs call and any partial output is lost.
+        # A successful all-filtered/empty run must instead replace any outputs
+        # from an earlier run with truthful empty artifacts.
         elapsed = time.monotonic() - t0
         finalize_audio_pretrain_outputs(
             args.output_manifest,
             args.metrics_path,
             args.output_audio_tar_path,
             audio_filepath_key=args.audio_filepath_key,
+            replace_empty=run_succeeded,
+            audio_tar_expected=not args.dry_run,
         )
     logger.info(
         f"Pipeline finished in {elapsed:.2f}s ({elapsed / 60:.2f} min). "

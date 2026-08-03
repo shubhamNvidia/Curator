@@ -164,6 +164,14 @@ def init_cluster(  # noqa: PLR0913
     ray_command.extend(["--dashboard-port", str(ray_dashboard_port)])
     ray_command.extend(["--ray-client-server-port", str(ray_client_server_port)])
     ray_command.extend(["--temp-dir", ray_temp_dir])
+    # Optional plasma/object-store directory. Ray's plasma store defaults to /dev/shm; on
+    # hosts where /dev/shm is absent or too small (some containers / CI / sandboxes) the
+    # raylet fails to start ("current node timed out during startup ... GCS overloaded").
+    # Setting CURATOR_RAY_PLASMA_DIRECTORY (e.g. /tmp) routes the object store to a real
+    # filesystem. Unset -> Ray's default is used, so existing behavior is unchanged.
+    plasma_directory = os.environ.get("CURATOR_RAY_PLASMA_DIRECTORY")
+    if plasma_directory:
+        ray_command.extend(["--plasma-directory", plasma_directory])
     if object_store_memory is not None:
         ray_command.extend(["--object-store-memory", str(object_store_memory)])
     ray_command.extend(["--disable-usage-stats"])
