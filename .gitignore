@@ -169,3 +169,8 @@ fern/product-docs/
 
 # PDF parsing data (symlinked to external storage)
 pdf_parsing/
+
+# Audio agent run/artifact store: run records plus a rebuildable SQLite index, written to
+# <cwd>/.audio_agent_runs unless AUDIO_AGENT_WORKSPACE points elsewhere. Local execution
+# state, not source -- running the agent from the repo root must not dirty the tree.
+.audio_agent_runs/

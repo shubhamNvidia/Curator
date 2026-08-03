@@ -22,11 +22,22 @@ python -m nemo_curator.audio_agent catalog-tree        # L0 category tree (route
 python -m nemo_curator.audio_agent cards --category quality          # L1 one-liners
 python -m nemo_curator.audio_agent cards --names UTMOSFilterStage    # L2 full cards
 python -m nemo_curator.audio_agent context --goal '{...}' --data DATA
+python -m nemo_curator.audio_agent doctor --json
+python -m nemo_curator.audio_agent diagnose --error '...' --recipe R.yaml
 python -m nemo_curator.audio_agent validate --recipe R.yaml --data DATA
 python -m nemo_curator.audio_agent smoke --recipe R.yaml --sample 10 --data DATA
 python -m nemo_curator.audio_agent run --recipe R.yaml --confirm <hash> --data DATA
 python -m nemo_curator.audio_agent report --output OUT --data DATA
+python -m nemo_curator.audio_agent reuse-scan --recipe R.yaml --data DATA   # prior work?
+python -m nemo_curator.audio_agent continue --recipe R.yaml --data DATA --execute --choice extend --confirm <hash>
 ```
+
+For recipe-driven verbs, stage 0's supported source parameter is execution truth.
+`Recipe.inputs` and `--data` are optional consistency assertions; they never
+populate or rewrite the stage. Omit `--data`, or pass the same canonical source.
+A mismatch is refused. A multi-manifest `ManifestReader` may run with singular
+`--data` omitted, but remains unkeyed for reuse. `context --data` directly
+profiles the path because it runs before a recipe exists.
 
 ## Golden rules
 
@@ -42,8 +53,47 @@ python -m nemo_curator.audio_agent report --output OUT --data DATA
   resample — `keep_waveform_in_task=false` + `write_to_disk=false` while the next stage reads
   from file converts then discards the audio (scorers still see the originals): make it
   effective (`write_to_disk` + `update_audio_filepath`, or keep the waveform) or drop it.
+- `resources` is a config knob, not a fixed default: set it from the card's `resource` facts.
+  For a `bound: gpu` / not `gpu_optional` stage, set resources=Resources(gpus=1) (VRAM ~
+  card `gpu_mem_gb`); a GPU-required stage left at its CPU default runs on CPU (very slow)
+  and can over-parallelize into many model-loading actors.
+- Environment issues live in ONE place: run `doctor` for any env symptom (import/CUDA/ffmpeg
+  errors, GPU model crashes) or before a heavy GPU run. It checks driver-vs-CUDA-toolkit,
+  ffmpeg, deps, disk, ... and prints fix steps. Don't diagnose env from stage cards — cards
+  defer to `doctor` (see ENVIRONMENT.md).
+- The core returns a recipe-aware `environment_decision`; you are the analyst. If
+  `decision_required` is true, stop before execution, separate detected facts from inference,
+  explain the affected stages, recommend an available grounded option using the user's
+  constraints, state trade-offs, and ask one outcome-level choice. Never silently install or
+  upgrade, change launch mode, request a secret value in chat, switch CPU/GPU, change a
+  model/decoder/stage, or retry the same failure. Offer CPU only as a conditional candidate
+  when every flattened execution leaf is proven CPU-capable; call it executable only after
+  the candidate builds and smokes. Any fallback is a new recipe/config hash and must
+  validate -> smoke -> confirm again. Re-run preflight after a fix. For runtime/import/CUDA/
+  Ray/model failures call `diagnose`; unknown means collect its minimal diagnostics, never
+  invent a cause.
+- Scope facts to the execution target: local driver GPU/ffmpeg/secrets/disk/Python/uv-launch
+  evidence is not remote-worker evidence. Hard-block driver/toolkit mismatch only for a
+  selected runtime-PTX/JIT path; use a bounded smoke for other GPU stages before host changes.
 - 0 silent full-scale runs: never `run --confirm` until the user approves after seeing a
   smoke result + scale estimate. Pass the recipe `config_hash` to `--confirm` (integrity).
+- Nothing touches the filesystem before approval: no creating, deleting, moving or truncating
+  files or directories ahead of the gate — least of all the user's output. An approval gate the
+  agent prepares the ground for is not a gate. `validate` reports `output_targets` (what already
+  exists at every path the recipe writes to, with row/file counts): surface an occupied path in
+  the plan and let the user decide. Never "clean up" an output first — the pipeline replaces its
+  own manifest output, so a rerun does NOT accumulate rows. (Verified: two consecutive runs on 4
+  files give 4 rows, not 8. Reading `ManifestWriterStage.process` in isolation suggests
+  otherwise because it opens in append mode; `setup` truncates first, and it is pinned to one
+  worker. An agent once deleted a user's file over exactly this misreading.)
+- Don't redo finished work, and never reuse it silently. Before a run, `reuse-scan`. If it
+  returns `prompt_user: true`, show the candidate card (objective, pipeline, input/output,
+  key params, date, metrics, time saved) and offer as-is / extend / fresh; take its
+  `recommended` as your default, which is `fresh` whenever `trust` is low. No candidate means
+  no question — just run. A *measured* saving under 30s is taken automatically but still
+  disclosed in the summary; unmeasured is not the same as small, so a non-empty
+  `unpriced_stages` asks regardless of the estimate. Then `continue --execute --choice ...`
+  rather than hand-editing the recipe.
 - Evidence only: no lift claims without before/after numbers from `report`.
 - Refuse/redirect: subjective labeling (gender/accent/emotion), model training/eval/deploy,
   large runs without confirmation. Offer a safe alternative.
@@ -51,20 +101,38 @@ python -m nemo_curator.audio_agent report --output OUT --data DATA
   batch size, model IDs). Ask outcome-level ("studio/broadcast/general?", language, format) and
   resolve via card `anchors`/`presets`. Module choice: compare on card facts, then auto/recommend/ask
   (ask only if material + preference-dependent + not inferable).
+- A green deterministic Verdict is **mechanically runnable, not intent-approved**. After
+  `validate` passes and before `smoke`, emit a semantic critique with exactly
+  `intent_status: pass|revise|ask`, and copy
+  `semantic_review.recipe.config_hash` into `recipe_config_hash` so the critique
+  is bound to that exact canonical recipe. Start from the Verdict's `semantic_review` packet: it
+  automatically co-locates configured exact-key lineage, latest/prior producers,
+  cardinality seams, and relevant producer/consumer card prose. Justify every stage against
+  a user goal/acceptance criterion; establish each consumed field's meaning, unit,
+  provenance and entity/granularity across fan-out/nesting/aggregation/copying; reason
+  through representative retain/drop values including the boundary; prove downstream
+  consumption of every transform; and check model language/domain/limits/metric caveats
+  against the data and request. Resolve packet gaps with targeted retrieval/source
+  inspection. Missing meaning is `ask`, never an inference from the key name. `revise`
+  changes the recipe and requires validate + critique again; only `pass` proceeds to smoke.
+  This is host judgment over card evidence, not a per-module core rule.
 
 ## Loop
 
 1. Interpret + clarify the goal (task, domain, quality bar, output). Refuse if out of scope.
 2. Inspect: `context --data DATA` (data profile + env + matched blueprints). Report findings.
+   Once you have a candidate recipe, `reuse-scan` it before smoking or running.
 3. Route coarse-to-fine: `catalog-tree` -> prune categories -> `cards --category` ->
    `cards --names` -> select stages. Prefer adapting a matched blueprint (adapt, don't copy).
    Overlapping stages: compare on card facts -> auto/recommend/ask.
 4. Plan -> `validate` -> fix issues -> re-validate (<= 3). A gap (unproduced role) means the
    card set was incomplete -> targeted re-retrieve (that role's category / role graph), don't
    stop at the first set. This is the retrieve<->plan loop.
-5. `smoke --sample N` -> show retained/rejected + examples; adjust if goals unmet (<= 2).
-6. Present plan + smoke + estimate, get user approval, then `run --confirm <hash>`.
-7. Summarize the `report`; propose a next action.
+5. Mandatory semantic critique -> `pass` / `revise` / `ask`. Only `pass` may continue.
+6. `smoke --sample N` -> show retained/rejected + examples; adjust if goals unmet (<= 2).
+7. Present plan + semantic pass + smoke + estimate, get user approval, then
+   `run --confirm <hash>`.
+8. Summarize the `report`; propose a next action.
 
 ## Execution note
 
