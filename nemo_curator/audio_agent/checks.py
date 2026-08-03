@@ -51,6 +51,7 @@ class CheckContext:
     expected_outputs: list[str] = field(default_factory=list)  # roles the user asked for
     acceptance_criteria: list[Any] = field(default_factory=list)  # parsed AcceptanceCriterion list (1A.1)
     request_type: str | None = None  # goal/request kind, for request-type sanity (1A.1)
+    execution_target: str = "local"
 
 
 @dataclass
@@ -131,6 +132,12 @@ def _fix_for(code: str) -> str | None:
     return {
         "unsatisfied_reads": "insert an upstream stage that produces the missing role (see find_producers)",
         "dangling_key": "align the producer's *_key value with what this stage reads, or seed it from the source manifest",
+        "ambiguous_default_key": (
+            "set the *_key parameter explicitly to the producer you mean. Two upstream stages wrote "
+            "same-kind keys, so a default is choosing between them silently -- e.g. a diarization merge "
+            "left at segments_key='segments' merges into the VAD segments and produces a plausible, "
+            "wrong answer with no error"
+        ),
         "tensor_into_sink": (
             "a resident tensor/audio blob is reaching a sink that serializes task.data as-is; strip it "
             "before the sink using a method that preserves the sink's input task type -- e.g. read/score "
@@ -155,14 +162,19 @@ def _escalate_for(code: str) -> str | None:
 # --------------------------------------------------------------------------- #
 @register("data_flow")
 def _check_data_flow(ctx: CheckContext) -> CheckResult:
-    """Role/key composition, residency, serializability, GPU gate (foundation)."""
+    """Role/key composition, residency, and serializability (foundation).
+
+    Environment gates are evaluated once by ``_check_gates`` below. Passing the
+    GPU count into both checks produced duplicate ``gpu_unavailable`` warnings
+    for the same stage.
+    """
     from nemo_curator.stages.audio import agent as foundation
 
     report = foundation.validate_pipeline(
         ctx.stages,
         initial_roles=ctx.initial_roles,
         initial_keys=ctx.initial_keys,
-        available_gpus=ctx.available_gpus,
+        available_gpus=None,
     )
     issues = [
         Issue(pi.code, pi.severity, pi.message, stage_index=pi.stage_index, stage=pi.stage_name,
@@ -178,6 +190,23 @@ def _check_data_flow(ctx: CheckContext) -> CheckResult:
     )
 
 
+def _rate_converted_to(stage: Any, built: Any) -> int | None:  # noqa: ANN401 - IR and built stage
+    """The rate this stage CONVERTS its audio to, or ``None`` if it changes nothing.
+
+    Only ``target_sample_rate`` counts as a conversion. ``MonoConversionStage`` takes an
+    ``output_sample_rate``, but its card is explicit that this is a rate to VERIFY against and
+    that the stage never resamples -- reading it as a conversion would tell the planner the
+    audio had been converted when it had merely been checked (and non-matching rows dropped).
+
+    The built stage is consulted so an omitted parameter still resolves to its real default
+    (``ResampleAudioStage`` converts to 16 kHz whether or not the recipe says so).
+    """
+    v = stage.params.get("target_sample_rate")
+    if v is None and built is not None:
+        v = getattr(built, "target_sample_rate", None)
+    return _to_int(v)
+
+
 @register("card_constraints")
 def _check_card_constraints(ctx: CheckContext) -> CheckResult:
     """Model-card constraints (batch, sample-rate, duration, max-speakers)."""
@@ -188,7 +217,20 @@ def _check_card_constraints(ctx: CheckContext) -> CheckResult:
     # (16000) doesn't false-warn against an int-typed card supported_sample_rates.
     data_srs = {int(k) for k in (data_profile or {}).get("sample_rates", {}) if str(k).lstrip("-").isdigit()} if data_profile else set()
     mean_dur = float((data_profile or {}).get("mean_duration_sec", 0.0)) if data_profile else 0.0
+    # The rate the audio carries AT each point, not the rate the source files had. Comparing a
+    # model's supported rates against the source profile warns about 48 kHz input to a 16 kHz
+    # model even when a resample sits immediately upstream -- correct pipelines told they are
+    # broken, which is how a validator loses its authority.
+    effective_srs = set(data_srs)
+    # Built stages carry real parameter defaults, but a stage that failed to construct is
+    # skipped in build_stages, so only trust the pairing when nothing was dropped.
+    built = list(ctx.stages or []) if len(ctx.stages or []) == len(ctx.recipe.stages) else []
     for i, s in enumerate(ctx.recipe.stages):
+        # A stage is judged on what it RECEIVES, so snapshot before applying its own conversion.
+        srs_here = set(effective_srs)
+        converted = _rate_converted_to(s, built[i] if built else None)
+        if converted is not None:
+            effective_srs = {converted}
         card = idx.card(s.ref)
         if not card:
             continue
@@ -204,12 +246,13 @@ def _check_card_constraints(ctx: CheckContext) -> CheckResult:
             )
         supported = cons.get("supported_sample_rates")
         supported_ints = {iv for iv in (_to_int(x) for x in (supported or [])) if iv is not None}
-        if supported and data_srs and supported_ints and not data_srs.issubset(supported_ints):
+        if supported and srs_here and supported_ints and not srs_here.issubset(supported_ints):
+            reached_via = "" if srs_here == data_srs else f" (after an upstream conversion; source was {sorted(data_srs)})"
             out.append(
                 Issue(
                     "card_sample_rate", "warning",
-                    f"{s.ref}: input sample rates {sorted(data_srs)} not all in supported {supported}",
-                    stage_index=i, stage=s.ref, fix="insert a resample/mono stage upstream to the supported rate",
+                    f"{s.ref}: input sample rates {sorted(srs_here)} not all in supported {supported}{reached_via}",
+                    stage_index=i, stage=s.ref, fix="insert a resample stage upstream to the supported rate",
                 )
             )
         sweet = cons.get("input_duration_sweetspot_sec")
@@ -235,6 +278,43 @@ def _check_card_constraints(ctx: CheckContext) -> CheckResult:
     return CheckResult(card_violations=out)
 
 
+@register("gpu_reservation")
+def _check_gpu_reservation(ctx: CheckContext) -> CheckResult:
+    """Warn when a GPU-required stage reserves no GPU (``resources`` left at a CPU default).
+
+    ``resources`` is a config knob: a stage whose card is ``bound: gpu`` and NOT
+    ``gpu_optional`` must reserve a GPU (``resources.gpus`` or ``gpu_memory_gb``), else the
+    executor runs it on CPU (very slow) and can over-parallelize into many model-loading
+    actors. Card-driven, so a new GPU stage is covered with no code change. Composites are
+    skipped -- they delegate resources to their decomposed inner stages.
+    """
+    from nemo_curator.stages.base import CompositeStage
+
+    idx = get_index()
+    out: list[Issue] = []
+    for i, s in enumerate(ctx.recipe.stages):
+        res_card = (idx.card(s.ref) or {}).get("resource") or {}
+        if res_card.get("bound") != "gpu" or res_card.get("gpu_optional"):
+            continue
+        stage_obj = ctx.stages[i] if i < len(ctx.stages) else None
+        if stage_obj is None or isinstance(stage_obj, CompositeStage):
+            continue
+        sres = getattr(stage_obj, "resources", None)
+        gpus = float(getattr(sres, "gpus", 0.0) or 0.0)
+        gpu_mem = float(getattr(sres, "gpu_memory_gb", 0.0) or 0.0)
+        if gpus <= 0 and gpu_mem <= 0:
+            out.append(
+                Issue(
+                    "gpu_reservation_missing", "warning",
+                    f"{s.ref}: card is bound=gpu / not gpu_optional but the stage reserves no GPU "
+                    "(resources.gpus=0) -- it will run on CPU (very slow) and may over-parallelize",
+                    stage_index=i, stage=s.ref,
+                    fix=f"set resources=Resources(gpus=1) (VRAM ~ card gpu_mem_gb={res_card.get('gpu_mem_gb')})",
+                )
+            )
+    return CheckResult(issues=out)
+
+
 @register("gates")
 def _check_gates(ctx: CheckContext) -> CheckResult:
     """Environment gates: ffmpeg / GPU / first-run download / runtime secrets."""
@@ -248,14 +328,25 @@ def _check_gates(ctx: CheckContext) -> CheckResult:
         except Exception:  # noqa: BLE001
             continue
         name = type(st).__name__
-        if getattr(gates, "requires_ffmpeg", False) and not env.has_ffmpeg:
+        target_is_local = ctx.execution_target == "local"
+        if target_is_local and getattr(gates, "requires_ffmpeg", False) and not env.has_ffmpeg:
             out.append(Issue("ffmpeg_missing", "error", f"{name} needs ffmpeg but it is not on PATH", stage_index=idx, stage=name, fix="install ffmpeg"))
-        if getattr(gates, "requires_gpu", False) and not env.has_gpu:
-            out.append(Issue("gpu_unavailable", "warning", f"{name} declares requires_gpu but no GPU was detected", stage_index=idx, stage=name, fix="run on a GPU host or lower resources"))
+        if target_is_local and getattr(gates, "requires_gpu", False) and not env.has_gpu:
+            # Mask-aware: a masked/unknown GPU is a re-verify decision, NOT a "no GPU"
+            # warning. Only a definitively absent GPU (CPU-only torch build) is a real
+            # gap. Codes match environment_preflight so the two paths never disagree.
+            gpu_status = getattr(env, "gpu_status", "absent")
+            if gpu_status == "possibly_masked":
+                out.append(Issue("gpu_possibly_masked", "info", f"{name} requires a GPU; none is reachable from this process but one is likely PRESENT and masked (sandbox/container) -- re-verify with full device access, do not conclude no GPU", stage_index=idx, stage=name, fix="re-run with full device access (outside the sandbox/container)"))
+            elif gpu_status == "unknown":
+                out.append(Issue("gpu_availability_unknown", "info", f"{name} requires a GPU but this environment supplied no GPU visibility facts -- re-verify with full device access", stage_index=idx, stage=name, fix="re-verify the GPU with full device access"))
+            else:
+                out.append(Issue("gpu_unavailable", "warning", f"{name} declares requires_gpu but this host has no usable GPU (CPU-only torch build)", stage_index=idx, stage=name, fix="install the CUDA torch extra or run on a GPU host"))
         if getattr(gates, "requires_internet_first_run", False):
             out.append(Issue("internet_first_run", "info", f"{name} downloads a model on first run", stage_index=idx, stage=name))
         for secret in getattr(gates, "runtime_secrets", []) or []:
-            if secret not in env.available_secrets:
+            configured = bool(getattr(st, str(secret).lower(), None))
+            if target_is_local and secret not in env.available_secrets and not configured:
                 out.append(Issue("missing_secret", "warning", f"{name} needs secret {secret!r} which is not set", stage_index=idx, stage=name, fix=f"export {secret}"))
     return CheckResult(gate_flags=out)
 
@@ -366,12 +457,22 @@ def _check_task_type(ctx: CheckContext) -> CheckResult:
         prod, acc = up.produces_task_type, dn.accepts_task_type
         if prod and acc and prod != acc:
             up_name, dn_name = type(ctx.stages[i]).__name__, type(ctx.stages[i + 1]).__name__
+            fix = (
+                "use DocumentBatchJsonlWriterStage when serializing this "
+                "DocumentBatch, or move every AudioTask-only stage before "
+                "AudioToDocumentStage"
+                if prod == "DocumentBatch" and acc == "AudioTask"
+                else (
+                    f"insert a converter that accepts {prod} and produces {acc}, "
+                    "or reorder the stages so their task types line up"
+                )
+            )
             out.append(
                 Issue(
                     "task_type_mismatch", "error",
                     f"{up_name} produces {prod} but {dn_name} accepts {acc}",
                     stage_index=i + 1, stage=dn_name,
-                    fix="insert a converter (e.g. AudioToDocumentStage) or reorder so task types line up",
+                    fix=fix,
                 )
             )
     return CheckResult(issues=out)

@@ -1,0 +1,751 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Fail-closed smoke bounds that do not require Ray or audio dependencies."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pandas as pd
+import pytest
+
+from nemo_curator.audio_agent.contracts import SmokeReport
+from nemo_curator.audio_agent.recipe import Recipe
+from nemo_curator.audio_agent import verbs
+from nemo_curator.tasks import DocumentBatch
+
+
+def _source_recipe(ref: str, params: dict[str, Any]) -> dict[str, Any]:
+    return {"stages": [{"ref": ref, "params": params}]}
+
+
+def _stub_smoke_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    inspect_source,
+    inspect_stages=None,
+) -> None:
+    """Keep the test at the verb boundary while replacing only execution."""
+    monkeypatch.delenv("AUDIO_AGENT_WORKSPACE", raising=False)
+    monkeypatch.setattr(verbs, "_profile_binding", lambda _binding: None)
+    monkeypatch.setattr(verbs, "probe_env", lambda: object())
+    monkeypatch.setattr(
+        verbs,
+        "_plan_resources",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            mode="batch",
+            escalations=[],
+            machine_fingerprint="smoke-test-machine",
+        ),
+    )
+
+    def capture(stages, _mode, _executor, **_kwargs):
+        inspect_source(stages[0])
+        if inspect_stages is not None:
+            inspect_stages(stages)
+        return [], "batch"
+
+    monkeypatch.setattr(verbs, "_run_pipeline_autofallback", capture)
+
+
+@pytest.mark.parametrize("sample", [0, -1, True, 1.5, "2"])
+def test_smoke_rejects_non_positive_or_non_integer_sample(sample: Any) -> None:
+    result = verbs.smoke(
+        _source_recipe("ManifestReader", {"manifest_path": "/does/not/matter.jsonl"}),
+        sample=sample,
+    )
+
+    assert result["status"] == "refused"
+    assert "positive integer" in result["reason"]
+
+
+def test_manifest_directory_is_concatenated_and_capped_in_execution_order(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifests = tmp_path / "manifests"
+    manifests.mkdir()
+    (manifests / "b.jsonl").write_text(
+        '{"audio_filepath":"b1.wav"}\n{"audio_filepath":"b2.wav"}\n',
+        encoding="utf-8",
+    )
+    (manifests / "a.jsonl").write_text(
+        '{"audio_filepath":"a1.wav"}\n{"audio_filepath":"a2.wav"}\n',
+        encoding="utf-8",
+    )
+    captured: list[dict[str, Any]] = []
+
+    def inspect_source(source) -> None:
+        assert source.__class__.__name__ == "ManifestReader"
+        with open(source.manifest_path, encoding="utf-8") as bounded:
+            captured.extend(json.loads(line) for line in bounded)
+
+    _stub_smoke_runtime(monkeypatch, inspect_source)
+    result = verbs.smoke(
+        _source_recipe("ManifestReader", {"manifest_path": str(manifests)}),
+        sample=3,
+    )
+
+    assert result["ran"] is True
+    assert result["input_count"] == 3
+    assert [row["audio_filepath"] for row in captured] == ["a1.wav", "a2.wav", "b1.wav"]
+    assert any("resolved local manifest" in note for note in result["notes"])
+
+
+def test_remote_manifest_selector_refuses_before_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        verbs,
+        "_run_pipeline_autofallback",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("remote selector reached execution")
+        ),
+    )
+
+    result = verbs.smoke(
+        _source_recipe(
+            "ManifestReader",
+            {"manifest_path": "s3://example-bucket/manifests/*.jsonl"},
+        ),
+        sample=2,
+    )
+
+    assert result["status"] == "refused"
+    assert "remote or mixed selectors" in result["reason"]
+
+
+def test_malformed_multi_manifest_refuses_before_execution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bad = tmp_path / "a.jsonl"
+    good = tmp_path / "b.jsonl"
+    bad.write_text("{bad json}\n", encoding="utf-8")
+    good.write_text('{"audio_filepath":"ok.wav"}\n', encoding="utf-8")
+    monkeypatch.setattr(verbs, "_profile_binding", lambda _binding: None)
+    monkeypatch.setattr(
+        verbs,
+        "_run_pipeline_autofallback",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("malformed selector reached execution")
+        ),
+    )
+
+    result = verbs.smoke(
+        _source_recipe(
+            "ManifestReader",
+            {"manifest_path": [str(bad), str(good)]},
+        ),
+        sample=2,
+    )
+
+    assert result["status"] == "refused"
+    assert "invalid JSON" in result["reason"]
+
+
+@pytest.mark.parametrize(
+    ("ref", "params"),
+    [
+        (
+            "CreateInitialManifestFleursStage",
+            {
+                "lang": "en_us",
+                "split": "test",
+                "raw_data_dir": "{root}",
+                "auto_download": True,
+            },
+        ),
+        (
+            "CreateInitialManifestReadSpeechStage",
+            {
+                "raw_data_dir": "{root}",
+                "auto_download": True,
+            },
+        ),
+    ],
+)
+def test_unstaged_download_sources_refuse_before_execution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    ref: str,
+    params: dict[str, Any],
+) -> None:
+    root = tmp_path / "unstaged"
+    authored = {
+        key: str(root) if value == "{root}" else value
+        for key, value in params.items()
+    }
+    monkeypatch.setattr(
+        verbs,
+        "_run_pipeline_autofallback",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("download-capable source reached execution")
+        ),
+    )
+
+    result = verbs.smoke(_source_recipe(ref, authored), sample=2)
+
+    assert result["status"] == "refused"
+    assert "pre-stage" in result["reason"]
+
+
+def test_prestaged_fleurs_is_adapted_to_a_bounded_local_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    language_dir = tmp_path / "fleurs" / "en_us"
+    audio_root = language_dir / "test"
+    audio_root.mkdir(parents=True)
+    (language_dir / "test.tsv").write_text(
+        "0\ta.wav\tfirst\n1\tb.wav\tsecond\n2\tc.wav\tthird\n",
+        encoding="utf-8",
+    )
+    captured: list[dict[str, Any]] = []
+
+    def inspect_source(source) -> None:
+        assert source.__class__.__name__ == "ManifestReader"
+        with open(source.manifest_path, encoding="utf-8") as bounded:
+            captured.extend(json.loads(line) for line in bounded)
+
+    _stub_smoke_runtime(monkeypatch, inspect_source)
+    result = verbs.smoke(
+        _source_recipe(
+            "CreateInitialManifestFleursStage",
+            {
+                "lang": "en_us",
+                "split": "test",
+                "raw_data_dir": str(tmp_path / "fleurs"),
+                "filepath_key": "path",
+                "text_key": "transcript",
+            },
+        ),
+        sample=2,
+    )
+
+    assert result["ran"] is True
+    assert result["input_count"] == 2
+    assert captured == [
+        {"path": str(audio_root / "a.wav"), "transcript": "first"},
+        {"path": str(audio_root / "b.wav"), "transcript": "second"},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("ref", "params"),
+    [
+        (
+            "CreateInitialManifestAudioFolderStage",
+            {"data_dir": "{root}"},
+        ),
+        (
+            "CreateInitialManifestReadSpeechStage",
+            {"raw_data_dir": "{root}", "auto_download": False},
+        ),
+    ],
+)
+def test_local_folder_sources_receive_an_ephemeral_sample_cap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    ref: str,
+    params: dict[str, Any],
+) -> None:
+    root = tmp_path / "audio"
+    root.mkdir()
+    (root / "clip.wav").write_bytes(b"RIFF")
+    authored = {
+        key: str(root) if value == "{root}" else value
+        for key, value in params.items()
+    }
+    seen: list[int] = []
+
+    def inspect_source(source) -> None:
+        seen.append(source.max_samples)
+
+    _stub_smoke_runtime(monkeypatch, inspect_source)
+    result = verbs.smoke(_source_recipe(ref, authored), sample=1)
+
+    assert result["ran"] is True
+    assert seen == [1]
+    assert params.get("max_samples") is None
+
+
+@pytest.mark.parametrize("raise_after_setup", [False, True])
+def test_smoke_never_truncates_the_production_manifest_and_cleans_its_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    raise_after_setup: bool,
+) -> None:
+    source = tmp_path / "source.jsonl"
+    source.write_text('{"audio_filepath":"clip.wav"}\n', encoding="utf-8")
+    production = tmp_path / "production.jsonl"
+    production.write_text("KEEP-ME\n", encoding="utf-8")
+    recipe = {
+        "stages": [
+            {"ref": "ManifestReader", "params": {"manifest_path": str(source)}},
+            {
+                "ref": "ManifestWriterStage",
+                "params": {"output_path": str(production)},
+            },
+        ]
+    }
+    authored = json.loads(json.dumps(recipe))
+    sandbox_outputs: list[str] = []
+
+    monkeypatch.setattr(verbs, "_profile_binding", lambda _binding: None)
+    monkeypatch.setattr(verbs, "probe_env", lambda: object())
+    monkeypatch.setattr(
+        verbs,
+        "_plan_resources",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            mode="batch",
+            escalations=[],
+            machine_fingerprint="smoke-test-machine",
+        ),
+    )
+
+    def exercise_lifecycle(stages, _mode, _executor, **_kwargs):
+        writer = stages[-1]
+        sandbox_outputs.append(writer.output_path)
+        assert writer.output_path != str(production)
+        writer.setup_on_node()
+        writer.setup()
+        if raise_after_setup:
+            raise RuntimeError("injected failure after writer setup")
+        return [], "batch"
+
+    monkeypatch.setattr(verbs, "_run_pipeline_autofallback", exercise_lifecycle)
+    result = verbs.smoke(recipe, sample=1)
+
+    assert production.read_text(encoding="utf-8") == "KEEP-ME\n"
+    assert recipe == authored
+    assert sandbox_outputs
+    assert all(not os.path.exists(path) for path in sandbox_outputs)
+    assert result["ran"] is (not raise_after_setup)
+    assert "smoke_token" not in result
+
+
+def test_remote_writer_destination_is_not_touched_by_smoke(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import fsspec
+
+    source = tmp_path / "source.jsonl"
+    source.write_text('{"audio_filepath":"clip.wav"}\n', encoding="utf-8")
+    production = "memory://audio-agent-smoke/production.jsonl"
+    fs, remote_path = fsspec.core.url_to_fs(production)
+    with fs.open(remote_path, "w", encoding="utf-8") as output:
+        output.write("KEEP-REMOTE\n")
+
+    _stub_smoke_runtime(
+        monkeypatch,
+        lambda _source: None,
+    )
+    result = verbs.smoke(
+        {
+            "stages": [
+                {
+                    "ref": "ManifestReader",
+                    "params": {"manifest_path": str(source)},
+                },
+                {
+                    "ref": "ManifestWriterStage",
+                    "params": {"output_path": production},
+                },
+            ]
+        },
+        sample=1,
+    )
+
+    with fs.open(remote_path, encoding="utf-8") as output:
+        assert output.read() == b"KEEP-REMOTE\n"
+    assert result["ran"] is True
+
+
+def test_output_isolation_covers_aliases_implicit_paths_and_hidden_writes(
+    tmp_path: Path,
+) -> None:
+    shared = str(tmp_path / "shared.jsonl")
+    authored = {
+        "stages": [
+            {"ref": "ManifestWriterStage", "params": {"output_path": shared}},
+            {"ref": "SnippetManifestWriterStage", "params": {"output_path": shared}},
+            {
+                "ref": "SnippetExtractionStage",
+                "params": {
+                    "output_dir": str(tmp_path / "snippets"),
+                    "output_audio_tar_path": str(tmp_path / "audio.tar"),
+                },
+            },
+            {
+                "ref": "MonoConversionStage",
+                "params": {"write_to_disk": True},
+            },
+            {
+                "ref": "PyAnnoteDiarizationStage",
+                "params": {"hf_token": "secret"},
+            },
+            {
+                "ref": "CreateInitialManifestReadSpeechStage",
+                "params": {
+                    "raw_data_dir": str(tmp_path / "readspeech"),
+                    "auto_download": True,
+                },
+            },
+            {"ref": "SplitASRAlignJoinStage", "params": {}},
+        ]
+    }
+    recipe = Recipe.from_dict(authored)
+    report = SmokeReport(sample=1)
+
+    isolated = verbs._isolate_smoke_outputs(
+        verbs._SmokeBound(recipe),
+        report,
+    )
+
+    assert isolated.recipe is not None
+    root = str(isolated.output_root)
+    stages = isolated.recipe.stages
+    assert stages[0].params["output_path"] == stages[1].params["output_path"]
+    assert stages[2].params["output_audio_tar_path"].endswith(".tar")
+    assert verbs._inside_smoke_root(stages[2].params["output_dir"], root)
+    assert verbs._inside_smoke_root(stages[3].params["output_dir"], root)
+    assert stages[4].params["write_rttm"] is False
+    assert stages[5].params["raw_data_dir"] == str(tmp_path / "readspeech")
+    assert stages[5].params["auto_download"] is False
+    assert verbs._inside_smoke_root(stages[6].params["output_dir"], root)
+    verbs._cleanup(list(isolated.tmp_paths))
+    assert not os.path.exists(root)
+
+
+@pytest.mark.parametrize("split_ref", ["SplitLongAudioStage", "SplitASRAlignJoinStage"])
+def test_direct_and_composite_split_writers_are_isolated(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    split_ref: str,
+) -> None:
+    source = tmp_path / "source.jsonl"
+    source.write_text(
+        '{"audio_filepath":"clip.wav","duration":7200,"segments":[]}\n',
+        encoding="utf-8",
+    )
+    captured: list[str] = []
+
+    def inspect_stages(stages) -> None:
+        captured.append(stages[1].output_dir)
+
+    _stub_smoke_runtime(
+        monkeypatch,
+        lambda _source: None,
+        inspect_stages,
+    )
+    result = verbs.smoke(
+        {
+            "stages": [
+                {
+                    "ref": "ManifestReader",
+                    "params": {"manifest_path": str(source)},
+                },
+                {"ref": split_ref, "params": {}},
+            ]
+        },
+        sample=1,
+    )
+
+    assert result["ran"] is True
+    assert captured and all(not os.path.exists(path) for path in captured)
+
+
+def test_unknown_disk_writer_fails_the_future_stage_guard(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from nemo_curator.stages.audio import agent as foundation
+    from nemo_curator.stages.audio._agent_ready import Gates, StageContract
+
+    monkeypatch.setattr(
+        foundation,
+        "build_contract",
+        lambda _stage: StageContract(gates=Gates(writes_to_disk=True)),
+    )
+
+    issues = verbs._smoke_write_issues([object()], str(tmp_path))
+
+    assert issues == [
+        "object: declares writes_to_disk=True but has no smoke-output adapter"
+    ]
+
+
+def test_smoke_token_is_issued_only_after_sampled_goals_are_met(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.jsonl"
+    source.write_text('{"audio_filepath":"clip.wav"}\n', encoding="utf-8")
+
+    monkeypatch.setattr(verbs, "_profile_binding", lambda _binding: None)
+    monkeypatch.setattr(verbs, "probe_env", lambda: object())
+    monkeypatch.setattr(
+        verbs,
+        "_plan_resources",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            mode="batch",
+            escalations=[],
+            machine_fingerprint="smoke-test-machine",
+        ),
+    )
+    monkeypatch.setattr(
+        verbs,
+        "_run_pipeline_autofallback",
+        lambda *_args, **_kwargs: (
+            [
+                SimpleNamespace(
+                    data={"audio_filepath": "clip.wav"},
+                    num_items=1,
+                    _stage_perf=[],
+                )
+            ],
+            "batch",
+        ),
+    )
+
+    result = verbs.smoke(
+        _source_recipe("ManifestReader", {"manifest_path": str(source)}),
+        sample=1,
+    )
+
+    assert result["goals_met"] is True
+    assert result["smoke_token"]
+    assert "smoke_token_status" not in result
+
+
+def test_document_batch_required_output_is_checked_beyond_preview_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.jsonl"
+    source.write_text(
+        "".join(
+            json.dumps({"audio_filepath": f"clip-{i}.wav"}) + "\n"
+            for i in range(4)
+        ),
+        encoding="utf-8",
+    )
+    batch = DocumentBatch(
+        dataset_name="smoke",
+        data=pd.DataFrame(
+            [
+                {"audio_filepath": "clip-0.wav", "text": "one"},
+                {"audio_filepath": "clip-1.wav", "text": "two"},
+                {"audio_filepath": "clip-2.wav", "text": "three"},
+                # DataFrame represents the absent field as NaN. This fourth
+                # row is intentionally outside the three-row report preview.
+                {"audio_filepath": "clip-3.wav"},
+            ]
+        ),
+    )
+
+    monkeypatch.setattr(verbs, "_profile_binding", lambda _binding: None)
+    monkeypatch.setattr(verbs, "probe_env", lambda: object())
+    monkeypatch.setattr(
+        verbs,
+        "_plan_resources",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            mode="batch",
+            feasible=True,
+            escalations=[],
+            machine_fingerprint="smoke-test-machine",
+        ),
+    )
+    monkeypatch.setattr(
+        verbs,
+        "_run_pipeline_autofallback",
+        lambda *_args, **_kwargs: ([batch], "batch"),
+    )
+
+    result = verbs.smoke(
+        {
+            "stages": [
+                {
+                    "ref": "ManifestReader",
+                    "params": {"manifest_path": str(source)},
+                },
+                {"ref": "AudioToDocumentStage", "params": {}},
+            ],
+            "acceptance_criteria": [
+                {
+                    "id": "transcript",
+                    "type": "output_completeness",
+                    "check": {"field": "text"},
+                    "severity": "must",
+                }
+            ],
+        },
+        sample=4,
+    )
+
+    assert result["ran"] is True
+    assert result["retained"] == 4
+    assert len(result["examples"]) == 3
+    assert all("text" in row for row in result["examples"])
+    assert result["goals_met"] is False
+    assert any("MISSING or EMPTY" in note and "text" in note for note in result["notes"])
+    assert "smoke_token" not in result
+    assert result["smoke_token_status"].startswith("not_issued")
+
+
+def test_smoke_runs_pretrain_driver_lifecycle_inside_the_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.jsonl"
+    source.write_text('{"audio_filepath":"clip.wav"}\n', encoding="utf-8")
+    calls: list[str] = []
+
+    class _Finalizer:
+        @staticmethod
+        def prepare() -> None:
+            calls.append("prepare")
+
+        @staticmethod
+        def finalize() -> None:
+            calls.append("finalize")
+
+    _stub_smoke_runtime(monkeypatch, lambda _source: calls.append("execute"))
+    monkeypatch.setattr(
+        verbs,
+        "_pretrain_finalizer",
+        lambda _stages: (_Finalizer(), ""),
+    )
+
+    result = verbs.smoke(
+        _source_recipe("ManifestReader", {"manifest_path": str(source)}),
+        sample=1,
+    )
+
+    assert result["ran"] is True
+    assert calls == ["prepare", "execute", "finalize"]
+    assert "alm_pretrain_prepare=completed" in result["notes"]
+    assert "alm_pretrain_finalize=completed" in result["notes"]
+
+
+def test_smoke_counts_serialized_pretrain_rows_not_origin_stubs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.jsonl"
+    source.write_text('{"audio_filepath":"clip.wav"}\n', encoding="utf-8")
+
+    class _Finalizer:
+        @staticmethod
+        def prepare() -> None:
+            return None
+
+        @staticmethod
+        def finalize(*, successful: bool = True) -> int:
+            assert successful is True
+            return 0
+
+    _stub_smoke_runtime(monkeypatch, lambda _source: None)
+    monkeypatch.setattr(
+        verbs,
+        "_pretrain_finalizer",
+        lambda _stages: (_Finalizer(), ""),
+    )
+    monkeypatch.setattr(
+        verbs,
+        "_run_pipeline_autofallback",
+        lambda *_args, **_kwargs: (
+            [SimpleNamespace(num_items=1, data={"is_stub": True})],
+            "batch",
+        ),
+    )
+
+    result = verbs.smoke(
+        _source_recipe("ManifestReader", {"manifest_path": str(source)}),
+        sample=1,
+    )
+
+    assert result["ran"] is True
+    assert result["retained"] == 0
+    assert result["goals_met"] is False
+    assert "smoke_token" not in result
+
+
+def test_streaming_fallback_resets_attempt_outputs_before_batch_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def execute(_stages, executor, *, checkpoint_path=None):
+        calls.append(str(executor))
+        if len(calls) == 1:
+            raise RuntimeError(
+                "streaming mode requires batch mode: not enough GPU capacity"
+            )
+        return []
+
+    monkeypatch.setattr(verbs, "_make_executor", lambda mode: mode)
+    monkeypatch.setattr(verbs, "_run_pipeline", execute)
+
+    results, used_mode = verbs._run_pipeline_autofallback(
+        [],
+        "streaming",
+        None,
+        before_retry=lambda: calls.append("reset"),
+    )
+
+    assert results == []
+    assert used_mode == "batch"
+    assert calls == ["streaming", "reset", "batch"]
+
+
+def test_resource_planning_failure_is_structured_and_cleans_output_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.jsonl"
+    source.write_text('{"audio_filepath":"clip.wav"}\n', encoding="utf-8")
+    roots: list[str] = []
+    isolate = verbs._isolate_smoke_outputs
+
+    def capture_root(bound, report):
+        isolated = isolate(bound, report)
+        roots.append(str(isolated.output_root))
+        return isolated
+
+    monkeypatch.setattr(verbs, "_profile_binding", lambda _binding: None)
+    monkeypatch.setattr(verbs, "_isolate_smoke_outputs", capture_root)
+    monkeypatch.setattr(
+        verbs,
+        "_plan_resources",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("planner unavailable")
+        ),
+    )
+
+    result = verbs.smoke(
+        _source_recipe("ManifestReader", {"manifest_path": str(source)}),
+        sample=1,
+    )
+
+    assert result["status"] == "error"
+    assert "resource planning failed" in result["reason"]
+    assert roots and all(not os.path.exists(root) for root in roots)
+    assert "smoke_token" not in result

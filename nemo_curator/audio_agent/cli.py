@@ -34,6 +34,11 @@ import json
 import sys
 from typing import Any
 
+_RECIPE_DATA_HELP = (
+    "optional assertion that must canonically match the recipe's first source "
+    "stage; never overrides stage parameters"
+)
+
 
 def _load_recipe(path: str) -> dict[str, Any]:
     import yaml
@@ -90,27 +95,75 @@ def _criteria_list(doc: Any) -> list[dict[str, Any]] | None:  # noqa: ANN401
 
 
 def _calibration_arg(path: str | None) -> dict[str, Any] | None:
-    """Accept a bare ``{stage: {...}}`` calibration or the ``{calibration: {...}}`` wrapper."""
-    doc = _load_doc(path)
-    if isinstance(doc, dict) and "calibration" in doc:
-        return doc["calibration"]
-    return doc
+    """Load a bare calibration or wrapper without discarding wrapper metadata."""
+    return _load_doc(path)
 
 
 def _emit(obj: Any) -> None:  # noqa: ANN401
     print(json.dumps(obj, indent=2, ensure_ascii=False, default=str))
 
 
+def _result_exit_code(cmd: str, obj: Any) -> int:  # noqa: ANN401
+    """Stable shell semantics for structured verb outcomes.
+
+    ``validate`` intentionally returns zero even for a non-runnable verdict:
+    validation answered successfully and callers inspect its JSON. Execution,
+    evidence, and lookup failures return non-zero so shell automation cannot
+    accidentally continue after a structured refusal.
+    """
+    if not isinstance(obj, dict):
+        return 0
+    acceptance = obj.get("acceptance")
+    if (
+        isinstance(acceptance, dict)
+        and acceptance.get("overall") is not None
+        and acceptance.get("overall") != "met"
+    ):
+        return 1
+    if cmd == "validate":
+        return 0
+    if cmd == "diagnose" and str(obj.get("status") or "").lower() == "unknown":
+        return 1
+    if "error" in obj:
+        return 1
+    if str(obj.get("status") or "").lower() in {
+        "action_required",
+        "blocked",
+        "error",
+        "fail",
+        "failed",
+        "refused",
+    }:
+        return 1
+    if cmd == "smoke" and obj.get("goals_met") is False:
+        return 1
+    if cmd == "verify" and obj.get("overall") not in {None, "met"}:
+        return 1
+    return 0
+
+
+def _finish(cmd: str, obj: Any) -> int:  # noqa: ANN401
+    _emit(obj)
+    return _result_exit_code(cmd, obj)
+
+
 def _parse_goal(raw: str | None) -> dict[str, Any]:
     if not raw:
         return {}
     try:
-        return json.loads(raw)
+        goal = json.loads(raw)
     except json.JSONDecodeError:
         return {"task": raw}
+    if not isinstance(goal, dict):
+        msg = (
+            "goal JSON must be an object mapping; pass unquoted free text "
+            "or a JSON object"
+        )
+        raise ValueError(msg)
+    return goal
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block per subcommand
     p = argparse.ArgumentParser(prog="nemo_curator.audio_agent", description="Audio Agent (P1) tool surface")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -126,22 +179,37 @@ def build_parser() -> argparse.ArgumentParser:
 
     ctx = sub.add_parser("context", help="assemble a PlanningContext for the router/planner")
     ctx.add_argument("--goal", help="JSON goal spec, or a free-text task string")
-    ctx.add_argument("--data")
+    ctx.add_argument("--data", help="dataset path to profile directly for pre-recipe planning")
     ctx.add_argument("--stages", nargs="*")
     ctx.add_argument("--roles", nargs="*")
 
-    v = sub.add_parser("validate", help="validate a recipe (roles/keys/cards/gates)")
+    v = sub.add_parser(
+        "validate",
+        help="validate mechanical runnability and emit host semantic-review context",
+    )
     v.add_argument("--recipe", required=True, help="path to a recipe YAML/JSON (or - for stdin)")
-    v.add_argument("--data")
+    v.add_argument("--data", help=_RECIPE_DATA_HELP)
     v.add_argument("--expected-outputs", nargs="*", help="semantic output roles the user asked for (output-completeness)")
-    v.add_argument("--acceptance-criteria", help="path to acceptance criteria YAML/JSON (list or {acceptance_criteria: [...]})")
+    v.add_argument(
+        "--acceptance-criteria",
+        help=(
+            "optional cross-check file (list or {acceptance_criteria: [...]}); "
+            "the same criteria must be embedded in the recipe so run hashes them"
+        ),
+    )
     v.add_argument("--request-type", help="goal/request kind (e.g. filter, transcribe) for request-type sanity")
 
     s = sub.add_parser("smoke", help="bounded run for evidence")
     s.add_argument("--recipe", required=True)
     s.add_argument("--sample", type=int, default=10)
-    s.add_argument("--data")
-    s.add_argument("--output-dir")
+    s.add_argument("--data", help=_RECIPE_DATA_HELP)
+    s.add_argument(
+        "--output-dir",
+        help=(
+            "legacy no-op retained for compatibility; smoke always redirects "
+            "stage-declared outputs to an ephemeral sandbox"
+        ),
+    )
     s.add_argument("--bootstrap-ray", action="store_true", help="auto-start a local Ray head if none is reachable")
     s.add_argument("--calibration", help="path to a calibration JSON from a prior smoke (1C.2)")
 
@@ -149,17 +217,30 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--recipe", required=True)
     r.add_argument("--confirm", nargs="?", const=True, default=False,
                    help="pass the recipe config_hash (integrity) or bare --confirm")
-    r.add_argument("--data")
-    r.add_argument("--output-dir")
+    r.add_argument("--data", help=_RECIPE_DATA_HELP)
+    r.add_argument(
+        "--output-dir",
+        help=(
+            "legacy no-op retained for compatibility; configure output paths "
+            "on recipe stages"
+        ),
+    )
     r.add_argument("--checkpoint-path")
     r.add_argument("--bootstrap-ray", action="store_true", help="auto-start a local Ray head if none is reachable")
     r.add_argument("--smoke-token", help="smoke-evidence token from a prior smoke (required if AUDIO_AGENT_REQUIRE_SMOKE is set)")
     r.add_argument("--calibration", help="path to a calibration JSON from a prior smoke (1C.2)")
+    r.add_argument("--goal", help="what this run is FOR (JSON or free text); recorded so prior work stays legible")
 
     rp = sub.add_parser("report", help="post-hoc report from an output manifest/dir")
     rp.add_argument("--output", required=True)
     rp.add_argument("--recipe")
-    rp.add_argument("--data")
+    rp.add_argument(
+        "--data",
+        help=(
+            "without --recipe, input used for counts; with --recipe, an optional "
+            "assertion that must match its first source stage"
+        ),
+    )
 
     vf = sub.add_parser("verify", help="verify acceptance criteria against evidence -> AcceptanceReport")
     vf.add_argument("--criteria", required=True, help="acceptance criteria YAML/JSON (list or {acceptance_criteria: [...]}; - for stdin)")
@@ -174,20 +255,62 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument("--explicit", help="JSON object of {param: value}")
     rs.add_argument("--data-driven", action="store_true", help="enable Path B (deferred; affects relative-objective asks)")
 
+    dg = sub.add_parser("diagnose", help="analyze a captured failure and return grounded user choices")
+    dg.add_argument("--error", required=True, help="captured error text, or - to read it from stdin")
+    dg.add_argument("--recipe", help="optional recipe YAML/JSON for stage-aware applicability")
+    dg.add_argument("--operation", default="run", choices=["validate", "smoke", "run"])
+    dg.add_argument("--phase", default="runtime", help="where the failure occurred")
+    dg.add_argument("--attempted-actions", nargs="*", help="actions already tried, so they are not repeated")
+    dg.add_argument(
+        "--execution-target",
+        choices=["local", "external_ray", "custom_executor"],
+        help="where stages execute (default: infer local vs RAY_ADDRESS)",
+    )
+
     ru = sub.add_parser("runs", help="list local run records (provenance) or show one by id")
     ru.add_argument("--run-id", help="show a single run record")
+    ru.add_argument("--data", help="filter to runs/artifacts for this source dataset (a path, or a dataset_key)")
+    ru.add_argument("--stage", help="filter artifacts to one stage")
+    ru.add_argument("--since", help="only records created at/after this ISO timestamp")
+    ru.add_argument("--limit", type=int, default=50)
 
-    cont = sub.add_parser("continue", help="plan a follow-up run incrementally against a prior run (reuse where safe)")
+    sc = sub.add_parser("reuse-scan", help="find prior work this recipe could reuse (read-only)")
+    sc.add_argument("--recipe", required=True, help="the recipe to scan for (or - for stdin)")
+    sc.add_argument("--data", help=_RECIPE_DATA_HELP)
+    sc.add_argument("--limit", type=int, default=5)
+
+    sub.add_parser("reindex", help="rebuild the run/artifact index from the JSON records")
+
+    cont = sub.add_parser("continue", help="plan (and optionally execute) a follow-up run that reuses prior work")
     cont.add_argument("--recipe", required=True, help="the follow-up recipe (or - for stdin)")
-    cont.add_argument("--parent-run-id", required=True, help="the prior run to continue from")
-    cont.add_argument("--data", help="the source dataset (for the same-data fingerprint guard)")
+    cont.add_argument("--parent-run-id", help="a prior run to diff against (optional; the artifact scan works without one)")
+    cont.add_argument("--data", help=_RECIPE_DATA_HELP)
+    cont.add_argument("--execute", action="store_true", help="carry the plan out instead of only printing it")
+    cont.add_argument("--choice", choices=["as_is", "extend", "fresh"], help="which option to take (default: what the plan concluded)")
+    cont.add_argument("--confirm", nargs="?", const=True, default=False,
+                      help="config_hash of the recipe that will run (integrity), or bare --confirm")
+    cont.add_argument(
+        "--output-dir",
+        help=(
+            "legacy no-op retained for compatibility; configure output paths "
+            "on recipe stages"
+        ),
+    )
+    cont.add_argument("--checkpoint-path")
+    cont.add_argument("--bootstrap-ray", action="store_true", help="auto-start a local Ray head if none is reachable")
+    cont.add_argument("--smoke-token", help="smoke token for the exact recipe branch that will execute")
+    cont.add_argument("--calibration", help="path to a calibration JSON from a prior smoke")
+    cont.add_argument("--goal", help="what this run is FOR (JSON or free text)")
 
     cal = sub.add_parser("calibrate", help="extract measured per-stage resources from a smoke report (1C.2)")
     cal.add_argument("--smoke", required=True, help="path to a smoke-result JSON (or - for stdin)")
+
+    dr = sub.add_parser("doctor", help="check environment health (driver/CUDA, ffmpeg, deps, ...) + get fix steps")
+    dr.add_argument("--json", action="store_true", help="emit the JSON report instead of human-readable text")
     return p
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0912 - a flat verb dispatch table
     from nemo_curator import audio_agent as aa
 
     args = build_parser().parse_args(argv)
@@ -195,53 +318,160 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if cmd == "discover":
-            _emit(aa.discover())
+            return _finish(cmd, aa.discover())
         elif cmd == "catalog-tree":
-            _emit(aa.catalog_tree())
+            return _finish(cmd, aa.catalog_tree())
         elif cmd == "describe":
-            _emit(aa.describe(args.name))
+            return _finish(cmd, aa.describe(args.name))
         elif cmd == "cards":
-            _emit(aa.cards(category=args.category, names=args.names))
+            return _finish(cmd, aa.cards(category=args.category, names=args.names))
         elif cmd == "context":
-            _emit(aa.context(_parse_goal(args.goal), data=args.data, stages=args.stages, roles=args.roles))
+            return _finish(
+                cmd,
+                aa.context(
+                    _parse_goal(args.goal),
+                    data=args.data,
+                    stages=args.stages,
+                    roles=args.roles,
+                ),
+            )
         elif cmd == "validate":
-            _emit(aa.validate(
-                _load_recipe(args.recipe), data=args.data, expected_outputs=args.expected_outputs,
-                acceptance_criteria=_criteria_list(_load_doc(args.acceptance_criteria)), request_type=args.request_type,
-            ))
+            return _finish(
+                cmd,
+                aa.validate(
+                    _load_recipe(args.recipe),
+                    data=args.data,
+                    expected_outputs=args.expected_outputs,
+                    acceptance_criteria=_criteria_list(
+                        _load_doc(args.acceptance_criteria)
+                    ),
+                    request_type=args.request_type,
+                ),
+            )
         elif cmd == "smoke":
-            _emit(aa.smoke(_load_recipe(args.recipe), sample=args.sample, data=args.data,
-                           output_dir=args.output_dir, bootstrap_ray=args.bootstrap_ray,
-                           calibration=_calibration_arg(args.calibration)))
+            return _finish(
+                cmd,
+                aa.smoke(
+                    _load_recipe(args.recipe),
+                    sample=args.sample,
+                    data=args.data,
+                    output_dir=args.output_dir,
+                    bootstrap_ray=args.bootstrap_ray,
+                    calibration=_calibration_arg(args.calibration),
+                ),
+            )
         elif cmd == "run":
-            _emit(aa.run(_load_recipe(args.recipe), confirm=args.confirm, data=args.data,
-                         output_dir=args.output_dir, checkpoint_path=args.checkpoint_path,
-                         bootstrap_ray=args.bootstrap_ray, smoke_token=args.smoke_token,
-                         calibration=_calibration_arg(args.calibration)))
+            return _finish(
+                cmd,
+                aa.run(
+                    _load_recipe(args.recipe),
+                    confirm=args.confirm,
+                    data=args.data,
+                    output_dir=args.output_dir,
+                    checkpoint_path=args.checkpoint_path,
+                    bootstrap_ray=args.bootstrap_ray,
+                    smoke_token=args.smoke_token,
+                    calibration=_calibration_arg(args.calibration),
+                    goal=_parse_goal(args.goal),
+                ),
+            )
         elif cmd == "report":
             recipe = _load_recipe(args.recipe) if args.recipe else None
-            _emit(aa.report(args.output, recipe=recipe, data=args.data))
+            return _finish(
+                cmd,
+                aa.report(args.output, recipe=recipe, data=args.data),
+            )
         elif cmd == "verify":
             frozen = _criteria_list(_load_doc(args.frozen_criteria)) if args.frozen_criteria else None
             rec = _load_recipe(args.verify_recipe) if args.verify_recipe else None
-            _emit(aa.verify(_criteria_list(_load_doc(args.criteria)) or [], evidence=_load_doc(args.evidence),
-                            frozen_criteria=frozen, recipe=rec))
+            return _finish(
+                cmd,
+                aa.verify(
+                    _criteria_list(_load_doc(args.criteria)) or [],
+                    evidence=_load_doc(args.evidence),
+                    frozen_criteria=frozen,
+                    recipe=rec,
+                ),
+            )
         elif cmd == "resolve":
             explicit = json.loads(args.explicit) if args.explicit else None
-            _emit(aa.resolve(args.stage, label=args.label, use_case=args.use_case,
-                             explicit=explicit, data_driven=args.data_driven))
+            return _finish(
+                cmd,
+                aa.resolve(
+                    args.stage,
+                    label=args.label,
+                    use_case=args.use_case,
+                    explicit=explicit,
+                    data_driven=args.data_driven,
+                ),
+            )
+        elif cmd == "diagnose":
+            error_text = sys.stdin.read() if args.error == "-" else args.error
+            diagnosis_recipe = _load_recipe(args.recipe) if args.recipe else None
+            return _finish(
+                cmd,
+                aa.diagnose(
+                    error_text,
+                    recipe=diagnosis_recipe,
+                    operation=args.operation,
+                    phase=args.phase,
+                    attempted_actions=args.attempted_actions,
+                    execution_target=args.execution_target,
+                ),
+            )
         elif cmd == "runs":
-            _emit(aa.runs(run_id=args.run_id))
+            return _finish(
+                cmd,
+                aa.runs(
+                    run_id=args.run_id,
+                    data=args.data,
+                    stage=args.stage,
+                    since=args.since,
+                    limit=args.limit,
+                ),
+            )
+        elif cmd == "reuse-scan":
+            return _finish(
+                cmd,
+                aa.reuse_scan(
+                    _load_recipe(args.recipe),
+                    data=args.data,
+                    limit=args.limit,
+                ),
+            )
+        elif cmd == "reindex":
+            return _finish(cmd, aa.reindex())
         elif cmd == "continue":
-            _emit(aa.plan_continuation(_load_recipe(args.recipe), args.parent_run_id, data=args.data))
+            return _finish(
+                cmd,
+                aa.plan_continuation(
+                    _load_recipe(args.recipe),
+                    args.parent_run_id,
+                    data=args.data,
+                    execute=args.execute,
+                    choice=args.choice,
+                    confirm=args.confirm,
+                    output_dir=args.output_dir,
+                    checkpoint_path=args.checkpoint_path,
+                    bootstrap_ray=args.bootstrap_ray,
+                    smoke_token=args.smoke_token,
+                    calibration=_calibration_arg(args.calibration),
+                    goal=_parse_goal(args.goal),
+                ),
+            )
         elif cmd == "calibrate":
-            _emit(aa.calibrate(_load_doc(args.smoke) or {}))
+            return _finish(cmd, aa.calibrate(_load_doc(args.smoke) or {}))
+        elif cmd == "doctor":
+            rep = aa.doctor()
+            if getattr(args, "json", False):
+                return _finish(cmd, rep)
+            print(aa.render_doctor(rep))
+            return _result_exit_code(cmd, rep)
         else:  # pragma: no cover - argparse enforces the choices
             return 2
-    except ValueError as e:  # bad criteria / recipe / input shape -> clean JSON, not a traceback
+    except Exception as e:  # noqa: BLE001 - CLI failures must remain structured
         _emit({"error": str(e)})
         return 1
-    return 0
 
 
 if __name__ == "__main__":

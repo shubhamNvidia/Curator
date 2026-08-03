@@ -40,7 +40,13 @@ class RunReport:
     data_profile: dict[str, Any] | None = None
     input_count: int = 0
     accepted: int = 0
-    rejected: int = 0
+    rejected: int | None = 0
+    # Explicit cardinality vocabulary. ``accepted``/``input_count`` remain for
+    # compatibility, while these fields prevent fan-out output rows from being
+    # mistaken for retained source items.
+    source_items: int | None = None
+    output_rows: int | None = None
+    cardinality_proven: bool = False
     per_filter_counts: dict[str, Any] = field(default_factory=dict)
     per_stage_metrics: dict[str, Any] = field(default_factory=dict)
     failure_reasons: list[dict[str, Any]] = field(default_factory=list)
@@ -52,6 +58,23 @@ class RunReport:
 
     def to_dict(self) -> dict[str, Any]:
         return _clean(asdict(self))
+
+
+def stage_duration_sec(per_stage: dict[str, Any], runtime_name: str) -> float:
+    """Seconds one stage spent, from the metrics THIS module writes; 0 when unmeasured.
+
+    The single reading convention for ``per_stage_metrics``. Two callers used to answer this
+    question two ways -- one matching any metric containing "time", the other only ``process_time``
+    under the stage's *class* name. Runtime names are a stage's own ``name`` field, which is often
+    neither (``manifest_writer``, ``ASR_inference``), so the stricter reader silently found nothing
+    for most of the catalogue. Keyed here, beside the writer, so a change to either side is one edit.
+    """
+    metrics = per_stage.get(runtime_name) or {}
+    seconds = 0.0
+    for metric, agg in metrics.items():
+        if "time" in metric and isinstance(agg, dict):
+            seconds = max(seconds, float(agg.get("sum") or 0.0))
+    return round(seconds, 3)
 
 
 def _dedup_stage_perf(tasks: list[Any]) -> dict[str, Any]:
@@ -78,7 +101,13 @@ def _dedup_stage_perf(tasks: list[Any]) -> dict[str, Any]:
         out[stage] = {}
         for name, vals in metrics.items():
             arr = np.asarray(vals, dtype=float)
-            out[stage][name] = {"sum": float(arr.sum()), "mean": float(arr.mean()), "count": int(arr.size)}
+            out[stage][name] = {
+                "sum": float(arr.sum()),
+                "mean": float(arr.mean()),
+                "min": float(arr.min()),
+                "max": float(arr.max()),
+                "count": int(arr.size),
+            }
     return out
 
 
@@ -136,6 +165,8 @@ def build_run_report(  # noqa: PLR0913 - a report intentionally gathers many fie
         input_count=input_count,
         accepted=accepted,
         rejected=max(0, input_count - accepted),
+        source_items=input_count,
+        output_rows=accepted,
         per_filter_counts=_filter_counts(per_stage),
         per_stage_metrics=per_stage,
         failure_reasons=failures or [],

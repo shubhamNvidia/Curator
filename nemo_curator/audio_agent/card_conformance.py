@@ -26,6 +26,8 @@ drift (the exact ``resample`` / ``audio_to_document`` failure class):
 * a model stage (``model_id`` set) must pin a ``model_version`` (measured-tier).
 * a ``metrics`` block, if present, must use a valid ``scale.direction``, a real
   ``threshold_param``, and a ``[lo, hi]`` ``valid_range``.
+* ``semantic_facts``, if present, is shape-checked as advisory prose.  The gate
+  never interprets scope or turns a fact into a module-specific pipeline rule.
 * a capability ``tag`` must reflect the stage's DEFAULT behavior: a tag that maps to an
   unconditional boolean contract gate (``writes_disk``/``needs_ffmpeg``) is checked against
   a default-constructed instance's gate. An opt-in capability belongs in a param (knob),
@@ -51,6 +53,7 @@ _NUMERIC_RESOURCE_KEYS = frozenset({"cpus", "gpu_mem_gb", "host_mem_gb", "disk_e
 _KNOWN_BOUND = frozenset({"cpu", "gpu", "io"})
 _VERIFIED_TIERS = frozenset({"mechanical", "measured", "best_guess"})
 _DIRECTIONS = frozenset({"higher_better", "lower_better"})
+_SEMANTIC_PROSE_FIELDS = frozenset({"meaning", "unit", "provenance", "scope", "propagation"})
 
 
 def _stage_param_names(stage_id: str) -> set[str] | None:
@@ -70,6 +73,43 @@ def _stage_param_names(stage_id: str) -> set[str] | None:
 
 def _model_version(card: dict[str, Any]) -> Any:  # noqa: ANN401
     return card.get("model_version") or (card.get("provenance") or {}).get("model_version")
+
+
+def _semantic_fact_violations(stage_id: str, raw: Any) -> list[str]:  # noqa: ANN401
+    """Validate only the JSON/YAML shape of optional semantic reasoning prose.
+
+    A compact string and a richer mapping are both accepted.  Meaning, scope,
+    and propagation remain free text: conformance can ensure the packet is
+    readable, but only a reviewer can judge whether it matches user intent.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, dict):
+        return [f"{stage_id}: semantic_facts must be a mapping"]
+    violations: list[str] = []
+    for anchor, fact in raw.items():
+        if not isinstance(anchor, str) or not anchor.strip():
+            violations.append(f"{stage_id}: semantic_facts keys must be non-empty strings")
+            continue
+        prefix = f"{stage_id}: semantic_facts[{anchor!r}]"
+        if isinstance(fact, str):
+            if not fact.strip():
+                violations.append(f"{prefix} must not be empty")
+            continue
+        if not isinstance(fact, dict):
+            violations.append(f"{prefix} must be prose or a mapping")
+            continue
+        for field in _SEMANTIC_PROSE_FIELDS:
+            if field in fact and (not isinstance(fact[field], str) or not fact[field].strip()):
+                violations.append(f"{prefix}.{field} must be a non-empty string")
+        counterexamples = fact.get("counterexamples")
+        if counterexamples is not None and (
+            not isinstance(counterexamples, list)
+            or not counterexamples
+            or any(not isinstance(item, str) or not item.strip() for item in counterexamples)
+        ):
+            violations.append(f"{prefix}.counterexamples must be a non-empty list of non-empty strings")
+    return violations
 
 
 # Capability tag -> the boolean contract gate it must mirror. A tag states DEFAULT behavior,
@@ -210,6 +250,10 @@ def check_card(stage_id: str, card: Any) -> list[str]:  # noqa: ANN401
             if vr is not None and not (isinstance(vr, list) and len(vr) == 2):  # noqa: PLR2004 - [lo, hi]
                 v.append(f"{stage_id}: metrics[{mkey!r}].valid_range must be [lo, hi]")
 
+    # Semantic facts are retrieval material for the host critic.  Validate
+    # shape only; do not encode field meaning or scope into deterministic rules.
+    v.extend(_semantic_fact_violations(stage_id, card.get("semantic_facts")))
+
     # versions block (optional, model-backed stages): {model_id: "when-to-use"} for
     # checkpoints verified interchangeable via model_name/model_path (same output structure,
     # no module code change). Keep it honest + drift-proof: a version an agent can *select*
@@ -234,11 +278,18 @@ def check_card(stage_id: str, card: Any) -> list[str]:  # noqa: ANN401
                             )
 
     # verified tiers, when present, must use the known vocabulary.
-    verified = card.get("verified") or {}
-    if isinstance(verified, dict):
+    verified = card.get("verified")
+    if not isinstance(verified, dict):
+        v.append(f"{stage_id}: verified must be a mapping of fact names to evidence tiers")
+    else:
         for fact, tier in verified.items():
             if tier not in _VERIFIED_TIERS:
                 v.append(f"{stage_id}: verified[{fact!r}]={tier!r} not in {sorted(_VERIFIED_TIERS)}")
+        if card.get("semantic_facts") is not None and "semantic_facts" not in verified:
+            v.append(
+                f"{stage_id}: semantic_facts must declare its evidence tier in "
+                "verified.semantic_facts"
+            )
 
     # tag <-> default-gate consistency (M5b): a capability tag must reflect DEFAULT behavior.
     v.extend(_tag_gate_violations(stage_id, card))

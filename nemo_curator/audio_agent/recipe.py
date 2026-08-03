@@ -21,8 +21,9 @@ understands, and freezes to a ``recipe_id`` + ``config_hash`` for reproducibilit
 and plan-execution integrity ("what was approved is what runs").
 
 The Recipe IR is the anti-hallucination boundary: the host proposes a Recipe,
-never raw Python, and the core validates it structurally (here) and semantically
-(``verbs.validate``) before anything runs.
+never raw Python, and the core validates its mechanically provable composition
+(``verbs.validate``) before anything runs. Open-ended intent fit remains a
+separate host-LLM critique over the returned semantic-review evidence.
 """
 
 from __future__ import annotations
@@ -39,7 +40,77 @@ if TYPE_CHECKING:
 
 # Constructor keys that configure the framework, not stage semantics; peeled out
 # and re-applied via .with_() rather than passed to the dataclass constructor.
-_WITH_KEYS = frozenset({"resources", "batch_size", "runtime_env", "num_workers"})
+EXECUTION_KNOB_PARAMS = frozenset({"resources", "batch_size", "runtime_env", "num_workers"})
+_WITH_KEYS = EXECUTION_KNOB_PARAMS  # historical alias used by build_stages
+
+# Params that name WHERE a stage writes, not WHAT it computes. Changing one moves the
+# bytes; it does not change them. Excluded from ``semantic_hash`` (so a re-run into a new
+# directory can reuse prior work) and scanned by output discovery (so resampled/per-speaker/
+# RTTM directories stop being invisible side effects). See REUSE_ARCHITECTURE.md.
+OUTPUT_LOCATION_PARAMS = frozenset(
+    {
+        "output_path",  # ManifestWriterStage, Snippet*/PretrainMetrics* writers
+        "output_manifest",  # recipe-level alias mapped onto output_path
+        "output_dir",  # SegmentExtraction / MonoConversion / SegmentConcatenation / SnippetExtraction
+        "output_audio_tar_path",  # SnippetExtractionStage
+        "resampled_audio_dir",  # ResampleAudioStage
+        "separated_audio_dir",  # SpeakerSeparationStage
+        "rttm_out_dir",  # InferenceSortformerStage
+    }
+)
+
+
+def _criteria(raw: Any) -> list[dict[str, Any]]:  # noqa: ANN401 - shape-checking untrusted input IS the job
+    """The success contract, or a loud error -- never a silently mangled one.
+
+    ``list()`` over a mapping yields its KEYS, so a plausible-looking
+    ``acceptance_criteria: {must: [...]}`` used to become ``["must"]``: a contract that
+    cannot be verified, which ``run`` then skipped without a word while reporting success.
+    The shape is checked here, at the door, so the CLI, the SDK and a recipe file all
+    reject the same mistake with the same message. ``ValueError`` (not ``TypeError``) to
+    match ``from_dict`` and ``acceptance.parse_criteria``, which callers already catch.
+    """
+    if raw is None:
+        return []
+    shape = "{id, type, check: {field, op, value}, severity}"
+    if not isinstance(raw, list):
+        detail = f" with keys {sorted(raw, key=repr)!r}" if isinstance(raw, dict) else ""
+        msg = (
+            f"acceptance_criteria must be a LIST of criterion mappings, got {type(raw).__name__}{detail}; "
+            f"each criterion is {shape}"
+        )
+        raise ValueError(msg)  # noqa: TRY004 - ValueError, per this module's convention
+    bad = [f"#{i} ({type(c).__name__})" for i, c in enumerate(raw) if not isinstance(c, dict)]
+    if bad:
+        msg = f"acceptance_criteria entries must be mappings, got {', '.join(bad)}; each criterion is {shape}"
+        raise ValueError(msg)
+    copied = [dict(c) for c in raw]
+
+    # Validate through the same boundary used by the SDK ``verify`` verb, but retain
+    # the exact host-authored mappings here. Adding normalized defaults to Recipe would
+    # change config_hash/contract_hash and break already-frozen tutorial recipes.
+    from nemo_curator.audio_agent.acceptance import parse_criteria
+
+    parse_criteria(copied)
+    return copied
+
+
+def _criteria_hash_payload(raw: list[Any]) -> list[dict[str, Any]]:
+    """Canonical criterion mappings for hashing without rewriting raw recipes.
+
+    ``Recipe.from_dict`` deliberately preserves the exact host-authored mappings
+    because adding normalized defaults would change existing confirmation hashes.
+    The SDK also permits a directly constructed ``Recipe`` to contain
+    ``AcceptanceCriterion`` objects. Convert only those objects to their mapping
+    form so ``recipe -> to_dict -> recipe`` keeps the same integrity hashes.
+    """
+    from nemo_curator.audio_agent.acceptance import parse_criteria
+
+    parsed = parse_criteria(raw)
+    return [
+        dict(original) if isinstance(original, dict) else criterion.to_dict()
+        for original, criterion in zip(raw, parsed, strict=True)
+    ]
 
 
 @dataclass
@@ -51,6 +122,15 @@ class StageRef:
 
     def to_dict(self) -> dict[str, Any]:
         return {"ref": self.ref, "params": dict(self.params)}
+
+    def semantic_params(self) -> dict[str, Any]:
+        """Params that change the stage's OUTPUT BYTES — execution knobs and output
+        locations removed. This is the reuse identity of the stage's configuration."""
+        skip = EXECUTION_KNOB_PARAMS | OUTPUT_LOCATION_PARAMS
+        return {k: v for k, v in self.params.items() if k not in skip}
+
+    def semantic_dict(self) -> dict[str, Any]:
+        return {"ref": self.ref, "params": self.semantic_params()}
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> StageRef:
@@ -75,6 +155,11 @@ class Recipe:
     name: str = "audio_agent_recipe"
     recipe_id: str | None = None
     config_hash: str | None = None
+    # Reuse identity, split out of config_hash (REUSE_ARCHITECTURE.md §2). config_hash stays
+    # the confirm-gate integrity anchor and covers EVERYTHING the user approved; these two
+    # answer the narrower questions reuse actually asks.
+    semantic_hash: str | None = None  # "would this produce the same bytes?"
+    contract_hash: str | None = None  # "is the success bar the same?" (re-verify, don't recompute)
     # Layered save: recomputable annotations kept OUT of the hash so the recipe
     # stays portable. Re-run on a different machine/dataset recomputes these rather
     # than reusing stale, machine-/data-specific numbers.
@@ -92,16 +177,30 @@ class Recipe:
         if not isinstance(d, dict):
             msg = f"recipe must be a dict, got {type(d).__name__}"
             raise ValueError(msg)
+        acceptance_typos = sorted(
+            str(key)
+            for key in d
+            if str(key).startswith("acceptance_") and key != "acceptance_criteria"
+        )
+        if acceptance_typos:
+            msg = (
+                f"unknown acceptance contract field(s) {acceptance_typos}; "
+                "use 'acceptance_criteria' so the success contract is validated "
+                "and included in the confirmation hash"
+            )
+            raise ValueError(msg)
         stages = [StageRef.from_dict(s) for s in (d.get("stages") or [])]
         return cls(
             stages=stages,
             inputs=dict(d.get("inputs") or {}),
             preset=d.get("preset"),
-            acceptance_criteria=list(d.get("acceptance_criteria") or []),
+            acceptance_criteria=_criteria(d.get("acceptance_criteria")),
             rationale=str(d.get("rationale") or ""),
             name=str(d.get("name") or "audio_agent_recipe"),
             recipe_id=d.get("recipe_id"),
             config_hash=d.get("config_hash"),
+            semantic_hash=d.get("semantic_hash"),
+            contract_hash=d.get("contract_hash"),
             machine_plan=d.get("machine_plan"),
             data_derived=d.get("data_derived"),
             config_strategy=d.get("config_strategy"),
@@ -129,20 +228,52 @@ class Recipe:
             "stages": [s.to_dict() for s in self.stages],
             "inputs": self.inputs,
             "preset": self.preset,
-            "acceptance_criteria": self.acceptance_criteria,
+            "acceptance_criteria": _criteria_hash_payload(self.acceptance_criteria),
         }
         return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
 
     def compute_hash(self) -> str:
         return hashlib.sha256(self._canonical().encode("utf-8")).hexdigest()[:16]
 
-    def freeze(self) -> Recipe:
-        """Stamp a ``config_hash`` and a stable ``recipe_id`` (integrity anchor).
+    def compute_semantic_hash(self) -> str:
+        """Identity of what this recipe COMPUTES, ignoring how and where it runs.
 
-        Only the portable layer (see :meth:`_canonical`) is hashed; the layered-save
-        annotations are attached separately and never change the hash.
+        Drops the execution knobs (``resources`` / ``batch_size`` / ``num_workers`` /
+        ``runtime_env``) and the output *locations* from every stage, and the acceptance
+        criteria entirely -- none of those change a single output byte. Two recipes with the
+        same ``semantic_hash`` on the same data produce the same result, so the second one
+        can reuse the first's artifacts. (``config_hash`` still covers all of it, so the
+        confirm gate is unaffected.)
+        """
+        payload = {
+            "stages": [s.semantic_dict() for s in self.stages],
+            "inputs": {k: v for k, v in self.inputs.items() if k not in OUTPUT_LOCATION_PARAMS},
+            "preset": self.preset,
+        }
+        blob = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+    def compute_contract_hash(self) -> str:
+        """Identity of the success bar alone. A changed bar means re-VERIFY the reused
+        data against the new criteria, never recompute it."""
+        blob = json.dumps(
+            _criteria_hash_payload(self.acceptance_criteria),
+            sort_keys=True,
+            ensure_ascii=False,
+            default=str,
+        )
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+    def freeze(self) -> Recipe:
+        """Stamp ``config_hash`` (integrity anchor) + a stable ``recipe_id``, plus the
+        ``semantic_hash`` / ``contract_hash`` reuse keys.
+
+        Only the portable layer (see :meth:`_canonical`) is hashed into ``config_hash``; the
+        layered-save annotations are attached separately and never change it.
         """
         self.config_hash = self.compute_hash()
+        self.semantic_hash = self.compute_semantic_hash()
+        self.contract_hash = self.compute_contract_hash()
         if not self.recipe_id:
             self.recipe_id = f"{self.name}-{self.config_hash[:8]}"
         return self

@@ -27,30 +27,479 @@ ours (deterministic, grounded); interpret/route/plan/critique is the host's.
 from __future__ import annotations
 
 import contextlib
+import copy
+import ipaddress
 import json
+import math
 import os
+import shutil
 import sys
 import tempfile
 import time
+from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 from nemo_curator.audio_agent import _safety
 from nemo_curator.audio_agent import context as _context
-from nemo_curator.audio_agent.contracts import Issue, SmokeReport, Verdict
+from nemo_curator.audio_agent.contracts import DATASET_KEY_TIERS, Issue, SmokeReport, Verdict
 from nemo_curator.audio_agent.index import get_index
 from nemo_curator.audio_agent.profiler import probe_env, profile_data
-from nemo_curator.audio_agent.recipe import Recipe, build_stages
-from nemo_curator.audio_agent.report import _row_count, build_run_report
+from nemo_curator.audio_agent.recipe import (
+    EXECUTION_KNOB_PARAMS,
+    OUTPUT_LOCATION_PARAMS,
+    Recipe,
+    build_stages,
+)
+from nemo_curator.audio_agent.report import _row_count, build_run_report, stage_duration_sec
 
-# Keys in a recipe's source stage that name the input dataset (for smoke bounding).
-_SOURCE_INPUT_KEYS = ("manifest_path", "input_manifest", "manifest", "raw_data_dir", "file_paths")
+# How many output rows a success contract may read back as evidence. Enough to judge coverage
+# on a real corpus; small enough that verifying a finished run never becomes the expensive part.
+_EVIDENCE_ROWS = 2000
+
+# Smoke runs exercise real write behavior, but only inside an ephemeral tree.
+# ``raw_data_dir`` is deliberately excluded: for dataset sources it is execution
+# input as well as an acquisition destination, so generated sources are refused
+# and pre-staged roots remain read-only.
+_SMOKE_FILE_OUTPUT_PARAMS = frozenset(
+    {"output_path", "output_manifest", "output_audio_tar_path"}
+)
+_SMOKE_DIR_OUTPUT_PARAMS = frozenset(
+    OUTPUT_LOCATION_PARAMS
+    - _SMOKE_FILE_OUTPUT_PARAMS
+    - {"raw_data_dir"}
+)
+
+# A contract that says ``writes_to_disk`` must have one reviewed smoke adapter.
+# Unknown writers fail closed even if their parameter happens to look path-like.
+_SMOKE_DISK_ADAPTERS: dict[str, tuple[str, ...]] = {
+    "CreateInitialManifestReadSpeechStage": (),
+    "DocumentBatchJsonlWriterStage": ("output_path",),
+    "InferenceSortformerStage": ("rttm_out_dir",),
+    "ManifestGroupExportStage": ("output_dir",),
+    "ManifestWriterStage": ("output_path",),
+    "MonoConversionStage": ("output_dir",),
+    "PretrainMetricsAggregatorStage": ("output_path",),
+    "ResampleAudioStage": ("resampled_audio_dir",),
+    "SegmentConcatenationStage": ("output_dir",),
+    "SegmentExtractionStage": ("output_dir",),
+    "SnippetExtractionStage": ("output_dir", "output_audio_tar_path"),
+    "SnippetManifestWriterStage": ("output_path",),
+    "SpeakerSeparationStage": ("separated_audio_dir",),
+    "SplitLongAudioStage": ("output_dir",),
+}
 
 
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
+def _ray_address_is_local(address: str | None) -> bool:
+    """Whether a configured Ray address names this machine.
+
+    An unset address plus Ray's ``auto`` and ``local`` modes retain local checks. A head
+    THIS process bootstrapped is always local: it runs on this machine even when Ray
+    advertises the node's LAN IP (multi-NIC / cloud), so its probed VRAM/GPU names are
+    valid. Otherwise a concrete address is local only when its host is ``localhost`` or an
+    IPv4/IPv6 loopback address; unknown hostnames fail closed as remote so driver
+    environment facts are never projected onto another machine.
+    """
+    value = str(address or "").strip()
+    if not value or value.casefold() in {"auto", "local"}:
+        return True
+    try:  # a self-started head is on this machine regardless of the advertised IP
+        from nemo_curator.audio_agent import _ray
+
+        if _ray.owns_cluster(value):
+            return True
+    except Exception:  # noqa: BLE001 - ownership is best-effort; fall through to host checks
+        pass
+    if value.casefold().rstrip(".") in {"localhost", "::1", "[::1]"}:
+        return True
+    try:
+        parsed = urlsplit(value if "://" in value else f"//{value}")
+        host = (parsed.hostname or "").casefold().rstrip(".")
+    except ValueError:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _ray_execution_target(address: str | None) -> str:
+    """Map a Ray address to the environment-analysis target vocabulary."""
+    return "local" if _ray_address_is_local(address) else "external_ray"
+
+
 def _as_recipe(recipe: Recipe | dict[str, Any]) -> Recipe:
-    return recipe if isinstance(recipe, Recipe) else Recipe.from_dict(recipe)
+    rec = recipe if isinstance(recipe, Recipe) else Recipe.from_dict(recipe)
+    # ``Recipe(...)`` remains a convenient SDK constructor and can bypass
+    # Recipe.from_dict. Hold that path to the same fail-closed contract boundary
+    # before validate/smoke/run/reuse performs any I/O.
+    from nemo_curator.audio_agent.acceptance import parse_criteria
+
+    parse_criteria(rec.acceptance_criteria)
+    return rec
+
+
+def _dataset_binding(rec: Recipe, data: str | None):  # noqa: ANN202 - private adapter type
+    """Resolve the recipe's physical input; stage params remain execution truth."""
+    from nemo_curator.audio_agent.input_identity import resolve_dataset_binding
+
+    return resolve_dataset_binding(rec, data)
+
+
+def _binding_blocks_execution(binding: Any, data: str | None) -> bool:  # noqa: ANN401
+    """Whether a binding problem makes execution unsafe rather than merely unkeyed."""
+    if binding.status in {"missing", "mismatch", "unsupported"}:
+        return True
+    if binding.status != "ambiguous":
+        return False
+    # A configured multi-manifest reader can still execute exactly as authored
+    # when no singular --data assertion pretends to describe the whole set. It
+    # simply gets no reuse identity until aggregate profiling exists.
+    return not (
+        data is None
+        and binding.source_ref == "ManifestReader"
+        and binding.source_index == 0
+        and len(binding.configured_paths) > 1
+    )
+
+
+def _profile_binding(binding: Any):  # noqa: ANN202, ANN401 - DataProfile | None without eager imports
+    """Profile only the source the recipe actually executes, never caller text."""
+    if binding.status not in {"resolved", "ambiguous"} or not binding.profile_source:
+        return None
+    allowed = {
+        "audio_filepath_key",
+        "audio_dir",
+        "audio_path_resolution",
+        "case_sensitive_extensions",
+        "exclude_stage_intermediates",
+        "folder_extensions",
+        "identity_files",
+        "max_files",
+        "max_probe",
+        "recursive",
+    }
+    kwargs = {key: value for key, value in binding.profile_kwargs.items() if key in allowed}
+    prof = profile_data(binding.profile_source, **kwargs)
+    # A lexical remote selector or unsupported selector must not become a
+    # reusable shape key merely because DataProfile can hash its spelling.
+    return prof if prof.kind != "unknown" else None
+
+
+def _profile_error(profile: Any) -> str:  # noqa: ANN401
+    """Fatal source-definition error found by the read-only profiler."""
+    errors = list(getattr(profile, "source_errors", None) or [])
+    return "; ".join(str(error) for error in errors)
+
+
+def _profile_refusal(binding: Any, profile: Any) -> dict[str, Any]:  # noqa: ANN401
+    return {
+        "status": "refused",
+        "reason": f"recipe data source is unreadable or malformed: {_profile_error(profile)}",
+        "data_binding": binding.to_dict(),
+        "data_profile": profile.to_dict(),
+    }
+
+
+def _binding_issue(binding: Any, data: str | None) -> Issue | None:  # noqa: ANN401
+    """Translate source binding state into the validation issue vocabulary."""
+    if binding.status == "resolved":
+        return None
+    blocking = _binding_blocks_execution(binding, data)
+    code = {
+        "missing": "data_source_missing",
+        "mismatch": "data_source_mismatch",
+        "ambiguous": "data_source_ambiguous",
+        "unsupported": "data_source_unsupported",
+    }.get(binding.status, "data_source_unresolved")
+    return Issue(
+        code,
+        "error" if blocking else "warning",
+        binding.reason,
+        stage_index=binding.source_index,
+        stage=binding.source_ref,
+        fix={
+            "missing": "configure an existing source in the first supported source stage",
+            "mismatch": (
+                "make --data and Recipe.inputs agree with the first stage's configured source"
+            ),
+            "unsupported": (
+                "use a supported first source stage/path form or add an explicit source adapter"
+            ),
+            "ambiguous": (
+                "remove the extra source, or omit singular --data for an authored "
+                "multi-manifest reader"
+                if blocking
+                else "omit singular --data or use one manifest selector if reusable identity is required"
+            ),
+        }.get(binding.status, "bind one supported source as the recipe's first stage"),
+    )
+
+
+def _binding_refusal(binding: Any) -> dict[str, Any]:  # noqa: ANN401
+    return {
+        "status": "refused",
+        "reason": f"recipe data source is not safely bound: {binding.reason}",
+        "data_binding": binding.to_dict(),
+    }
+
+
+@dataclass(frozen=True)
+class _ContinuationRunContext:
+    """The minimum claim a continued run may present at the execution boundary.
+
+    None of the identities that are ultimately published are accepted directly.
+    The verifier re-derives the logical chain and the materialized suffix from
+    this recipe, the current source fingerprint, and one complete artifact.
+    """
+
+    logical_recipe: dict[str, Any]
+    dataset_key: str
+    reuse_step_key: str
+
+
+@dataclass(frozen=True)
+class _PretrainFinalizer:
+    """Driver lifecycle required by the shard-writing ALM pretrain stages."""
+
+    manifest_path: str
+    metrics_path: str
+    audio_tar_path: str
+    audio_filepath_key: str
+    audio_tar_expected: bool = True
+
+    def prepare(self) -> None:
+        from nemo_curator.stages.audio.alm.pretrain import (
+            prepare_audio_pretrain_outputs,
+        )
+
+        prepare_audio_pretrain_outputs(
+            self.manifest_path,
+            self.metrics_path,
+            self.audio_tar_path,
+        )
+
+    def finalize(self, *, successful: bool = True) -> int:
+        """Merge this attempt's shards and return its serialized snippet count.
+
+        A successful attempt owns the final output paths, including the truthful
+        empty-output case.  A failed attempt may still have recoverable shards,
+        but must not erase an older completed output when it produced none.
+        """
+        from nemo_curator.stages.audio.alm.pretrain import (
+            finalize_audio_pretrain_outputs,
+        )
+
+        finalize_audio_pretrain_outputs(
+            self.manifest_path,
+            self.metrics_path,
+            self.audio_tar_path,
+            audio_filepath_key=self.audio_filepath_key,
+            replace_empty=successful,
+            audio_tar_expected=self.audio_tar_expected,
+        )
+        return _count_output_rows(self.manifest_path)
+
+
+def _pretrain_finalizer(
+    stages: list[Any],
+) -> tuple[_PretrainFinalizer | None, str]:
+    """Resolve a complete ALM shard lifecycle, or reject a partial recipe."""
+    wanted: dict[str, list[Any]] = {
+        "SnippetExtractionStage": [],
+        "SnippetManifestWriterStage": [],
+        "PretrainMetricsAggregatorStage": [],
+    }
+    for stage in stages:
+        name = type(stage).__name__
+        if name in wanted:
+            wanted[name].append(stage)
+    present = {name for name, matches in wanted.items() if matches}
+    if not present:
+        return None, ""
+    if present != set(wanted):
+        missing = sorted(set(wanted) - present)
+        return None, (
+            "ALM pretrain shard outputs require SnippetExtractionStage, "
+            "SnippetManifestWriterStage, and PretrainMetricsAggregatorStage "
+            f"in one recipe; missing {missing}"
+        )
+    duplicates = sorted(
+        name for name, matches in wanted.items() if len(matches) != 1
+    )
+    if duplicates:
+        return None, (
+            "ALM pretrain finalization requires exactly one of each shard stage; "
+            f"ambiguous stage(s): {duplicates}"
+        )
+
+    extraction = wanted["SnippetExtractionStage"][0]
+    writer = wanted["SnippetManifestWriterStage"][0]
+    aggregator = wanted["PretrainMetricsAggregatorStage"][0]
+    manifest_path = getattr(writer, "output_path", None)
+    metrics_path = getattr(aggregator, "output_path", None)
+    audio_tar_path = getattr(extraction, "output_audio_tar_path", None)
+    missing_paths = sorted(
+        key
+        for key, value in {
+            "manifest_path": manifest_path,
+            "metrics_path": metrics_path,
+            "audio_tar_path": audio_tar_path,
+        }.items()
+        if not isinstance(value, str) or not value
+    )
+    if missing_paths:
+        return None, (
+            "ALM pretrain finalization is missing required output path(s): "
+            f"{missing_paths}"
+        )
+    return (
+        _PretrainFinalizer(
+            manifest_path=str(manifest_path),
+            metrics_path=str(metrics_path),
+            audio_tar_path=str(audio_tar_path),
+            audio_filepath_key=str(
+                getattr(extraction, "audio_filepath_key", "audio_filepath")
+            ),
+            audio_tar_expected=not bool(getattr(extraction, "dry_run", False)),
+        ),
+        "",
+    )
+
+
+@dataclass(frozen=True)
+class _SmokeBound:
+    """A proved smoke-input cap, or a refusal before stage construction."""
+
+    recipe: Recipe | None
+    tmp_paths: tuple[str, ...] = ()
+    input_count: int | None = None
+    error: str = ""
+    output_root: str | None = None
+
+
+def _continuation_context_from_plan(
+    logical_recipe: Recipe,
+    plan: dict[str, Any],
+) -> _ContinuationRunContext:
+    """Snapshot the logical request for verification by :func:`run`."""
+    point = plan.get("reuse_point") or {}
+    return _ContinuationRunContext(
+        logical_recipe=logical_recipe.to_dict(),
+        dataset_key=str(plan.get("dataset_key") or ""),
+        reuse_step_key=str(point.get("step_key") or ""),
+    )
+
+
+def _verify_continuation_context(  # noqa: PLR0911 - each refusal names one broken proof
+    physical_recipe: Recipe,
+    physical_binding: Any,  # noqa: ANN401 - DatasetBinding without eager import
+    context: _ContinuationRunContext | None,
+) -> tuple[dict[str, Any] | None, str]:
+    """Prove a continued run, then derive every identity override internally.
+
+    A caller cannot provide step tuples or a run-record chain. The reused step
+    must belong to the logical recipe on the stated current dataset; its complete
+    artifact must be the physical source; and materializing that exact boundary
+    must reproduce the recipe about to execute.
+    """
+    if context is None:
+        return None, ""
+    if not isinstance(context, _ContinuationRunContext):
+        return None, "continued-run context has an invalid type"
+
+    from nemo_curator.audio_agent import artifacts as art_mod
+    from nemo_curator.audio_agent import continuation as continuation_mod
+    from nemo_curator.audio_agent.input_identity import canonical_source
+
+    dataset_key = str(context.dataset_key or "")
+    reuse_step_key = str(context.reuse_step_key or "")
+    if not dataset_key or not reuse_step_key:
+        return None, "continued-run context is incomplete"
+
+    try:
+        logical_recipe = Recipe.from_dict(context.logical_recipe).freeze()
+        logical_binding = _dataset_binding(logical_recipe, None)
+        logical_profile = _profile_binding(logical_binding)
+    except (TypeError, ValueError) as exc:
+        return None, f"continued-run logical recipe is invalid: {exc}"
+    if logical_binding.status != "resolved" or logical_profile is None:
+        return None, "continued-run logical source cannot be verified"
+    if logical_profile.dataset_key() != dataset_key:
+        return None, "continued-run logical source no longer matches the claimed dataset"
+
+    try:
+        logical_plans = art_mod.plan_steps(logical_recipe, dataset_key)
+    except Exception as exc:  # noqa: BLE001 - turn an identity failure into a refusal
+        return None, f"continued-run logical steps could not be derived: {exc}"
+    matches = [plan for plan in logical_plans if plan.step_key == reuse_step_key]
+    if len(matches) != 1:
+        return None, "continued-run artifact step does not belong to the logical recipe"
+    reused_plan = matches[0]
+
+    artifact, reasons = art_mod.lookup(reuse_step_key, dataset_key=dataset_key)
+    if artifact is None or reasons:
+        why = "; ".join(reasons or ["artifact record is missing"])
+        return None, f"continued-run lineage is no longer valid: {why}"
+    expected_identity = {
+        "step_key": reused_plan.step_key,
+        "dataset_key": dataset_key,
+        "input_key": reused_plan.input_key,
+        "stage_index": reused_plan.index,
+        "stage_ref": reused_plan.stage_ref,
+        "semantic_params": reused_plan.semantic_params,
+        "model_version": reused_plan.model_version,
+    }
+    try:
+        actual_identity = {
+            "step_key": str(getattr(artifact, "step_key", "") or ""),
+            "dataset_key": str(getattr(artifact, "dataset_key", "") or ""),
+            "input_key": str(getattr(artifact, "input_key", "") or ""),
+            "stage_index": int(getattr(artifact, "stage_index", -1)),
+            "stage_ref": str(getattr(artifact, "stage_ref", "") or ""),
+            "semantic_params": dict(getattr(artifact, "semantic_params", {}) or {}),
+            "model_version": str(getattr(artifact, "model_version", "") or ""),
+        }
+    except (TypeError, ValueError):
+        return None, "continued-run artifact metadata is malformed"
+    if actual_identity != expected_identity:
+        return None, "continued-run artifact metadata does not match its logical step"
+
+    if not physical_binding.primary_path:
+        return None, "continued-run physical source could not be resolved"
+    try:
+        if canonical_source(physical_binding.primary_path) != canonical_source(artifact.uri):
+            return None, "continued-run recipe does not read the verified artifact"
+    except (TypeError, ValueError) as exc:
+        return None, f"continued-run artifact path is invalid: {exc}"
+
+    expected_recipe, materialize_error = continuation_mod.materialize(
+        logical_recipe,
+        uri=artifact.uri,
+        kind=artifact.kind,
+        prefix=reused_plan.index + 1,
+    )
+    if expected_recipe is None:
+        return None, f"continued-run boundary cannot be materialized: {materialize_error}"
+    if physical_recipe.compute_hash() != expected_recipe.compute_hash():
+        return None, "continued-run physical recipe is not the verified logical suffix"
+
+    return {
+        "dataset_key": dataset_key,
+        "fingerprint_tier": str(getattr(artifact, "fingerprint_tier", "") or ""),
+        "data_source": logical_binding.primary_path,
+        "step_identity": [
+            (plan.step_key, plan.input_key, plan.index)
+            for plan in logical_plans[reused_plan.index :]
+        ],
+        "logical_steps": [plan.step_key for plan in logical_plans],
+    }, ""
 
 
 def _derive_initial(data_profile: dict[str, Any] | None) -> tuple[set[str], set[str]]:
@@ -118,7 +567,18 @@ def context(
     stages: list[str] | None = None,
     roles: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Assemble a compact PlanningContext for the host router/planner."""
+    """Assemble a compact PlanningContext for the host router/planner.
+
+    Unlike recipe-driven verbs, ``data`` is the direct path to profile because
+    no executable recipe source exists yet.
+    """
+    pviol = _safety.path_violations([data])
+    if pviol:
+        return {
+            "status": "refused",
+            "reason": "path(s) resolve outside the allowed workspace",
+            "violations": pviol,
+        }
     return _context.assemble(goal, data=data, selected_stages=stages, roles=roles).to_dict()
 
 
@@ -146,8 +606,50 @@ def resolve(
     )
 
 
+def diagnose(
+    error: str,
+    *,
+    recipe: Recipe | dict[str, Any] | None = None,
+    operation: str = "run",
+    phase: str = "runtime",
+    attempted_actions: list[str] | None = None,
+    execution_target: str | None = None,
+) -> dict[str, Any]:
+    """Analyze a captured failure for the host LLM without applying a fix.
+
+    The result combines the sanitized failure taxonomy, a fresh machine probe,
+    recipe-specific environment applicability, ranked grounded choices, and an
+    explicit user-decision prompt. Unknown failures stay unknown and receive only
+    diagnostic next steps.
+    """
+    stages: list[Any] = []
+    recipe_issues: list[dict[str, Any]] = []
+    if recipe is not None:
+        stages_or_none, recipe_issues = build_stages(_as_recipe(recipe))
+        stages = list(stages_or_none or [])
+    target = (
+        execution_target
+        if execution_target in {"local", "external_ray", "custom_executor"}
+        else _ray_execution_target(os.environ.get("RAY_ADDRESS"))
+    )
+    from nemo_curator.audio_agent.diagnostics import diagnose_failure
+
+    result = diagnose_failure(
+        error,
+        stages=stages,
+        env=probe_env(),
+        operation=operation,
+        phase=phase,
+        execution_target=target,
+        attempted_actions=attempted_actions,
+    )
+    if recipe_issues:
+        result["recipe_issues"] = recipe_issues
+    return _safety.redact(result)
+
+
 # --------------------------------------------------------------------------- #
-# validate (structural + semantic + card + preflight)
+# validate (mechanical composition + card facts + preflight)
 # --------------------------------------------------------------------------- #
 def validate(
     recipe: Recipe | dict[str, Any],
@@ -167,10 +669,24 @@ def validate(
     unproducible roles, task-type, output-completeness, and request-type sanity.
     ``expected_outputs`` (semantic roles) enables the output-completeness check;
     ``acceptance_criteria`` (1A.1) additionally compile their output/metric fields
-    into that check and drive request-type sanity via ``request_type``.
+    into that check and drive request-type sanity via ``request_type``. They are
+    a cross-check only: the same success contract must be embedded in the recipe
+    so smoke/run and the confirmation hash cannot lose it.
 
-    To decide whether to run, gate on the returned ``runnable`` (no error-severity
-    problem anywhere) or ``status == "pass"`` -- NOT ``ok``, which is data-flow only.
+    Mechanical progression requires returned ``runnable`` (no error-severity
+    problem anywhere) or ``status == "pass"`` -- NOT ``ok``, which is data-flow
+    only. Before smoke or confirmation, the host must also complete the returned
+    ``semantic_review`` and reach an intent-level pass.
+
+    ``output_targets`` states what is already at each location the recipe writes to, so an
+    occupied output can be REPORTED to the user rather than guessed at or quietly cleared.
+
+    ``semantic_review`` is a separate, advisory evidence packet for the host LLM.
+    It co-locates configured field lineage, cardinality seams, and card prose but
+    never claims that the recipe expresses the user's intent.
+
+    The first supported source stage's parameters are execution truth. ``data``
+    and ``Recipe.inputs`` are optional assertions and never rewrite that stage.
     """
     from nemo_curator.audio_agent.acceptance import expected_roles_from_criteria, parse_criteria
     from nemo_curator.audio_agent.checks import CheckContext, run_checks
@@ -182,12 +698,54 @@ def validate(
         verdict.issues.append(Issue("empty_recipe", "error", "recipe has no stages"))
         return verdict.to_dict()
 
-    data_profile = profile_data(data).to_dict() if data else None
+    pviol = _safety.path_violations([data, *_safety.recipe_path_params(rec)])
+    if pviol:
+        verdict.issues.append(
+            Issue(
+                "path_outside_workspace",
+                "error",
+                "; ".join(pviol),
+                fix="move the source/output under AUDIO_AGENT_WORKSPACE or change that lock",
+            )
+        )
+        return verdict.to_dict()
+
+    binding = _dataset_binding(rec, data)
+    verdict.data_binding = binding.to_dict()
+    binding_issue = _binding_issue(binding, data)
+    if binding_issue is not None:
+        verdict.issues.append(binding_issue)
+    dp_obj = _profile_binding(binding)
+    data_profile = dp_obj.to_dict() if dp_obj else None
+    if dp_obj is not None and _profile_error(dp_obj):
+        verdict.issues.append(
+            Issue(
+                "data_source_unreadable",
+                "error",
+                _profile_error(dp_obj),
+                stage_index=binding.source_index,
+                stage=binding.source_ref,
+                fix="repair or replace the manifest before validation or execution",
+            )
+        )
     env = probe_env()
+    execution_target = _ray_execution_target(os.environ.get("RAY_ADDRESS"))
 
     stages, build_issues = build_stages(rec)
     verdict.issues.extend(_issue_from_dict(i) for i in build_issues)
     if stages is None:
+        from nemo_curator.audio_agent.diagnostics import diagnose_failure
+
+        verdict.diagnosis = diagnose_failure(
+            "; ".join(
+                str(issue.get("message") or issue.get("code") or "")
+                for issue in build_issues
+            ),
+            env=env,
+            operation="validate",
+            phase="stage_construction",
+            execution_target=execution_target,
+        )
         return verdict.to_dict()
 
     roles0, keys0 = _derive_initial(data_profile)
@@ -196,8 +754,25 @@ def validate(
     if initial_keys is not None:
         keys0 = set(initial_keys)
 
-    # Default to the recipe's frozen success contract; an explicit arg overrides it.
-    criteria = parse_criteria(acceptance_criteria if acceptance_criteria is not None else rec.acceptance_criteria)
+    recipe_criteria = parse_criteria(rec.acceptance_criteria)
+    if acceptance_criteria is None:
+        criteria = recipe_criteria
+    else:
+        criteria = parse_criteria(acceptance_criteria)
+        if criteria != recipe_criteria:
+            verdict.issues.append(
+                Issue(
+                    "acceptance_contract_not_embedded",
+                    "error",
+                    "the criteria passed to validate differ from the recipe's "
+                    "acceptance_criteria, so a later smoke/run would not be bound "
+                    "to the success contract that was validated",
+                    fix=(
+                        "copy the complete acceptance_criteria list into recipe.yaml "
+                        "and validate that same recipe"
+                    ),
+                )
+            )
     expected = set(expected_outputs or []) | set(expected_roles_from_criteria(criteria))
 
     ctx = CheckContext(
@@ -211,6 +786,7 @@ def validate(
         expected_outputs=sorted(expected),
         acceptance_criteria=criteria,
         request_type=request_type,
+        execution_target=execution_target,
     )
     result = run_checks(ctx)
     verdict.ok = bool(result.ok)
@@ -221,7 +797,114 @@ def validate(
     verdict.card_violations.extend(result.card_violations)
     verdict.gate_flags.extend(result.gate_flags)
     verdict.unproducible_roles = result.unproducible_roles
+
+    # Mechanical validation cannot decide whether a valid field/filter/model
+    # expresses open-ended user intent.  Assemble the exact configured lineage
+    # and its card prose for the mandatory host-LLM critic, without letting an
+    # advisory packet failure take down the deterministic validator.
+    semantic_response: dict[str, Any] | None = None
+    try:
+        from nemo_curator.audio_agent.semantic_review import (
+            build_semantic_review,
+            semantic_response_contract,
+        )
+
+        semantic_response = semantic_response_contract()
+        verdict.semantic_review = build_semantic_review(
+            stages,
+            initial_keys=keys0,
+            recipe=rec,
+            data_profile=data_profile,
+        )
+    except Exception as exc:  # noqa: BLE001 - validation stays available; packet says it is incomplete
+        verdict.semantic_review = {
+            "status": "unavailable",
+            "review_required": True,
+            "advisory_only": True,
+            "intent_interpretation_performed": False,
+            "required_response": semantic_response,
+            "contract_issues": [
+                {
+                    "code": "semantic_review_context_unavailable",
+                    "message": _safety.redact_secret_text(
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                }
+            ],
+            "checklist": [
+                {
+                    "id": "missing_review_context",
+                    "required": True,
+                    "instruction": (
+                        "Do not infer intent from a mechanically runnable verdict; "
+                        "retrieve the configured stage cards and lineage manually."
+                    ),
+                }
+            ],
+        }
+
+    from nemo_curator.audio_agent.diagnostics import (
+        environment_preflight,
+        verdict_issues,
+    )
+
+    environment_decision = environment_preflight(
+        stages,
+        env,
+        operation="validate",
+        execution_target=execution_target,
+    )
+    verdict.environment_decision = environment_decision
+    for env_issue in verdict_issues(environment_decision):
+        matches = [
+            issue
+            for issue in verdict.gate_flags
+            if issue.code == env_issue.code
+        ]
+        if matches:
+            # Keep the existing per-stage location, but promote a proven,
+            # recipe-relevant execution blocker to the shared safe severity.
+            for issue in matches:
+                issue.severity = "error"
+                issue.fix = env_issue.fix
+                issue.escalate_to = "user"
+        else:
+            verdict.gate_flags.append(env_issue)
+    verdict.output_targets = _output_targets(rec)
     return verdict.to_dict()
+
+
+def _output_targets(rec: Recipe) -> list[dict[str, Any]]:
+    """What is already sitting at each location this recipe writes to.
+
+    Facts only, no predictions: whether it exists, whether it is a file or a directory, and how
+    much is in it. An agent that cannot see this has to guess, and guessing led somewhere bad --
+    reading the writer's append-mode open, concluding reruns would double, and deleting the
+    user's file before the confirm gate. The path was in fact replaced cleanly by the run.
+
+    Reporting an occupied path is the whole point; deciding what to do about it belongs to the
+    user, and clearing it belongs to nobody (the pipeline replaces its own manifest output).
+    """
+    targets: list[dict[str, Any]] = []
+    for path in _recipe_outputs(rec, None):
+        expanded = os.path.expanduser(path)
+        entry: dict[str, Any] = {"path": path, "exists": os.path.exists(expanded)}
+        if not entry["exists"]:
+            targets.append(entry)
+            continue
+        if os.path.isdir(expanded):
+            entry["kind"] = "directory"
+            with contextlib.suppress(OSError):
+                entry["files"] = sum(len(fs) for _r, _d, fs in os.walk(expanded))
+        else:
+            entry["kind"] = "file"
+            with contextlib.suppress(OSError):
+                entry["bytes"] = os.path.getsize(expanded)
+            if expanded.endswith((".jsonl", ".json")):
+                entry["rows"] = _count_output_rows(expanded)
+        entry["note"] = "already present; the run writes here. Report this -- do not clear it yourself."
+        targets.append(entry)
+    return targets
 
 
 def _issue_from_dict(d: dict[str, Any]) -> Issue:
@@ -246,6 +929,7 @@ def _is_streaming_infeasible(err: Exception) -> bool:
 def _run_pipeline_autofallback(
     stages: list[Any], mode: str, caller_executor: Any, *,  # noqa: ANN401
     checkpoint_path: str | None = None, note: Any = None,  # noqa: ANN401
+    before_retry: Any = None,  # noqa: ANN401
 ) -> tuple[list[Any] | None, str]:
     """Run in the planned mode; on a runtime streaming-infeasibility error (e.g. a
     composite stage hides inner GPU stages, so the planner undercounted the concurrent
@@ -258,6 +942,15 @@ def _run_pipeline_autofallback(
         if caller_executor is None and mode != "batch" and _is_streaming_infeasible(e):
             if callable(note):
                 note("streaming infeasible at runtime -> retried in batch")
+            if callable(before_retry):
+                # Reset hook for writers whose output lifecycle is NOT the standard
+                # truncate-in-setup() (e.g. the ALM pretrain finalizer's prepare/finalize):
+                # clear their partial state so the two attempts are never merged. Standard
+                # terminal sinks (ManifestWriterStage / DocumentBatchJsonlWriterStage)
+                # truncate their output in setup(), which the batch retry re-invokes, so
+                # their partial streaming shards are REPLACED (not merged) without this hook
+                # -- which is why before_retry is None for a plain writer pipeline.
+                before_retry()
             return _run_pipeline(stages, _make_executor("batch"), checkpoint_path=checkpoint_path), "batch"
         raise
 
@@ -279,66 +972,391 @@ def smoke(
     ``calibration`` block — measured per-stage resources extracted from this run
     (1C.2) — to feed the next ``run``/``smoke`` planner; an optional ``calibration``
     input seeds mode selection from a prior smoke.
-    """
-    from nemo_curator.audio_agent.failures import classify
 
+    ``data`` is an optional assertion about the configured first source stage,
+    not an input override. A mismatch is refused before execution.
+    """
     rec = _as_recipe(recipe).freeze()
+    if isinstance(sample, bool) or not isinstance(sample, int) or sample <= 0:
+        return {
+            "status": "refused",
+            "reason": "smoke sample must be a positive integer",
+            "sample": sample,
+            "config_hash": rec.config_hash,
+        }
     pviol = _safety.path_violations([data, output_dir, *_safety.recipe_path_params(rec)])
     if pviol:
         return {"status": "refused", "reason": "path(s) resolve outside the allowed workspace", "violations": pviol}
+    binding = _dataset_binding(rec, data)
+    if _binding_blocks_execution(binding, data):
+        return _safety.redact(_binding_refusal(binding))
+    dp_obj = _profile_binding(binding)
+    if dp_obj is not None and _profile_error(dp_obj):
+        return _safety.redact(_profile_refusal(binding, dp_obj))
+    preflight_stages, preflight_build_issues = build_stages(rec)
+    execution_target = (
+        "custom_executor"
+        if executor is not None
+        else _ray_execution_target(os.environ.get("RAY_ADDRESS"))
+    )
+    preflight_env = probe_env()
+    if preflight_stages is None:
+        from nemo_curator.audio_agent.diagnostics import diagnose_failure
+
+        build_error = "; ".join(
+            str(issue.get("message") or issue.get("code") or "")
+            for issue in preflight_build_issues
+        )
+        return _safety.redact(
+            {
+                "status": "error",
+                "reason": "smoke recipe could not be constructed",
+                "issues": preflight_build_issues,
+                "diagnosis": diagnose_failure(
+                    build_error,
+                    env=preflight_env,
+                    operation="smoke",
+                    phase="stage_construction",
+                    execution_target=execution_target,
+                ),
+                "sample": sample,
+                "config_hash": rec.config_hash,
+                "data_binding": binding.to_dict(),
+            }
+        )
+    from nemo_curator.audio_agent.diagnostics import environment_preflight
+
+    environment_decision = environment_preflight(
+        preflight_stages,
+        preflight_env,
+        operation="smoke",
+        execution_target=execution_target,
+    )
+    if not environment_decision.get("can_execute", False):
+        return _safety.redact(
+            {
+                "status": "refused",
+                "reason_code": "environment_action_required",
+                "reason": environment_decision.get("summary"),
+                "environment_decision": environment_decision,
+                "sample": sample,
+                "config_hash": rec.config_hash,
+                "data_binding": binding.to_dict(),
+            }
+        )
     rpt = SmokeReport(sample=sample)
-    bounded, tmp_paths = _bound_recipe(rec, sample, rpt)
+    bound = _bound_recipe(rec, sample, rpt, binding)
+    if bound.recipe is not None:
+        bound = _isolate_smoke_outputs(bound, rpt)
+    if bound.recipe is None:
+        _cleanup(list(bound.tmp_paths))
+        return _safety.redact(
+            {
+                "status": "refused",
+                "reason": f"smoke input cannot be safely bounded: {bound.error}",
+                "sample": sample,
+                "config_hash": rec.config_hash,
+                "data_binding": binding.to_dict(),
+            }
+        )
+    bounded = bound.recipe
+    tmp_paths = list(bound.tmp_paths)
 
     stages, issues = build_stages(bounded)
     if stages is None:
         rpt.errors.extend(i.get("message", "") for i in issues)
         _cleanup(tmp_paths)
-        return _safety.redact(rpt.to_dict())
+        out = rpt.to_dict()
+        out["status"] = "error"
+        out["reason"] = "smoke recipe could not be constructed"
+        out["config_hash"] = rec.config_hash
+        out["data_binding"] = binding.to_dict()
+        from nemo_curator.audio_agent.diagnostics import diagnose_failure
 
-    data_profile = profile_data(data).to_dict() if data else None
-    rpt.input_count = int((data_profile or {}).get("num_files", 0)) or sample
-    rplan = _plan_resources(stages, probe_env(), data_profile, calibration=calibration)
+        out["diagnosis"] = diagnose_failure(
+            "; ".join(rpt.errors),
+            env=preflight_env,
+            operation="smoke",
+            phase="bounded_stage_construction",
+            execution_target=execution_target,
+        )
+        return _safety.redact(out)
+    try:
+        write_issues = _smoke_write_issues(stages, bound.output_root)
+    except Exception as exc:  # noqa: BLE001 - output proof must fail closed
+        write_issues = [
+            "disk-write contracts could not be fully inspected "
+            f"({type(exc).__name__}: {exc})"
+        ]
+    if write_issues:
+        _cleanup(tmp_paths)
+        return _safety.redact(
+            {
+                "status": "refused",
+                "reason": "smoke output isolation could not be proven",
+                "issues": write_issues,
+                "sample": sample,
+                "config_hash": rec.config_hash,
+                "data_binding": binding.to_dict(),
+            }
+        )
+    pretrain_finalizer, pretrain_error = _pretrain_finalizer(stages)
+    if pretrain_error:
+        _cleanup(tmp_paths)
+        return _safety.redact(
+            {
+                "status": "refused",
+                "reason": pretrain_error,
+                "sample": sample,
+                "config_hash": rec.config_hash,
+                "data_binding": binding.to_dict(),
+            }
+        )
+
+    data_profile = dp_obj.to_dict() if dp_obj else None
+    profile_count = int((data_profile or {}).get("num_files", 0))
+    rpt.input_count = (
+        bound.input_count
+        if bound.input_count is not None
+        else min(sample, profile_count)
+        if data_profile is not None
+        else sample
+    )
+    caller_executor = executor
+    owned_ray_address: str | None = None
+    ray_address = (
+        os.environ.get("RAY_ADDRESS")
+        if caller_executor is None
+        else None
+    )
+    if bootstrap_ray and caller_executor is None:
+        try:
+            from nemo_curator.audio_agent._ray import owns_cluster
+
+            owned_before = owns_cluster()
+            ray_address = _bootstrap_ray()
+            if not owned_before and owns_cluster(ray_address):
+                owned_ray_address = ray_address
+            rpt.notes.append("ray_head=" + ray_address)
+        except Exception as exc:  # noqa: BLE001 - structured preflight failure
+            _cleanup(tmp_paths)
+            from nemo_curator.audio_agent.diagnostics import diagnose_failure
+
+            error_text = f"{type(exc).__name__}: {exc}"
+            return _safety.redact(
+                {
+                    "status": "error",
+                    "reason": (
+                        "Ray bootstrap failed before resource planning: "
+                        + error_text
+                    ),
+                    "diagnosis": diagnose_failure(
+                        error_text,
+                        stages=stages,
+                        env=preflight_env,
+                        operation="smoke",
+                        phase="ray_bootstrap",
+                        execution_target=execution_target,
+                    ),
+                    "sample": sample,
+                    "config_hash": rec.config_hash,
+                    "data_binding": binding.to_dict(),
+                }
+            )
+    try:
+        env_obj = _resource_environment(
+            preflight_env,
+            ray_address,
+            execution_target,
+        )
+        rplan = _plan_resources(
+            stages,
+            env_obj,
+            data_profile,
+            calibration=calibration,
+        )
+        _adapt_resource_plan_for_target(
+            rplan,
+            execution_target=execution_target,
+            operation="smoke",
+        )
+    except Exception as exc:  # noqa: BLE001 - structured failure + guaranteed cleanup
+        ray_cleanup = _shutdown_owned_ray(owned_ray_address)
+        _cleanup(tmp_paths)
+        from nemo_curator.audio_agent.diagnostics import diagnose_failure
+
+        error_text = f"{type(exc).__name__}: {exc}"
+        return _safety.redact(
+            {
+                "status": "error",
+                "reason": (
+                    "smoke resource planning failed: "
+                    + error_text
+                ),
+                "diagnosis": diagnose_failure(
+                    error_text,
+                    stages=stages,
+                    env=preflight_env,
+                    operation="smoke",
+                    phase="resource_planning",
+                    execution_target=execution_target,
+                ),
+                "sample": sample,
+                "config_hash": rec.config_hash,
+                "data_binding": binding.to_dict(),
+                **(
+                    {"ray_bootstrap_cleanup": ray_cleanup}
+                    if ray_cleanup is not None
+                    else {}
+                ),
+            }
+        )
     rpt.notes.append(f"resource_plan_mode={rplan.mode}")
     if rplan.escalations:
         rpt.notes.append("resource_escalations=" + "; ".join(rplan.escalations))
-    caller_executor = executor
+    if not getattr(rplan, "feasible", True):
+        ray_cleanup = _shutdown_owned_ray(owned_ray_address)
+        _cleanup(tmp_paths)
+        from nemo_curator.audio_agent.diagnostics import diagnose_failure
+
+        infeasible = "; ".join(rplan.escalations) or "resource plan infeasible"
+        return _safety.redact(
+            {
+                "status": "refused",
+                "reason": "smoke resource plan is infeasible on the selected execution target",
+                "sample": sample,
+                "config_hash": rec.config_hash,
+                "escalations": list(rplan.escalations),
+                "machine_plan": rplan.to_dict(),
+                "diagnosis": diagnose_failure(
+                    infeasible,
+                    stages=stages,
+                    env=env_obj,
+                    operation="smoke",
+                    phase="resource_planning",
+                    execution_target=execution_target,
+                ),
+                "data_binding": binding.to_dict(),
+                **(
+                    {"ray_bootstrap_cleanup": ray_cleanup}
+                    if ray_cleanup is not None
+                    else {}
+                ),
+            }
+        )
     t0 = time.perf_counter()
+    pretrain_prepared = False
+    pretrain_output_rows: int | None = None
+    runtime_diagnosis: dict[str, Any] | None = None
     try:
-        if bootstrap_ray and caller_executor is None:
-            rpt.notes.append("ray_head=" + _bootstrap_ray())
-        results, _used_mode = _run_pipeline_autofallback(stages, rplan.mode, caller_executor, note=rpt.notes.append)
+        if pretrain_finalizer is not None:
+            pretrain_finalizer.prepare()
+            pretrain_prepared = True
+            rpt.notes.append("alm_pretrain_prepare=completed")
+        results, _used_mode = _run_pipeline_autofallback(
+            stages,
+            rplan.mode,
+            caller_executor,
+            note=rpt.notes.append,
+            before_retry=(
+                pretrain_finalizer.prepare
+                if pretrain_finalizer is not None
+                else None
+            ),
+        )
         rpt.ran = True
-        rpt.retained = _row_count(results)  # rows, not task count (DocumentBatch holds a table)
+        if pretrain_finalizer is not None:
+            finalized_rows = pretrain_finalizer.finalize()
+            if isinstance(finalized_rows, int) and not isinstance(finalized_rows, bool):
+                pretrain_output_rows = max(0, finalized_rows)
+            rpt.notes.append("alm_pretrain_finalize=completed")
+        # ALM returns one origin stub when every snippet was filtered.  Only its
+        # manifest is a serialized output, so count that instead of return
+        # carriers or a zero-output smoke could receive a success token.
+        rpt.retained = (
+            pretrain_output_rows
+            if pretrain_output_rows is not None
+            else _row_count(results)
+        )
         rpt.rejected = max(0, min(sample, rpt.input_count) - rpt.retained)
         rpt.per_stage_metrics = _stage_metrics(results)
-        rpt.examples = _examples(results, limit=3)
+        sampled_rows = list(_result_rows(results))
+        rpt.examples = _examples_from_rows(sampled_rows, limit=3)
         rpt.goals_met = rpt.retained > 0
-        empty_outputs = _empty_required_outputs(rec, rpt.examples)
-        if empty_outputs:
-            # A stage ran and 'produced' the field, but with no content (e.g. an ASR that ran
-            # yet emitted empty transcripts). retained>0 alone would wrongly read as success.
+        incomplete_outputs = _empty_required_outputs(rec, sampled_rows)
+        if incomplete_outputs:
+            # A stage may retain rows while omitting a required field or filling it
+            # with no content (e.g. an ASR that emits blank transcripts).
+            # retained>0 alone would wrongly read as success.
             rpt.goals_met = False
-            rpt.notes.append("required output(s) produced but EMPTY in sampled rows: " + ", ".join(empty_outputs))
+            rpt.notes.append(
+                "required output(s) MISSING or EMPTY in sampled rows: "
+                + ", ".join(incomplete_outputs)
+            )
     except Exception as e:  # noqa: BLE001 - classify any execution failure for the critic
-        rpt.errors.append(f"{type(e).__name__}: {e}")
-        rpt.notes.append(str(classify(f"{type(e).__name__}: {e}")))
+        if pretrain_finalizer is not None and pretrain_prepared:
+            try:
+                pretrain_finalizer.finalize(successful=False)
+                rpt.notes.append("alm_pretrain_partial_finalize=completed")
+            except Exception as finalize_exc:  # noqa: BLE001 - retain the primary failure
+                rpt.notes.append(
+                    "alm_pretrain_partial_finalize=failed: "
+                    f"{type(finalize_exc).__name__}: {finalize_exc}"
+                )
+        error_text = f"{type(e).__name__}: {e}"
+        rpt.errors.append(error_text)
+        from nemo_curator.audio_agent.diagnostics import diagnose_failure
+
+        runtime_diagnosis = diagnose_failure(
+            error_text,
+            stages=stages,
+            env=env_obj,
+            operation="smoke",
+            phase="pipeline_execution",
+            execution_target=execution_target,
+        )
+        rpt.notes.append(
+            "failure_code="
+            + str((runtime_diagnosis.get("failure") or {}).get("code") or "unknown_failure")
+        )
     finally:
         rpt.notes.append(f"elapsed_sec={round(time.perf_counter() - t0, 3)}")
+        ray_cleanup = _shutdown_owned_ray(owned_ray_address)
+        if ray_cleanup is not None:
+            rpt.notes.append(
+                "ray_bootstrap_cleanup="
+                + ("completed" if ray_cleanup else "failed")
+            )
         _cleanup(tmp_paths)
     out = rpt.to_dict()
+    out["status"] = "completed" if rpt.ran and not rpt.errors else "error"
     out["config_hash"] = rec.config_hash
+    out["data_binding"] = binding.to_dict()
+    out["environment_decision"] = environment_decision
+    if runtime_diagnosis is not None:
+        out["diagnosis"] = runtime_diagnosis
     from nemo_curator.audio_agent import calibration as _cal
 
     out["calibration"] = _cal.from_smoke(out, machine_fingerprint=rplan.machine_fingerprint)
     redacted = _safety.redact(out)
+    if output_dir:
+        redacted["warnings"] = [
+            "output_dir is a legacy no-op; smoke outputs are always redirected "
+            "to an ephemeral sandbox. Configure output paths on recipe stages."
+        ]
     # Surface the smoke token AFTER redaction: it is evidence the host must hand back
     # to run() (AUDIO_AGENT_REQUIRE_SMOKE), not a secret to hide from the host. redact()
     # would otherwise strip it because the key contains "token".
-    redacted["smoke_token"] = _safety.smoke_token(rec.config_hash)
+    if rpt.ran and rpt.goals_met is True and not rpt.errors:
+        redacted["smoke_token"] = _safety.smoke_token(rec.config_hash)
+    else:
+        redacted["smoke_token_status"] = (
+            "not_issued: smoke must run without errors and meet sampled goals"
+        )
     return redacted
 
 
-def run(
+def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat on purpose)
     recipe: Recipe | dict[str, Any],
     *,
     confirm: bool | str = False,
@@ -349,6 +1367,9 @@ def run(
     bootstrap_ray: bool = False,
     smoke_token: str | None = None,
     calibration: dict[str, Any] | None = None,
+    goal: dict[str, Any] | None = None,
+    reuse: dict[str, Any] | None = None,
+    _continuation_context: _ContinuationRunContext | None = None,
 ) -> dict[str, Any]:
     """Confirm-gated full run. Refuses without explicit confirmation (0 silent runs).
 
@@ -357,17 +1378,51 @@ def run(
     ``checkpoint_path`` enables partial-run recovery (resume completed source
     partitions on a rerun) when the pipeline's stages are resumability-safe.
     ``bootstrap_ray`` opts into auto-starting a local Ray head when none is reachable.
+
+    On success every step that persisted output is published as a content-addressed
+    artifact, so a later request can reuse it instead of recomputing it
+    (``REUSE_ARCHITECTURE.md``). ``goal`` records what the run was FOR (it is what makes a
+    reuse candidate legible to a human later), and ``reuse`` carries the lineage when this
+    run is itself the tail of a materialized continuation. Continuation identity
+    is accepted only through an internal context: the core verifies one complete
+    artifact against the original logical recipe and current source, then derives
+    the publication tuples and complete run-record chain itself.
+
+    ``data`` is an optional assertion about the configured first source stage,
+    not an input override. A mismatch is refused before execution.
     """
-    from nemo_curator.audio_agent.failures import classify
-
     rec = _as_recipe(recipe).freeze()
-    dp_obj = profile_data(data) if data else None
+    if goal is not None and not isinstance(goal, dict):
+        return {
+            "status": "refused",
+            "reason": (
+                "goal must be a JSON object/mapping, "
+                f"got {type(goal).__name__}"
+            ),
+            "recipe_id": rec.recipe_id,
+            "config_hash": rec.config_hash,
+        }
+    pviol = _safety.path_violations(
+        [data, output_dir, checkpoint_path, *_safety.recipe_path_params(rec)]
+    )
+    if pviol:
+        return {
+            "status": "refused",
+            "reason": "path(s) resolve outside the allowed workspace",
+            "recipe_id": rec.recipe_id,
+            "violations": pviol,
+        }
+    binding = _dataset_binding(rec, data)
+    dp_obj = _profile_binding(binding)
     data_profile = dp_obj.to_dict() if dp_obj else None
-    data_fp = dp_obj.fingerprint() if dp_obj else None
-    env_obj = probe_env()
-    env = env_obj.to_dict()
+    if dp_obj is not None and _profile_error(dp_obj):
+        return _safety.redact(_profile_refusal(binding, dp_obj))
 
-    if confirm is False:
+    # Only an explicit ``True`` or a hash string counts as confirmation. Gating on
+    # ``confirm is False`` alone let any other falsy value (None / 0 / [] / {}) -- e.g. a
+    # JSON-RPC ``confirm: null`` forwarded by the MCP adapter -- slip past BOTH this refusal
+    # and the config_hash integrity check below into a silent full-scale run.
+    if confirm is not True and not isinstance(confirm, str):
         return {
             "status": "refused",
             "reason": "full run requires explicit confirmation (0 silent full-scale runs)",
@@ -375,6 +1430,7 @@ def run(
             "config_hash": rec.config_hash,
             "estimate": _estimate(data_profile),
             "confirm_with": f"pass confirm={rec.config_hash!r} (or confirm=True) to proceed",
+            "data_binding": binding.to_dict(),
         }
     if isinstance(confirm, str) and confirm != rec.config_hash:
         return {
@@ -382,46 +1438,296 @@ def run(
             "reason": "plan-execution integrity check failed: confirmed hash does not match the recipe",
             "confirmed": confirm,
             "config_hash": rec.config_hash,
+            "data_binding": binding.to_dict(),
         }
 
-    pviol = _safety.path_violations([data, output_dir, checkpoint_path, *_safety.recipe_path_params(rec)])
-    if pviol:
-        return {"status": "refused", "reason": "path(s) resolve outside the allowed workspace", "recipe_id": rec.recipe_id, "violations": pviol}
     if _safety.require_smoke() and not _safety.verify_smoke_token(smoke_token, rec.config_hash):
         return {
             "status": "refused",
             "reason": "run requires smoke evidence (AUDIO_AGENT_REQUIRE_SMOKE is set): run smoke on this recipe and pass its 'smoke_token'",
             "recipe_id": rec.recipe_id,
             "config_hash": rec.config_hash,
+            "data_binding": binding.to_dict(),
         }
+    if _binding_blocks_execution(binding, data):
+        return _safety.redact(_binding_refusal(binding))
+
+    logical_identity, lineage_error = _verify_continuation_context(
+        rec,
+        binding,
+        _continuation_context,
+    )
+    if lineage_error:
+        return {
+            "status": "refused",
+            "reason": lineage_error,
+            "data_binding": binding.to_dict(),
+        }
+    data_fp = None if logical_identity else (dp_obj.fingerprint() if dp_obj else None)
+    dataset_key = (
+        str(logical_identity["dataset_key"])
+        if logical_identity
+        else (dp_obj.dataset_key() if dp_obj else "")
+    )
+    fingerprint_tier = (
+        str(logical_identity["fingerprint_tier"])
+        if logical_identity
+        else (dp_obj.fingerprint_tier if dp_obj else "")
+    )
+    recorded_data = (
+        logical_identity.get("data_source")
+        if logical_identity
+        else (binding.primary_path or data)
+    )
 
     stages, issues = build_stages(rec)
     if stages is None:
-        return {"status": "error", "recipe_id": rec.recipe_id, "issues": issues}
+        from nemo_curator.audio_agent.diagnostics import diagnose_failure
 
-    rplan = _plan_resources(stages, env_obj, data_profile, calibration=calibration)
-    rec.with_machine_plan(rplan.to_dict(), machine_fingerprint=rplan.machine_fingerprint)
-    if not rplan.feasible:
-        return {
-            "status": "refused",
-            "reason": "resource plan is infeasible on this machine",
-            "recipe_id": rec.recipe_id,
-            "config_hash": rec.config_hash,
-            "escalations": rplan.escalations,
-            "machine_plan": rplan.to_dict(),
-        }
+        build_error = "; ".join(
+            str(issue.get("message") or issue.get("code") or "")
+            for issue in issues
+        )
+        return _safety.redact(
+            {
+                "status": "error",
+                "recipe_id": rec.recipe_id,
+                "issues": issues,
+                "diagnosis": diagnose_failure(
+                    build_error,
+                    operation="run",
+                    phase="stage_construction",
+                ),
+                "data_binding": binding.to_dict(),
+            }
+        )
+    pretrain_finalizer, pretrain_error = _pretrain_finalizer(stages)
+    if pretrain_error:
+        return _safety.redact(
+            {
+                "status": "refused",
+                "reason": pretrain_error,
+                "recipe_id": rec.recipe_id,
+                "config_hash": rec.config_hash,
+                "data_binding": binding.to_dict(),
+            }
+        )
 
     caller_executor = executor
+    execution_target = (
+        "custom_executor"
+        if caller_executor is not None
+        else _ray_execution_target(os.environ.get("RAY_ADDRESS"))
+    )
+    preflight_env = probe_env()
+    from nemo_curator.audio_agent.diagnostics import environment_preflight
+
+    environment_decision = environment_preflight(
+        stages,
+        preflight_env,
+        operation="run",
+        execution_target=execution_target,
+    )
+    if not environment_decision.get("can_execute", False):
+        return _safety.redact(
+            {
+                "status": "refused",
+                "reason_code": "environment_action_required",
+                "reason": environment_decision.get("summary"),
+                "environment_decision": environment_decision,
+                "recipe_id": rec.recipe_id,
+                "config_hash": rec.config_hash,
+                "data_binding": binding.to_dict(),
+            }
+        )
+    owned_ray_address: str | None = None
+    ray_address = (
+        os.environ.get("RAY_ADDRESS")
+        if caller_executor is None
+        else None
+    )
+    if bootstrap_ray and caller_executor is None:
+        try:
+            from nemo_curator.audio_agent._ray import owns_cluster
+
+            owned_before = owns_cluster()
+            ray_address = _bootstrap_ray()
+            if not owned_before and owns_cluster(ray_address):
+                owned_ray_address = ray_address
+        except Exception as exc:  # noqa: BLE001 - structured preflight failure
+            from nemo_curator.audio_agent.diagnostics import diagnose_failure
+
+            error_text = f"{type(exc).__name__}: {exc}"
+            return _safety.redact(
+                {
+                    "status": "error",
+                    "reason": (
+                        "Ray bootstrap failed before resource planning: "
+                        + error_text
+                    ),
+                    "diagnosis": diagnose_failure(
+                        error_text,
+                        stages=stages,
+                        env=preflight_env,
+                        operation="run",
+                        phase="ray_bootstrap",
+                        execution_target=execution_target,
+                    ),
+                    "recipe_id": rec.recipe_id,
+                    "config_hash": rec.config_hash,
+                    "data_binding": binding.to_dict(),
+                }
+            )
+    try:
+        env_obj = _resource_environment(
+            preflight_env,
+            ray_address,
+            execution_target,
+        )
+        env = env_obj.to_dict()
+        rplan = _plan_resources(
+            stages,
+            env_obj,
+            data_profile,
+            calibration=calibration,
+        )
+        _adapt_resource_plan_for_target(
+            rplan,
+            execution_target=execution_target,
+            operation="run",
+        )
+    except Exception as exc:  # noqa: BLE001 - public verb returns structured failures
+        ray_cleanup = _shutdown_owned_ray(owned_ray_address)
+        from nemo_curator.audio_agent.diagnostics import diagnose_failure
+
+        error_text = f"{type(exc).__name__}: {exc}"
+        return _safety.redact(
+            {
+                "status": "error",
+                "reason": (
+                    "resource planning failed: "
+                    + error_text
+                ),
+                "diagnosis": diagnose_failure(
+                    error_text,
+                    stages=stages,
+                    env=preflight_env,
+                    operation="run",
+                    phase="resource_planning",
+                    execution_target=execution_target,
+                ),
+                "recipe_id": rec.recipe_id,
+                "config_hash": rec.config_hash,
+                "data_binding": binding.to_dict(),
+                **(
+                    {"ray_bootstrap_cleanup": ray_cleanup}
+                    if ray_cleanup is not None
+                    else {}
+                ),
+            }
+        )
+    rec.with_machine_plan(rplan.to_dict(), machine_fingerprint=rplan.machine_fingerprint)
+    if not rplan.feasible:
+        ray_cleanup = _shutdown_owned_ray(owned_ray_address)
+        from nemo_curator.audio_agent.diagnostics import diagnose_failure
+
+        infeasible = "; ".join(rplan.escalations) or "resource plan infeasible"
+        return _safety.redact(
+            {
+                "status": "refused",
+                "reason": "resource plan is infeasible on the selected execution target",
+                "recipe_id": rec.recipe_id,
+                "config_hash": rec.config_hash,
+                "escalations": rplan.escalations,
+                "machine_plan": rplan.to_dict(),
+                "diagnosis": diagnose_failure(
+                    infeasible,
+                    stages=stages,
+                    env=env_obj,
+                    operation="run",
+                    phase="resource_planning",
+                    execution_target=execution_target,
+                ),
+                "data_binding": binding.to_dict(),
+                **(
+                    {"ray_bootstrap_cleanup": ray_cleanup}
+                    if ray_cleanup is not None
+                    else {}
+                ),
+            }
+        )
+
     failures: list[dict[str, Any]] = []
+    runtime_diagnosis: dict[str, Any] | None = None
     results: list[Any] | None = None
+    used_mode: str | None = None
+    pretrain_prepared = False
+    pretrain_output_rows: int | None = None
+    started_at = _utc_now()
     t0 = time.perf_counter()
     try:
-        if bootstrap_ray and caller_executor is None:
-            _bootstrap_ray()
-        results, _used_mode = _run_pipeline_autofallback(stages, rplan.mode, caller_executor, checkpoint_path=checkpoint_path)
+        if pretrain_finalizer is not None:
+            pretrain_finalizer.prepare()
+            pretrain_prepared = True
+        results, used_mode = _run_pipeline_autofallback(
+            stages,
+            rplan.mode,
+            caller_executor,
+            checkpoint_path=checkpoint_path,
+            before_retry=(
+                pretrain_finalizer.prepare
+                if pretrain_finalizer is not None
+                else None
+            ),
+        )
+        if pretrain_finalizer is not None:
+            finalized_rows = pretrain_finalizer.finalize()
+            if isinstance(finalized_rows, int) and not isinstance(finalized_rows, bool):
+                pretrain_output_rows = max(0, finalized_rows)
     except Exception as e:  # noqa: BLE001 - classify + report, do not crash the caller
-        failures.append(classify(f"{type(e).__name__}: {e}"))
+        if pretrain_finalizer is not None and pretrain_prepared:
+            with contextlib.suppress(Exception):
+                pretrain_finalizer.finalize(successful=False)
+        from nemo_curator.audio_agent.diagnostics import diagnose_failure
+
+        runtime_diagnosis = diagnose_failure(
+            f"{type(e).__name__}: {e}",
+            stages=stages,
+            env=env_obj,
+            operation="run",
+            phase="pipeline_execution",
+            execution_target=execution_target,
+        )
+        failures.append(dict(runtime_diagnosis.get("failure") or {}))
     elapsed = time.perf_counter() - t0
+    ended_at = _utc_now()
+    if used_mode is not None and used_mode != rplan.mode:
+        actual_plan = rplan.to_dict()
+        actual_plan["planned_mode"] = rplan.mode
+        actual_plan["mode"] = used_mode
+        actual_plan.setdefault("notes", []).append(
+            f"executor fell back from {rplan.mode} to {used_mode}"
+        )
+        rec.with_machine_plan(
+            actual_plan,
+            machine_fingerprint=rplan.machine_fingerprint,
+        )
+
+    # Download-capable sources have no bytes to identify before their first
+    # successful run. Re-resolve read-only after execution so that first run can
+    # still publish artifacts under the dataset that was actually materialized.
+    if not failures and dp_obj is None and binding.generated:
+        refreshed = _dataset_binding(rec, data)
+        refreshed_profile = _profile_binding(refreshed)
+        if refreshed_profile is not None:
+            binding = refreshed
+            dp_obj = refreshed_profile
+            data_profile = dp_obj.to_dict()
+            if logical_identity is None:
+                data_fp = dp_obj.fingerprint()
+                dataset_key = dp_obj.dataset_key()
+                fingerprint_tier = dp_obj.fingerprint_tier
+                recorded_data = binding.primary_path or data
 
     output_paths = _recipe_outputs(rec, output_dir)
     report_obj = build_run_report(
@@ -437,60 +1743,703 @@ def run(
         if not failures
         else "triage the failure_reasons and re-validate",
     )
-    run_id = _record_run(rec, data=data, data_fp=data_fp, report=report_obj, failed=bool(failures))
-    return _safety.redact(
-        {"status": "completed" if not failures else "failed", "run_id": run_id, "report": report_obj.to_dict()}
+    if pretrain_output_rows is not None:
+        report_obj.accepted = pretrain_output_rows
+    _terminal_outputs, cardinality_proven = _terminal_evidence_outputs(
+        rec,
+        list(getattr(report_obj, "output_paths", []) or []),
+    )
+    report_obj.source_items = int(getattr(report_obj, "input_count", 0))
+    report_obj.output_rows = int(getattr(report_obj, "accepted", 0))
+    report_obj.cardinality_proven = cardinality_proven
+    report_obj.rejected = (
+        max(0, report_obj.source_items - report_obj.output_rows)
+        if cardinality_proven
+        else None
     )
 
+    from nemo_curator.audio_agent import run_store
 
-def _record_run(rec: Recipe, *, data: str | None, data_fp: str | None, report: Any, failed: bool) -> str | None:  # noqa: ANN401
+    run_id = run_store.new_run_id(rec.config_hash)
+    roles, keys = _produced_roles_keys(stages, data_profile)
+    acceptance_result = _acceptance_result(
+        rec,
+        report_obj,
+        roles,
+        keys,
+        list(getattr(report_obj, "output_paths", []) or []),
+    )
+    provenance: dict[str, Any] = {
+        "run_record_persisted": False,
+        "artifacts_published": 0,
+        "warnings": [],
+    }
+    persistence_warnings: list[str] = provenance["warnings"]
+    published: list[dict[str, Any]] = []
+    if not failures:
+        # Only a run that completed may publish: a crashed run's partial output must never
+        # acquire the _COMPLETE marker that makes it look reusable.
+        published = _publish_artifacts(
+            rec,
+            stages,
+            dataset_key=dataset_key,
+            fingerprint_tier=fingerprint_tier,
+            per_stage=getattr(report_obj, "per_stage_metrics", {}) or {},
+            run_id=run_id,
+            input_count=int(getattr(report_obj, "input_count", 0)),
+            data_profile=data_profile,
+            started_at=started_at,
+            ended_at=ended_at,
+            elapsed_sec=elapsed,
+            step_identity=(
+                list(logical_identity["step_identity"])
+                if logical_identity
+                else None
+            ),
+            persistence_warnings=persistence_warnings,
+        )
+    provenance["artifacts_published"] = len(published)
+    lineage = {**(reuse or {}), "published": published}
+    _record_run(
+        rec,
+        run_id=run_id,
+        data=recorded_data,
+        data_fp=data_fp,
+        dataset_key=dataset_key,
+        fingerprint_tier=fingerprint_tier,
+        report=report_obj,
+        failed=bool(failures),
+        goal=goal,
+        elapsed=elapsed,
+        env=env,
+        produced_roles=roles,
+        produced_keys=keys,
+        acceptance_result=acceptance_result,
+        reuse=lineage,
+        logical_steps=(
+            list(logical_identity["logical_steps"])
+            if logical_identity
+            else None
+        ),
+        persistence_status=provenance,
+    )
+    result = {
+        "status": "completed" if not failures else "failed",
+        "run_id": run_id,
+        "report": report_obj.to_dict(),
+        "acceptance": acceptance_result,
+        "machine_plan": rec.machine_plan,
+        "environment_decision": environment_decision,
+        "reuse": lineage,
+        "provenance": provenance,
+        "data_binding": {
+            **binding.to_dict(),
+            **(
+                {
+                    "logical_dataset_key": dataset_key,
+                    "logical_data_source": recorded_data,
+                }
+                if logical_identity
+                else {}
+            ),
+        },
+    }
+    if runtime_diagnosis is not None:
+        result["diagnosis"] = runtime_diagnosis
+    warnings = list(persistence_warnings)
+    if output_dir:
+        warnings.append(
+            "output_dir is a legacy no-op and was not reported as an output; "
+            "configure output paths on recipe stages."
+        )
+    if warnings:
+        result["warnings"] = warnings
+    ray_cleanup = _shutdown_owned_ray(owned_ray_address)
+    if ray_cleanup is not None:
+        result["ray_bootstrap_cleanup"] = ray_cleanup
+        if not ray_cleanup:
+            result.setdefault("warnings", []).append(
+                "the locally bootstrapped Ray head could not be stopped safely"
+            )
+    return _safety.redact(result)
+
+
+def _utc_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _produced_roles_keys(stages: list[Any], data_profile: dict[str, Any] | None) -> tuple[list[str], list[str]]:
+    """Cumulative semantic roles + literal keys the built pipeline produces.
+
+    Same derivation the resume-safety guard uses, so an artifact advertises exactly the roles
+    a later suffix will be re-validated against.
+    """
+    try:
+        from nemo_curator.stages.audio import agent as foundation
+        from nemo_curator.stages.audio._conformance import produced_roles
+
+        roles, keys = _derive_initial(data_profile)
+        for st in stages:
+            c = foundation.build_contract(st)
+            roles |= produced_roles(c)
+            keys |= set(c.writes.data_keys) | set(c.writes.segment_data_keys)
+        roles.discard("unknown")
+        return sorted(roles), sorted(keys)
+    except Exception:  # noqa: BLE001 - provenance detail, never worth failing a completed run
+        return [], []
+
+
+def _stage_cost(per_stage: dict[str, Any], stage: Any) -> tuple[float, float]:  # noqa: ANN401
+    """``(duration_sec, gpu_seconds)`` measured for one stage, 0 when unmeasured.
+
+    Real numbers only -- an unmeasured stage reports 0 rather than a share of the total, so a
+    "time saved" estimate is never inflated by guesswork.
+    """
+    duration = stage_duration_sec(per_stage, str(getattr(stage, "name", "") or ""))
+    gpus = float(getattr(getattr(stage, "resources", None), "gpus", 0) or 0)
+    return round(duration, 3), round(duration * gpus, 3)
+
+
+def _publish_artifacts(  # noqa: PLR0913 - publishing gathers the run's whole context
+    rec: Recipe,
+    stages: list[Any],
+    *,
+    dataset_key: str,
+    fingerprint_tier: str,
+    per_stage: dict[str, Any],
+    run_id: str,
+    input_count: int,
+    data_profile: dict[str, Any] | None,
+    started_at: str,
+    ended_at: str,
+    elapsed_sec: float = 0.0,
+    step_identity: list[tuple[str, str, int]] | None = None,
+    persistence_warnings: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Register every step that actually persisted output as a reusable artifact.
+
+    A step with no output-location param writes nothing, so it can never be a resume point and
+    gets no artifact -- reuse always resumes from disk. ``step_identity`` overrides the
+    ``(step_key, input_key, stage_index)`` of each step positionally, which is how a
+    materialized continuation registers its tail under the identity of the pipeline the user
+    actually asked for. Best-effort throughout: a bookkeeping problem must not turn a
+    successful run into a failure.
+    """
+    # Unknown input is not a reusable namespace.  Publishing under ``""`` would
+    # let a later unknown input look identical merely because neither was
+    # profiled.
+    if not dataset_key:
+        if persistence_warnings is not None:
+            persistence_warnings.append(
+                "artifacts were not published because source data identity is unavailable"
+            )
+        return []
+
+    try:
+        from nemo_curator.audio_agent import artifacts as art_mod
+        from nemo_curator.stages.audio import agent as foundation
+        from nemo_curator.stages.audio._conformance import produced_roles as _roles_of
+    except Exception as exc:  # noqa: BLE001
+        if persistence_warnings is not None:
+            persistence_warnings.append(
+                "artifact registry could not be loaded: "
+                f"{type(exc).__name__}: {exc}"
+            )
+        return []
+
+    out: list[dict[str, Any]] = []
+    try:
+        plans = art_mod.plan_steps(rec, dataset_key)
+    except Exception as exc:  # noqa: BLE001
+        if persistence_warnings is not None:
+            persistence_warnings.append(
+                "artifact publication plan could not be built: "
+                f"{type(exc).__name__}: {exc}"
+            )
+        return []
+
+    roles, keys = _derive_initial(data_profile)
+    rows_in = input_count
+    cumulative = 0.0
+    for i, (plan, st) in enumerate(zip(plans, stages, strict=False)):
+        with contextlib.suppress(Exception):
+            c = foundation.build_contract(st)
+            roles |= _roles_of(c)
+            keys |= set(c.writes.data_keys) | set(c.writes.segment_data_keys)
+        duration, gpu_seconds = _stage_cost(per_stage, st)
+        cumulative += duration  # every step so far, persisting or not: that is the true saving
+        if not plan.persists():
+            continue
+        if "://" in plan.uri and not plan.uri.startswith("file://"):
+            if persistence_warnings is not None:
+                persistence_warnings.append(
+                    "artifact publication/reuse is unsupported for non-local "
+                    f"output backend {plan.uri!r}"
+                )
+            continue
+        if not os.path.exists(os.path.expanduser(plan.uri)):
+            if persistence_warnings is not None:
+                persistence_warnings.append(
+                    f"declared persisted output {plan.uri!r} was not found; "
+                    f"{plan.stage_ref} was not published for reuse"
+                )
+            continue
+        # Reusing the LAST step skips the run outright, so its true cost is the wall clock,
+        # not the sum of stage timers (which misses setup, scheduling and teardown).
+        through_here = max(cumulative, elapsed_sec) if plan.index == len(plans) - 1 else cumulative
+        step_key, input_key, stage_index = (
+            step_identity[i] if step_identity and i < len(step_identity)
+            else (plan.step_key, plan.input_key, plan.index)
+        )
+        art = art_mod.Artifact(
+            step_key=step_key,
+            input_key=input_key,
+            stage_ref=plan.stage_ref,
+            stage_index=stage_index,
+            semantic_params=plan.semantic_params,
+            contract_hash=rec.contract_hash,
+            uri=plan.uri,
+            # Re-classified now rather than trusting the plan-time guess: at plan time a directory
+            # that does not exist yet cannot be identified, and the kind decides which source stage
+            # may re-read this artifact later.
+            kind=art_mod.classify_output(plan.uri) or plan.kind,
+            rows_in=rows_in,
+            produced_roles=sorted(roles - {"unknown"}),
+            produced_keys=sorted(keys),
+            duration_sec=duration,
+            cumulative_sec=round(through_here, 3),
+            gpu_seconds=gpu_seconds,
+            device="gpu" if gpu_seconds else "cpu",
+            started_at=started_at,
+            ended_at=ended_at,
+            dataset_key=dataset_key,
+            fingerprint_tier=fingerprint_tier,
+            code_version=art_mod.code_version(),
+            model_version=plan.model_version,
+            deterministic=plan.deterministic,
+            ttl_sec=plan.ttl_sec,
+            run_id=run_id,
+        )
+        try:
+            art_mod.publish(art)
+        except Exception as exc:  # noqa: BLE001 - compute completion stays separate
+            if persistence_warnings is not None:
+                persistence_warnings.append(
+                    f"artifact publication failed for {plan.uri!r}: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+            continue
+        rows_in = art.rows_out or rows_in
+        out.append({"step_key": art.step_key, "stage": art.stage_ref, "uri": art.uri, "rows": art.rows_out})
+    return out
+
+
+def _record_run(  # noqa: PLR0913 - a provenance record intentionally gathers many fields
+    rec: Recipe,
+    *,
+    run_id: str,
+    data: str | None,
+    data_fp: str | None,
+    dataset_key: str,
+    fingerprint_tier: str,
+    report: Any,  # noqa: ANN401
+    failed: bool,
+    goal: dict[str, Any] | None = None,
+    elapsed: float = 0.0,
+    env: dict[str, Any] | None = None,
+    produced_roles: list[str] | None = None,
+    produced_keys: list[str] | None = None,
+    acceptance_result: dict[str, Any] | None = None,
+    reuse: dict[str, Any] | None = None,
+    logical_steps: list[str] | None = None,
+    persistence_status: dict[str, Any] | None = None,
+) -> str:
     """Persist a local RunRecord (provenance for tracing + continuation). Best-effort."""
     from nemo_curator.audio_agent import run_store
     from nemo_curator.audio_agent.contracts import RunRecord
 
+    env = env or {}
     record = RunRecord(
-        run_id=run_store.new_run_id(rec.config_hash),
+        run_id=run_id,
         # Redact secret-valued params (e.g. hf_token) so they never land in the on-disk record.
         recipe=_safety.redact(rec.to_dict(), redact_transcripts=False),
         config_hash=rec.config_hash,
+        semantic_hash=rec.semantic_hash,
+        contract_hash=rec.contract_hash,
         parent_run_id=rec.parent_run_id,
+        goal=dict(goal or {}),
         data_source=data,
         data_fingerprint=data_fp,
+        dataset_key=dataset_key,
+        fingerprint_tier=fingerprint_tier,
         acceptance_criteria=list(rec.acceptance_criteria),
+        acceptance_result=(
+            acceptance_result
+            if acceptance_result is not None
+            else _acceptance_result(
+                rec,
+                report,
+                produced_roles,
+                produced_keys,
+                list(getattr(report, "output_paths", []) or []),
+            )
+        ),
         status="failed" if failed else "completed",
         accepted=int(getattr(report, "accepted", 0)),
         input_count=int(getattr(report, "input_count", 0)),
         output_paths=list(getattr(report, "output_paths", []) or []),
-        created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        elapsed_sec=round(elapsed, 3),
+        per_stage_metrics=dict(getattr(report, "per_stage_metrics", {}) or {}),
+        env_summary={k: env.get(k) for k in ("has_gpu", "gpu_count", "gpu_names", "python_version", "cuda_runtime_version")},
+        curator_version=str(env.get("curator_version") or ""),
+        knowledge_version=rec.knowledge_version,
+        # The chain of the pipeline the USER asked for. After a continuation ``rec`` is the
+        # rewritten recipe, whose own keys describe a pipeline nobody requested and share no
+        # prefix with the request -- which made every continued run unrecognisable to anything
+        # matching on this field, including the disclosure of already-done-but-unsaved work.
+        steps=logical_steps or _step_keys(rec, dataset_key),
+        reuse=dict(reuse or {}),
+        created_at=_utc_now(),
     )
     try:
-        run_store.save(record)
-    except Exception:  # noqa: BLE001 - provenance is best-effort; never fail the run over it
+        path = run_store.save(record)
+    except Exception as exc:  # noqa: BLE001 - compute may succeed even if provenance does not
+        if persistence_status is not None:
+            persistence_status["run_record_persisted"] = False
+            persistence_status.setdefault("warnings", []).append(
+                "run record persistence failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
         return record.run_id
+    if persistence_status is not None:
+        persistence_status["run_record_persisted"] = True
+        persistence_status["run_record_path"] = path
     return record.run_id
 
 
+def _step_keys(rec: Recipe, dataset_key: str) -> list[str]:
+    try:
+        from nemo_curator.audio_agent import artifacts as art_mod
+
+        return art_mod.step_keys(rec, dataset_key)
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _acceptance_result(
+    rec: Recipe,
+    report: Any,  # noqa: ANN401
+    produced_roles: list[str] | None,
+    produced_keys: list[str] | None,
+    outputs: list[str] | None = None,
+) -> dict[str, Any]:
+    """Verify the run's own success contract against the evidence it just produced.
+
+    Recording the OUTCOME (not just the criteria) is what lets a reuse candidate be judged
+    later without re-deriving whether it actually met its bar. A contract that could not be
+    verified is reported as ``unverifiable`` with the reason: swallowing it would let a run
+    claim success while its success bar was never checked.
+
+    ``outputs`` are read back as row-level evidence so the contract judges the DATA, not the
+    role labels ``validate`` declared. Declaration-level checking passes a field that every
+    row left null -- the precise failure the contract exists to prevent.
+    """
+    if not rec.acceptance_criteria:
+        return {}
+    try:
+        evidence_outputs, cardinality_proven = _terminal_evidence_outputs(
+            rec,
+            list(outputs or []),
+        )
+        per_item, output_scan = (
+            _scan_terminal_output(evidence_outputs, limit=0)
+            if _needs_terminal_evidence(rec)
+            else ([], {})
+        )
+        expected_output_rows = (
+            int(getattr(report, "accepted", 0))
+            if cardinality_proven
+            else None
+        )
+        return verify(
+            list(rec.acceptance_criteria),
+            {
+                "produced_roles": list(produced_roles or []),
+                "produced_keys": list(produced_keys or []),
+                "per_item": per_item,
+                "output_scan": output_scan,
+                "metrics": _aggregate_metrics(output_scan),
+                "expected_output_rows": expected_output_rows,
+                "retained": int(getattr(report, "accepted", 0)),
+                "input_count": int(getattr(report, "input_count", 0)),
+            },
+        )
+    except Exception as e:  # noqa: BLE001 - report the failure, but do not fail a completed run
+        return {"overall": "unverifiable", "reason": f"could not verify the success contract: {e}"}
+
+
+def _needs_terminal_evidence(rec: Recipe) -> bool:
+    """Whether this contract needs an exhaustive manifest readback."""
+    from nemo_curator.audio_agent.acceptance import parse_criteria
+
+    return any(
+        criterion.type == "output_completeness"
+        or criterion.check.get("scope") == "per_retained_item"
+        or (
+            criterion.type in {"quality_standard", "distribution"}
+            and (criterion.check.get("scope") or "aggregate") == "aggregate"
+        )
+        for criterion in parse_criteria(rec.acceptance_criteria)
+    )
+
+
+def _terminal_evidence_outputs(
+    rec: Recipe,
+    reported_outputs: list[str],
+) -> tuple[list[str], bool]:
+    """Select the actual per-item serializer and whether it is provably 1:1.
+
+    ``output_dir`` is a legacy verb argument and is currently not injected into
+    the recipe. It may therefore appear in ``reported_outputs`` despite not being
+    written by the pipeline. Prefer a recipe-declared serializer so acceptance
+    never scans that phantom path.
+
+    Final ``ManifestWriterStage`` and ``DocumentBatchJsonlWriterStage`` sinks
+    have proven one-row-per-logical-returned-row contracts.
+    ``SnippetManifestWriterStage`` intentionally skips origin stubs, and a
+    writer followed by another stage need not have the final run's cardinality,
+    so those cases remain explicitly unproven.
+    """
+    per_item_writers = {
+        "DocumentBatchJsonlWriterStage",
+        "ManifestWriterStage",
+        "SnippetManifestWriterStage",
+    }
+    for index in range(len(rec.stages) - 1, -1, -1):
+        stage = rec.stages[index]
+        short_ref = stage.ref.rsplit(".", 1)[-1]
+        if short_ref not in per_item_writers:
+            continue
+        output = stage.params.get("output_path")
+        if not isinstance(output, str) or not output:
+            continue
+        cardinality_proven = (
+            short_ref
+            in {"DocumentBatchJsonlWriterStage", "ManifestWriterStage"}
+            and index == len(rec.stages) - 1
+        )
+        return [output], cardinality_proven
+
+    declared_outputs = _recipe_outputs(rec, None)
+    if declared_outputs:
+        return [declared_outputs[-1]], False
+    return ([str(reported_outputs[-1])] if reported_outputs else []), False
+
+
+def _same_output_target(left: str, right: str) -> bool:
+    """Canonical equality for local paths and lexical equality for remote URIs."""
+    from nemo_curator.audio_agent.input_identity import canonical_source
+
+    try:
+        return canonical_source(left).rstrip("/") == canonical_source(right).rstrip("/")
+    except (TypeError, ValueError):
+        return False
+
+
 def report(output: str, *, recipe: Recipe | dict[str, Any] | None = None, data: str | None = None) -> dict[str, Any]:
-    """Post-hoc report from an output manifest/dir (counts rows vs input scale)."""
-    pviol = _safety.path_violations([output, data])
+    """Post-hoc report from an output manifest/dir (counts rows vs input scale).
+
+    Without ``recipe``, ``data`` is profiled directly for the input count. With
+    a recipe, it is only an optional assertion matching the configured source.
+    A supplied recipe also binds ``output`` to its declared terminal serializer
+    and carries its frozen identity/acceptance contract into the report.
+    """
+    rec = _as_recipe(recipe).freeze() if recipe is not None else None
+    pviol = _safety.path_violations(
+        [output, data, *(_safety.recipe_path_params(rec) if rec is not None else [])]
+    )
     if pviol:
         return {"status": "refused", "reason": "path(s) resolve outside the allowed workspace", "violations": pviol}
-    rec = _as_recipe(recipe) if recipe is not None else None
-    data_profile = profile_data(data).to_dict() if data else None
-    accepted = _count_output_rows(output)
-    input_count = int((data_profile or {}).get("num_files", 0))
+    binding = _dataset_binding(rec, data) if rec is not None else None
+    if binding is not None and _binding_blocks_execution(binding, data):
+        return _safety.redact(_binding_refusal(binding))
+    dp_obj = _profile_binding(binding) if binding is not None else (profile_data(data) if data else None)
+    if dp_obj is not None and _profile_error(dp_obj):
+        if binding is not None:
+            return _safety.redact(_profile_refusal(binding, dp_obj))
+        return _safety.redact(
+            {
+                "status": "refused",
+                "reason": f"input data is unreadable or malformed: {_profile_error(dp_obj)}",
+                "data_profile": dp_obj.to_dict(),
+            }
+        )
+    data_profile = dp_obj.to_dict() if dp_obj else None
+    terminal_outputs: list[str] = []
+    cardinality_proven = False
+    if rec is not None:
+        terminal_outputs, cardinality_proven = _terminal_evidence_outputs(rec, [])
+        if not terminal_outputs:
+            return _safety.redact(
+                {
+                    "status": "refused",
+                    "reason": (
+                        "the recipe declares no terminal output that can be "
+                        "bound to this post-hoc report"
+                    ),
+                    "recipe_id": rec.recipe_id,
+                    "config_hash": rec.config_hash,
+                    "data_binding": binding.to_dict() if binding is not None else None,
+                }
+            )
+        if not any(_same_output_target(output, declared) for declared in terminal_outputs):
+            return _safety.redact(
+                {
+                    "status": "refused",
+                    "reason": (
+                        "reported output does not match the recipe's declared "
+                        "terminal output"
+                    ),
+                    "output": output,
+                    "declared_terminal_outputs": terminal_outputs,
+                    "recipe_id": rec.recipe_id,
+                    "config_hash": rec.config_hash,
+                    "data_binding": binding.to_dict() if binding is not None else None,
+                }
+            )
+
+    preview, output_scan = _scan_terminal_output([output], limit=5)
+    locate_status = str(output_scan.get("status") or "unavailable")
+    if locate_status == "no_manifest":
+        inventory = _scan_output_inventory(output)
+        if inventory.get("status") in {"complete", "empty"}:
+            source_items = (
+                int((data_profile or {}).get("num_files", 0))
+                if data_profile is not None
+                else None
+            )
+            rpt = build_run_report(
+                recipe=rec or Recipe(),
+                result_tasks=[],
+                data_profile=data_profile,
+                env_profile=probe_env().to_dict(),
+                output_paths=[output],
+                examples=[],
+                next_action=(
+                    "review the output inventory; row-level fields are unavailable "
+                    "for this output type"
+                ),
+            )
+            d = rpt.to_dict()
+            d.update(
+                {
+                    "status": "ok",
+                    "accepted": None,
+                    "rejected": None,
+                    "input_count": source_items,
+                    "source_items": source_items,
+                    "output_rows": None,
+                    "output_files": int(inventory.get("files") or 0),
+                    "output_scan": output_scan,
+                    "output_inventory": inventory,
+                }
+            )
+            if rec is not None and rec.acceptance_criteria:
+                d["acceptance"] = verify(
+                    list(rec.acceptance_criteria),
+                    {
+                        "per_item": [],
+                        "output_scan": output_scan,
+                        "metrics": {},
+                        "expected_output_rows": None,
+                        "retained": None,
+                        "input_count": source_items,
+                    },
+                    recipe=rec,
+                )
+            if binding is not None:
+                d["data_binding"] = binding.to_dict()
+            return _safety.redact(d)
+    if locate_status in {"missing", "no_manifest", "unreadable", "unavailable"}:
+        return _safety.redact(
+            {
+                "status": "error",
+                "reason": f"terminal output could not be read as a manifest: {locate_status}",
+                "output": output,
+                "output_scan": output_scan,
+                "recipe_id": rec.recipe_id if rec is not None else None,
+                "config_hash": rec.config_hash if rec is not None else None,
+                "data_binding": binding.to_dict() if binding is not None else None,
+            }
+        )
+
+    accepted = int(output_scan.get("valid_rows") or 0)
+    input_count = (
+        int((data_profile or {}).get("num_files", 0))
+        if data_profile is not None
+        else None
+    )
+    corrupt = bool(
+        int(output_scan.get("read_errors") or 0)
+        or int(output_scan.get("malformed_rows") or 0)
+        or int(output_scan.get("blank_rows") or 0)
+    )
+    failures = (
+        [
+            {
+                "code": "terminal_output_incomplete",
+                "message": (
+                    "terminal output contains unreadable, malformed, or blank "
+                    "rows; accepted counts include valid JSON-object rows only"
+                ),
+                "output_scan": output_scan,
+            }
+        ]
+        if corrupt
+        else []
+    )
     rpt = build_run_report(
         recipe=rec or Recipe(),
         result_tasks=[],
         data_profile=data_profile,
         env_profile=probe_env().to_dict(),
         output_paths=[output],
+        failures=failures,
+        examples=preview,
         next_action="compare against expected retention; scale up or adjust thresholds",
     )
     d = rpt.to_dict()
+    d["status"] = "error" if corrupt else "ok"
     d["accepted"] = accepted
-    d["input_count"] = input_count or accepted
-    d["rejected"] = max(0, (input_count or accepted) - accepted)
+    d["input_count"] = input_count
+    d["source_items"] = input_count
+    d["output_rows"] = accepted
+    # Output-row cardinality is not generally the same as source-item
+    # cardinality (split/fan-out stages are common).  Only a proven 1:1
+    # terminal serializer supports subtraction as a rejection count.
+    d["rejected"] = (
+        max(0, input_count - accepted)
+        if input_count is not None and cardinality_proven
+        else None
+    )
+    d["output_scan"] = output_scan
+    if rec is not None and rec.acceptance_criteria:
+        d["acceptance"] = verify(
+            list(rec.acceptance_criteria),
+            {
+                "per_item": [],
+                "output_scan": output_scan,
+                "metrics": _aggregate_metrics(output_scan),
+                "expected_output_rows": accepted if cardinality_proven else None,
+                "retained": accepted,
+                # A relative-yield denominator must come from actual source
+                # evidence; substituting accepted would manufacture 100%.
+                "input_count": input_count,
+            },
+            recipe=rec,
+        )
+    if binding is not None:
+        d["data_binding"] = binding.to_dict()
     return _safety.redact(d)
 
 
@@ -514,69 +2463,696 @@ def verify(
     ``acceptance_criteria``) to run the honesty guard (1A.3): if the criteria being
     verified are weaker than confirmed, it is flagged and ``overall`` is ``not_met``.
     """
-    from nemo_curator.audio_agent.acceptance import parse_criteria, verify as _verify
+    from nemo_curator.audio_agent.acceptance import parse_criteria
+    from nemo_curator.audio_agent.acceptance import verify as _verify
 
     frozen = None
     if recipe is not None:
         frozen = parse_criteria(_as_recipe(recipe).acceptance_criteria)
+        if frozen_criteria is not None:
+            explicit_frozen = parse_criteria(frozen_criteria)
+            if [criterion.to_dict() for criterion in explicit_frozen] != [
+                criterion.to_dict() for criterion in frozen
+            ]:
+                msg = (
+                    "frozen_criteria conflicts with recipe.acceptance_criteria; "
+                    "provide one honesty source or make them identical"
+                )
+                raise ValueError(msg)
     elif frozen_criteria is not None:
         frozen = parse_criteria(frozen_criteria)
-    report_obj = _verify(parse_criteria(acceptance_criteria), evidence or {}, frozen_criteria=frozen)
+    report_obj = _verify(
+        parse_criteria(acceptance_criteria),
+        evidence if evidence is not None else {},
+        frozen_criteria=frozen,
+    )
     return _safety.redact(report_obj.to_dict())
 
 
-def runs(run_id: str | None = None) -> dict[str, Any]:
+def runs(
+    run_id: str | None = None,
+    *,
+    data: str | None = None,
+    stage: str | None = None,
+    since: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
     """List local run records, or load one by ``run_id`` (provenance for tracing).
 
     Local history only — NOT shared memory / cross-user learning. Use it to trace a
-    prior run or to feed ``plan_continuation`` for a follow-up request.
+    prior run or to feed ``plan_continuation`` for a follow-up request. ``data`` /
+    ``stage`` / ``since`` query the index for what has already been done to a corpus.
+    ``data`` takes either the dataset's path or a ``dataset_key`` copied from earlier
+    reuse output — profiling a key as if it were a path would silently match nothing.
     """
-    from nemo_curator.audio_agent import run_store
+    from nemo_curator.audio_agent import run_index, run_store
 
     if run_id:
         rec = run_store.load(run_id)
         return _safety.redact(rec.to_dict()) if rec else {"error": f"no run record {run_id!r}"}
+    if data or stage or since:
+        pviol = _safety.path_violations(
+            [data]
+            if data and not data.startswith(tuple(f"{tier}:" for tier in DATASET_KEY_TIERS))
+            else []
+        )
+        if pviol:
+            return {
+                "status": "refused",
+                "reason": "path(s) resolve outside the allowed workspace",
+                "violations": pviol,
+            }
+        dataset_key = _dataset_key_arg(data) if data else None
+        return _safety.redact(
+            {
+                "dataset_key": dataset_key,
+                "runs": run_index.find_runs(dataset_key=dataset_key, since=since, limit=limit),
+                "artifacts": run_index.find_artifacts(
+                    dataset_key=dataset_key,
+                    stage_ref=stage,
+                    since=since,
+                    limit=limit,
+                ),
+            }
+        )
     return {"runs": run_store.list_runs()}
 
 
-def plan_continuation(
+def _dataset_key_arg(data: str) -> str:
+    """A dataset identity from either a path or a key already printed by an earlier scan."""
+    from nemo_curator.audio_agent.contracts import DATASET_KEY_TIERS
+
+    if data.startswith(tuple(f"{t}:" for t in DATASET_KEY_TIERS)):
+        return data
+    return profile_data(data).dataset_key()
+
+
+def reindex() -> dict[str, Any]:
+    """Rebuild the run/artifact index from the JSON records.
+
+    The index is a cache; the JSON records are the source of truth. Run this after moving,
+    pruning, or hand-editing ``.audio_agent_runs/``.
+    """
+    from nemo_curator.audio_agent import run_index
+
+    return run_index.reindex()
+
+
+def reuse_scan(recipe: Recipe | dict[str, Any], *, data: str | None = None, limit: int = 5) -> dict[str, Any]:
+    """Find prior work this recipe could reuse, and describe it for a human decision.
+
+    Probes the artifact registry with the recipe's step keys and returns the longest safely
+    reusable prefix plus ranked approval cards (objective, pipeline, input/output, key params,
+    date, metrics, estimated saving). Read-only: it never reuses anything by itself.
+
+    ``prompt_user`` is the anti-nag signal — false when there is no candidate at all, or when
+    the saving was measured and is too small to be worth a question (take it and disclose it).
+    An unmeasured prefix containing work the cards call expensive is named in ``unpriced_stages``
+    and always asks: not knowing what something cost is not the same as it having been cheap.
+
+    ``data`` is an optional assertion about the configured first source stage,
+    not an input override. Omit it when the recipe is already unambiguous.
+    """
+    from nemo_curator.audio_agent import reuse as _reuse
+
+    rec = _as_recipe(recipe).freeze()
+    pviol = _safety.path_violations([data, *_safety.recipe_path_params(rec)])
+    if pviol:
+        return {
+            "status": "refused",
+            "reason": "path(s) resolve outside the allowed workspace",
+            "violations": pviol,
+        }
+    binding = _dataset_binding(rec, data)
+    dp = _profile_binding(binding)
+    profile_error = _profile_error(dp) if dp is not None else ""
+    dataset_key = (
+        dp.dataset_key()
+        if dp and not profile_error and not _binding_blocks_execution(binding, data)
+        else ""
+    )
+    result = _reuse.scan(rec, dataset_key=dataset_key, limit=limit)
+    result["data_binding"] = binding.to_dict()
+    if profile_error:
+        result["rationale"] = f"prior work was not considered: {profile_error}"
+        result["data_profile"] = dp.to_dict()
+    if _binding_blocks_execution(binding, data):
+        result["rationale"] = f"prior work was not considered: {binding.reason}"
+    return _safety.redact(result)
+
+
+def plan_continuation(  # noqa: PLR0913 - one verb covering plan + the three-way choice
     recipe: Recipe | dict[str, Any],
-    parent_run_id: str,
+    parent_run_id: str | None = None,
     *,
     data: str | None = None,
+    execute: bool = False,
+    choice: str | None = None,
+    confirm: bool | str = False,
+    output_dir: str | None = None,
+    checkpoint_path: str | None = None,
+    bootstrap_ray: bool = False,
+    smoke_token: str | None = None,
+    calibration: dict[str, Any] | None = None,
+    goal: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Plan a follow-up run incrementally against a prior run (reuse where safe).
+    """Plan — and optionally execute — a follow-up run that reuses prior work.
 
-    Loads the parent :class:`RunRecord`, diffs the recipes, and returns the mode
-    (``already_done`` / ``incremental`` / ``full_rerun``) with which stages to reuse
-    vs run and where to reuse from. Reuse requires the same source data
-    (``data`` -> fingerprint match).
+    Two engines feed one answer. A ``parent_run_id`` is diffed stage-by-stage against its
+    :class:`RunRecord` (the honest, exact-append case), and the artifact registry is probed
+    with this recipe's step keys, which additionally catches reuse the diff cannot see: a
+    middle-of-pipeline edit, or work done by a *different* recipe that happens to share a
+    prefix. The deeper of the two wins.
+
+    With ``execute`` the plan stops being advice. ``choice`` picks the branch — ``as_is``
+    (serve the existing output and re-verify the contract), ``extend`` (materialize a recipe
+    that starts from the artifact and run only what is new), or ``fresh`` — defaulting to
+    whatever the plan concluded. Execution still goes through the normal confirm gate.
+
+    ``data`` is an optional assertion about the configured first source stage,
+    not an input override. Omit it when the recipe is already unambiguous.
     """
     from nemo_curator.audio_agent import continuation, run_store
+    from nemo_curator.audio_agent import reuse as _reuse
 
-    rec = _as_recipe(recipe)
+    rec = _as_recipe(recipe).freeze()
+    pviol = _safety.path_violations(
+        [data, output_dir, checkpoint_path, *_safety.recipe_path_params(rec)]
+    )
+    if pviol:
+        return {
+            "status": "refused",
+            "reason": "path(s) resolve outside the allowed workspace",
+            "violations": pviol,
+        }
+    binding = _dataset_binding(rec, data)
+    dp = _profile_binding(binding)
+    profile_error = _profile_error(dp) if dp is not None else ""
+    binding_blocked = _binding_blocks_execution(binding, data) or bool(profile_error)
+    dataset_key = dp.dataset_key() if dp and not binding_blocked else ""
+    scan = _reuse.scan(rec, dataset_key=dataset_key)
+
+    plan = _parent_plan(rec, parent_run_id, dp=dp, dataset_key=dataset_key)
+    plan = _merge_plans(rec, plan, scan, dataset_key=dataset_key)
+    plan["candidates"] = scan["candidates"]
+    plan["estimated_saving_sec"] = scan["estimated_saving_sec"]
+    plan["prompt_user"] = scan["prompt_user"]
+    # Why the gate is asking, when it is not the size of the saving: work whose cost was never
+    # recorded. Without this the card shows "saves 0.2 s" beside a question and looks broken.
+    plan["unpriced_stages"] = scan.get("unpriced_stages", [])
+    plan["recommended"] = scan.get("recommended", "fresh")
+    plan["choices"] = scan.get("choices", [])
+    plan["reuse_rationale"] = scan.get("rationale", "")
+    plan["dataset_key"] = dataset_key
+    plan["data_binding"] = binding.to_dict()
+    if profile_error:
+        plan["source_error"] = profile_error
+        plan["reuse_rationale"] = f"prior work was not considered: {profile_error}"
+    # Work that ran before but persisted nothing is invisible to BOTH engines: the parent diff
+    # sees a changed recipe, the scan finds no artifact. Carry the disclosure onto the plan, or
+    # the gate presents a recomputation as new work and the user pays for it twice unknowingly.
+    if scan.get("prior_unsaved"):
+        plan["prior_unsaved"] = scan["prior_unsaved"]
+        plan["offer"] = scan["offer"]
+
+    if not execute:
+        return _safety.redact(plan)
+    if binding_blocked:
+        reason = profile_error or binding.reason
+        return _safety.redact(
+            {
+                "status": "refused",
+                "reason": f"continuation cannot execute with an unbound source: {reason}",
+                "plan": plan,
+                "data_binding": binding.to_dict(),
+            }
+        )
+    return _execute_plan(
+        rec,
+        plan,
+        choice=choice or _chosen_by_default(plan),
+        data=data,
+        confirm=confirm,
+        output_dir=output_dir,
+        checkpoint_path=checkpoint_path,
+        bootstrap_ray=bootstrap_ray,
+        smoke_token=smoke_token,
+        calibration=calibration,
+        goal=goal,
+        parent=run_store.load(parent_run_id) if parent_run_id else None,
+        continuation_mod=continuation,
+    )
+
+
+def _parent_plan(rec: Recipe, parent_run_id: str | None, *, dp: Any, dataset_key: str) -> dict[str, Any]:  # noqa: ANN401
+    """The classic parent-diff plan, or a neutral 'nothing to diff against'."""
+    from nemo_curator.audio_agent import continuation, run_store
+
+    if not parent_run_id:
+        return {"mode": "full_rerun", "reason": "no parent run given; reuse comes from the artifact scan alone",
+                "run_stages": [s.ref for s in rec.stages]}
     parent = run_store.load(parent_run_id)
     if parent is None:
+        return {"mode": "full_rerun", "reason": f"no parent run record {parent_run_id!r}; run fresh",
+                "run_stages": [s.ref for s in rec.stages]}
+    if dp is None or not dataset_key:
         return {
             "mode": "full_rerun",
-            "reason": f"no parent run record {parent_run_id!r}; run fresh",
+            "parent_run_id": parent.run_id,
+            "reason": "source data identity is unavailable; the parent cannot be claimed to be on the same data",
             "run_stages": [s.ref for s in rec.stages],
         }
-    data_fp = profile_data(data).fingerprint() if data else None
-    return continuation.plan_continuation(rec, parent, data_fingerprint=data_fp)
+    return continuation.plan_continuation(
+        rec, parent, data_fingerprint=dp.fingerprint() if dp else None, dataset_key=dataset_key or None
+    )
+
+
+def _merge_plans(rec: Recipe, plan: dict[str, Any], scan: dict[str, Any], *, dataset_key: str) -> dict[str, Any]:
+    """Take whichever engine reuses more VERIFIED work, and say which one found it.
+
+    The parent diff and the step-key scan answer slightly different questions, so they can
+    disagree, and depth breaks the tie. But depth alone used to decide it, and only the scan
+    carried an artifact -- so a tie handed the plan to the engine that had proven nothing, and the
+    executor then refused to extend for want of a resume URI. That was the ordinary case: a parent
+    run whose artifact WAS published gives both engines the same depth.
+
+    So the parent diff's claim is now resolved against the same registry, and verified depth beats
+    unverified depth. When neither resolves, the plan says so instead of failing later.
+    """
+    from nemo_curator.audio_agent import reuse as _reuse
+
+    scan_depth = len(scan.get("reuse_stages") or []) if scan["decision"] != "fresh" else 0
+    plan_depth = len(plan.get("reuse_stages") or []) if plan["mode"] in ("already_done", "incremental") else 0
+    if plan_depth >= scan_depth and plan_depth:
+        point, why_not = _reuse.verified_point(rec, plan_depth, dataset_key=dataset_key)
+        if point:
+            plan["reuse_point"] = point
+            plan.setdefault("reuse_from", [point["uri"]])
+            plan.setdefault("source", "parent_diff")
+            return plan
+        if not scan_depth:
+            plan["reuse_point_unavailable"] = why_not
+            plan.setdefault("source", "parent_diff")
+            return plan
+        # The scan is shallower but backed by a real artifact, so it is the safer resume point.
+        plan["superseded_parent_diff"] = f"deeper parent-diff reuse has no reusable artifact: {'; '.join(why_not)}"
+    elif scan_depth <= plan_depth:
+        plan.setdefault("source", "none")
+        return plan
+    point = scan["reuse_point"] or {}
+    merged = {
+        "mode": "already_done" if scan["decision"] == "already_done" else "incremental",
+        "source": "artifact_scan",
+        "parent_run_id": plan.get("parent_run_id"),
+        "reuse_stages": scan["reuse_stages"],
+        "run_stages": scan["run_stages"],
+        "reuse_from": [point.get("uri")] if point.get("uri") else [],
+        "reuse_point": point,
+        "rationale": scan["rationale"],
+    }
+    superseded = plan.get("superseded_parent_diff") or plan.get("reason")
+    if superseded:
+        merged["superseded_parent_diff"] = superseded
+    return merged
+
+
+def _default_choice(mode: str) -> str:
+    return {"already_done": "as_is", "incremental": "extend"}.get(mode, "fresh")
+
+
+def _chosen_by_default(plan: dict[str, Any]) -> str:
+    """What runs when the caller states no choice -- the plan's own recommendation if it made one.
+
+    The scan already downgrades to ``fresh`` whenever a candidate's trust is anything less than
+    high (a sampled dataset key that cannot see an in-place edit, a stage whose output is not
+    reproducible). That recommendation only ever reached the approval card: execution went to the
+    mode's default and reused the low-trust output anyway, so the warning and the behaviour
+    disagreed. Recommending caution and then not taking it is worse than not warning at all.
+    """
+    recommended = str(plan.get("recommended") or "")
+    offered = {str(c.get("id")) for c in plan.get("choices") or [] if isinstance(c, dict)}
+    if recommended and (not offered or recommended in offered):
+        return recommended
+    return _default_choice(plan["mode"])
+
+
+def _execute_plan(  # noqa: PLR0913 - executing a plan needs the plan's whole context
+    rec: Recipe,
+    plan: dict[str, Any],
+    *,
+    choice: str,
+    data: str | None,
+    confirm: bool | str,
+    output_dir: str | None,
+    bootstrap_ray: bool,
+    goal: dict[str, Any] | None,
+    parent: Any,  # noqa: ANN401
+    continuation_mod: Any,  # noqa: ANN401
+    checkpoint_path: str | None = None,
+    smoke_token: str | None = None,
+    calibration: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Carry out the user's three-way choice."""
+    lineage = {"choice": choice, "mode": plan["mode"], "reuse_source": plan.get("source")}
+    if choice == "fresh":
+        return run(
+            rec,
+            confirm=confirm,
+            data=data,
+            output_dir=output_dir,
+            checkpoint_path=checkpoint_path,
+            bootstrap_ray=bootstrap_ray,
+            smoke_token=smoke_token,
+            calibration=calibration,
+            goal=goal,
+            reuse={**lineage, "reused": []},
+        )
+
+    point = plan.get("reuse_point") or {}
+    if choice == "as_is":
+        return _serve_as_is(rec, plan, parent=parent, lineage=lineage)
+
+    if plan["mode"] != "incremental" or not point.get("uri"):
+        why = "; ".join(plan.get("reuse_point_unavailable") or []) or "the plan names no reusable output"
+        return {
+            "status": "refused",
+            "reason": f"there is nothing to extend from ({why}); choose 'fresh'",
+            "plan": plan,
+        }
+
+    materialized, err = continuation_mod.materialize(
+        rec, uri=point["uri"], kind=point.get("kind", "unknown"), prefix=int(point.get("stage_index", -1)) + 1
+    )
+    if materialized is None:
+        return {"status": "refused", "reason": err, "plan": plan}
+
+    # Re-derive the boundary from the serialized artifact and its new source
+    # stage. Cumulative in-memory metadata in the registry is not proof that a
+    # manifest or bare audio directory serialized those roles/keys.
+    verdict = validate(materialized, data=None)
+    if not verdict.get("runnable", False):
+        return _safety.redact(
+            {
+                "status": "refused",
+                "reason": "the continued pipeline does not validate when resumed from the reused output",
+                "recipe": materialized.to_dict(),
+                "verdict": verdict,
+                "plan": plan,
+            },
+            redact_transcripts=False,
+        )
+    result = run(
+        materialized,
+        confirm=confirm,
+        data=None,
+        output_dir=output_dir,
+        checkpoint_path=checkpoint_path,
+        bootstrap_ray=bootstrap_ray,
+        smoke_token=smoke_token,
+        calibration=calibration,
+        goal=goal, reuse={**lineage, "reused": plan.get("reuse_stages", []), "reused_from": point.get("uri")},
+        _continuation_context=_continuation_context_from_plan(rec, plan),
+    )
+    result["recipe"] = _safety.redact(
+        materialized.to_dict(),
+        redact_transcripts=False,
+    )
+    result["plan"] = _safety.redact(plan, redact_transcripts=False)
+    return _safety.redact(result)
+
+
+def _logical_chain(rec: Recipe, *, dataset_key: str) -> list[str] | None:
+    """Every step key of the recipe the user asked for, reused prefix included.
+
+    What a continued run DELIVERED is the whole requested pipeline, even though it only executed
+    the tail, so that is what the record should describe. Recording the rewritten recipe's keys
+    instead left the run matching nothing a later request could ask about.
+    """
+    if not dataset_key:
+        return None
+    return _step_keys(rec, dataset_key) or None
+
+
+def _logical_identity(rec: Recipe, plan: dict[str, Any], *, dataset_key: str) -> list[tuple[str, str, int]] | None:
+    """Step keys of the recipe the USER asked for, aligned to the materialized stages.
+
+    The materialized recipe is ``[reader on the artifact] + rec.stages[prefix:]``, so its own
+    keys describe a pipeline nobody asked for. Publishing the tail under the logical keys is
+    what makes the *same* follow-up request come back ``already_done`` instead of recomputing
+    the tail forever.
+    """
+    from nemo_curator.audio_agent import artifacts as art_mod
+
+    prefix = int((plan.get("reuse_point") or {}).get("stage_index", -1)) + 1
+    if not dataset_key or prefix <= 0:
+        return None
+    try:
+        plans = art_mod.plan_steps(rec, dataset_key)
+    except Exception:  # noqa: BLE001 - identity is an optimization; never fail the run over it
+        return None
+    return [(p.step_key, p.input_key, p.index) for p in plans[prefix - 1 :]]
+
+
+def _declared_output(rec: Recipe) -> str:
+    """The last output location the recipe names, or ``""`` -- where the user asked for it."""
+    outs = _recipe_outputs(rec, None)
+    return outs[-1] if outs else ""
+
+
+def _deliver_to_declared_path(rec: Recipe, uri: str) -> tuple[str, bool | None]:
+    """Put the reused output where the recipe asked for it.
+
+    Returns ``(path, delivered)``: ``None`` when no copy was needed, ``True`` when the artifact
+    was materialized at the declared path, ``False`` when it could not be.
+
+    Serving the stored URI when the recipe declares a different ``output_path`` answers a
+    question the user did not ask -- they get a path they never named, and the file they DID
+    name is silently absent. Copying is cheap next to recomputing, so reuse honors the request.
+    """
+    want = _declared_output(rec)
+    if not want or os.path.abspath(os.path.expanduser(want)) == os.path.abspath(os.path.expanduser(uri)):
+        return uri, None
+    src, dst = os.path.expanduser(uri), os.path.expanduser(want)
+    try:
+        os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+        if os.path.isdir(src):
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+        else:
+            shutil.copyfile(src, dst)
+    except OSError:
+        return uri, False
+    return want, True
+
+
+def _has_content(uri: str) -> bool:
+    """True if something is actually there -- a non-empty file, or a directory with entries."""
+    path = os.path.expanduser(uri)
+    if os.path.isdir(path):
+        return bool(os.listdir(path))
+    return os.path.isfile(path) and os.path.getsize(path) > 0
+
+
+def _as_is_evidence(
+    plan: dict[str, Any],
+    parent: Any,  # noqa: ANN401
+    uri: str,
+) -> tuple[str, list[str], int | None]:
+    """How well the bytes about to be served are proven to be a complete result.
+
+    Two engines can propose an ``as_is`` path and only one of them carries an artifact, so this is
+    where both are held to a bar. The parent-diff path used to be served unconditionally from a
+    recorded output path, which meant a record naming a file that was never written came back as
+    ``status: reused`` with acceptance computed over nothing at all.
+
+    An artifact is the strong evidence: a ``_COMPLETE`` marker, a matching dataset and code
+    version. Without one -- a run from before artifacts, or a pruned record -- fall back to what
+    can still be checked rather than refusing outright, and name the weaker basis in the result.
+    """
+    from nemo_curator.audio_agent import artifacts as art_mod
+
+    point = plan.get("reuse_point") or {}
+    if point.get("step_key"):
+        art, reasons = art_mod.lookup(point["step_key"], dataset_key=plan.get("dataset_key") or None)
+        if art is not None and not reasons:
+            marker = art_mod.read_marker(art.uri) or {}
+            artifact_rows = getattr(art, "rows_out", None)
+            marker_rows = marker.get("rows")
+            expected_rows = (
+                artifact_rows
+                if (
+                    isinstance(artifact_rows, int)
+                    and not isinstance(artifact_rows, bool)
+                    and artifact_rows >= 0
+                    and marker_rows == artifact_rows
+                )
+                else None
+            )
+            return "artifact", [], expected_rows
+        return "", reasons or ["the recorded artifact is no longer reusable"], None
+    status = str(getattr(parent, "status", "") or "")
+    if status and status != "completed":
+        return "", [
+            f"the run that produced it ended {status!r}, so its output is not a complete result"
+        ], None
+    if not _has_content(uri):
+        return "", [f"{uri!r} does not exist or is empty, so there is nothing to serve"], None
+    return "run_record", [], None
+
+
+def _serve_as_is(rec: Recipe, plan: dict[str, Any], *, parent: Any, lineage: dict[str, Any]) -> dict[str, Any]:  # noqa: ANN401
+    """Serve an existing output — and RE-VERIFY it against the criteria asked for now.
+
+    Reused data is still judged by today's bar: a stricter contract must be re-checked, never
+    inherited from the run that produced the bytes.
+    """
+    point = plan.get("reuse_point") or {}
+    uri = point.get("uri") or next(iter(plan.get("reuse_from") or []), None)
+    if not uri:
+        detail = str(plan.get("reuse_rationale") or "").strip()
+        reason = "no completed output can be served"
+        if detail:
+            reason += f": {detail}"
+        return {"status": "refused", "reason": f"{reason}; choose 'fresh'", "plan": plan}
+    pviol = _safety.path_violations([uri, _declared_output(rec)])
+    if pviol:
+        return {
+            "status": "refused",
+            "reason": "reused input/output resolves outside the allowed workspace",
+            "violations": pviol,
+            "plan": plan,
+        }
+    # Checked BEFORE delivery: a refusal must not leave a copy behind.
+    trust, why_not, expected_output_rows = _as_is_evidence(plan, parent, uri)
+    if not trust:
+        return {
+            "status": "refused",
+            "reason": f"the previous output cannot be served: {'; '.join(why_not)}; choose 'fresh'",
+            "plan": plan,
+        }
+    uri, delivered_to = _deliver_to_declared_path(rec, uri)
+    if delivered_to is False:
+        return {
+            "status": "refused",
+            "reason": (
+                f"the recipe asks for output at {_declared_output(rec)!r} but the reusable output is at "
+                f"{uri!r}, and it could not be copied there; choose 'fresh' or point the recipe at that path"
+            ),
+            "plan": plan,
+        }
+    per_item, output_scan = (
+        _scan_terminal_output([uri], limit=0)
+        if _needs_terminal_evidence(rec)
+        else ([], {})
+    )
+    source_run = parent
+    source_run_id = getattr(source_run, "run_id", None)
+    if source_run is None:
+        source_run_id = point.get("run_id") or (
+            (plan.get("candidates") or [{}])[0].get("run_id")
+        )
+        if source_run_id:
+            from nemo_curator.audio_agent import run_store
+
+            source_run = run_store.load(str(source_run_id))
+    source_input_count = getattr(source_run, "input_count", None)
+    if (
+        not isinstance(source_input_count, int)
+        or isinstance(source_input_count, bool)
+        or source_input_count < 0
+    ):
+        source_input_count = None
+    acceptance = verify(
+        list(rec.acceptance_criteria),
+        {
+            "produced_roles": list(point.get("produced_roles") or []),
+            "produced_keys": list(point.get("produced_keys") or []),
+            # The artifact is a real file, so judge today's bar against its rows -- reused data
+            # gets the same data-level scrutiny a fresh run gets, not a weaker label check.
+            "per_item": per_item,
+            "output_scan": output_scan,
+            "metrics": _aggregate_metrics(output_scan),
+            # A valid artifact binds this count in both its registry record and
+            # completion marker. A legacy run record names a path but does not
+            # independently prove its serialized inventory, so it stays unknown.
+            "expected_output_rows": expected_output_rows,
+            "retained": int(point.get("rows") or 0),
+            # Relative yield is defined against the producing run's source
+            # inventory.  Substituting output rows here manufactures 100%
+            # retention whenever the run record is unavailable.
+            "input_count": source_input_count,
+        },
+    )
+    checked = len(rec.acceptance_criteria)
+    note = "served from a previously completed run; no compute was done. "
+    note += f"The {checked} success criterion(a) were re-checked." if checked else "No success criteria were supplied, so nothing was re-checked."
+    if delivered_to:
+        note += f" The reused output was copied to the path the recipe asked for ({uri})."
+    if trust == "run_record":
+        note += (
+            " No artifact record backs this output, so completeness rests on the producing run"
+            " having finished rather than on a completion marker."
+        )
+    return _safety.redact(
+        {
+            "status": "reused",
+            "output": uri,
+            "rows": point.get("rows") if point.get("rows") is not None else _row_count(uri),
+            "evidence": trust,
+            "reuse": {**lineage, "reused": plan.get("reuse_stages", []), "reused_from": uri},
+            "acceptance": acceptance,
+            "source_run_id": source_run_id,
+            "note": note,
+            "plan": plan,
+        }
+    )
 
 
 def calibrate(smoke_report: dict[str, Any]) -> dict[str, Any]:
     """Extract measured per-stage resources from a smoke report (1C.2).
 
     Returns ``{calibration: {stage: {gpu_mem_gb?, host_mem_gb?, ...}}}`` to pass to
-    ``run(..., calibration=...)`` so the planner uses measured numbers over card
-    ``best_guess`` facts. Empty on a CPU smoke (no VRAM to read) — the numbers come
-    from a real GPU smoke.
+    ``run(..., calibration=...)`` so the planner can raise card ``best_guess``
+    facts when the smoke observed a larger peak. A bounded smoke never lowers a
+    card/default estimate. Empty on a CPU smoke (no VRAM to read) — the numbers
+    come from a real GPU smoke.
     """
     from nemo_curator.audio_agent import calibration as _cal
 
-    return {"calibration": _cal.from_smoke(smoke_report)}
+    existing = smoke_report.get("calibration")
+    if isinstance(existing, dict):
+        # ``smoke`` already extracted and machine-stamped these measurements.
+        # Re-extracting from the surrounding report silently discarded that
+        # binding and let measurements migrate to another machine.
+        result: dict[str, Any] = {"calibration": existing}
+        wrapper_fingerprint = smoke_report.get("machine_fingerprint")
+        if not wrapper_fingerprint:
+            fingerprints = {
+                entry.get("machine_fingerprint")
+                for entry in existing.values()
+                if isinstance(entry, dict) and entry.get("machine_fingerprint")
+            }
+            if len(fingerprints) == 1:
+                wrapper_fingerprint = fingerprints.pop()
+        if isinstance(wrapper_fingerprint, str) and wrapper_fingerprint:
+            result["machine_fingerprint"] = wrapper_fingerprint
+        return result
+
+    machine_fingerprint = smoke_report.get("machine_fingerprint")
+    return {
+        **(
+            {"machine_fingerprint": machine_fingerprint}
+            if isinstance(machine_fingerprint, str) and machine_fingerprint
+            else {}
+        ),
+        "calibration": _cal.from_smoke(
+            smoke_report,
+            machine_fingerprint=(
+                machine_fingerprint
+                if isinstance(machine_fingerprint, str)
+                else None
+            ),
+        ),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -587,6 +3163,132 @@ def _bootstrap_ray() -> str:
     from nemo_curator.audio_agent._ray import ensure_cluster
 
     return ensure_cluster()
+
+
+def _shutdown_owned_ray(address: str | None) -> bool | None:
+    """Stop only a local Ray head this process created.
+
+    ``None`` means the address was external/not owned, ``True`` means cleanup
+    completed, and ``False`` means an owned head could not be stopped safely.
+    """
+    if not address:
+        return None
+    from nemo_curator.audio_agent._ray import owns_cluster, shutdown_cluster
+
+    if not owns_cluster(address):
+        return None
+    return shutdown_cluster(address)
+
+
+def _resource_environment(
+    env: Any,  # noqa: ANN401
+    address: str | None,
+    execution_target: str,
+) -> Any:  # noqa: ANN401
+    """Return only capacity facts that belong to the selected executor."""
+    if execution_target != "custom_executor":
+        return _apply_ray_cluster_capacity(env, address)
+    target_env = copy.deepcopy(env)
+    target_env.has_gpu = False
+    target_env.gpu_count = 0
+    target_env.gpu_names = []
+    target_env.gpu_mem_gb = 0.0
+    target_env.gpu_visibility = "unknown"
+    target_env.total_cpus = 0
+    target_env.total_ram_gb = 0.0
+    target_env.free_disk_gb = None
+    target_env.notes = list(getattr(target_env, "notes", []) or [])
+    target_env.notes.append(
+        "custom executor capacity is caller-owned and unverified; driver capacity was not substituted"
+    )
+    return target_env
+
+
+def _adapt_resource_plan_for_target(
+    plan: Any,  # noqa: ANN401
+    *,
+    execution_target: str,
+    operation: str,
+) -> None:
+    """Keep target uncertainty explicit without making bounded verification impossible."""
+    if not isinstance(getattr(plan, "notes", None), list):
+        plan.notes = []
+    escalations = list(getattr(plan, "escalations", []) or [])
+    if execution_target == "custom_executor":
+        if escalations:
+            plan.notes.append(
+                "custom_executor_unverified_capacity=" + "; ".join(escalations)
+            )
+        plan.escalations = []
+        plan.feasible = True
+        plan.notes.append(
+            "custom executor owns scheduling; capacity is verified by its bounded execution"
+        )
+        return
+    unknown_vram = [
+        item
+        for item in escalations
+        if item.startswith("GPU VRAM capacity is unknown;")
+    ]
+    if (
+        execution_target == "external_ray"
+        and operation == "smoke"
+        and escalations
+        and len(unknown_vram) == len(escalations)
+    ):
+        plan.notes.extend(
+            "bounded_remote_smoke=" + item
+            for item in unknown_vram
+        )
+        plan.escalations = []
+        plan.feasible = True
+
+
+def _apply_ray_cluster_capacity(env: Any, address: str | None) -> Any:  # noqa: ANN401
+    """Overlay driver probes with the resources the executor can schedule."""
+    if not address:
+        return env
+    try:
+        from nemo_curator.audio_agent._ray import cluster_resources
+
+        resources = cluster_resources(address)
+    except Exception as exc:  # noqa: BLE001 - an unprobed executor must fail closed
+        raise RuntimeError(
+            "Ray cluster capacity could not be verified; refusing to substitute "
+            f"driver resources ({type(exc).__name__}: {exc})"
+        ) from exc
+
+    cpus = float(resources.get("CPU", 0.0) or 0.0)
+    gpus = float(resources.get("GPU", 0.0) or 0.0)
+    memory = float(resources.get("memory", 0.0) or 0.0)
+    if not math.isfinite(cpus) or cpus <= 0:
+        raise RuntimeError(
+            f"Ray cluster at {address!r} reported no positive finite CPU capacity"
+        )
+    if not math.isfinite(gpus) or gpus < 0:
+        raise RuntimeError(
+            f"Ray cluster at {address!r} reported invalid GPU capacity {gpus!r}"
+        )
+    if not math.isfinite(memory) or memory < 0:
+        raise RuntimeError(
+            f"Ray cluster at {address!r} reported invalid memory capacity {memory!r}"
+        )
+    env.total_cpus = cpus
+    env.gpu_count = max(0, int(gpus))
+    env.has_gpu = env.gpu_count > 0
+    if memory > 0:
+        env.total_ram_gb = round(memory / (1024**3), 1)
+
+    if not _ray_address_is_local(address):
+        # Ray exposes GPU count, not per-device VRAM/name. Driver GPU details
+        # must not be projected onto a remote or unresolved cluster.
+        env.gpu_mem_gb = 0.0
+        env.gpu_names = []
+    env.notes.append(
+        "resource planning bound to Ray cluster capacity at "
+        f"{address}: CPU={cpus:g}, GPU={gpus:g}"
+    )
+    return env
 
 
 def _run_pipeline(stages: list[Any], executor: Any, *, checkpoint_path: str | None = None) -> list[Any] | None:  # noqa: ANN401
@@ -624,67 +3326,390 @@ def _make_executor(mode: str) -> Any:  # noqa: ANN401
         return None
 
 
-def _bound_recipe(recipe: Recipe, sample: int, rpt: SmokeReport) -> tuple[Recipe, list[str]]:
-    """Return a copy of the recipe bounded to ``sample`` items, + temp paths to clean up.
+def _bound_recipe(
+    recipe: Recipe,
+    sample: int,
+    rpt: SmokeReport,
+    binding: Any,  # noqa: ANN401 - DatasetBinding without an eager import
+) -> _SmokeBound:
+    """Prove that the source can emit at most ``sample`` rows.
 
-    If the source stage reads a JSONL manifest, truncate it to ``sample`` lines in
-    a temp file and point the recipe at it. If the source supports ``max_samples``,
-    set it. Otherwise, run unbounded with a note.
+    Bounding is a closed adapter table, just like source identity. A source that
+    cannot be capped without downloading or reading an unknown remote selector is
+    refused before stage construction. The original recipe and every stage default
+    remain untouched.
     """
     import copy
 
     bounded = copy.deepcopy(recipe)
-    tmp_paths: list[str] = []
     if not bounded.stages:
-        return bounded, tmp_paths
+        return _SmokeBound(None, error="recipe has no source stage")
     src = bounded.stages[0]
+    if src.ref == "ManifestReader":
+        manifests = tuple(getattr(binding, "selected_manifest_files", ()) or ())
+        if not manifests:
+            return _SmokeBound(
+                None,
+                error=(
+                    "ManifestReader selectors are not a complete ordered set of "
+                    "local manifest files; remote or mixed selectors are unsupported"
+                ),
+            )
+        tmp, count, error = _write_bounded_manifest(manifests, sample)
+        if error:
+            return _SmokeBound(None, error=error)
+        execution_knobs = {
+            key: value for key, value in src.params.items() if key in EXECUTION_KNOB_PARAMS
+        }
+        src.params = {
+            "manifest_path": tmp,
+            "files_per_partition": 1,
+            "blocksize": None,
+            "file_extensions": [".jsonl"],
+            "storage_options": None,
+            **execution_knobs,
+        }
+        rpt.notes.append(
+            f"bounded via {len(manifests)} resolved local manifest file(s) "
+            f"({count}/{sample} rows)"
+        )
+        return _SmokeBound(bounded, (tmp,), count)
 
-    for key in _SOURCE_INPUT_KEYS:
-        val = src.params.get(key)
-        if isinstance(val, str) and val.endswith((".jsonl", ".json")) and os.path.isfile(os.path.expanduser(val)):
-            tmp = _truncate_manifest(os.path.expanduser(val), sample)
-            src.params[key] = tmp
-            tmp_paths.append(tmp)
-            rpt.notes.append(f"bounded via truncated manifest ({sample} lines)")
-            return bounded, tmp_paths
+    if src.ref == "ReadLongFormManifestStage":
+        manifest = getattr(binding, "primary_path", None)
+        if not isinstance(manifest, str):
+            return _SmokeBound(None, error="long-form manifest path was not resolved")
+        tmp, count, error = _write_bounded_manifest((manifest,), sample)
+        if error:
+            return _SmokeBound(None, error=error)
+        src.params["input_manifest"] = tmp
+        rpt.notes.append(f"bounded via truncated long-form manifest ({count}/{sample} rows)")
+        return _SmokeBound(bounded, (tmp,), count)
 
-    # source exposes a sample cap
-    if "max_samples" in src.params or _accepts_param(src.ref, "max_samples"):
+    if src.ref == "CreateInitialManifestFleursStage":
+        if getattr(binding, "generated", False) or not getattr(binding, "profile_source", None):
+            return _SmokeBound(
+                None,
+                error=(
+                    "unstaged FLEURS would download and materialize the complete split; "
+                    "pre-stage the dataset before smoke"
+                ),
+            )
+        tmp, count, error = _write_bounded_fleurs_manifest(src, binding, sample)
+        if error:
+            return _SmokeBound(None, error=error)
+        execution_knobs = {
+            key: value for key, value in src.params.items() if key in EXECUTION_KNOB_PARAMS
+        }
+        src.ref = "ManifestReader"
+        src.params = {"manifest_path": tmp, **execution_knobs}
+        rpt.notes.append(f"bounded pre-staged FLEURS via temporary manifest ({count}/{sample} rows)")
+        return _SmokeBound(bounded, (tmp,), count)
+
+    if src.ref == "CreateInitialManifestReadSpeechStage" and getattr(binding, "generated", False):
+        return _SmokeBound(
+            None,
+            error=(
+                "unstaged ReadSpeech would download and extract the complete archive; "
+                "pre-stage the dataset before smoke"
+            ),
+        )
+
+    if src.ref in {
+        "CreateInitialManifestAudioFolderStage",
+        "CreateInitialManifestReadSpeechStage",
+    }:
         src.params["max_samples"] = sample
         rpt.notes.append(f"bounded via max_samples={sample}")
-        return bounded, tmp_paths
+        return _SmokeBound(bounded)
 
-    rpt.notes.append("could not bound input; smoke ran unbounded (add max_samples or use a manifest source)")
-    return bounded, tmp_paths
+    return _SmokeBound(
+        None,
+        error=f"source stage {src.ref!r} has no proven smoke-bounding adapter",
+    )
 
 
-def _truncate_manifest(path: str, n: int) -> str:
+def _isolate_smoke_outputs(bound: _SmokeBound, rpt: SmokeReport) -> _SmokeBound:
+    """Redirect every reviewed output mutation into one disposable local tree."""
+    if bound.recipe is None:
+        return bound
+    try:
+        root = tempfile.mkdtemp(prefix="audio_agent_smoke_outputs_")
+    except OSError as exc:
+        return _SmokeBound(
+            None,
+            tmp_paths=bound.tmp_paths,
+            input_count=bound.input_count,
+            error=f"temporary output sandbox could not be created: {type(exc).__name__}: {exc}",
+        )
+
+    aliases: dict[str, str] = {}
+    try:
+        for index, stage in enumerate(bound.recipe.stages):
+            for key in sorted(_SMOKE_FILE_OUTPUT_PARAMS | _SMOKE_DIR_OUTPUT_PARAMS):
+                value = stage.params.get(key)
+                if not isinstance(value, str) or not value:
+                    continue
+                stage.params[key] = _smoke_output_path(
+                    root,
+                    index,
+                    stage.ref,
+                    key,
+                    value,
+                    aliases,
+                )
+
+            if (
+                stage.ref == "MonoConversionStage"
+                and stage.params.get("write_to_disk", False)
+                and not stage.params.get("output_dir")
+            ):
+                stage.params["output_dir"] = _smoke_output_path(
+                    root,
+                    index,
+                    stage.ref,
+                    "output_dir",
+                    f"<implicit:{index}:output_dir>",
+                    aliases,
+                )
+
+            if stage.ref == "PyAnnoteDiarizationStage" and stage.params.get(
+                "write_rttm",
+                True,
+            ):
+                stage.params["write_rttm"] = False
+                rpt.notes.append(
+                    "disabled source-adjacent PyAnnote RTTM side output for smoke"
+                )
+
+            if stage.ref in {"SplitLongAudioStage", "SplitASRAlignJoinStage"}:
+                stage.params["output_dir"] = _smoke_output_path(
+                    root,
+                    index,
+                    stage.ref,
+                    "output_dir",
+                    f"<implicit:{index}:split_output_dir>",
+                    aliases,
+                )
+
+            if stage.ref == "CreateInitialManifestReadSpeechStage":
+                # Binding already proved this source is staged. Prevent a
+                # disappearing/racing directory from turning smoke into a 4.88 GB
+                # acquisition between the read-only check and stage execution.
+                stage.params["auto_download"] = False
+    except (OSError, TypeError, ValueError) as exc:
+        _cleanup([root])
+        return _SmokeBound(
+            None,
+            tmp_paths=bound.tmp_paths,
+            input_count=bound.input_count,
+            error=f"output sandbox could not be configured: {type(exc).__name__}: {exc}",
+        )
+
+    rpt.notes.append("all pipeline outputs isolated in temporary smoke storage")
+    return _SmokeBound(
+        bound.recipe,
+        (*bound.tmp_paths, root),
+        bound.input_count,
+        output_root=root,
+    )
+
+
+def _smoke_output_path(
+    root: str,
+    stage_index: int,
+    stage_ref: str,
+    key: str,
+    original: str,
+    aliases: dict[str, str],
+) -> str:
+    """Map a production location to a stable path inside ``root``."""
+    if original in aliases:
+        return aliases[original]
+    stage_dir = os.path.join(root, f"{stage_index:03d}_{stage_ref}")
+    if key in _SMOKE_FILE_OUTPUT_PARAMS:
+        from urllib.parse import urlsplit
+
+        basename = os.path.basename(urlsplit(original).path.rstrip("/"))
+        filename = f"{key}_{basename or 'output'}"
+        target = os.path.join(stage_dir, filename)
+    else:
+        target = os.path.join(stage_dir, key)
+    aliases[original] = target
+    return target
+
+
+def _smoke_write_issues(
+    stages: list[Any],
+    output_root: str | None,
+) -> list[str]:
+    """Find a disk-writing stage whose output is not proved to be isolated."""
+    if not output_root:
+        return ["temporary output root is missing"]
+
+    from nemo_curator.stages.audio import agent as foundation
+
+    issues: list[str] = []
+    for stage in _walk_smoke_stages(stages):
+        name = type(stage).__name__
+        if name == "FilePartitioningStage":
+            # ManifestReader's framework partitioner only discovers input paths
+            # and is not part of the audio AgentReady contract surface.
+            continue
+        try:
+            contract = foundation.build_contract(stage)
+        except Exception as exc:  # noqa: BLE001 - inability to inspect must fail closed
+            issues.append(
+                f"{name}: disk-write contract could not be inspected "
+                f"({type(exc).__name__}: {exc})"
+            )
+            continue
+        if not contract.gates.writes_to_disk:
+            continue
+        adapter = _SMOKE_DISK_ADAPTERS.get(name)
+        if adapter is None:
+            issues.append(
+                f"{name}: declares writes_to_disk=True but has no smoke-output adapter"
+            )
+            continue
+        if name == "CreateInitialManifestReadSpeechStage":
+            if getattr(stage, "auto_download", True):
+                issues.append(
+                    f"{name}: auto_download must be disabled for a pre-staged smoke"
+                )
+            continue
+        for param in adapter:
+            value = getattr(stage, param, None)
+            if not isinstance(value, str) or not _inside_smoke_root(
+                value,
+                output_root,
+            ):
+                issues.append(
+                    f"{name}.{param}: output is not inside temporary smoke storage"
+                )
+    return issues
+
+
+def _walk_smoke_stages(stages: list[Any]):  # noqa: ANN202 - private generator
+    """Yield configured stages and the concrete children of composites."""
+    from nemo_curator.stages.base import CompositeStage
+
+    for stage in stages:
+        yield stage
+        if isinstance(stage, CompositeStage):
+            yield from _walk_smoke_stages(list(stage.decompose()))
+
+
+def _inside_smoke_root(path: str, root: str) -> bool:
+    resolved_path = os.path.realpath(path)
+    resolved_root = os.path.realpath(root)
+    return resolved_path == resolved_root or resolved_path.startswith(
+        resolved_root + os.sep
+    )
+
+
+def _write_bounded_manifest(
+    paths: tuple[str, ...],
+    n: int,
+) -> tuple[str, int, str]:
+    """Concatenate at most ``n`` valid JSON-object rows from ordered local files."""
     fd, tmp = tempfile.mkstemp(suffix=".jsonl", prefix="audio_agent_smoke_")
-    with os.fdopen(fd, "w", encoding="utf-8") as out, open(path, encoding="utf-8") as src:
-        written = 0
-        for line in src:
-            if line.strip():
-                out.write(line if line.endswith("\n") else line + "\n")
-                written += 1
-                if written >= n:
+    count = 0
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            for path in paths:
+                try:
+                    with open(path, encoding="utf-8") as src:
+                        for lineno, line in enumerate(src, 1):
+                            if not line.strip():
+                                continue
+                            try:
+                                row = json.loads(line)
+                            except json.JSONDecodeError as exc:
+                                return _bounded_write_error(
+                                    tmp,
+                                    count,
+                                    f"{path}:{lineno} contains invalid JSON: {exc}",
+                                )
+                            if not isinstance(row, dict):
+                                return _bounded_write_error(
+                                    tmp,
+                                    count,
+                                    f"{path}:{lineno} must contain a JSON object",
+                                )
+                            out.write(line if line.endswith("\n") else line + "\n")
+                            count += 1
+                            if count >= n:
+                                return tmp, count, ""
+                except (OSError, UnicodeError) as exc:
+                    return _bounded_write_error(
+                        tmp,
+                        count,
+                        f"{path} could not be read: {type(exc).__name__}: {exc}",
+                    )
+    except OSError as exc:
+        return _bounded_write_error(
+            tmp,
+            count,
+            f"bounded manifest could not be written: {type(exc).__name__}: {exc}",
+        )
+    return tmp, count, ""
+
+
+def _write_bounded_fleurs_manifest(
+    source: Any,  # noqa: ANN401 - copied StageRef
+    binding: Any,  # noqa: ANN401 - DatasetBinding
+    n: int,
+) -> tuple[str, int, str]:
+    """Materialize the first ``n`` rows exactly as a pre-staged FLEURS source does."""
+    identity_files = list(getattr(binding, "profile_kwargs", {}).get("identity_files") or [])
+    if len(identity_files) != 1:
+        return "", 0, "pre-staged FLEURS transcript was not uniquely resolved"
+    transcript = identity_files[0]
+    audio_root = str(binding.profile_source)
+    filepath_key = source.params.get("filepath_key", "audio_filepath")
+    text_key = source.params.get("text_key", "text")
+    fd, tmp = tempfile.mkstemp(suffix=".jsonl", prefix="audio_agent_smoke_fleurs_")
+    count = 0
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out, open(
+            transcript,
+            encoding="utf-8",
+        ) as src:
+            for line in src:
+                parts = line.strip().split("\t")
+                if len(parts) < 3:
+                    continue
+                row = {
+                    filepath_key: os.path.abspath(os.path.join(audio_root, parts[1])),
+                    text_key: parts[2],
+                }
+                out.write(json.dumps(row, ensure_ascii=False) + "\n")
+                count += 1
+                if count >= n:
                     break
-    return tmp
+    except (OSError, UnicodeError) as exc:
+        return _bounded_write_error(
+            tmp,
+            count,
+            f"{transcript} could not be read: {type(exc).__name__}: {exc}",
+        )
+    return tmp, count, ""
 
 
-def _accepts_param(ref: str, param: str) -> bool:
-    import inspect
-
-    with contextlib.suppress(Exception):
-        from nemo_curator.audio_agent._resolve import resolve_stage_class
-
-        return param in inspect.signature(resolve_stage_class(ref).__init__).parameters
-    return False
+def _bounded_write_error(tmp: str, count: int, error: str) -> tuple[str, int, str]:
+    with contextlib.suppress(OSError):
+        os.remove(tmp)
+    return "", count, error
 
 
 def _cleanup(paths: list[str]) -> None:
     for p in paths:
         with contextlib.suppress(OSError):
-            os.remove(p)
+            if os.path.isdir(p) and not os.path.islink(p):
+                shutil.rmtree(p)
+            else:
+                os.remove(p)
 
 
 def _estimate(data_profile: dict[str, Any] | None) -> dict[str, Any]:
@@ -697,14 +3722,25 @@ def _estimate(data_profile: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _recipe_outputs(recipe: Recipe, output_dir: str | None) -> list[str]:
+    """Every location the recipe writes to, in stage order.
+
+    Scans the shared ``OUTPUT_LOCATION_PARAMS`` set, so intermediates a stage produces as a
+    side effect (resampled dirs, per-speaker audio, RTTM dirs) are recorded rather than being
+    invisible. ``path`` is kept as a legacy alias. ``raw_data_dir`` is a source
+    cache/input, not a curated output. The verb-level ``output_dir`` argument is
+    retained for API compatibility but intentionally never invents an output the
+    executable recipe did not write.
+    """
+    from nemo_curator.audio_agent.recipe import OUTPUT_LOCATION_PARAMS
+
+    keys = [*sorted(OUTPUT_LOCATION_PARAMS - {"raw_data_dir"}), "path"]
     outs: list[str] = []
     for s in recipe.stages:
-        for key in ("output_path", "path", "output_manifest"):
+        for key in keys:
             v = s.params.get(key)
-            if isinstance(v, str):
+            if isinstance(v, str) and v not in outs:
                 outs.append(v)
-    if output_dir:
-        outs.append(output_dir)
+    _ = output_dir  # legacy no-op; stage params are execution truth
     return outs
 
 
@@ -714,13 +3750,53 @@ def _stage_metrics(results: list[Any] | None) -> dict[str, Any]:
     return _dedup_stage_perf(results or [])
 
 
-def _examples(results: list[Any] | None, *, limit: int) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for task in (results or [])[:limit]:
+def _result_rows(results: list[Any] | None) -> Iterator[dict[str, Any]]:
+    """Yield logical rows from one-row tasks and batched document carriers.
+
+    AudioTask-like results carry one mapping in ``task.data``. ``DocumentBatch``
+    carries a pandas/Arrow table and exposes ``to_pandas``. Keeping this adapter
+    structural avoids importing either dataframe dependency in the agent core
+    while ensuring evidence counts and previews describe the same logical rows.
+    """
+    for task in results or []:
         data = getattr(task, "data", None)
         if isinstance(data, dict):
-            out.append({k: v for k, v in data.items() if _jsonable(v)})
-    return out
+            yield data
+            continue
+        to_pandas = getattr(task, "to_pandas", None)
+        if not callable(to_pandas):
+            continue
+        frame = to_pandas()
+        to_dict = getattr(frame, "to_dict", None)
+        if not callable(to_dict):
+            continue
+        records = to_dict(orient="records")
+        if not isinstance(records, list):
+            continue
+        for row in records:
+            if isinstance(row, dict):
+                yield row
+
+
+def _examples_from_rows(
+    rows: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    return [
+        {k: v for k, v in row.items() if _jsonable(v)}
+        for row in rows[:limit]
+    ]
+
+
+def _examples(results: list[Any] | None, *, limit: int) -> list[dict[str, Any]]:
+    """Return at most ``limit`` JSON-safe logical rows from result carriers."""
+    rows: list[dict[str, Any]] = []
+    for row in _result_rows(results):
+        rows.append(row)
+        if len(rows) >= limit:
+            break
+    return _examples_from_rows(rows, limit=limit)
 
 
 def _is_value_empty(v: Any) -> bool:  # noqa: ANN401
@@ -731,19 +3807,23 @@ def _is_value_empty(v: Any) -> bool:  # noqa: ANN401
         return not v.strip()
     if isinstance(v, (list, dict, tuple)):
         return len(v) == 0
-    return False
+    # DataFrame rows use NaN for a column absent from one record. Treat that as
+    # missing evidence without importing pandas/numpy into this module.
+    try:
+        return bool(v != v)
+    except (TypeError, ValueError):
+        return False
 
 
 def _empty_required_outputs(rec: Recipe, rows: list[dict[str, Any]]) -> list[str]:
     """Required output keys (from the recipe's ``output_completeness`` criteria) that are
-    PRESENT in the sampled rows but EMPTY in every one of them -- i.e. produced-but-empty.
+    missing or empty in at least one bounded retained row.
 
-    Never flags an absent key (that's a produce/presence gap for validate/verify) and does
-    nothing when the recipe declares no output_completeness criteria, so it only tightens
-    ``goals_met`` on a real degenerate output (e.g. an ASR that ran but emitted no text).
+    ``output_completeness`` defaults to per-retained-item semantics, so one
+    missing/blank value is enough to withhold the smoke token. If retained rows
+    cannot be inspected at all, a deterministic required output is unverifiable
+    and therefore also cannot authorize a full run.
     """
-    if not rows:
-        return []
     from nemo_curator.audio_agent.acceptance import parse_criteria
 
     keys: list[str] = []
@@ -754,8 +3834,7 @@ def _empty_required_outputs(rec: Recipe, rows: list[dict[str, Any]]) -> list[str
                 keys.append(key)
     empty: list[str] = []
     for key in keys:
-        present = [row[key] for row in rows if key in row]
-        if present and all(_is_value_empty(v) for v in present):
+        if not rows or any(key not in row or _is_value_empty(row.get(key)) for row in rows):
             empty.append(key)
     return empty
 
@@ -780,16 +3859,241 @@ def _jsonable(v: Any) -> bool:  # noqa: ANN401
     return False
 
 
+def _locate_manifest_files(
+    output: str,
+) -> tuple[Any | None, list[str], str]:
+    """Resolve a local/cloud manifest location through one fsspec filesystem.
+
+    Paths returned here are filesystem-relative and must be opened through the
+    returned ``fs`` object. A directly named file keeps the historical behavior
+    of being scannable regardless of suffix; directories recursively include
+    only ``.json``/``.jsonl`` files.
+    """
+    try:
+        from fsspec.core import url_to_fs
+
+        fs, resolved = url_to_fs(os.path.expanduser(output))
+        if fs.isfile(resolved):
+            return fs, [resolved], "ok"
+        if fs.isdir(resolved):
+            found = sorted(
+                str(path)
+                for path in fs.find(
+                    resolved,
+                    withdirs=False,
+                    detail=False,
+                )
+                if str(path).endswith((".jsonl", ".json"))
+            )
+            return fs, found, "ok" if found else "no_manifest"
+        return fs, [], "missing" if not fs.exists(resolved) else "no_manifest"
+    except Exception:  # noqa: BLE001 - evidence readback must not fail a completed run
+        return None, [], "unreadable"
+
+
+def _manifest_files(output: str) -> list[str]:
+    """Filesystem-relative JSON/JSONL paths found at ``output``."""
+    _fs, files, _status = _locate_manifest_files(output)
+    return files
+
+
+def _scan_output_inventory(output: str) -> dict[str, Any]:
+    """Inventory a non-manifest file/directory without claiming row evidence."""
+    summary: dict[str, Any] = {
+        "status": "unavailable",
+        "output": output,
+        "files": 0,
+        "bytes": 0,
+        "suffixes": {},
+        "read_errors": 0,
+    }
+    try:
+        from fsspec.core import url_to_fs
+
+        fs, resolved = url_to_fs(os.path.expanduser(output))
+        if fs.isfile(resolved):
+            files = [resolved]
+        elif fs.isdir(resolved):
+            files = sorted(
+                str(path)
+                for path in fs.find(
+                    resolved,
+                    withdirs=False,
+                    detail=False,
+                )
+            )
+        else:
+            summary["status"] = "missing"
+            return summary
+        for path in files:
+            try:
+                info = fs.info(path)
+                summary["bytes"] += int(info.get("size") or 0)
+                suffix = os.path.splitext(str(path))[1].lower() or "<none>"
+                suffixes = summary["suffixes"]
+                suffixes[suffix] = int(suffixes.get(suffix) or 0) + 1
+            except Exception:  # noqa: BLE001 - one unreadable entry stays explicit
+                summary["read_errors"] += 1
+        summary["files"] = len(files)
+        if summary["read_errors"]:
+            summary["status"] = "partial"
+        else:
+            summary["status"] = "complete" if files else "empty"
+    except Exception:  # noqa: BLE001 - backend failures are evidence, not crashes
+        summary["status"] = "unreadable"
+        summary["read_errors"] = 1
+    return summary
+
+
 def _count_output_rows(output: str) -> int:
-    expanded = os.path.expanduser(output)
-    files: list[str] = []
-    if os.path.isdir(expanded):
-        for root, _d, fs in os.walk(expanded):
-            files.extend(os.path.join(root, f) for f in fs if f.endswith((".jsonl", ".json")))
-    elif os.path.isfile(expanded):
-        files = [expanded]
+    fs, files, _status = _locate_manifest_files(output)
+    if fs is None:
+        return 0
     total = 0
-    for f in files:
-        with contextlib.suppress(OSError), open(f, encoding="utf-8") as fh:
-            total += sum(1 for line in fh if line.strip())
+    for path in files:
+        try:
+            with fs.open(path, "rt", encoding="utf-8") as fh:
+                total += sum(1 for line in fh if line.strip())
+        except Exception:  # noqa: BLE001 - output inventory is best-effort
+            continue
     return total
+
+
+def _row_evidence(outputs: list[str], *, limit: int = _EVIDENCE_ROWS) -> list[dict[str, Any]]:
+    """Bounded preview rows from the terminal output only.
+
+    Full acceptance coverage comes from the summary returned by
+    :func:`_scan_terminal_output`; this compatibility helper intentionally keeps
+    only the first ``limit`` valid rows in memory.
+    """
+    rows, _summary = _scan_terminal_output(outputs, limit=limit)
+    return rows
+
+
+def _scan_terminal_output(  # noqa: C901, PLR0912, PLR0915 - streaming evidence states
+    outputs: list[str],
+    *,
+    limit: int = _EVIDENCE_ROWS,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Scan the terminal manifest completely while retaining a bounded row preview.
+
+    The last declared output is authoritative. A missing/empty terminal product
+    must never borrow valid rows from an earlier intermediate. The summary stores
+    counts only (including per-field coverage), so exhaustive checking does not
+    retain transcripts or scale memory with the corpus size.
+    """
+    terminal = str(outputs[-1]) if outputs else ""
+    summary: dict[str, Any] = {
+        "status": "unavailable",
+        "terminal_output": terminal,
+        "files": 0,
+        "readable_files": 0,
+        "valid_rows": 0,
+        "malformed_rows": 0,
+        "blank_rows": 0,
+        "read_errors": 0,
+        "field_scope": "top_level",
+        "fields": {},
+    }
+    if not terminal:
+        return [], summary
+
+    fs, files, locate_status = _locate_manifest_files(terminal)
+    summary["files"] = len(files)
+    if locate_status != "ok" or fs is None:
+        summary["status"] = locate_status
+        if locate_status == "unreadable":
+            summary["read_errors"] = 1
+        return [], summary
+
+    preview: list[dict[str, Any]] = []
+    fields: dict[str, dict[str, Any]] = summary["fields"]
+    for path in files:
+        try:
+            fh = fs.open(path, "rt", encoding="utf-8")
+        except Exception:  # noqa: BLE001 - backend errors become explicit evidence state
+            summary["read_errors"] += 1
+            continue
+        summary["readable_files"] += 1
+        try:
+            with fh:
+                for raw in fh:
+                    line = raw.strip()
+                    if not line:
+                        summary["blank_rows"] += 1
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except (TypeError, ValueError):
+                        summary["malformed_rows"] += 1
+                        continue
+                    if not isinstance(obj, dict):
+                        summary["malformed_rows"] += 1
+                        continue
+
+                    summary["valid_rows"] += 1
+                    if len(preview) < limit:
+                        preview.append(obj)
+                    for key, value in obj.items():
+                        stat = fields.setdefault(
+                            str(key),
+                            {
+                                "present": 0,
+                                "non_empty": 0,
+                                "numeric": 0,
+                            },
+                        )
+                        stat["present"] += 1
+                        if not _is_value_empty(value):
+                            stat["non_empty"] += 1
+                        if (
+                            isinstance(value, (int, float))
+                            and not isinstance(value, bool)
+                            and math.isfinite(float(value))
+                        ):
+                            number = float(value)
+                            stat["numeric"] += 1
+                            stat["sum"] = stat.get("sum", 0.0) + number
+                            stat["min"] = min(number, stat.get("min", number))
+                            stat["max"] = max(number, stat.get("max", number))
+        except Exception:  # noqa: BLE001 - remote iteration can raise backend-specific errors
+            summary["read_errors"] += 1
+
+    if summary["read_errors"] and not summary["readable_files"]:
+        summary["status"] = "unreadable"
+    elif summary["read_errors"] or summary["malformed_rows"] or summary["blank_rows"]:
+        summary["status"] = "partial"
+    elif not summary["valid_rows"]:
+        summary["status"] = "empty"
+    else:
+        summary["status"] = "complete"
+    rows = int(summary["valid_rows"])
+    for stat in fields.values():
+        if rows > 0 and int(stat.get("numeric") or 0) == rows:
+            stat["mean"] = float(stat.get("sum") or 0.0) / rows
+    return preview, summary
+
+
+def _aggregate_metrics(output_scan: dict[str, Any]) -> dict[str, float]:
+    """Return complete-corpus means for wholly numeric terminal fields.
+
+    Aggregate acceptance is evidence-backed only when every serialized row was
+    read successfully and every row carries a finite number for that field.
+    Partial scans and mixed/missing values stay unverifiable.
+    """
+    if str(output_scan.get("status") or "") != "complete":
+        return {}
+    rows = int(output_scan.get("valid_rows") or 0)
+    if rows <= 0:
+        return {}
+    metrics: dict[str, float] = {}
+    for field, stat in dict(output_scan.get("fields") or {}).items():
+        if (
+            int(stat.get("present") or 0) == rows
+            and int(stat.get("numeric") or 0) == rows
+            and isinstance(stat.get("mean"), (int, float))
+            and not isinstance(stat.get("mean"), bool)
+            and math.isfinite(float(stat["mean"]))
+        ):
+            metrics[str(field)] = float(stat["mean"])
+    return metrics

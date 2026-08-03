@@ -41,6 +41,69 @@ class TestRedact:
     def test_can_keep_transcripts(self) -> None:
         assert _safety.redact({"text": "hi"}, redact_transcripts=False)["text"] == "hi"
 
+    def test_strips_secret_values_embedded_in_error_strings(self) -> None:
+        out = _safety.redact(
+            {
+                "reason": (
+                    "credential=plain-value "
+                    "HF_TOKEN=plain-token "
+                    "AWS_ACCESS_KEY_ID=plain-access "
+                    "Authorization: Bearer bearer-value"
+                )
+            }
+        )
+        reason = out["reason"]
+        assert "plain-value" not in reason
+        assert "plain-token" not in reason
+        assert "plain-access" not in reason
+        assert "bearer-value" not in reason
+        assert reason.count("<redacted-secret>") == 4
+
+    def test_strips_quoted_json_secret_assignments_and_multiword_values(self) -> None:
+        redacted = _safety.redact_secret_text(
+            '{"api_key": "sk-demo-secret", "password": "two words secret"}'
+        )
+        assert "sk-demo-secret" not in redacted
+        assert "two words secret" not in redacted
+        assert redacted.count("<redacted-secret>") == 2
+
+    def test_strips_basic_auth_url_userinfo_and_jwt(self) -> None:
+        basic = "dXNlcjpwYXNzd29yZA=="
+        jwt = (
+            "eyJhbGciOiJIUzI1NiJ9."
+            "eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+            "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+        )
+        redacted = _safety.redact_secret_text(
+            f"Authorization: Basic {basic}; "
+            "registry=https://alice:correct-horse@example.test/v2; "
+            f"assertion {jwt}"
+        )
+        assert basic not in redacted
+        assert "alice:correct-horse" not in redacted
+        assert jwt not in redacted
+        assert "https://<redacted-secret>@example.test/v2" in redacted
+        assert redacted.count("<redacted-secret>") == 3
+
+    def test_strips_conservative_standalone_token_prefixes(self) -> None:
+        # Assembled from split literals so these FAKE fixtures never appear as a
+        # contiguous token in source (GitHub secret-scanning push protection matches the
+        # xoxb-/ghp_/AKIA/sk-proj- prefixes). The runtime strings are unchanged, so the
+        # redaction coverage is identical.
+        secrets = (
+            "sk-" + "proj-abcdefghijklmnopqrstuv",
+            "ghp" + "_abcdefghijklmnopqrstuvwxyz123456",
+            "AKIA" + "ABCDEFGHIJKLMNOP",
+            "xoxb" + "-123456789012-abcdefghijklmnop",
+        )
+        redacted = _safety.redact_secret_text(" ".join(secrets))
+        assert all(secret not in redacted for secret in secrets)
+        assert redacted.count("<redacted-secret>") == len(secrets)
+
+    def test_keeps_noncredential_basic_text_and_short_prefixed_terms(self) -> None:
+        text = "basic authentication failed while importing sk-learn and checking ghp_status"
+        assert _safety.redact_secret_text(text) == text
+
 
 class TestWorkspaceLock:
     def test_off_by_default(self, monkeypatch) -> None:
@@ -58,6 +121,40 @@ class TestWorkspaceLock:
     def test_allows_remote_uris(self, monkeypatch, tmp_path) -> None:
         monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))
         assert _safety.path_violations(["s3://bucket/key", "http://h/x", None]) == []
+
+    def test_file_uri_is_still_a_local_path(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))
+        inside = (tmp_path / "data.jsonl").as_uri()
+        assert _safety.path_violations([inside]) == []
+        assert any("passwd" in v for v in _safety.path_violations(["file:///etc/passwd"]))
+
+    def test_local_uri_alias_is_still_a_local_path(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))
+        inside = f"local://{tmp_path}/data.jsonl"
+        assert _safety.path_violations([inside]) == []
+        assert any("passwd" in v for v in _safety.path_violations(["local:///etc/passwd"]))
+
+    def test_recipe_path_params_flattens_list_valued_sources(self) -> None:
+        stage = type("Stage", (), {"params": {"manifest_path": ["a.jsonl", "b.jsonl"]}})()
+        recipe = type("Recipe", (), {"stages": [stage]})()
+        assert _safety.recipe_path_params(recipe) == ["a.jsonl", "b.jsonl"]
+
+    def test_recipe_path_params_ignores_semantic_path_key_fields(self) -> None:
+        stage = type(
+            "Stage",
+            (),
+            {
+                "params": {
+                    "audio_filepath_key": "audio_filepath",
+                    "audio_path_resolution": "relative",
+                    "split_filepaths_key": "split_filepaths",
+                    "model_path": "nvidia/model-name",
+                    "manifest_path": "inside.jsonl",
+                }
+            },
+        )()
+        recipe = type("Recipe", (), {"stages": [stage]})()
+        assert _safety.recipe_path_params(recipe) == ["inside.jsonl"]
 
 
 class TestSmokeToken:

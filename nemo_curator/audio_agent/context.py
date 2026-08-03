@@ -25,6 +25,7 @@ from __future__ import annotations
 from typing import Any
 
 from nemo_curator.audio_agent.contracts import PlanningContext
+from nemo_curator.audio_agent.env_health import env_report
 from nemo_curator.audio_agent.index import get_index
 from nemo_curator.audio_agent.profiler import probe_env, profile_data
 
@@ -47,7 +48,9 @@ def assemble(
 
     presets = _collect_presets(idx, selected_stages or [], matched_blueprints)
     data_profile = profile_data(data).to_dict() if data else None
-    env_profile = probe_env().to_dict() if include_env else None
+    env_obj = probe_env() if include_env else None
+    env_profile = env_obj.to_dict() if env_obj is not None else None
+    env_health = env_report(env_obj).to_dict() if env_obj is not None else None
 
     return PlanningContext(
         goal=goal,
@@ -60,6 +63,7 @@ def assemble(
         role_graph_slice=idx.role_neighborhood(roles),
         data_profile=data_profile,
         env_profile=env_profile,
+        env_health=env_health,
     )
 
 

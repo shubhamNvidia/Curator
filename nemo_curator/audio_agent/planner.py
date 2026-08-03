@@ -25,23 +25,42 @@ Scope of 1C.1: mode selection + feasibility + escalation. Per-stage resource
 *assignment* (1C.2) and measured calibration (the ``data_driven`` module) refine
 these numbers later; this module never reimplements Xenna's bin-packer.
 
-GPU feasibility tracks TWO INDEPENDENT constraints (both must hold):
+Feasibility gates ONLY on exact facts that are knowable ahead of time and that Xenna
+itself enforces -- never on a guess:
   (a) Ray reservation (scheduling) -- each stage reserves ``resources.gpus`` (the
       fraction Xenna pins per replica); the concurrent sum must fit the GPU COUNT,
-      else Xenna aborts ("requires 1.5 but only 1 are available").
-  (b) VRAM fit (memory) -- the concurrent VRAM (card/measured ``gpu_mem_gb``) must
-      fit one GPU's memory when the machine VRAM is known.
+      else Xenna aborts ("requires 1.5 but only 1 are available"). Exact -> a gate.
+  (b) GPU presence -- a GPU-only stage needs a GPU on the box. Exact -> a gate.
+  (c) CPU demand/reservation and host-RAM against known machine totals -> a gate.
 
-    streaming feasible iff  Sum(cpus) <= cpus*0.95  AND  Sum(host_mem) <= ram*0.90
-                            AND  Sum(gpu_reservation) <= num_gpus
-                            AND  Sum(gpu_mem_gb) <= machine_gpu_mem
-    else batch (only the largest single stage must fit each dimension:
-    max(gpu_reservation) <= num_gpus AND max(gpu_mem_gb) <= machine_gpu_mem);
-    if even that fails -> escalate.
+VRAM fit (memory) is DELIBERATELY NOT a gate. Real device-VRAM need depends on
+weights x activations x batch x precision -- the card ``gpu_mem_gb`` is a best_guess and
+is frequently *unknown* on multi-NIC / cloud hosts (Ray advertises a non-loopback IP).
+Xenna does not reserve VRAM (it reserves the GPU *fraction*), and the agent already
+measures real VRAM in ``smoke`` on the actual GPU. So VRAM is surfaced as an ADVISORY
+estimate/warning only: it never sets ``feasible=False`` and never forces batch. A real
+over-subscription shows up in the bounded ``smoke`` (the ground truth) as an OOM the
+failure classifier turns into "lower batch_size / smaller model", and the runtime
+auto-fallback drops streaming -> batch. This keeps the planner from out-predicting the
+scheduler and -- critically -- from blocking the very measurement step (``smoke``).
+
+CPU feasibility tracks estimated demand separately from the exact Ray reservation in
+``stage.resources.cpus``. Positive fixed ``num_workers()`` values multiply both per-worker
+footprints. The Xenna CPU budget is ``floor(total_cpus * 0.95)`` in both modes.
+
+    streaming feasible iff  Sum(cpu_demand) <= allocatable_cpus
+                            AND Sum(cpu_reservation) <= allocatable_cpus
+                            AND Sum(host_mem) <= ram*0.90
+                            AND Sum(gpu_reservation) <= num_gpus
+                            AND (a GPU exists when any stage is GPU-only)
+    else batch (only the largest single stage must fit each *gated* dimension);
+    if even that fails -> escalate. VRAM only ever adds an advisory note.
 """
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -60,14 +79,25 @@ class StageNeed:
 
     index: int
     name: str
+    # Card/calibration estimate of CPU demand per worker. This is distinct from
+    # ``cpu_reservation``, which is the exact value Ray schedules.
     cpus: float
     gpu_mem_gb: float
     host_mem_gb: float
     gpu_optional: bool = True
+    # Exact per-worker Ray CPU reservation from ``stage.resources.cpus``.
+    cpu_reservation: float = 0.0
     # Ray ``Resources.gpus`` the stage reserves for SCHEDULING (the fraction Xenna
     # pins per replica) -- independent of ``gpu_mem_gb`` (the VRAM it actually needs).
     gpu_reservation: float = 0.0
-    source: str = "default"  # measured (calibration) | card | default
+    # A positive explicit worker count means that many replicas are scheduled
+    # concurrently, even in batch mode. ``None`` means executor-sized; planning
+    # accounts for the minimum schedulable footprint of one replica.
+    num_workers: int | None = None
+    source: str = "default"  # measured (calibration raised a value) | card | default
+    # Per-resource provenance keeps the aggregate ``source`` honest when only
+    # some measurements exceed their conservative card/default floors.
+    resource_sources: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -103,34 +133,86 @@ def _gpu_fraction(gpu_mem_gb: float, machine_gpu_mem_gb: float) -> float:
     return 1.0  # GPU needed but machine VRAM unknown -> assume a whole GPU (conservative)
 
 
-def _stage_need(
-    index: int, stage: Any, contract: Any, card: dict[str, Any] | None, calib: dict[str, Any] | None = None  # noqa: ANN401
-) -> StageNeed:
-    """Derive a stage's absolute needs, preferring measured calibration > card > default.
+def _worker_count(need: StageNeed) -> int:
+    """Concurrent replicas the planner must reserve for one execution stage."""
+    return need.num_workers if need.num_workers is not None else 1
 
-    ``calib`` (from a prior smoke, 1C.2) overrides card ``resource`` facts field by
-    field, so a stage whose real VRAM was measured plans against the measured number
-    instead of the card's ``best_guess``.
+
+def _fixed_num_workers(stage: Any) -> int | None:  # noqa: ANN401
+    """Read a stage's fixed worker request without changing the stage."""
+    try:
+        value = stage.num_workers()
+    except Exception:  # noqa: BLE001 - an unreadable hint falls back to executor sizing
+        return None
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
+def _stage_need(
+    index: int,
+    stage: Any,
+    contract: Any,
+    card: dict[str, Any] | None,
+    calib: dict[str, Any] | None = None,  # noqa: ANN401
+) -> StageNeed:
+    """Derive a stage's needs from scheduling truth and conservative estimates.
+
+    Until calibration is bound to the exact stage configuration and proves full
+    configured-batch coverage, a bounded smoke may raise a card/default estimate
+    but must never lower it. This prevents a sample-of-one measurement from
+    understating full-run CPU/RAM/VRAM.
     """
     name = type(stage).__name__
     res = (card or {}).get("resource", {}) or {}
     calib = calib or {}
     requires_gpu = bool(getattr(getattr(contract, "gates", None), "requires_gpu", False))
 
-    def pick(key: str, card_default: Any) -> Any:  # measured > card > default  # noqa: ANN401
-        if key in calib and calib[key] is not None:
-            return calib[key]
-        return res.get(key, card_default)
+    baseline_source = "card" if res else "default"
 
-    cpus = float(pick("cpus", 1.0))
-    gpu_mem = pick("gpu_mem_gb", _DEFAULT_GPU_MEM_GB if requires_gpu else 0.0)
-    host_mem = float(pick("host_mem_gb", _DEFAULT_HOST_MEM_GB))
-    gpu_optional = bool(res.get("gpu_optional", True))
-    # The Ray GPU reservation is a scheduling fact only the built stage knows
-    # (``resources.gpus``); it is NOT a card/calibration number.
-    gpu_reservation = float(getattr(getattr(stage, "resources", None), "gpus", 0.0) or 0.0)
-    source = "measured" if calib.get("source") == "measured" and any(k in calib for k in ("cpus", "gpu_mem_gb", "host_mem_gb")) else ("card" if res else "default")
-    return StageNeed(index, name, cpus, float(gpu_mem or 0.0), host_mem, gpu_optional, gpu_reservation, source=source)
+    def pick(key: str, card_default: Any) -> tuple[float, str]:  # noqa: ANN401
+        baseline = float(res.get(key, card_default) or 0.0)
+        measured = calib.get(key)
+        if measured is not None and float(measured) > baseline:
+            return float(measured), "measured"
+        return baseline, baseline_source
+
+    cpus, cpus_source = pick("cpus", 1.0)
+    gpu_mem, gpu_mem_source = pick(
+        "gpu_mem_gb",
+        _DEFAULT_GPU_MEM_GB if requires_gpu else 0.0,
+    )
+    host_mem, host_mem_source = pick("host_mem_gb", _DEFAULT_HOST_MEM_GB)
+    gpu_optional = bool(res.get("gpu_optional", not requires_gpu))
+    resources = getattr(stage, "resources", None)
+    # Ray CPU/GPU reservations are scheduling facts only the built stage knows;
+    # they are NOT card/calibration numbers. Merely read the Resources object:
+    # planning must not normalize or mutate stage defaults.
+    cpu_reservation_raw = getattr(resources, "cpus", 1.0)
+    cpu_reservation = float(1.0 if cpu_reservation_raw is None else cpu_reservation_raw)
+    gpu_reservation = float(getattr(resources, "gpus", 0.0) or 0.0)
+    num_workers = _fixed_num_workers(stage)
+    resource_sources = {
+        "cpus": cpus_source,
+        "gpu_mem_gb": gpu_mem_source,
+        "host_mem_gb": host_mem_source,
+    }
+    # A bounded measurement that is equal to or below its conservative floor did
+    # not supply the selected value and must not be reported as its provenance.
+    source = "measured" if "measured" in resource_sources.values() else baseline_source
+    return StageNeed(
+        index=index,
+        name=name,
+        cpus=cpus,
+        gpu_mem_gb=float(gpu_mem or 0.0),
+        host_mem_gb=host_mem,
+        gpu_optional=gpu_optional,
+        cpu_reservation=cpu_reservation,
+        gpu_reservation=gpu_reservation,
+        num_workers=num_workers,
+        source=source,
+        resource_sources=resource_sources,
+    )
 
 
 def _execution_needs(
@@ -156,7 +238,10 @@ def _execution_needs(
         inner: list[Any] | None = None
         if depth < 8 and CompositeStage and isinstance(stage, CompositeStage):
             try:
-                inner = list(stage.decompose() or [])
+                # Match Pipeline._decompose_stages: this carries any configured
+                # ``CompositeStage.with_`` resource/worker overrides into the
+                # concrete stages that the backend will schedule.
+                inner = list(stage.decompose_and_apply_with() or [])
             except Exception:  # noqa: BLE001 - a composite that cannot plan-time decompose stays a leaf
                 inner = None
         if inner:
@@ -168,6 +253,35 @@ def _execution_needs(
     for i, st in enumerate(stages):
         visit(st, contracts[i] if i < len(contracts) else None, i, 0)
     return out
+
+
+def _calibration_mapping(
+    calibration: dict[str, Any] | None,
+) -> tuple[Mapping[str, Any], Any]:  # noqa: ANN401
+    """Return bare stage entries and an optional wrapper-level fingerprint.
+
+    ``calibrate`` returns ``{"calibration": {stage: facts}}`` while the SDK has
+    historically also accepted the inner mapping. Supporting both here keeps all
+    callers behind the same validation boundary.
+    """
+    if not isinstance(calibration, Mapping):
+        return {}, None
+    if "calibration" not in calibration:
+        return calibration, calibration.get("machine_fingerprint")
+    nested = calibration.get("calibration")
+    if not isinstance(nested, Mapping):
+        return {}, calibration.get("machine_fingerprint")
+    return nested, calibration.get("machine_fingerprint")
+
+
+def _valid_calibration_number(value: Any) -> bool:  # noqa: ANN401
+    """Whether a measured resource fact is finite and non-negative."""
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and float(value) >= 0
+    )
 
 
 def plan(
@@ -184,20 +298,64 @@ def plan(
     Default streaming; fall back to batch when the concurrent sum doesn't fit
     (CPU, host-RAM, Ray GPU reservations, or VRAM). If even the largest single
     stage doesn't fit (reservation > num_gpus, VRAM > machine VRAM, or a GPU-only
-    stage has no GPU), mark ``feasible=False`` with escalations. Per-stage needs
-    prefer measured ``calibration`` (1C.2, from a prior smoke) over card
-    ``resource`` facts over conservative defaults; the Ray GPU *reservation* is
-    always read from the built stage's ``resources.gpus``.
+    stage has no GPU), mark ``feasible=False`` with escalations. Per-stage
+    estimates conservatively take the maximum of measured ``calibration`` and
+    card/default facts; the Ray CPU/GPU reservations are always read from the
+    built stage's ``resources``.
     """
     from nemo_curator.audio_agent.index import get_index
 
     idx = index or get_index()
-    calibration = calibration or {}
+    machine_fingerprint = env.fingerprint()
+    calibration_entries, wrapper_fingerprint = _calibration_mapping(calibration)
+    calibration_notes: list[str] = []
+    noted_calibration_issues: set[str] = set()
+
+    def _calibration_note(message: str) -> None:
+        if message not in noted_calibration_issues:
+            noted_calibration_issues.add(message)
+            calibration_notes.append(message)
 
     def _calib_for(st: Any) -> dict[str, Any] | None:  # noqa: ANN401
         # Match by class name (manual calibration dicts) OR stage.name (what a smoke's
         # per_stage_metrics / from_smoke key by, e.g. "UTMOSFilter" vs "UTMOSFilterStage").
-        return calibration.get(type(st).__name__) or calibration.get(getattr(st, "name", "") or "\0")
+        stage_name = type(st).__name__
+        runtime_name = getattr(st, "name", "") or "\0"
+        raw = calibration_entries.get(stage_name) or calibration_entries.get(runtime_name)
+        if raw is None:
+            return None
+        if not isinstance(raw, Mapping):
+            _calibration_note(f"ignored invalid calibration for {stage_name}: entry is not a mapping")
+            return None
+
+        explicit_fingerprint = raw.get("machine_fingerprint", wrapper_fingerprint)
+        if explicit_fingerprint is not None:
+            if not isinstance(explicit_fingerprint, str) or not explicit_fingerprint:
+                _calibration_note(
+                    f"ignored calibration for {stage_name}: machine_fingerprint is invalid"
+                )
+                return None
+            if explicit_fingerprint != machine_fingerprint:
+                _calibration_note(
+                    f"ignored calibration for {stage_name}: machine_fingerprint does not match this machine"
+                )
+                return None
+
+        clean: dict[str, Any] = {}
+        for key in ("cpus", "gpu_mem_gb", "host_mem_gb"):
+            if key not in raw or raw[key] is None:
+                continue
+            if not _valid_calibration_number(raw[key]):
+                _calibration_note(
+                    f"ignored invalid calibration value for {stage_name}.{key}: "
+                    "expected a finite non-negative number"
+                )
+                continue
+            clean[key] = float(raw[key])
+        if not clean:
+            return None
+        clean["source"] = raw.get("source", "measured")
+        return clean
 
     needs = [
         _stage_need(i, st, contracts[i], idx.card(type(st).__name__), _calib_for(st))
@@ -207,32 +365,71 @@ def plan(
     # composite's hidden inner GPU stages are counted; the per-stage *report* below stays
     # at the recipe level. exec_needs == needs when there are no composites.
     exec_needs = _execution_needs(stages, contracts, idx, _calib_for)
-    if any(n.source == "measured" for n in needs):
-        rp_note = f"using measured calibration for {sum(1 for n in needs if n.source == 'measured')} stage(s)"
+    measured_count = sum(1 for n in exec_needs if n.source == "measured")
+    if measured_count:
+        rp_note = (
+            f"using measured calibration for {measured_count} stage(s) "
+            "(counted after composite expansion)"
+        )
     else:
         rp_note = ""
 
     total_cpus = float(env.total_cpus or 1)
+    # Xenna converts its fractional CPU allocation to an integral worker budget.
+    # Use the same floor for streaming and batch so a batch fallback cannot claim
+    # schedulability with CPUs Xenna intentionally withholds.
+    allocatable_cpus = math.floor(total_cpus * CPU_ALLOC)
     num_gpus = int(env.gpu_count or 0)
+    # A masked GPU (unreachable from this possibly-sandboxed process, but likely
+    # PRESENT) must not be treated as absent: GPU presence then DEFERS to smoke/run
+    # with full device access -- consistent with VRAM being advisory here (smoke is
+    # the oracle). Only a host with no masking signal blocks a GPU-only stage.
+    gpu_masked = bool(getattr(env, "gpu_possibly_masked", False))
     machine_gpu_mem = float(env.gpu_mem_gb or 0.0)
     total_ram = float(env.total_ram_gb or 0.0)
 
-    sum_cpus = sum(n.cpus for n in exec_needs)
-    sum_ram = sum(n.host_mem_gb for n in exec_needs)
-    max_cpus = max((n.cpus for n in exec_needs), default=0.0)
-    max_ram = max((n.host_mem_gb for n in exec_needs), default=0.0)
+    # Explicit ``num_workers`` means those actors coexist in both Xenna modes.
+    # Without it, account for the minimum one-replica schedulable footprint.
+    sum_cpu_demand = sum(n.cpus * _worker_count(n) for n in exec_needs)
+    sum_cpu_reservation = sum(n.cpu_reservation * _worker_count(n) for n in exec_needs)
+    sum_ram = sum(n.host_mem_gb * _worker_count(n) for n in exec_needs)
+    max_cpu_demand = max((n.cpus * _worker_count(n) for n in exec_needs), default=0.0)
+    max_cpu_reservation = max(
+        (n.cpu_reservation * _worker_count(n) for n in exec_needs),
+        default=0.0,
+    )
+    max_ram = max((n.host_mem_gb * _worker_count(n) for n in exec_needs), default=0.0)
     # GPU is TWO INDEPENDENT constraints, tracked separately (both must hold):
     #  (a) Ray reservation (scheduling): stages reserve ``resources.gpus``; Xenna pins
     #      that fraction per replica, so the CONCURRENT sum must fit the GPU COUNT (else
     #      it aborts, e.g. "requires 1.5 but only 1 are available").
     #  (b) VRAM fit (memory): the CONCURRENT VRAM must fit one GPU's memory (when known).
-    sum_reservation = sum(n.gpu_reservation for n in exec_needs)
-    max_reservation = max((n.gpu_reservation for n in exec_needs), default=0.0)
-    sum_gpu_mem = sum(n.gpu_mem_gb for n in exec_needs)
-    max_gpu_mem = max((n.gpu_mem_gb for n in exec_needs), default=0.0)
-    sum_gpu_fraction = sum(_gpu_fraction(n.gpu_mem_gb, machine_gpu_mem) for n in exec_needs)  # informational
+    sum_reservation = sum(n.gpu_reservation * _worker_count(n) for n in exec_needs)
+    max_reservation = max(
+        (n.gpu_reservation * _worker_count(n) for n in exec_needs),
+        default=0.0,
+    )
+    # A GPU-optional stage with no Ray GPU reservation is executing in CPU mode;
+    # its card's possible GPU footprint is not a demand on this plan. GPU-only
+    # stages remain a memory demand even if their reservation was misconfigured.
+    gpu_memory_needs = [
+        n
+        for n in exec_needs
+        if n.gpu_mem_gb > 0 and (n.gpu_reservation > 0 or not n.gpu_optional)
+    ]
+    sum_gpu_mem = sum(n.gpu_mem_gb * _worker_count(n) for n in gpu_memory_needs)
+    max_gpu_mem = max(
+        (n.gpu_mem_gb * _worker_count(n) for n in gpu_memory_needs),
+        default=0.0,
+    )
+    sum_gpu_fraction = sum(
+        _gpu_fraction(n.gpu_mem_gb, machine_gpu_mem) * _worker_count(n)
+        for n in gpu_memory_needs
+    )  # informational
 
-    rp = ResourcePlan(machine_fingerprint=env.fingerprint())
+    rp = ResourcePlan(machine_fingerprint=machine_fingerprint)
+    rp.notes.extend(str(note) for note in (env.notes or []) if str(note))
+    rp.notes.extend(calibration_notes)
     if rp_note:
         rp.notes.append(rp_note)
     if len(exec_needs) != len(needs):
@@ -241,59 +438,137 @@ def plan(
             "(composites flattened) for resource planning"
         )
 
-    cpu_ok = sum_cpus <= total_cpus * CPU_ALLOC
+    cpu_demand_ok = sum_cpu_demand <= allocatable_cpus
+    cpu_reservation_ok = sum_cpu_reservation <= allocatable_cpus
+    cpu_ok = cpu_demand_ok and cpu_reservation_ok
     ram_ok = total_ram <= 0 or sum_ram <= total_ram * RAM_ALLOC  # unknown RAM -> don't block
     reservation_stream_ok = sum_reservation <= num_gpus  # (a) concurrent Ray reservations fit the GPU count
-    vram_stream_ok = machine_gpu_mem <= 0 or sum_gpu_mem <= machine_gpu_mem  # (b) concurrent VRAM fits
+    gpu_presence_ok = (not gpu_memory_needs) or num_gpus > 0 or gpu_masked
+    vram_known = machine_gpu_mem > 0
 
-    if cpu_ok and ram_ok and reservation_stream_ok and vram_stream_ok:
+    # VRAM is NOT part of mode selection: it's a best-guess (often unknown), and forcing
+    # batch on it pre-empts the scheduler. Default streaming on the exact dims; a real VRAM
+    # over-subscription is caught by smoke + the runtime streaming->batch auto-fallback.
+    if cpu_ok and ram_ok and gpu_presence_ok and reservation_stream_ok:
         rp.mode = "streaming"
     else:
         rp.mode = "batch"
         rp.notes.append(
-            f"streaming does not fit (cpu_ok={cpu_ok}, ram_ok={ram_ok}, "
-            f"gpu_reservation_ok={reservation_stream_ok} [sum {round(sum_reservation, 2)} vs {num_gpus} GPU(s)], "
-            f"gpu_vram_ok={vram_stream_ok} [sum {round(sum_gpu_mem, 2)} vs {machine_gpu_mem} GB]); "
+            f"streaming does not fit (cpu_demand_ok={cpu_demand_ok}, "
+            f"cpu_reservation_ok={cpu_reservation_ok} "
+            f"[demand {round(sum_cpu_demand, 2)}, reservation {round(sum_cpu_reservation, 2)} "
+            f"vs {allocatable_cpus} allocatable CPU(s)], ram_ok={ram_ok}, "
+            f"gpu_available_ok={gpu_presence_ok}, "
+            f"gpu_reservation_ok={reservation_stream_ok} [sum {round(sum_reservation, 2)} vs {num_gpus} GPU(s)]); "
             f"falling back to batch (sequential)"
         )
 
     # Batch feasibility: only the largest single stage must fit each dimension; else escalate.
     if rp.mode == "batch":
-        if max_cpus > total_cpus:
+        if max_cpu_demand > allocatable_cpus:
             rp.feasible = False
-            rp.escalations.append(f"a single stage needs {max_cpus} CPUs > machine {total_cpus}")
-        if num_gpus == 0 and any((n.gpu_reservation > 0 or n.gpu_mem_gb > 0) and not n.gpu_optional for n in exec_needs):
+            rp.escalations.append(
+                f"a single stage demands {max_cpu_demand} CPUs > Xenna allocatable "
+                f"{allocatable_cpus} of machine {total_cpus}"
+            )
+        if max_cpu_reservation > allocatable_cpus:
+            rp.feasible = False
+            rp.escalations.append(
+                f"a single stage reserves {max_cpu_reservation} Ray CPU(s) > Xenna allocatable "
+                f"{allocatable_cpus} of machine {total_cpus}"
+            )
+        if num_gpus == 0 and gpu_masked and (
+            max_reservation > 0
+            or any(n.gpu_mem_gb > 0 and not n.gpu_optional for n in exec_needs)
+        ):
+            # Masked, not absent: defer to smoke/run with full device access rather
+            # than refuse. A genuinely GPU-less run surfaces at smoke (the oracle).
+            rp.notes.append(
+                "GPU appears masked (unreachable from this process); assuming a GPU is present "
+                "on the execution host -- smoke/run with full device access will confirm"
+            )
+        elif num_gpus == 0 and max_reservation > 0:
+            rp.feasible = False
+            rp.escalations.append(
+                f"a stage reserves {max_reservation} Ray GPU(s) but no GPU is available"
+            )
+        elif num_gpus == 0 and any(
+            n.gpu_mem_gb > 0 and not n.gpu_optional for n in exec_needs
+        ):
             rp.feasible = False
             rp.escalations.append("a GPU-only stage requires a GPU but none is available")
         if num_gpus > 0 and max_reservation > num_gpus:
             rp.feasible = False
             rp.escalations.append(f"a single stage reserves {max_reservation} Ray GPU(s) > available {num_gpus}")
-        if machine_gpu_mem > 0 and max_gpu_mem > machine_gpu_mem:
-            rp.feasible = False
-            rp.escalations.append(f"a single stage needs {max_gpu_mem} GB VRAM > machine GPU memory {machine_gpu_mem} GB")
+        # NOTE: VRAM is intentionally NOT escalated here -- it is advisory (see below).
         if total_ram > 0 and max_ram > total_ram:
             rp.feasible = False
             rp.escalations.append(f"a single stage needs {max_ram} GB RAM > machine {total_ram} GB")
 
+    # VRAM advisory (never a gate): the estimate is best_guess and often unknown, and smoke
+    # measures the real fit on the actual GPU. Warn but keep the plan feasible -- smoke is
+    # the oracle and the runtime auto-fallback handles a real streaming OOM.
+    if gpu_memory_needs:
+        if not vram_known:
+            rp.notes.append(
+                f"GPU VRAM for this machine is unknown; the ~{round(sum_gpu_mem, 2)} GB estimate is "
+                "unverified (best-guess) -- smoke will measure the real fit on the actual GPU"
+            )
+        elif sum_gpu_mem > machine_gpu_mem or max_gpu_mem > machine_gpu_mem:
+            rp.notes.append(
+                f"estimated VRAM (sum {round(sum_gpu_mem, 2)} GB, peak stage {round(max_gpu_mem, 2)} GB) "
+                f"may exceed machine GPU memory {machine_gpu_mem} GB (best-guess) -- smoke will confirm; "
+                "streaming auto-falls-back to batch and you can lower batch_size if it OOMs"
+            )
+
     # Disk headroom (best-effort; per-file sizing is a data_driven refinement).
-    if env.free_disk_gb and env.free_disk_gb < 1.0:
+    if env.free_disk_gb is not None and env.free_disk_gb < 1.0:
         rp.notes.append(f"low free disk ({env.free_disk_gb} GB) - outputs may not fit")
 
     rp.per_stage = [
-        {"stage_index": n.index, "stage": n.name, "cpus": n.cpus,
-         "gpu_reservation": n.gpu_reservation, "gpu_mem_gb": n.gpu_mem_gb,
-         "host_mem_gb": n.host_mem_gb, "source": n.source}
+        {
+            "stage_index": n.index,
+            "stage": n.name,
+            "cpus": n.cpus,
+            "cpu_reservation": n.cpu_reservation,
+            "gpu_reservation": n.gpu_reservation,
+            "gpu_mem_gb": n.gpu_mem_gb,
+            "host_mem_gb": n.host_mem_gb,
+            "num_workers": n.num_workers,
+            "source": n.source,
+            "resource_sources": dict(n.resource_sources),
+        }
         for n in needs
     ]
     rp.estimate = {
         "mode": rp.mode,
         "num_files": int((data_profile or {}).get("num_files", 0)),
-        "sum_cpus": round(sum_cpus, 2),
+        # ``sum_cpus`` remains the card/calibration demand for compatibility.
+        "sum_cpus": round(sum_cpu_demand, 2),
+        "sum_cpu_demand": round(sum_cpu_demand, 2),
+        "sum_cpu_reservation": round(sum_cpu_reservation, 2),
+        "allocatable_cpus": allocatable_cpus,
         "sum_gpu_reservation": round(sum_reservation, 2),
         "max_gpu_reservation": round(max_reservation, 2),
         "sum_gpu_mem_gb": round(sum_gpu_mem, 2),
         "sum_gpu_fraction": round(sum_gpu_fraction, 2),
+        "gpu_mem_known": vram_known,
         "sum_host_mem_gb": round(sum_ram, 2),
         "machine": {"cpus": total_cpus, "gpus": num_gpus, "gpu_mem_gb": machine_gpu_mem, "ram_gb": total_ram},
+        "execution_stages": [
+            {
+                "stage_index": n.index,
+                "stage": n.name,
+                "cpus": n.cpus,
+                "cpu_reservation": n.cpu_reservation,
+                "gpu_reservation": n.gpu_reservation,
+                "gpu_mem_gb": n.gpu_mem_gb,
+                "host_mem_gb": n.host_mem_gb,
+                "num_workers": n.num_workers,
+                "source": n.source,
+                "resource_sources": dict(n.resource_sources),
+            }
+            for n in exec_needs
+        ],
     }
     return rp

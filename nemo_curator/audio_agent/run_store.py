@@ -14,15 +14,19 @@
 
 """Local run-record store — per-run provenance for tracing + incremental continuation.
 
-**Local history only, NOT shared memory / cross-user learning** (a permanent
-non-goal). One JSON per run under a runs directory: ``AUDIO_AGENT_RUNS_DIR`` if set,
-else ``<AUDIO_AGENT_WORKSPACE>/.audio_agent_runs``, else ``<cwd>/.audio_agent_runs``.
-Records are written by ``run`` and read by the ``runs`` / ``plan_continuation`` verbs;
-they are never fed back to influence planning across sessions.
+**Local history only, NOT shared memory / cross-user learning** (a permanent non-goal).
+Records support *deterministic memoization* — content-addressed "has this exact computation
+already been done?" (see ``REUSE_ARCHITECTURE.md``) — and provenance; they are never fed back
+as learned priors to influence *what* the agent plans.
+
+One JSON per run under a runs directory: ``AUDIO_AGENT_RUNS_DIR`` if set, else
+``<AUDIO_AGENT_WORKSPACE>/.audio_agent_runs``, else ``<cwd>/.audio_agent_runs``. Records are
+written by ``run`` and read by the ``runs`` / ``continue`` / ``reuse-scan`` verbs.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import time
@@ -58,12 +62,20 @@ def new_run_id(config_hash: str | None = None) -> str:
 
 
 def save(record: RunRecord) -> str:
-    """Persist a run record as JSON; returns the path (best-effort, never raises)."""
+    """Persist a run record as JSON and index it; returns the path.
+
+    The JSON is the source of truth; the SQLite index is a rebuildable cache, so a failure
+    to index is swallowed rather than losing the record.
+    """
     directory = runs_dir()
     os.makedirs(directory, exist_ok=True)
     path = os.path.join(directory, f"{record.run_id}.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(record.to_dict(), f, indent=2, ensure_ascii=False, default=str)
+    with contextlib.suppress(Exception):  # the index is a cache; never fail a save over it
+        from nemo_curator.audio_agent import run_index
+
+        run_index.index_run(record)
     return path
 
 
@@ -95,11 +107,14 @@ def list_runs() -> list[dict[str, Any]]:
             {
                 "run_id": rec.run_id,
                 "config_hash": rec.config_hash,
+                "semantic_hash": rec.semantic_hash,
+                "dataset_key": rec.dataset_key,
                 "parent_run_id": rec.parent_run_id,
                 "status": rec.status,
                 "accepted": rec.accepted,
                 "input_count": rec.input_count,
                 "data_source": rec.data_source,
+                "elapsed_sec": rec.elapsed_sec,
                 "created_at": rec.created_at,
             }
         )

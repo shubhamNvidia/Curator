@@ -30,21 +30,90 @@ needs judgment a deterministic tool can't make, so it stays a skill/policy conce
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import os
+import re
 import secrets
 from functools import lru_cache
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 _SMOKE_SECRET_ENV = "AUDIO_AGENT_SMOKE_SECRET"
+_LOCAL_URI_SCHEMES = frozenset({"file", "local"})
 
 # Substrings that mark a dict key as holding a secret (redacted from returns).
 _SECRET_HINTS = ("token", "api_key", "apikey", "secret", "password", "aws_access_key", "credential")
+_SECRET_ASSIGNMENT = re.compile(
+    r"""(?ix)
+    (?P<prefix>
+        ["']?
+        [a-z0-9_-]*
+        (?:token|api[_-]?key|access[_-]?key|password|secret|credential)
+        [a-z0-9_-]*
+        ["']?
+        \s*[:=]\s*
+    )
+    (?P<value>
+        "(?:\\.|[^"\\])*"
+        |
+        '(?:\\.|[^'\\])*'
+        |
+        [^\s,;}\]]+
+    )
+    """
+)
+_HF_TOKEN_VALUE = re.compile(r"\bhf_[A-Za-z0-9]{8,}\b")
+_BEARER_VALUE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
+_BASIC_VALUE = re.compile(
+    r"(?i)(?P<prefix>\bbasic\s+)(?P<value>[A-Za-z0-9+/]{4,}={0,2})(?=$|[^A-Za-z0-9+/=])"
+)
+_URL_USERINFO = re.compile(
+    r"(?i)(?P<scheme>\b[a-z][a-z0-9+.-]*://)(?P<userinfo>[^/@\s]+)@"
+)
+_JWT_VALUE = re.compile(
+    r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
+    r"(?![A-Za-z0-9_-])"
+)
+# Strong, well-known prefixes plus a minimum opaque suffix length keep this
+# conservative: ordinary strings such as ``sk-learn`` are left untouched.
+_PREFIXED_TOKEN_VALUE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:"
+    r"sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{16,}"
+    r"|gh[pousr]_[A-Za-z0-9]{20,}"
+    r"|github_pat_[A-Za-z0-9_]{20,}"
+    r"|glpat-[A-Za-z0-9_-]{20,}"
+    r"|nvapi-[A-Za-z0-9_-]{16,}"
+    r"|xox[baprs]-[A-Za-z0-9-]{16,}"
+    r"|(?:AKIA|ASIA)[A-Z0-9]{16}"
+    r"|AIza[A-Za-z0-9_-]{20,}"
+    r")(?![A-Za-z0-9_-])"
+)
 # Keys holding transcript text (stripped from returns so transcripts don't reach the LLM).
 _TRANSCRIPT_KEYS = frozenset({"text", "pred_text", "reference_text", "transcript", "text_ref"})
-# Recipe param names that name a filesystem path (subject to the workspace lock).
-_PATH_PARAM_HINTS = ("path", "dir", "manifest", "file_paths", "raw_data_dir")
+# Dataset and output parameters that the agent itself reads or writes. This is a
+# closed list: substring matching mistakes semantic fields such as
+# ``audio_filepath_key`` and ``audio_path_resolution`` for filesystem paths, and
+# mistakes model IDs such as ``nvidia/...`` for workspace-relative files.
+_PATH_PARAM_NAMES = frozenset(
+    {
+        "audio_dir",
+        "data_dir",
+        "file_paths",
+        "input_manifest",
+        "manifest",
+        "manifest_path",
+        "output_audio_tar_path",
+        "output_dir",
+        "output_manifest",
+        "output_path",
+        "raw_data_dir",
+        "resampled_audio_dir",
+        "rttm_out_dir",
+        "separated_audio_dir",
+    }
+)
 
 
 def workspace_root() -> str | None:
@@ -64,9 +133,15 @@ def path_violations(paths: list[str | None]) -> list[str]:
         return []
     out: list[str] = []
     for p in paths:
-        if not p or not isinstance(p, str) or "://" in p:  # skip empty + remote URIs
+        if not p or not isinstance(p, str):
             continue
-        rp = os.path.realpath(os.path.expanduser(p))
+        parsed = urlsplit(p)
+        if parsed.scheme and parsed.scheme not in _LOCAL_URI_SCHEMES:
+            continue  # a local workspace root cannot constrain a remote namespace
+        local = unquote(parsed.path) if parsed.scheme in _LOCAL_URI_SCHEMES else p
+        if parsed.scheme in _LOCAL_URI_SCHEMES and parsed.netloc not in ("", "localhost"):
+            local = f"//{parsed.netloc}{local}"
+        rp = os.path.realpath(os.path.expanduser(local))
         if rp != root and not rp.startswith(root + os.sep):
             out.append(f"{p!r} resolves outside the allowed workspace {root!r}")
     return out
@@ -77,9 +152,48 @@ def recipe_path_params(recipe: Any) -> list[str]:  # noqa: ANN401
     paths: list[str] = []
     for s in getattr(recipe, "stages", []) or []:
         for k, v in (getattr(s, "params", {}) or {}).items():
-            if isinstance(v, str) and v and any(h in str(k).lower() for h in _PATH_PARAM_HINTS):
-                paths.append(v)
+            if str(k).lower() not in _PATH_PARAM_NAMES:
+                continue
+            values = v if isinstance(v, (list, tuple)) else [v]
+            paths.extend(item for item in values if isinstance(item, str) and item)
     return paths
+
+
+def redact_secret_text(value: str) -> str:
+    """Redact credential values embedded in otherwise ordinary error/log text."""
+
+    def replace_assignment(match: re.Match[str]) -> str:
+        raw_value = match.group("value")
+        quote = (
+            raw_value[0]
+            if len(raw_value) >= 2
+            and raw_value[0] in {'"', "'"}
+            and raw_value[-1] == raw_value[0]
+            else ""
+        )
+        replacement = f"{quote}<redacted-secret>{quote}"
+        return match.group("prefix") + replacement
+
+    def replace_basic(match: re.Match[str]) -> str:
+        """Redact only syntactically valid Basic user:password credentials."""
+        token = match.group("value")
+        unpadded = token.rstrip("=")
+        padded = unpadded + ("=" * (-len(unpadded) % 4))
+        try:
+            decoded = base64.b64decode(padded, validate=True)
+        except (ValueError, TypeError):
+            return match.group(0)
+        if b":" not in decoded:
+            return match.group(0)
+        return match.group("prefix") + "<redacted-secret>"
+
+    text = _SECRET_ASSIGNMENT.sub(replace_assignment, value)
+    text = _URL_USERINFO.sub(r"\g<scheme><redacted-secret>@", text)
+    text = _BASIC_VALUE.sub(replace_basic, text)
+    text = _HF_TOKEN_VALUE.sub("<redacted-secret>", text)
+    text = _BEARER_VALUE.sub("Bearer <redacted-secret>", text)
+    text = _JWT_VALUE.sub("<redacted-secret>", text)
+    return _PREFIXED_TOKEN_VALUE.sub("<redacted-secret>", text)
 
 
 def redact(obj: Any, *, redact_transcripts: bool = True) -> Any:  # noqa: ANN401
@@ -106,6 +220,8 @@ def redact(obj: Any, *, redact_transcripts: bool = True) -> Any:  # noqa: ANN401
             return out
         if isinstance(o, list):
             return [_r(v) for v in o]
+        if isinstance(o, str):
+            return redact_secret_text(o)
         return o
 
     return _r(obj)

@@ -20,7 +20,9 @@ GPU resources based on the test session's requirements.
 
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -193,8 +195,40 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool:
     return False
 
 
+# Ray appends "/session_<date>_<time>_<us>_<pid>/sockets/plasma_store" (63 bytes) to its temp
+# directory, and mkdtemp adds "/rayXXXXXXXX" (12). The kernel caps an AF_UNIX path at 107.
+_RAY_SESSION_SOCKET_BYTES = 63
+_RAY_MKDTEMP_BYTES = 12
+_AF_UNIX_MAX_BYTES = 107
+_RAY_TEMP_ROOT_BUDGET = _AF_UNIX_MAX_BYTES - _RAY_SESSION_SOCKET_BYTES - _RAY_MKDTEMP_BYTES
+
+
+def _short_ray_temp_dir() -> Path:
+    """A Ray temp directory short enough for the kernel's UNIX-socket limit.
+
+    Ray's raylet and plasma sockets live under this directory, and their paths are bounded by
+    :data:`_AF_UNIX_MAX_BYTES`. Ray's own session folder spends most of that budget, leaving the
+    root about 30 bytes. That is why this does not use ``tmp_path_factory``: it inherits
+    ``--basetemp``, and even pytest's default ``/tmp/pytest-of-<user>/pytest-<n>`` overruns the
+    cap once the username is longer than a few characters. The raylet then never starts and the
+    whole session fails as "Ray cluster did not become responsive", with the real ``OSError``
+    buried in a raylet log -- a full test run's wait to learn nothing. Hence a short root of our
+    own, deliberately independent of ``--basetemp``, removed on teardown since pytest no longer
+    owns it.
+    """
+    root = os.environ.get("RAY_TMPDIR") or tempfile.gettempdir()
+    if len(root) > _RAY_TEMP_ROOT_BUDGET:
+        msg = (
+            f"the temp root for Ray is {len(root)} bytes ({root!r}) and must be at most "
+            f"{_RAY_TEMP_ROOT_BUDGET}, or its socket paths exceed the {_AF_UNIX_MAX_BYTES}-byte "
+            f"AF_UNIX limit and the raylet will not start. Set RAY_TMPDIR to something shorter."
+        )
+        raise RuntimeError(msg)
+    return Path(tempfile.mkdtemp(prefix="ray", dir=root))
+
+
 @pytest.fixture(scope="session", autouse=True)
-def shared_ray_cluster(tmp_path_factory: pytest.TempPathFactory, pytestconfig: pytest.Config) -> str:
+def shared_ray_cluster(pytestconfig: pytest.Config) -> str:
     """Set up a shared Ray cluster with dynamic GPU configuration.
 
     This fixture automatically determines whether GPU resources are needed
@@ -226,7 +260,7 @@ def shared_ray_cluster(tmp_path_factory: pytest.TempPathFactory, pytestconfig: p
 
     logger.info(f"Configuring Ray cluster with {'GPU' if needs_gpu else 'CPU-only'} support")
 
-    temp_dir = tmp_path_factory.mktemp("ray")
+    temp_dir = _short_ray_temp_dir()
 
     ray_client = RayClient(
         num_cpus=num_cpus,
@@ -246,6 +280,7 @@ def shared_ray_cluster(tmp_path_factory: pytest.TempPathFactory, pytestconfig: p
         _safe_loguru_info("Shutting down Ray cluster")
         with suppress(Exception):
             ray_client.stop()
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 @pytest.fixture

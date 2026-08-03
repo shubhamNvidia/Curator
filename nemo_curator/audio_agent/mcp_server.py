@@ -73,10 +73,12 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
         acceptance_criteria: list[dict[str, Any]] | None = None,
         request_type: str | None = None,
     ) -> dict[str, Any]:
-        """Validate a recipe (roles/keys/cards/gates/output-completeness) -> Verdict.
+        """Validate mechanical runnability and return a grounded Verdict.
 
         ``acceptance_criteria`` + ``request_type`` add the 1A.1 acceptance checks
-        (criterion fields must be producible; request-type sanity)."""
+        (criterion fields must be producible; request-type sanity). The additive
+        ``semantic_review`` packet must be interpreted by the host LLM before smoke;
+        a mechanical ``pass`` alone is not intent approval."""
         return aa.validate(
             recipe, data=data, expected_outputs=expected_outputs,
             acceptance_criteria=acceptance_criteria, request_type=request_type,
@@ -94,8 +96,9 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
         """Run a recipe on a bounded sample and return evidence (incl. a ``smoke_token``).
 
         ``bootstrap_ray`` auto-starts a local Ray head when none is reachable;
-        ``output_dir`` sets where sampled outputs go; ``calibration`` seeds mode
-        selection from a prior smoke. Parity with the ``smoke`` verb/CLI."""
+        ``output_dir`` is retained as the verb's legacy no-op; sampled writes are
+        always isolated in an ephemeral sandbox. ``calibration`` accepts either
+        the mapping from a smoke or the complete wrapper returned by ``calibrate``."""
         return aa.smoke(
             recipe, sample=sample, data=data, output_dir=output_dir,
             bootstrap_ray=bootstrap_ray, calibration=calibration,
@@ -111,23 +114,34 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
         bootstrap_ray: bool = False,
         smoke_token: str | None = None,
         calibration: dict[str, Any] | None = None,
+        goal: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Confirm-gated full run. Refuses without explicit confirmation.
 
         ``smoke_token`` satisfies ``AUDIO_AGENT_REQUIRE_SMOKE`` (pass the token from a
         prior ``smoke``); ``bootstrap_ray`` auto-starts Ray; ``checkpoint_path`` enables
-        partial-run resume; ``output_dir``/``calibration`` mirror the verb. Full parity
-        with the ``run`` verb/CLI."""
+        partial-run resume; ``goal`` records what the run was for in provenance.
+        ``calibration`` accepts the complete wrapper returned by ``calibrate``.
+        ``output_dir`` is retained as the verb's legacy no-op; configure output
+        paths on recipe stages."""
         return aa.run(
             recipe, confirm=confirm, data=data, output_dir=output_dir,
             checkpoint_path=checkpoint_path, bootstrap_ray=bootstrap_ray,
-            smoke_token=smoke_token, calibration=calibration,
+            smoke_token=smoke_token, calibration=calibration, goal=goal,
         )
 
     @server.tool()
-    def report(output: str, data: str | None = None) -> dict[str, Any]:
-        """Post-hoc evidence report from an output manifest/dir."""
-        return aa.report(output, data=data)
+    def report(
+        output: str,
+        recipe: dict[str, Any] | None = None,
+        data: str | None = None,
+    ) -> dict[str, Any]:
+        """Post-hoc evidence report from an output manifest/dir.
+
+        Supplying ``recipe`` binds the evidence to its terminal serializer,
+        frozen identity, and acceptance contract. In that form ``data`` is only
+        a consistency assertion about the recipe's configured source."""
+        return aa.report(output, recipe=recipe, data=data)
 
     @server.tool()
     def verify(
@@ -160,23 +174,104 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
         return aa.resolve(stage, label=label, use_case=use_case, explicit=explicit, data_driven=data_driven)
 
     @server.tool()
-    def runs(run_id: str | None = None) -> dict[str, Any]:
+    def runs(
+        run_id: str | None = None,
+        data: str | None = None,
+        stage: str | None = None,
+        since: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
         """List local run records (provenance), or load one by run_id. Local history,
-        not shared memory/learning."""
-        return aa.runs(run_id=run_id)
+        not shared memory/learning. Filter by dataset path/key, stage, and time."""
+        return aa.runs(run_id=run_id, data=data, stage=stage, since=since, limit=limit)
 
     @server.tool()
-    def plan_continuation(recipe: dict[str, Any], parent_run_id: str, data: str | None = None) -> dict[str, Any]:
-        """Plan a follow-up run incrementally against a prior run: reuse the parent's
-        output where the new recipe safely extends it (else full_rerun with the
-        divergence point). Reuse requires the same source data."""
-        return aa.plan_continuation(recipe, parent_run_id, data=data)
+    def reuse_scan(
+        recipe: dict[str, Any],
+        data: str | None = None,
+        limit: int = 5,
+    ) -> dict[str, Any]:
+        """Find prior artifacts this recipe could reuse without changing state."""
+        return aa.reuse_scan(recipe, data=data, limit=limit)
+
+    @server.tool()
+    def reindex() -> dict[str, Any]:
+        """Rebuild the run/artifact lookup index from its JSON source records."""
+        return aa.reindex()
+
+    @server.tool()
+    def plan_continuation(
+        recipe: dict[str, Any],
+        parent_run_id: str | None = None,
+        data: str | None = None,
+        execute: bool = False,
+        choice: str | None = None,
+        confirm: bool | str = False,
+        output_dir: str | None = None,
+        checkpoint_path: str | None = None,
+        bootstrap_ray: bool = False,
+        smoke_token: str | None = None,
+        calibration: dict[str, Any] | None = None,
+        goal: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Plan, or explicitly execute, a safe reuse choice for a follow-up recipe.
+
+        ``parent_run_id`` is optional because the artifact scan can find reusable
+        work independently. Execution remains subject to the normal confirmation
+        and smoke-evidence gates. ``calibration`` accepts the complete wrapper
+        returned by ``calibrate``."""
+        return aa.plan_continuation(
+            recipe,
+            parent_run_id,
+            data=data,
+            execute=execute,
+            choice=choice,
+            confirm=confirm,
+            output_dir=output_dir,
+            checkpoint_path=checkpoint_path,
+            bootstrap_ray=bootstrap_ray,
+            smoke_token=smoke_token,
+            calibration=calibration,
+            goal=goal,
+        )
 
     @server.tool()
     def calibrate(smoke_report: dict[str, Any]) -> dict[str, Any]:
-        """Extract measured per-stage resources from a smoke report (1C.2), to pass to
-        run(calibration=...) so the planner uses measured over card best-guess numbers."""
+        """Extract measured per-stage resources from a smoke report (1C.2).
+
+        The result is a ``{"calibration": {...}}`` wrapper. Pass that complete
+        result unchanged as ``calibration`` to ``smoke``, ``run``, or
+        ``plan_continuation``; the core accepts both this wrapper and a bare
+        stage-to-measurements mapping."""
         return aa.calibrate(smoke_report)
+
+    @server.tool()
+    def diagnose(
+        error: str,
+        recipe: dict[str, Any] | None = None,
+        operation: str = "run",
+        phase: str = "runtime",
+        attempted_actions: list[str] | None = None,
+        execution_target: str | None = None,
+    ) -> dict[str, Any]:
+        """Analyze a failure and return evidence, grounded choices, and a user-decision prompt.
+
+        This tool never applies a fix. The host should explain the relevant facts,
+        recommend an available option against the user's constraints, and ask before
+        any environment, host, credential, launch, device, or recipe change."""
+        return aa.diagnose(
+            error,
+            recipe=recipe,
+            operation=operation,
+            phase=phase,
+            attempted_actions=attempted_actions,
+            execution_target=execution_target,
+        )
+
+    @server.tool()
+    def doctor() -> dict[str, Any]:
+        """Return machine health plus structured, non-executing remediation options."""
+        return aa.doctor()
 
     return server
 

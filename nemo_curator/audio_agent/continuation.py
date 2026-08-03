@@ -39,8 +39,65 @@ if TYPE_CHECKING:
     from nemo_curator.audio_agent.recipe import Recipe
 
 
+# How to re-enter a pipeline from a persisted artifact: the source stage that reads each
+# artifact kind, and the param naming the location.
+_SOURCE_FOR_KIND: dict[str, tuple[str, str]] = {
+    "manifest": ("ManifestReader", "manifest_path"),
+    "audio_dir": ("CreateInitialManifestAudioFolderStage", "data_dir"),
+}
+_SOURCE_ASSERTION_KEYS = frozenset(
+    {"manifest_path", "input_manifest", "audio_dir", "raw_data_dir", "data_dir"}
+)
+
+
 def _stage_dicts(recipe: Recipe) -> list[dict[str, Any]]:
     return [s.to_dict() for s in recipe.stages]
+
+
+def materialize(new_recipe: Recipe, *, uri: str, kind: str, prefix: int) -> tuple[Recipe | None, str]:
+    """Rewrite ``new_recipe`` to start from a persisted artifact: ``(recipe, error)``.
+
+    Drops the first ``prefix`` stages (the work being reused) and prepends a source stage
+    that reads ``uri``. The result is an ordinary recipe -- it goes through the same
+    ``validate`` -> confirm -> ``run`` path as anything else, so reuse buys no shortcut past
+    the safety gates. Everything downstream is left exactly as the user configured it.
+    """
+    from nemo_curator.audio_agent.recipe import Recipe, StageRef
+
+    if prefix <= 0 or prefix > len(new_recipe.stages):
+        return None, f"reuse point {prefix} is outside the recipe ({len(new_recipe.stages)} stages)"
+    source = _SOURCE_FOR_KIND.get(kind)
+    if source is None:
+        return None, (
+            f"no source stage can re-read a {kind!r} artifact; reuse would need the pipeline to start "
+            f"from a manifest or an audio directory"
+        )
+    ref, param = source
+    suffix = [StageRef(ref=s.ref, params=dict(s.params)) for s in new_recipe.stages[prefix:]]
+    if not suffix:
+        return None, "nothing left to run after the reuse point (this is an 'already done' case)"
+    # Recipe.inputs is assertion metadata, not parameter injection. A continued
+    # recipe physically reads the verified artifact, so carrying the original
+    # corpus assertion unchanged would make its own metadata contradict its
+    # source stage. Keep unrelated/output metadata and bind the physical input;
+    # the original corpus identity travels separately as verified lineage.
+    execution_inputs = {
+        key: value
+        for key, value in new_recipe.inputs.items()
+        if key not in _SOURCE_ASSERTION_KEYS
+    }
+    execution_inputs[param] = uri
+    materialized = Recipe(
+        stages=[StageRef(ref=ref, params={param: uri}), *suffix],
+        inputs=execution_inputs,
+        preset=new_recipe.preset,
+        acceptance_criteria=list(new_recipe.acceptance_criteria),
+        rationale=new_recipe.rationale,
+        name=f"{new_recipe.name}_continued",
+        knowledge_version=new_recipe.knowledge_version,
+        parent_run_id=new_recipe.parent_run_id,
+    )
+    return materialized.freeze(), ""
 
 
 def _common_prefix_len(a: list[dict[str, Any]], b: list[dict[str, Any]]) -> int:
@@ -95,11 +152,25 @@ def _resume_breaks_on_disk_boundary(new_recipe: Recipe, prefix: int) -> str | No
         return None
 
 
+def _source_changed(parent: RunRecord, *, data_fingerprint: str | None, dataset_key: str | None) -> bool:
+    """True when the source data is provably different from the parent run's.
+
+    Prefers the tiered ``dataset_key`` (size+mtime, so an in-place edit is caught) and falls
+    back to the legacy shape fingerprint for records written before it existed. Unknown on
+    either side is not "changed" -- the caller simply gets no same-data evidence.
+    """
+    parent_key = getattr(parent, "dataset_key", None)
+    if dataset_key and parent_key:
+        return dataset_key != parent_key
+    return bool(data_fingerprint and parent.data_fingerprint and data_fingerprint != parent.data_fingerprint)
+
+
 def plan_continuation(
     new_recipe: Recipe,
     parent: RunRecord,
     *,
     data_fingerprint: str | None = None,
+    dataset_key: str | None = None,
 ) -> dict[str, Any]:
     """Compute the incremental execution plan for ``new_recipe`` given a ``parent`` run."""
     from nemo_curator.audio_agent import _safety
@@ -114,11 +185,11 @@ def plan_continuation(
     new_refs = [s.get("ref") for s in new_stages]
 
     # Same-data guard: reuse is invalid if the source dataset changed.
-    if data_fingerprint is not None and parent.data_fingerprint and data_fingerprint != parent.data_fingerprint:
+    if _source_changed(parent, data_fingerprint=data_fingerprint, dataset_key=dataset_key):
         return {
             "mode": "full_rerun",
             "parent_run_id": parent.run_id,
-            "reason": "source data changed since the parent run (data-fingerprint mismatch); nothing can be reused",
+            "reason": "source dataset identity changed since the parent run; nothing can be reused",
             "run_stages": new_refs,
         }
 
@@ -134,7 +205,10 @@ def plan_continuation(
             "reuse_from": list(parent.output_paths),
             "reuse_stages": parent_refs,
             "run_stages": [],
-            "rationale": "identical recipe on the same data; reuse the parent output as-is (nothing to run)",
+            "rationale": (
+                "identical recipe with a matching dataset identity; "
+                "reuse the parent output as-is (nothing to run)"
+            ),
         }
 
     prefix = _common_prefix_len(parent_stages, new_stages)
