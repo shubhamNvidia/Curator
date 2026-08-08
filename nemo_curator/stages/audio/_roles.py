@@ -166,13 +166,26 @@ def role_for_value(key_value: str, *, field_name: str | None = None) -> Role:
     return LITERAL_KEY_ROLES.get(key_value, "unknown")
 
 
-def field_has_declared_role(field_name: str) -> bool:
-    """True if a ``*_key`` field has a role or is an allowlisted internal key.
+def field_has_declared_role(field_name: str, stage_cls: type | None = None) -> bool:
+    """True if a ``*_key`` field has a role or is declared internal bookkeeping.
 
-    Used by the conformance harness to catch a newly added ``*_key`` field that
-    forgot a :data:`KEY_ROLES` entry.
+    Used by the conformance harness to catch a newly added ``*_key`` field that forgot a
+    :data:`KEY_ROLES` entry.
+
+    A stage may satisfy this itself, via ``KEY_ROLE_OVERRIDES`` (this field means an
+    existing role) or ``INTERNAL_KEY_FIELDS`` (this field is my own bookkeeping and chains
+    with nothing). That is what keeps adding a stage from meaning editing this module. The
+    shared tables stay authoritative for keys that cross stages, because a role is the
+    vocabulary two stages connect through -- a privately invented one would compose with
+    nothing while still passing the check.
     """
-    return field_name in KEY_ROLES or field_name in INTERNAL_KEY_FIELDS
+    if field_name in KEY_ROLES or field_name in INTERNAL_KEY_FIELDS:
+        return True
+    if stage_cls is None:
+        return False
+    return field_name in role_overrides_for(stage_cls) or field_name in (
+        getattr(stage_cls, "INTERNAL_KEY_FIELDS", frozenset()) or frozenset()
+    )
 
 
 def role_overrides_for(stage_cls: type) -> Mapping[str, Role]:

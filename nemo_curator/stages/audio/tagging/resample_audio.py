@@ -126,7 +126,7 @@ class ResampleAudioStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 sample_rate_key=self.sample_rate_key,
             ),
             writes=IOSpec(data_keys=writes, produces=produces),
-            gates=Gates(writes_to_disk=self.write_to_disk, requires_ffmpeg=True),
+            gates=Gates(writes_to_disk=self.write_to_disk, requires_ffmpeg=True, output_path_params=["resampled_audio_dir"]),
         )
 
     def process(self, task: AudioTask) -> AudioTask:

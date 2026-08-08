@@ -336,7 +336,7 @@ class SegmentExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 IOSpec(data_keys=["original_file", "diar_segments", "speaker_id"], accepts=["file"]),
             ],
             writes=IOSpec(data_keys=[self.output_key], produces=["disk"]),
-            gates=Gates(writes_to_disk=True),
+            gates=Gates(writes_to_disk=True, output_path_params=["output_dir"]),
         )
 
     def num_workers(self) -> int | None:

@@ -270,8 +270,7 @@ class InferenceSortformerStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
             gates=Gates(
                 requires_gpu=True,
                 writes_to_disk=self.rttm_out_dir is not None,
-                requires_internet_first_run=self.model_path is None,
-            ),
+                requires_internet_first_run=self.model_path is None, output_path_params=["rttm_out_dir"]),
         )
 
     def ray_stage_spec(self) -> dict[str, Any]:

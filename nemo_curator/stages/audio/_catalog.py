@@ -41,6 +41,9 @@ if TYPE_CHECKING:
     from nemo_curator.stages.audio._agent_ready import StageContract
 
 _IMPORTED = False
+# Modules discovery could not import, kept so the failure can be reported rather than
+# silently shrinking the catalog.
+_SKIPPED: list[dict[str, str]] = []
 
 
 def _ensure_audio_stages_imported() -> None:
@@ -68,7 +71,24 @@ def _ensure_audio_stages_imported() -> None:
             importlib.import_module(modinfo.name)
         except Exception as e:  # noqa: BLE001 - optional dep or import-time issue; skip
             warnings.warn(f"audio catalog: skipped {modinfo.name} ({type(e).__name__}: {e})", stacklevel=2)
+            # Recorded, not just warned: a warning goes to stderr, where the agent's JSON
+            # consumer never sees it, and a silently shorter catalog is indistinguishable
+            # from a smaller library. See :func:`unavailable_modules`.
+            _SKIPPED.append({"module": modinfo.name, "error": f"{type(e).__name__}: {e}"})
     _IMPORTED = True
+
+
+def unavailable_modules() -> list[dict[str, str]]:
+    """Stage modules that could not be imported, so a caller can report what is MISSING.
+
+    Discovery degrades to whatever imported successfully. Without this, a CPU-only
+    (``audio_cpu``) install -- a supported profile -- simply has no ASR or diarization
+    stages, and the agent concludes they do not exist rather than that they are unavailable
+    *here*, which is the difference between "your library cannot do this" and "install the
+    GPU extra".
+    """
+    _ensure_audio_stages_imported()
+    return [dict(entry) for entry in _SKIPPED]
 
 
 def _agent_ready_registry() -> dict[str, type]:

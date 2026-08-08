@@ -179,6 +179,13 @@ class ALMDataBuilderStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             # process() rebuilds task.data selectively (words/segments stripped;
             # the min_sample_rate branch keeps only a four-key subset).
             preserves_upstream_keys=False,
+            # Named, not merely implied by preserves_upstream_keys: that flag says the entry is
+            # rebuilt, while this says WHICH keys do not survive. Without the names, a downstream
+            # sink check still counts a waveform this stage has already dropped, and refuses a
+            # pipeline that would have run -- the kind of wrong hard gate that pushes a caller
+            # into faking a value to get past it. Derived from the configured parameter so the
+            # declaration tracks whatever the caller actually set.
+            removes_keys=sorted(self._drop_fields_top_level_set),
         )
 
     def process(self, task: AudioTask) -> AudioTask:

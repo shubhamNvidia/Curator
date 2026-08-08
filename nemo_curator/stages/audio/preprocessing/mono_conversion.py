@@ -146,7 +146,7 @@ class MonoConversionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 sample_rate_key=self.sample_rate_key,
             ),
             writes=IOSpec(data_keys=writes, produces=produces),
-            gates=Gates(writes_to_disk=self.write_to_disk),
+            gates=Gates(writes_to_disk=self.write_to_disk, output_path_params=["output_dir"]),
         )
 
     def _write_audio(self, waveform: torch.Tensor, sample_rate: int, task: AudioTask) -> str:

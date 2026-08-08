@@ -128,7 +128,7 @@ class SnippetExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             ),
             cardinality="1:N fan-out",
             iteration_key=_PLAN_DATA_KEY,
-            gates=Gates(writes_to_disk=not self.dry_run, lifecycle_side_effects=not self.dry_run),
+            gates=Gates(writes_to_disk=not self.dry_run, lifecycle_side_effects=not self.dry_run, output_path_params=["output_dir", "output_audio_tar_path"]),
         )
 
     def ray_stage_spec(self) -> dict[str, Any]:

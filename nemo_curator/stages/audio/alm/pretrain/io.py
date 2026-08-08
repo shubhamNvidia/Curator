@@ -253,6 +253,7 @@ class SnippetManifestWriterStage(AgentReady, ProcessingStage[AudioTask, AudioTas
     AGENT_STATIC: ClassVar[StaticHints] = StaticHints(
         gates=Gates(
             writes_to_disk=True,
+            output_path_params=["output_path"],
             lifecycle_side_effects=True,
             requires_serializable_input=True,
         )
@@ -271,6 +272,7 @@ class SnippetManifestWriterStage(AgentReady, ProcessingStage[AudioTask, AudioTas
         return StageContract(
             gates=Gates(
                 writes_to_disk=True,
+                output_path_params=["output_path"],
                 lifecycle_side_effects=True,
                 requires_serializable_input=True,
             )
@@ -357,7 +359,7 @@ class PretrainMetricsAggregatorStage(AgentReady, ProcessingStage[AudioTask, Audi
     def describe(self) -> StageContract:
         return StageContract(
             metadata_reads=[_PRETRAIN_META_KEY],
-            gates=Gates(writes_to_disk=True, lifecycle_side_effects=True),
+            gates=Gates(writes_to_disk=True, output_path_params=["output_path"], lifecycle_side_effects=True),
         )
 
     def setup_on_node(

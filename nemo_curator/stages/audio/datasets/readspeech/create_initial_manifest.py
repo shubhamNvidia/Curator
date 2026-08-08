@@ -73,7 +73,7 @@ class CreateInitialManifestReadSpeechStage(AgentReady, ProcessingStage[EmptyTask
         return StageContract(
             writes=IOSpec(data_keys=[self.filepath_key, self.text_key], produces=["disk"]),
             cardinality="1:N fan-out",
-            gates=Gates(writes_to_disk=True, requires_internet_first_run=self.auto_download),
+            gates=Gates(writes_to_disk=True, requires_internet_first_run=self.auto_download, output_path_params=[]),
         )
 
     def ray_stage_spec(self) -> dict[str, Any]:

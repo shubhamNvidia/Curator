@@ -15,10 +15,24 @@
 """Pipeline-level validation for agent-composed audio pipelines.
 
 ``validate_pipeline([stageA, stageB, ...])`` walks an ordered list of configured
-stages and checks they actually compose — each stage's required inputs (matched
-by semantic *role*, not key string) must be produced by an upstream stage or be
-present in the initial task. It also surfaces resource-gate problems (GPU needed
-but none available) and composite stages that must be decomposed first.
+stages and checks they actually compose — each stage's required inputs must be
+produced by an upstream stage or be present in the initial task. It also surfaces
+resource-gate problems (GPU needed but none available).
+
+A read is satisfied by matching *either* the literal key it names or the semantic
+*role* behind it. Both routes are needed: role matching tolerates a producer that
+writes ``resampled_audio_filepath`` where the consumer reads ``audio_filepath``,
+and key matching covers the reverse, where the names agree but the two sides file
+that name under different roles. Requiring both would report breaks in pipelines
+that run.
+
+Composites are expanded (see :mod:`nemo_curator.stages.audio._composite`) so the
+stages inside them are checked too — the requirements of the stages that do the
+work, rather than the empty contract the composite advertises. Reads that fail
+inside a composite are warnings, not errors, until the expansion has proven it
+does not false-positive. A composite that cannot be expanded, or whose children
+include something with no contract at all, falls back to being treated as opaque:
+it is reported, and reads after it are no longer judged by role.
 
 Two levels of confidence, deliberately separated:
 
@@ -42,6 +56,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from nemo_curator.stages.audio._agent_registry import build_contract
+from nemo_curator.stages.audio._composite import expand_composites
 from nemo_curator.stages.audio._conformance import produced_roles, reads_satisfied_by_role
 from nemo_curator.stages.audio._roles import role_for_value
 
@@ -54,6 +69,15 @@ Severity = Literal["error", "warning"]
 _DEFAULT_INITIAL_ROLES: frozenset[str] = frozenset({"audio_filepath"})
 # Key VALUES a typical audio task carries at the start (the conventional path key).
 _DEFAULT_INITIAL_KEYS: frozenset[str] = frozenset({"audio_filepath"})
+
+# The role of the key a tensor producer parks its waveform under. Tracking the carrier
+# rather than a bare "a tensor is resident" flag is what lets a stage that DROPS that key
+# end the residency, instead of only a stage flagged ``sanitizes_output``.
+_TENSOR_ROLE = "waveform"
+# Stand-in for a producer that declares ``produces=["tensor"]`` without naming a
+# waveform-roled key. Its residency is still tracked, but no key removal can match it, so
+# only an explicit sanitizer clears it -- deliberately the pre-existing behaviour.
+_UNNAMED_TENSOR = "<unnamed tensor>"
 
 
 @dataclass(frozen=True)
@@ -192,9 +216,21 @@ def _ambiguous_default_reads(
     return found
 
 
+@dataclass(frozen=True)
+class _Site:
+    """The stage being checked right now, and how to name it to whoever wrote the recipe."""
+
+    index: int
+    """Index of the RECIPE stage, so an inner stage points at something the caller can edit."""
+
+    name: str
+    stage: Any
+    composite: Any | None = None
+    """The recipe-level composite this was expanded from, when it is not a stage in its own right."""
+
+
 def _gate_issues(
-    index: int,
-    name: str,
+    site: _Site,
     contract: StageContract,
     available_gpus: float | None,
     *,
@@ -208,14 +244,17 @@ def _gate_issues(
     out = []
     if available_gpus is not None and contract.gates.requires_gpu and available_gpus <= 0:
         out.append(
-            PipelineIssue(index, name, "warning", "gpu_unavailable", "declares requires_gpu but available_gpus <= 0")
+            PipelineIssue(
+                site.index, site.name, "warning", "gpu_unavailable",
+                "declares requires_gpu but available_gpus <= 0",
+            )
         )
     # A resident tensor (e.g. a waveform) reaching a serialize-as-is sink (raw json.dumps)
     # crashes at runtime. A sanitizing stage upstream clears the flag before we get here.
     if contract.gates.requires_serializable_input and tensor_resident:
         out.append(
             PipelineIssue(
-                index, name, "error", "tensor_into_sink",
+                site.index, site.name, "error", "tensor_into_sink",
                 "a resident tensor/audio blob from an upstream stage reaches this "
                 "serialize-as-JSON sink; it WILL fail at json.dumps — drop the tensor "
                 "upstream (e.g. keep_segment_waveform_in_task=False) or route through "
@@ -225,21 +264,19 @@ def _gate_issues(
     return out
 
 
-def _ambiguity_issues(  # noqa: PLR0913 - an ambiguity message must name the stage, key and producers
-    index: int,
-    name: str,
-    stage: Any,  # noqa: ANN401 - any built stage
+def _ambiguity_issues(
+    site: _Site,
     contract: StageContract,
     available_keys: set[str],
     key_producer: dict[str, str],
 ) -> list[PipelineIssue]:
     """``ambiguous_default_key`` warnings for this stage, naming who wrote each candidate."""
     out = []
-    for key, attr, rivals in _ambiguous_default_reads(stage, contract, available_keys, key_producer):
+    for key, attr, rivals in _ambiguous_default_reads(site.stage, contract, available_keys, key_producer):
         others = ", ".join(f"{k!r} from {p}" for k, p in rivals)
         out.append(
             PipelineIssue(
-                index, name, "warning", "ambiguous_default_key",
+                site.index, site.name, "warning", "ambiguous_default_key",
                 f"reads {key!r} (the default for {attr}), but upstream also produced {others}. "
                 f"The default silently picks {key!r} "
                 f"({key_producer.get(key, 'the source manifest')}); if you meant the other, "
@@ -247,6 +284,73 @@ def _ambiguity_issues(  # noqa: PLR0913 - an ambiguity message must name the sta
             )
         )
     return out
+
+
+def _missing_read_keys(contract: StageContract, available_keys: set[str]) -> set[str]:
+    """Read key VALUES this stage wants that nothing upstream produced or seeded."""
+    reads = {*contract.reads.data_keys, *contract.reads.segment_data_keys}
+    return {k for k in reads if k not in available_keys}
+
+
+def _reads_satisfied_by_key(contract: StageContract, available_keys: set[str]) -> bool:
+    """Whether every read is met by the LITERAL key it names.
+
+    A stage reads ``task.data[self.segments_key]`` at runtime -- a key string, never a role. So
+    a diarizer that writes ``diar_segments`` does satisfy a consumer configured to read
+    ``diar_segments``, even though the producer registers that key under the role
+    ``diar_segments`` while the consumer's contract calls the same slot ``segments``. Judging
+    that pairing only by role reports a break in a pipeline that runs, and the caller's options
+    are then to distrust the validator or to rename a key to appease it -- both worse than the
+    check not existing.
+
+    Role matching stays as the rename-tolerant fallback for the opposite case, where the key
+    names differ but mean the same thing (a producer writing ``resampled_audio_filepath``
+    satisfying a consumer reading ``audio_filepath``). A read is satisfied by either route.
+    """
+    if {*contract.reads.data_keys, *contract.reads.segment_data_keys} - available_keys:
+        return False
+    if not contract.reads_one_of:
+        return True
+    return any(not ({*spec.data_keys, *spec.segment_data_keys} - available_keys) for spec in contract.reads_one_of)
+
+
+def _forwarding_param(inner: Any, composite: Any, missing: set[str]) -> str | None:  # noqa: ANN401
+    """The composite parameter to set so an inner stage stops reading the wrong key.
+
+    A caller who configured ``SplitASRAlignJoinStage`` has never heard of ``SplitLongAudioStage``
+    and cannot configure it directly, so naming the inner stage alone leaves them stuck. The
+    remedy is always a parameter the composite forwards down, and it is identifiable rather than
+    guessable: the attribute exists on both classes and its current value IS the key that went
+    missing. Returns ``None`` when no such parameter exists, in which case the inner stage's
+    requirement genuinely cannot be reached from the recipe.
+    """
+    inner_fields = getattr(type(inner), "__dataclass_fields__", {})
+    composite_fields = getattr(type(composite), "__dataclass_fields__", {})
+    for attr in inner_fields:
+        if attr in composite_fields and getattr(inner, attr, None) in missing:
+            return attr
+    return None
+
+
+def _unreadable_child(group: list[Any]) -> str | None:
+    """Why this composite's expansion cannot be reasoned about, or ``None`` if it can.
+
+    A composite is only as legible as its least legible child. Composites routinely contain
+    plumbing that was never annotated for the agent -- ``ManifestReader`` expands through
+    ``FilePartitioningStage``, which has no ``describe()`` at all -- and a child whose reads and
+    writes are unknown leaves a hole in the role bookkeeping that makes every later stage's
+    verdict unsound. Blaming the caller for that with a hard error would fail pipelines that run
+    perfectly well, on the name of a stage they never wrote. So the composite reverts to being
+    opaque, which is exactly how it was treated before it could be expanded at all.
+    """
+    for item in group:
+        if not item.composite_ref:
+            continue  # a top-level stage that cannot describe itself is the caller's own error
+        try:
+            build_contract(item.stage)
+        except Exception as e:  # noqa: BLE001 - any failure to describe means the same thing here
+            return f"{type(item.stage).__name__} does not describe its I/O ({type(e).__name__})"
+    return None
 
 
 def _dangling_read_keys(contract: StageContract, available_keys: set[str]) -> set[str]:
@@ -275,7 +379,121 @@ def _dangling_read_keys(contract: StageContract, available_keys: set[str]) -> se
     return dangling
 
 
-def validate_pipeline(  # noqa: C901 (complexity accepted: sequential per-stage validation checklist)
+@dataclass
+class _Walk:
+    """What the pipeline carries from one stage to the next while being validated."""
+
+    available: set[str]  # roles produced so far
+    available_keys: set[str]  # literal key VALUES produced so far
+    tensor_keys: set[str] = field(default_factory=set)
+    removed_roles: set[str] = field(default_factory=set)
+    key_producer: dict[str, str] = field(default_factory=dict)
+    past_composite: bool = False  # an UNEXPANDABLE composite hid its writes; reads past it can't be judged
+
+
+def _read_issues(walk: _Walk, site: _Site, contract: StageContract) -> list[PipelineIssue]:
+    """Whether this stage's reads are met, and how loudly to say so if not.
+
+    Severity is graded by how sure we are, because a wrong hard error is worse than a wrong
+    warning: it stops the caller with no recourse and invites them to fake a value to get past
+    the gate rather than fix anything. A read that fails on a stage the caller wrote is certain,
+    so it is an error. A read that fails inside an expanded composite is reported as a warning
+    for now -- the expansion is new, and it earns the right to block only once it has been shown
+    not to false-positive on pipelines known to work.
+    """
+    if reads_satisfied_by_role(contract, walk.available) or _reads_satisfied_by_key(contract, walk.available_keys):
+        if walk.past_composite:
+            return []
+        out: list[PipelineIssue] = []
+        dangling = _dangling_read_keys(contract, walk.available_keys)
+        if dangling:
+            out.append(
+                PipelineIssue(
+                    site.index, site.name, "warning", "dangling_key",
+                    f"reads key(s) {sorted(dangling)} satisfied by role but not produced "
+                    f"upstream under that key value nor seeded (renamed producer key?); "
+                    f"available keys: {sorted(walk.available_keys)}",
+                )
+            )
+        out.extend(_ambiguity_issues(site, contract, walk.available_keys, walk.key_producer))
+        return out
+
+    if site.composite is not None:
+        composite_name = type(site.composite).__name__
+        missing = _missing_read_keys(contract, walk.available_keys)
+        param = _forwarding_param(site.stage, site.composite, missing)
+        remedy = (
+            f"set {param} on {composite_name} (it forwards the value to this inner stage)"
+            if param
+            else "produce the missing key upstream"
+        )
+        return [
+            PipelineIssue(
+                site.index, site.name, "warning", "unsatisfied_reads_in_composite",
+                f"this stage runs inside {composite_name} and requires "
+                f"{_requirement_str(contract, walk.available)}"
+                + (f" (key(s) {sorted(missing)})" if missing else "")
+                + f", not produced upstream; {remedy}. Available keys: {sorted(walk.available_keys)}",
+            )
+        ]
+
+    if walk.past_composite:
+        return [
+            PipelineIssue(
+                site.index, site.name, "warning", "unsatisfied_reads_after_composite",
+                f"requires {_requirement_str(contract, walk.available)} "
+                f"not visibly produced — but an upstream composite hides its writes; "
+                f"decompose it to validate this read",
+            )
+        ]
+
+    needed = _required_roles(contract) | {r for o in contract.reads_one_of for r in _roles_of(o, contract)}
+    removed_hit = (needed & walk.removed_roles) - walk.available
+    if removed_hit:
+        return [
+            PipelineIssue(
+                site.index, site.name, "error", "key_removed_upstream",
+                f"reads role(s) {sorted(removed_hit)} that an upstream stage removed "
+                f"(removes_keys) and no stage re-produced; available so far: {sorted(walk.available)}",
+            )
+        ]
+    return [
+        PipelineIssue(
+            site.index, site.name, "error", "unsatisfied_reads",
+            f"requires {_requirement_str(contract, walk.available)} "
+            f"not produced upstream; available so far: {sorted(walk.available)}",
+        )
+    ]
+
+
+def _advance(walk: _Walk, contract: StageContract, name: str) -> None:
+    """Fold one stage's writes, removals and tensor residency into the running state."""
+    produced = produced_roles(contract)
+    walk.available |= produced
+    walk.removed_roles -= produced  # a re-produced role is no longer "removed"
+    written = _write_key_values(contract)
+    # Most recent writer wins -- that is who a downstream reader would actually get.
+    walk.key_producer.update(dict.fromkeys(written, name))
+    walk.available_keys |= written
+    for rk in contract.removes_keys:
+        walk.available_keys.discard(rk)
+        # Dropping the carrier ends the tensor residency as surely as sanitizing does.
+        walk.tensor_keys.discard(rk)
+        role = role_for_value(rk)
+        if (
+            role != "unknown"
+            and role not in produced
+            and not any(role_for_value(k) == role for k in walk.available_keys)
+        ):
+            walk.available.discard(role)
+            walk.removed_roles.add(role)
+    if "tensor" in contract.writes.produces:
+        walk.tensor_keys |= {k for k in written if role_for_value(k) == _TENSOR_ROLE} or {_UNNAMED_TENSOR}
+    if contract.gates.sanitizes_output:
+        walk.tensor_keys.clear()
+
+
+def validate_pipeline(
     stages: list[Any],
     *,
     initial_roles: set[str] | None = None,
@@ -302,106 +520,76 @@ def validate_pipeline(  # noqa: C901 (complexity accepted: sequential per-stage 
         found (role-level); ``report.keys_ok`` additionally confirms literal-key
         identity (see the class docstring).
     """
-    available: set[str] = set(initial_roles) if initial_roles is not None else set(_DEFAULT_INITIAL_ROLES)
-    available_keys: set[str] = set(initial_keys) if initial_keys is not None else set(_DEFAULT_INITIAL_KEYS)
-    tensor_resident = False  # an upstream stage left a non-serializable tensor in task.data
-    past_composite = False  # a composite hides its true writes; downstream reads can't be judged
-    removed_roles: set[str] = set()  # roles whose carrier key an upstream stage deleted (removes_keys)
-    key_producer: dict[str, str] = {}  # key value -> the stage that wrote it (for ambiguity messages)
+    if initial_keys is not None:
+        seed_keys = set(initial_keys)
+    elif initial_roles is not None:
+        # Both seeds describe ONE input task, so they cannot be defaulted independently: a caller
+        # who says "this task carries no roles" does not mean "and also the default columns".
+        # Left independent, an empty role seed still admitted a seeded ``audio_filepath`` key and
+        # the literal-key route below then declared the read satisfied.
+        seed_keys = set(initial_roles)
+    else:
+        seed_keys = set(_DEFAULT_INITIAL_KEYS)
+    walk = _Walk(
+        available=set(initial_roles) if initial_roles is not None else set(_DEFAULT_INITIAL_ROLES),
+        available_keys=seed_keys,
+    )
+    expansion = expand_composites(stages)
+    leaves = expansion.by_recipe_index()
+    opaque = dict(expansion.opaque)
+    for index, group in list(leaves.items()):
+        reason = _unreadable_child(group)
+        if reason:
+            opaque[index] = reason
+            del leaves[index]
     issues: list[PipelineIssue] = []
 
-    for index, stage in enumerate(stages):
-        try:
-            contract = build_contract(stage)
-        except Exception as e:  # noqa: BLE001 - a stage that can't describe itself is an error
-            issues.append(
-                PipelineIssue(index, type(stage).__name__, "error", "contract_error", f"describe() failed: {e}")
-            )
-            continue
-        name = contract.stage_id or type(stage).__name__
-
-        if not contract.wrappable:
+    for index, recipe_stage in enumerate(stages):
+        if index in opaque:
             issues.append(
                 PipelineIssue(
-                    index, name, "warning", "composite",
-                    "composite stage — decompose before validating its data flow",
+                    index, type(recipe_stage).__name__, "warning", "composite",
+                    f"composite stage — its data flow could not be resolved ({opaque[index]}), "
+                    f"so reads after it cannot be judged by role",
                 )
             )
-            # A composite hides its true I/O; don't reason about roles past it.
-            past_composite = True
+            walk.past_composite = True
             continue
 
-        # Reads. A composite upstream hides its writes, so an unsatisfied read is
-        # downgraded to an advisory (never a false HARD error); otherwise it is a
-        # hard error. The literal-key (dangling) check only runs when upstream keys
-        # are trustworthy (no composite hiding them).
-        if not reads_satisfied_by_role(contract, available):
-            if past_composite:
+        for item in leaves.get(index, []):
+            stage = item.stage
+            try:
+                contract = build_contract(stage)
+            except Exception as e:  # noqa: BLE001 - a stage that can't describe itself is an error
+                issues.append(PipelineIssue(index, item.label, "error", "contract_error", f"describe() failed: {e}"))
+                continue
+            site = _Site(
+                index=index,
+                name=item.label if item.composite_ref else (contract.stage_id or type(stage).__name__),
+                stage=stage,
+                composite=recipe_stage if item.composite_ref else None,
+            )
+
+            if not contract.wrappable:
+                # It calls itself a composite yet arrived here unexpanded, so it is not a
+                # CompositeStage the expander could open. Its real I/O stays unknown and the
+                # pre-expansion caution applies: warn, and judge nothing downstream by role.
                 issues.append(
                     PipelineIssue(
-                        index, name, "warning", "unsatisfied_reads_after_composite",
-                        f"requires {_requirement_str(contract, available)} "
-                        f"not visibly produced — but an upstream composite hides its writes; "
-                        f"decompose it to validate this read",
+                        site.index, site.name, "warning", "composite",
+                        "composite stage — decompose before validating its data flow",
                     )
                 )
-            else:
-                needed = _required_roles(contract) | {r for o in contract.reads_one_of for r in _roles_of(o, contract)}
-                removed_hit = (needed & removed_roles) - available
-                if removed_hit:
-                    issues.append(
-                        PipelineIssue(
-                            index, name, "error", "key_removed_upstream",
-                            f"reads role(s) {sorted(removed_hit)} that an upstream stage removed "
-                            f"(removes_keys) and no stage re-produced; available so far: {sorted(available)}",
-                        )
-                    )
-                else:
-                    issues.append(
-                        PipelineIssue(
-                            index, name, "error", "unsatisfied_reads",
-                            f"requires {_requirement_str(contract, available)} "
-                            f"not produced upstream; available so far: {sorted(available)}",
-                        )
-                    )
-        elif not past_composite:
-            dangling = _dangling_read_keys(contract, available_keys)
-            if dangling:
-                issues.append(
-                    PipelineIssue(
-                        index, name, "warning", "dangling_key",
-                        f"reads key(s) {sorted(dangling)} satisfied by role but not produced "
-                        f"upstream under that key value nor seeded (renamed producer key?); "
-                        f"available keys: {sorted(available_keys)}",
-                    )
-                )
-            issues.extend(_ambiguity_issues(index, name, stage, contract, available_keys, key_producer))
+                walk.past_composite = True
+                continue
 
-        # The checks below reason about serialization / GPU / key-flow, NOT the
-        # composite's hidden roles, so they run for every concrete stage even after
-        # a composite (fixes the tensor_into_sink blind spot: ManifestReader is a
-        # composite, so a start-with-reader pipeline used to skip these entirely).
-        issues.extend(_gate_issues(index, name, contract, available_gpus, tensor_resident=tensor_resident))
+            issues.extend(_read_issues(walk, site, contract))
+            # Serialization / GPU gates reason about the environment rather than about roles, so
+            # they run for every concrete stage even downstream of a composite nobody could expand.
+            issues.extend(_gate_issues(site, contract, available_gpus, tensor_resident=bool(walk.tensor_keys)))
+            _advance(walk, contract, site.name)
 
-        produced = produced_roles(contract)
-        available |= produced
-        removed_roles -= produced  # a re-produced role is no longer "removed"
-        written = _write_key_values(contract)
-        # Most recent writer wins -- that is who a downstream reader would actually get.
-        key_producer.update(dict.fromkeys(written, name))
-        available_keys |= written
-        for rk in contract.removes_keys:
-            available_keys.discard(rk)
-            role = role_for_value(rk)
-            if role != "unknown" and role not in produced and not any(role_for_value(k) == role for k in available_keys):
-                available.discard(role)
-                removed_roles.add(role)
-        if "tensor" in contract.writes.produces:
-            tensor_resident = True
-        if contract.gates.sanitizes_output:
-            tensor_resident = False
-
-    return PipelineReport(issues=issues, produced_roles=available, produced_keys=available_keys)
+    return PipelineReport(issues=issues, produced_roles=walk.available, produced_keys=walk.available_keys)
 
 
 def _roles_of(spec: Any, contract: StageContract) -> set[str]:  # noqa: ANN401

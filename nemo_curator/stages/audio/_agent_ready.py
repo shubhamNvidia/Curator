@@ -141,6 +141,17 @@ class Gates:
     """Execution gates or side effects an agent should know before wrapping a stage."""
 
     writes_to_disk: bool = False
+    # The constructor params holding this stage's OUTPUT paths, so a caller running it in a
+    # sandbox (a smoke) knows what to redirect. Declared by the stage because only the stage
+    # knows; the alternative is a central table that every new writer must be added to, or
+    # guessing from parameter names -- and a wrong guess writes a smoke's output into the
+    # user's real output directory.
+    #
+    # ``None`` means NOT DECLARED and is deliberately distinct from ``[]``. A stage that says
+    # ``writes_to_disk=True`` without naming its outputs cannot be sandboxed, so callers must
+    # refuse rather than assume there is nothing to redirect. ``[]`` is the positive claim
+    # "writes to disk, but through no redirectable path parameter".
+    output_path_params: list[str] | None = None
     requires_gpu: bool = False
     requires_internet_first_run: bool = False
     requires_ffmpeg: bool = False
@@ -362,6 +373,13 @@ class AgentReady:
     # Rare per-field role overrides keyed by ``*_key`` field name. Consulted
     # before the shared ``_roles.KEY_ROLES`` table.
     KEY_ROLE_OVERRIDES: ClassVar[Mapping[str, Role]] = {}
+    # ``*_key`` fields that are this stage's own bookkeeping and chain with nothing --
+    # a counter or flag it records for readers, not a key another stage routes on.
+    # Declared here rather than in the shared ``_roles.INTERNAL_KEY_FIELDS`` so adding a
+    # stage does not mean editing a central table. Cross-stage keys still belong in
+    # ``KEY_ROLES``: roles are the vocabulary stages connect THROUGH, so letting each
+    # stage invent private role names would quietly weaken composition checking.
+    INTERNAL_KEY_FIELDS: ClassVar[frozenset[str]] = frozenset()
 
     def describe(self) -> StageContract:
         raise NotImplementedError

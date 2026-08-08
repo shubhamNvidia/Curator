@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Literal
+from typing import ClassVar, Literal
 
 import pytest
 
@@ -260,3 +260,88 @@ def test_static_hints_are_optional_and_additive():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+class TestStagesDeclareTheirOwnAgentFacts:
+    """Adding a stage must not mean editing a central table in the agent.
+
+    Two facts used to live in agent-side tables that every new stage had to be added to:
+    which params hold a writer's output paths (``verbs._SMOKE_DISK_ADAPTERS``) and whether
+    a ``*_key`` field is bookkeeping (``_roles.INTERNAL_KEY_FIELDS``). Both are facts only
+    the stage knows, so both are now declared by the stage.
+    """
+
+    # The exact mapping the deleted verbs._SMOKE_DISK_ADAPTERS table held. Pinned so a
+    # refactor that silently drops or widens a redirect is caught, not just noticed.
+    EXPECTED_OUTPUT_PATH_PARAMS: ClassVar[dict[str, list[str]]] = {
+        "CreateInitialManifestReadSpeechStage": [],
+        "DocumentBatchJsonlWriterStage": ["output_path"],
+        "InferenceSortformerStage": ["rttm_out_dir"],
+        "ManifestGroupExportStage": ["output_dir"],
+        "ManifestWriterStage": ["output_path"],
+        "MonoConversionStage": ["output_dir"],
+        "PretrainMetricsAggregatorStage": ["output_path"],
+        "ResampleAudioStage": ["resampled_audio_dir"],
+        "SegmentConcatenationStage": ["output_dir"],
+        "SegmentExtractionStage": ["output_dir"],
+        "SnippetExtractionStage": ["output_dir", "output_audio_tar_path"],
+        "SnippetManifestWriterStage": ["output_path"],
+        "SpeakerSeparationStage": ["separated_audio_dir"],
+        "SplitLongAudioStage": ["output_dir"],
+    }
+
+    _REQUIRED_DIRS: ClassVar[set[str]] = {"output_dir", "separated_audio_dir", "resampled_audio_dir", "rttm_out_dir"}
+
+    def _configured(self, cls: type) -> object:
+        """A disk-writing instance, supplying whatever the constructor demands."""
+        from dataclasses import MISSING, fields
+
+        names = {f.name for f in fields(cls) if f.init}
+        kwargs = {
+            f.name: ("/tmp/x" if ("path" in f.name or "dir" in f.name) else "x")  # noqa: S108
+            for f in fields(cls)
+            if f.init and f.default is MISSING and f.default_factory is MISSING
+        }
+        if "write_to_disk" in names:
+            kwargs["write_to_disk"] = True
+        for name in self._REQUIRED_DIRS & names:
+            kwargs.setdefault(name, "/tmp/x")  # noqa: S108
+        return cls(**kwargs)
+
+    def test_every_writer_declares_exactly_the_params_the_table_used_to_hold(self) -> None:
+        from nemo_curator.stages.audio._catalog import get_agent_ready_stage_class
+
+        declared = {
+            name: list(self._configured(get_agent_ready_stage_class(name)).describe().gates.output_path_params or [])
+            for name in self.EXPECTED_OUTPUT_PATH_PARAMS
+        }
+        assert declared == self.EXPECTED_OUTPUT_PATH_PARAMS
+
+    def test_an_undeclared_writer_still_fails_closed(self) -> None:
+        """The safety property, not the table, is what mattered.
+
+        A stage claiming writes_to_disk without naming its outputs cannot be sandboxed.
+        Guessing which params look path-like would risk a smoke writing into the caller's
+        real output tree, so ``None`` must stay distinguishable from ``[]``.
+        """
+        from nemo_curator.stages.audio._agent_ready import Gates
+
+        assert Gates(writes_to_disk=True).output_path_params is None, "undeclared is not empty"
+        assert Gates(writes_to_disk=True, output_path_params=[]).output_path_params == []
+
+    def test_a_stage_can_declare_a_bookkeeping_key_without_touching_the_shared_table(self) -> None:
+        from nemo_curator.stages.audio._roles import INTERNAL_KEY_FIELDS, field_has_declared_role
+        from nemo_curator.stages.audio.preprocessing import ChannelConversionStage
+
+        assert "num_channels_key" not in INTERNAL_KEY_FIELDS, "not in the central table"
+        assert "num_channels_key" in ChannelConversionStage.INTERNAL_KEY_FIELDS
+        assert field_has_declared_role("num_channels_key", ChannelConversionStage)
+        # ...and it is still undeclared for a stage that did not claim it.
+        assert not field_has_declared_role("num_channels_key")
+
+    def test_an_undeclared_key_is_still_caught(self) -> None:
+        """The gate must keep catching a genuinely forgotten role mapping."""
+        from nemo_curator.stages.audio._roles import field_has_declared_role
+        from nemo_curator.stages.audio.preprocessing import ChannelConversionStage
+
+        assert not field_has_declared_role("invented_thing_key", ChannelConversionStage)

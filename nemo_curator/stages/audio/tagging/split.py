@@ -93,7 +93,7 @@ class SplitLongAudioStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             ),
             cardinality="1:1 nested-list",
             iteration_key=self.split_metadata_key,
-            gates=Gates(writes_to_disk=True),
+            gates=Gates(writes_to_disk=True, output_path_params=["output_dir"]),
         )
 
     def get_split_points(self, metadata: dict) -> list[float]:

@@ -151,7 +151,7 @@ def _check_shape(c: StageContract, name: str) -> None:
         assert len(spec.data_keys) == len(set(spec.data_keys)), f"{name}: duplicate {label}.data_keys"
 
 
-def _check_roles(_stage_or_cls: Any, c: StageContract, name: str) -> None:  # noqa: ANN401
+def _check_roles(stage_or_cls: Any, c: StageContract, name: str) -> None:  # noqa: ANN401
     for value, role in c.key_roles.items():
         assert role in _VALID_ROLES, f"{name}: key_roles[{value!r}] has invalid role {role!r}"
     for p in c.params:
@@ -160,9 +160,12 @@ def _check_roles(_stage_or_cls: Any, c: StageContract, name: str) -> None:  # no
         # check #8: a *_key constructor field must have a KEY_ROLES entry or be
         # explicitly allowlisted as internal (catches a forgotten role mapping).
         if p.name.endswith("_key"):
-            assert field_has_declared_role(p.name), (
-                f"{name}: param {p.name!r} ends in '_key' but has no role in KEY_ROLES "
-                f"and is not allowlisted in INTERNAL_KEY_FIELDS (add one in _roles.py)"
+            stage_cls = stage_or_cls if isinstance(stage_or_cls, type) else type(stage_or_cls)
+            assert field_has_declared_role(p.name, stage_cls), (
+                f"{name}: param {p.name!r} ends in '_key' but declares no role. Either give it "
+                "a shared role (KEY_ROLES in _roles.py) if another stage consumes it, or -- for "
+                "this stage's own bookkeeping -- declare it on the stage itself via "
+                "KEY_ROLE_OVERRIDES or INTERNAL_KEY_FIELDS"
             )
 
 

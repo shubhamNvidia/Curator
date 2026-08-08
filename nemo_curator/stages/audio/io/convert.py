@@ -174,6 +174,7 @@ class DocumentBatchJsonlWriterStage(AgentReady, ProcessingStage[DocumentBatch, D
     AGENT_STATIC: ClassVar[StaticHints] = StaticHints(
         gates=Gates(
             writes_to_disk=True,
+            output_path_params=["output_path"],
             lifecycle_side_effects=True,
             requires_serializable_input=True,
         ),
@@ -225,6 +226,7 @@ class DocumentBatchJsonlWriterStage(AgentReady, ProcessingStage[DocumentBatch, D
         return StageContract(
             gates=Gates(
                 writes_to_disk=True,
+                output_path_params=["output_path"],
                 lifecycle_side_effects=True,
                 requires_serializable_input=True,
             ),

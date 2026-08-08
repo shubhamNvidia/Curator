@@ -455,6 +455,7 @@ class ManifestWriterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         return StageContract(
             gates=Gates(
                 writes_to_disk=True,
+                output_path_params=["output_path"],
                 lifecycle_side_effects=True,
                 # Serializes task.data as-is via json.dumps; a resident tensor
                 # (e.g. a waveform) will crash it. Stop carrying the tensor
