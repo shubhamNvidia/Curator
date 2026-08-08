@@ -1,0 +1,43 @@
+stage_id: ChannelConversionStage
+category: preprocess
+summary: "Bring audio to a requested channel count, in memory. Downmix to mono averages all channels; mono upmixes by duplication. It does NOT resample and does NOT filter."
+tags: []   # default keeps the waveform in-task; disk output is opt-in (write_to_disk)
+model_id: null
+domain: {language: any, style: any}
+constraints: {}
+resource:
+  cpus: 1.0
+  gpu_mem_gb: 0.0
+  gpu_optional: false
+  bound: cpu
+  throughput_hint: "CPU (torch mean/repeat over an in-memory waveform)"
+use_cases:
+  good_for:
+    - "normalizing stereo/multi-channel input to mono before models"
+    - "giving a consumer a fixed channel count without changing the sample rate"
+    - "pairing with SampleRateFilterStage when rate policy and channel policy should be set separately"
+  avoid_for:
+    - "changing the sample rate -- this stage never resamples; use ResampleAudioStage"
+    - "downmixing surround to stereo (target_channels > 1 from more channels is REFUSED; ffmpeg via ResampleAudioStage knows channel layouts)"
+    - "data already at the target channel count"
+composition:
+  typical_upstream: [ManifestReader, SampleRateFilterStage, ResampleAudioStage, CreateInitialManifestReadSpeechStage]
+  typical_downstream: [VADSegmentationStage, BandFilterStage, UTMOSFilterStage, SIGMOSFilterStage]
+params_of_note:
+  target_channels: "channel count to produce (default 1 = mono). N->1 averages every channel. 1->T duplicates the mono channel T times. N->T where N > T > 1 is REFUSED (the row is dropped) because a correct surround downmix needs the file's channel layout, which a waveform tensor does not carry."
+  keep_waveform_in_task: "keep the converted waveform in the task for the next stage (default True; in-memory, no disk)."
+  write_to_disk: "OPT-IN (default False): also write the converted WAV to disk (pair with output_dir). Off by default -- that is why this card is not tagged writes_disk."
+semantic_facts:
+  target_channels:
+    meaning: "The channel count the stage produces. Not a rate, and not a filter -- rows are only dropped when the requested conversion cannot be done correctly."
+    unit: "channels (integer >= 1)"
+    propagation: "Writes num_channels (the resulting count). Duplicating mono into T channels adds no information: the result is the same signal T times."
+    gotchas:
+      - "target_channels=2 does NOT downmix 5.1 to stereo -- that row is dropped with a warning. Use ResampleAudioStage, which drives ffmpeg and knows channel layouts."
+      - "This stage never resamples. Pair it with SampleRateFilterStage (select rates) or ResampleAudioStage (convert rates)."
+      - "Upmix is duplication, so a 2-channel result may be synthetic stereo rather than a genuine two-channel recording."
+relationships:
+  ResampleAudioStage: "converts rate and channels via ffmpeg on disk, and knows channel layouts. Use it to change a sample rate, or for a surround downmix this stage refuses."
+  SampleRateFilterStage: "selects which sample rates pass and records each. Put it upstream so rows that will be rejected are never decoded."
+  MonoConversionStage: "an alternative that applies a mono downmix and a single-rate gate together. Use this stage instead when channel policy and rate policy should be set independently."
+verified: {params: mechanical, semantic_facts: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess}

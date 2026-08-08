@@ -83,8 +83,18 @@ LEGACY_STAGE_NAMES = (
     "WhisperXVADStage",
 )
 
-ADDITIVE_STAGE_NAMES = ("DocumentBatchJsonlWriterStage",)
+ADDITIVE_STAGE_NAMES = (
+    "ChannelConversionStage",
+    "DocumentBatchJsonlWriterStage",
+    "SampleRateFilterStage",
+)
 
+# Refreshed 2026-08-07: disk-writing stages now DECLARE their output path params via the
+# additive Gates.output_path_params, replacing a central table in verbs.py that every new
+# writer had to be added to. Verified additive by diffing the full payload before/after:
+# the only field that moved is gates.output_path_params, and only from absent to a declared
+# list. No stage lost a param, a key, a default, or a read/write.
+#
 # Refreshed 2026-08-03 for the agentification stage extensions, which are ADDITIVE and
 # backward-compatible (the 46-name set is unchanged -- see the names test above):
 #   * diarizers now also write a derived `num_speakers` scalar (Sortformer/PyAnnote),
@@ -94,7 +104,7 @@ ADDITIVE_STAGE_NAMES = ("DocumentBatchJsonlWriterStage",)
 # No stage lost a param, a read/write key, or changed an existing default. Regenerate this
 # value ONLY after confirming (git diff of describe()/defaults) that a change is additive.
 EXPECTED_LEGACY_COMPATIBILITY_SHA256 = (
-    "0453b6a641a302b417e6a6e44b162e64246f4cac3685a5c700e52b59d0659078"
+    "356df336fd1c62b2448cac36c69b4ae51f98e11697bc26c981967b25aa7dcff7"
 )
 
 
@@ -191,8 +201,25 @@ def _compatibility_payload() -> list[dict[str, Any]]:
     return payload
 
 
+def _shipped_agent_ready_stages() -> set[str]:
+    """Agent-ready stages that NeMo Curator itself ships.
+
+    The registry is deliberately open: any imported subclass of an agent-ready base
+    registers itself, which is what lets a user extend the catalog. It also means the
+    set is not a closed world -- ``tests/stages/audio`` defines ``ConcreteASRProcessor``
+    as a test double, so whether it appears here depends on which suites were imported
+    first. Compatibility is a claim about what Curator ships, so foreign classes are
+    excluded rather than asserted about.
+    """
+    return {
+        name
+        for name in list_agent_ready_stages()
+        if getattr(get_agent_ready_stage_class(name), "__module__", "").startswith("nemo_curator.")
+    }
+
+
 def test_registered_stage_names_are_backward_compatible() -> None:
-    actual = set(list_agent_ready_stages())
+    actual = _shipped_agent_ready_stages()
     legacy = set(LEGACY_STAGE_NAMES)
     additive = set(ADDITIVE_STAGE_NAMES)
 

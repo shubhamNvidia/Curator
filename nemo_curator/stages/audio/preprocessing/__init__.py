@@ -16,18 +16,31 @@
 Audio preprocessing stages.
 
 These stages prepare audio for further processing:
-- MonoConversionStage: Convert to mono and verify sample rate
+- ChannelConversionStage: Bring audio to a requested channel count (never resamples)
+- SampleRateFilterStage: Keep only acceptable sample rates, recording each (header-only read)
+- MonoConversionStage: Convert to mono and verify sample rate in one step
 - SegmentConcatenationStage: Concatenate multiple audio segments
 
 Example:
     from nemo_curator.pipeline import Pipeline
-    from nemo_curator.stages.audio.preprocessing import MonoConversionStage
+    from nemo_curator.stages.audio.preprocessing import (
+        ChannelConversionStage,
+        SampleRateFilterStage,
+    )
 
     pipeline = Pipeline(name="preprocessing_pipeline")
-    pipeline.add_stage(MonoConversionStage(output_sample_rate=48000))
+    pipeline.add_stage(SampleRateFilterStage(allowed_sample_rates=[16000]))
+    pipeline.add_stage(ChannelConversionStage(target_channels=1))
 """
 
+from .channel_conversion import ChannelConversionStage
 from .concatenation import SegmentConcatenationStage
 from .mono_conversion import MonoConversionStage
+from .sample_rate_filter import SampleRateFilterStage
 
-__all__ = ["MonoConversionStage", "SegmentConcatenationStage"]
+__all__ = [
+    "ChannelConversionStage",
+    "MonoConversionStage",
+    "SampleRateFilterStage",
+    "SegmentConcatenationStage",
+]
