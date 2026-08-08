@@ -276,9 +276,17 @@ def test_profiled_initial_keys_survive_an_opaque_source_with_uncertainty() -> No
     } == {"card_absent", "semantic_facts_absent"}
 
 
-def test_recursive_composite_expansion_exposes_authored_and_execution_views(
+def test_a_nested_composite_is_reported_as_unsupported_not_expanded(
     monkeypatch,
 ) -> None:
+    """Semantic review must describe a plan the backend can actually run.
+
+    ``Pipeline._decompose_stages`` expands each stage once and raises TypeError
+    ("Nested composition is not supported") when a child decomposes further, so a
+    recursively-expanded review would document an execution plan that cannot start.
+    Reporting the executor's own limit is the honest answer -- and it is why no depth
+    bound or cycle check is needed here: neither is reachable once nesting is refused.
+    """
     from nemo_curator.audio_agent.index import get_index
 
     index = get_index()
@@ -296,60 +304,29 @@ def test_recursive_composite_expansion_exposes_authored_and_execution_views(
             },
         )
 
-    stage = _OuterComposite(duration_key="clip_seconds")
-    recipe = {
-        "stages": [
-            {
-                "ref": "_OuterComposite",
-                "params": {"duration_key": "clip_seconds"},
-            }
-        ],
-        "rationale": "keep clips of at least one second",
-    }
-    packet = build_semantic_review([stage], recipe=recipe)
-
-    assert packet["status"] == "complete"
-    assert packet["recipe"]["stage_count"] == 1
-    assert packet["recipe"]["execution_leaf_count"] == 2
-    assert packet["recipe_stages"] == [
-        {
-            "recipe_stage_index": 0,
-            "recipe_stage_ref": "_OuterComposite",
-            "kind": "composite",
-            "authored_params": {"duration_key": "clip_seconds"},
-            "execution_leaf_indices": [0, 1],
-            "composite_view_index": 0,
-        }
-    ]
-    assert [
-        (stage_info["stage"], stage_info["provenance"]["execution_path"])
-        for stage_info in packet["stages"]
-    ] == [
-        ("GetAudioDurationStage", [0, 0]),
-        ("PreserveByValueStage", [0, 1]),
-    ]
-    assert all(
-        stage_info["stage_index"]
-        == stage_info["provenance"]["execution_leaf_index"]
-        for stage_info in packet["stages"]
+    packet = build_semantic_review(
+        [_OuterComposite(duration_key="clip_seconds")],
+        recipe={
+            "stages": [
+                {"ref": "_OuterComposite", "params": {"duration_key": "clip_seconds"}}
+            ],
+            "rationale": "keep clips of at least one second",
+        },
     )
-    assert packet["composites"][0]["authored_params"] == {
-        "duration_key": "clip_seconds"
-    }
-    assert packet["composites"][0]["semantic_material"]["verified"] == {
-        "semantic_facts": "mechanical"
-    }
-    assert packet["composites"][0]["semantic_material"]["provenance"] == {
-        "card_version": 1
-    }
-    assert packet["composites"][1]["execution_path"] == [0]
-    assert packet["stages"][1]["configured_params"]["operator"] == {
-        "value": "ge",
-        "source": "composite_effective",
-    }
-    edge = _edge(packet, consumer_index=1, key="clip_seconds")
-    assert edge["latest_upstream_producer"]["stage_index"] == 0
-    assert edge["consumer"]["provenance"]["recipe_stage_ref"] == "_OuterComposite"
+
+    nested = [
+        i for i in packet["contract_issues"] if i["code"] == "nested_composite_unsupported"
+    ]
+    assert nested, "the inner composite the executor would reject must be reported"
+    assert nested[0]["execution_path"] == [0], "and located at the offending child"
+
+    # No leaf is fabricated for a branch that cannot run.
+    assert packet["status"] == "partial", "a plan that cannot run is not a complete review"
+    assert packet["recipe"]["execution_leaf_count"] == 0
+    assert packet["stages"] == []
+    # The outer composite is still described, marked with why expansion stopped.
+    assert packet["composites"][0]["authored_params"] == {"duration_key": "clip_seconds"}
+    assert packet["composites"][1]["expansion_error"] == "nested_composite"
 
 
 def test_recipe_free_instance_values_are_not_labeled_as_defaults() -> None:

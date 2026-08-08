@@ -51,7 +51,6 @@ _SEMANTIC_CARD_FIELDS: tuple[str, ...] = (
     "provenance",
 )
 
-_MAX_COMPOSITE_DEPTH = 8
 _MAX_EXECUTION_LEAVES = 512
 
 _CARDINALITY_SEAM_KINDS: dict[str, str] = {
@@ -406,10 +405,11 @@ def _expand_configured_stages(
     """Resolve the exact execution leaves without executing stage processing.
 
     Expansion intentionally mirrors the pipeline/planner boundary:
-    ``CompositeStage.decompose_and_apply_with`` is recursive so composite
-    ``with_`` overrides are reflected in the evidence.  A cycle, exception,
-    empty decomposition, depth overflow, or leaf-budget overflow produces no
-    fabricated leaf for that branch and leaves the packet partial.
+    ``CompositeStage.decompose_and_apply_with`` is used so composite ``with_``
+    overrides are reflected in the evidence, and expansion is SINGLE-LEVEL because
+    that is the only shape the executor runs.  An exception, empty decomposition,
+    nested composite, or leaf-budget overflow produces no fabricated leaf for that
+    branch and leaves the packet partial.
     """
     from nemo_curator.audio_agent import _safety
     from nemo_curator.stages.base import CompositeStage, ProcessingStage
@@ -488,8 +488,6 @@ def _expand_configured_stages(
             stage: Any,  # noqa: ANN401
             *,
             path: tuple[int, ...],
-            depth: int,
-            ancestors: frozenset[int],
         ) -> list[int]:
             nonlocal execution_leaf_count, leaf_limit_reported
             stage_name = type(stage).__name__
@@ -553,30 +551,26 @@ def _expand_configured_stages(
                     )
                 composite_views.append(view)
 
-                if depth >= _MAX_COMPOSITE_DEPTH:
+                # A composite reached below the top level is one the EXECUTOR refuses:
+                # ``Pipeline._decompose_stages`` expands each stage once and raises
+                # TypeError ("Nested composition is not supported") on a child that
+                # decomposes further. Reviewing it anyway would describe a plan that
+                # cannot run, so this reports the same limit the backend enforces --
+                # which also makes a depth bound and a cycle check unnecessary, since
+                # neither is reachable once nesting itself is rejected.
+                if path:
                     issue(
-                        code="composite_depth_exceeded",
+                        code="nested_composite_unsupported",
                         message=(
-                            f"composite expansion exceeded the {_MAX_COMPOSITE_DEPTH}-level "
-                            "semantic-review bound"
+                            "composite decomposition returned another composite; the "
+                            "executor does not support nested composition"
                         ),
                         recipe_stage_index=recipe_stage_index,
                         recipe_stage_ref=recipe_stage_ref,
                         execution_path=path,
                         stage=composite_ref,
                     )
-                    view["expansion_error"] = "depth_bound"
-                    return []
-                if id(stage) in ancestors:
-                    issue(
-                        code="composite_cycle",
-                        message="composite expansion returned an ancestor composite",
-                        recipe_stage_index=recipe_stage_index,
-                        recipe_stage_ref=recipe_stage_ref,
-                        execution_path=path,
-                        stage=composite_ref,
-                    )
-                    view["expansion_error"] = "cycle"
+                    view["expansion_error"] = "nested_composite"
                     return []
                 expansion_issue_count = len(issues)
                 try:
@@ -622,7 +616,6 @@ def _expand_configured_stages(
                     return []
 
                 child_leaf_indices: list[int] = []
-                next_ancestors = ancestors | {id(stage)}
                 for child_index, child in enumerate(children):
                     if not isinstance(child, ProcessingStage):
                         issue(
@@ -638,12 +631,7 @@ def _expand_configured_stages(
                         )
                         continue
                     child_leaf_indices.extend(
-                        visit(
-                            child,
-                            path=(*path, child_index),
-                            depth=depth + 1,
-                            ancestors=next_ancestors,
-                        )
+                        visit(child, path=(*path, child_index))
                     )
                 view["child_count"] = len(children)
                 view["execution_leaf_indices"] = child_leaf_indices
@@ -684,12 +672,7 @@ def _expand_configured_stages(
             )
             return [leaf_index]
 
-        leaf_indices = visit(
-            configured_stage,
-            path=(),
-            depth=0,
-            ancestors=frozenset(),
-        )
+        leaf_indices = visit(configured_stage, path=())
         recipe_view["execution_leaf_indices"] = leaf_indices
         if is_composite:
             recipe_view["composite_view_index"] = next(
@@ -1111,9 +1094,12 @@ def build_semantic_review(
 
     for group in execution_groups:
         # ``initial_keys`` describe configured source output, never its EmptyTask
-        # input. Do not let them appear as inputs to the source's inner leaves.
+        # input. Strip only those declared keys (not real upstream producers) so they
+        # don't appear as inputs to a source's own inner leaves -- a second source must
+        # not wipe the keys an earlier source already produced.
         if group["is_source"]:
-            active_writers.clear()
+            for slot in declared_initial_writers:
+                active_writers.pop(slot, None)
 
         for leaf in group["leaves"]:
             stage = leaf["stage"]
