@@ -35,6 +35,13 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
 
     server = FastMCP("nemo-curator-audio-agent")
 
+    # Tool errors are the SDK's job, deliberately not ours. FastMCP wraps anything a tool
+    # raises in ``ToolError`` (mcp/server/fastmcp/tools/base.py) and the server turns that
+    # into ``CallToolResult(isError=True)``, so a raising verb can never reach the client as
+    # a protocol-level exception. A local wrapper that caught the exception and RETURNED an
+    # error dict was strictly worse: the call then looks like a success, so ``isError`` stays
+    # False and a host keying off that flag cannot see the failure at all.
+
     @server.tool()
     def discover() -> dict[str, Any]:
         """List agent-ready audio stages with category and one-liner."""

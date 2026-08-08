@@ -1201,7 +1201,7 @@ class TestContinueVerb:
         monkeypatch.setattr(verbs, "_run_pipeline_autofallback", fake_execute)
         monkeypatch.setattr(verbs, "build_run_report", fake_report)
         monkeypatch.setattr(verbs, "_produced_roles_keys", lambda *_args: ([], []))
-        monkeypatch.setattr(verbs, "_acceptance_result", lambda *_args: {})
+        monkeypatch.setattr(verbs, "_acceptance_result", lambda *_args, **_kwargs: {})
         monkeypatch.setattr(verbs, "_publish_artifacts", fake_publish)
         monkeypatch.setattr(verbs, "_record_run", fake_record)
         monkeypatch.setattr(run_store, "new_run_id", lambda _config_hash: "continued-run")

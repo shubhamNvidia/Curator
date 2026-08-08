@@ -14,12 +14,14 @@
 
 """Unit tests for the deterministic grounding layer (validate / checks)."""
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
 
 from nemo_curator import audio_agent as aa
 from nemo_curator.audio_agent import cli, verbs
+from nemo_curator.audio_agent.verbs import validate
 
 _READER_MANIFEST = Path(__file__).resolve().parents[1] / "fixtures/audio/alm/sample_input.jsonl"
 _READER = {"ref": "ManifestReader", "params": {"manifest_path": str(_READER_MANIFEST)}}
@@ -393,3 +395,69 @@ class TestSampleRateFollowsThePipeline:
         warnings = self._rate_warnings([reader, mono, self._SIXTEEN_K_ONLY], manifest)
         assert len(warnings) == 1
         assert "48000" in warnings[0]["message"]
+
+
+class TestSourceSchemaHonesty:
+    """A manifest whose columns cannot satisfy the stages must not validate as sound."""
+
+    def _recipe(self, manifest: str, params: dict | None = None) -> dict:
+        return {
+            "stages": [
+                {"ref": "ManifestReader", "params": {"manifest_path": manifest}},
+                {"ref": "GetAudioDurationStage", "params": params or {}},
+            ]
+        }
+
+    def _write(self, tmp_path, name: str, row: dict) -> str:
+        path = tmp_path / name
+        path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+        return str(path)
+
+    def test_a_manifest_without_an_audio_path_column_is_refused(self, tmp_path) -> None:
+        """The 'validates green, yields zero rows' class: the reader declares
+        audio_filepath but is schema-agnostic, so the declaration is not evidence.
+
+        Refused rather than inferred around. ``audio_filepath`` is the NeMo manifest key
+        and meeting it is the caller's contract; guessing which other column holds the
+        audio means guessing wrong on some dataset and curating the wrong field silently.
+        """
+        manifest = self._write(tmp_path, "cv.jsonl", {"path": "/a.wav", "sentence": "hi"})
+        verdict = validate(self._recipe(manifest), data=manifest)
+        issue = next(i for i in verdict["issues"] if i["code"] == "source_schema_mismatch")
+        assert issue["severity"] == "error"
+        assert verdict["runnable"] is False
+        # The message has to be actionable: name the columns actually present, and the fix.
+        assert "'path'" in issue["message"]
+        assert "'sentence'" in issue["message"]
+        assert "audio_filepath" in issue["fix"]
+
+    def test_a_stage_pointed_at_the_real_column_is_not_flagged(self, tmp_path) -> None:
+        manifest = self._write(tmp_path, "cv.jsonl", {"path": "/a.wav", "sentence": "hi"})
+        verdict = validate(self._recipe(manifest, {"audio_filepath_key": "path"}), data=manifest)
+        assert "source_schema_mismatch" not in [i["code"] for i in verdict["issues"]]
+
+    def test_a_conventional_manifest_is_not_flagged(self, tmp_path) -> None:
+        manifest = self._write(tmp_path, "nemo.jsonl", {"audio_filepath": "/a.wav", "text": "hi"})
+        verdict = validate(self._recipe(manifest), data=manifest)
+        assert "source_schema_mismatch" not in [i["code"] for i in verdict["issues"]]
+
+    def test_the_recipes_own_manifest_is_evidence_even_without_an_explicit_data_argument(
+        self, tmp_path
+    ) -> None:
+        """validate binds and profiles the source named in the recipe, so the mismatch is
+        caught whether or not the caller passes ``data``."""
+        manifest = self._write(tmp_path, "cv.jsonl", {"path": "/a.wav"})
+        verdict = validate(self._recipe(manifest))  # no data= argument
+        assert "source_schema_mismatch" in [i["code"] for i in verdict["issues"]]
+
+    def test_no_observed_columns_means_no_claim(self, tmp_path) -> None:
+        """An empty manifest yields no columns; with no evidence the check stays silent
+        rather than inventing a mismatch."""
+        manifest = self._write_raw(tmp_path, "empty.jsonl", "")
+        verdict = validate(self._recipe(manifest), data=manifest)
+        assert "source_schema_mismatch" not in [i["code"] for i in verdict["issues"]]
+
+    def _write_raw(self, tmp_path, name: str, text: str) -> str:
+        path = tmp_path / name
+        path.write_text(text, encoding="utf-8")
+        return str(path)

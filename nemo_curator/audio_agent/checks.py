@@ -91,6 +91,16 @@ def _to_int(v: Any) -> int | None:  # noqa: ANN401
         return None
 
 
+def _to_float(v: Any) -> float | None:  # noqa: ANN401
+    """Best-effort float coercion (None on failure); same intent as ``_to_int`` for
+    duration/threshold values so a non-numeric card/profile entry skips the check
+    instead of degrading the whole recipe to ``check_error``."""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def run_checks(ctx: CheckContext) -> CheckResult:
     """Run every registered check and merge the results into one ``CheckResult``.
 
@@ -148,13 +158,26 @@ def _fix_for(code: str) -> str | None:
         "gpu_unavailable": "run on a GPU host or set the stage to CPU resources",
         "composite": "decompose the composite (it hides its true I/O) before validating downstream",
         "key_removed_upstream": "reorder so the reader runs before the stage that removes the key, or re-produce the key",
+        "unsatisfied_reads_in_composite": (
+            "a stage INSIDE a composite reads a key nothing upstream produces. The composite's own "
+            "contract is silent about this, so it will validate and then fail once that inner stage "
+            "starts -- after any model downloads and GPU work ahead of it. The message names the "
+            "composite parameter that forwards the key; set it to what the upstream stage actually "
+            "wrote (e.g. segments_key='diar_segments' when a diarizer, not a VAD, produced the "
+            "segments), or add a stage that produces the key under the name the inner stage reads"
+        ),
     }.get(code)
 
 
 def _escalate_for(code: str) -> str | None:
-    # A composite hides its writes, so an unsatisfied read past it is neither a hard
-    # fail nor a clean pass -> mark the Verdict 'uncertain' (resolve it with a smoke).
-    return {"unsatisfied_reads_after_composite": "smoke"}.get(code)
+    # Both mean "this read might not be satisfied and validation alone cannot settle it" -> mark
+    # the Verdict 'uncertain' and resolve with a smoke. The in-composite case is a warning rather
+    # than an error deliberately: expansion earns the right to hard-fail a pipeline only once it
+    # has been shown not to false-positive on pipelines known to work.
+    return {
+        "unsatisfied_reads_after_composite": "smoke",
+        "unsatisfied_reads_in_composite": "smoke",
+    }.get(code)
 
 
 # --------------------------------------------------------------------------- #
@@ -216,7 +239,7 @@ def _check_card_constraints(ctx: CheckContext) -> CheckResult:
     # sample-rate keys are strings post-serialization; coerce to int so a matching rate
     # (16000) doesn't false-warn against an int-typed card supported_sample_rates.
     data_srs = {int(k) for k in (data_profile or {}).get("sample_rates", {}) if str(k).lstrip("-").isdigit()} if data_profile else set()
-    mean_dur = float((data_profile or {}).get("mean_duration_sec", 0.0)) if data_profile else 0.0
+    mean_dur = (_to_float((data_profile or {}).get("mean_duration_sec")) or 0.0) if data_profile else 0.0
     # The rate the audio carries AT each point, not the rate the source files had. Comparing a
     # model's supported rates against the source profile warns about 48 kHz input to a 16 kHz
     # model even when a resample sits immediately upstream -- correct pipelines told they are
@@ -256,7 +279,8 @@ def _check_card_constraints(ctx: CheckContext) -> CheckResult:
                 )
             )
         sweet = cons.get("input_duration_sweetspot_sec")
-        if isinstance(sweet, dict) and sweet.get("max") and mean_dur and mean_dur > float(sweet["max"]):
+        sweet_max = _to_float(sweet.get("max")) if isinstance(sweet, dict) else None
+        if sweet_max is not None and mean_dur and mean_dur > sweet_max:
             out.append(
                 Issue(
                     "card_duration", "warning",
@@ -549,3 +573,63 @@ def _check_diarization_continuity(ctx: CheckContext) -> CheckResult:
                 )
             )
     return CheckResult(issues=out)
+
+
+# Constructor fields through which a stage is told which column holds the audio path.
+_AUDIO_PATH_KEY_FIELDS = ("audio_filepath_key", "filepath_key")
+
+
+@register("source_schema")
+def _check_source_schema(ctx: CheckContext) -> CheckResult:
+    """The profiled manifest must actually carry the audio path the stages will read.
+
+    ``ManifestReaderStage`` declares ``writes=["audio_filepath"]`` but is schema-agnostic:
+    it emits whatever columns each JSONL row happens to have. Validation therefore trusts
+    the declaration over the data, so a manifest using another convention (Common Voice's
+    ``path``/``sentence``) satisfies every downstream read and the recipe validates clean --
+    then produces zero rows. This is the "validates green, yields nothing" class, and the
+    profile is the evidence that settles it.
+
+    The manifest format is the CALLER's contract to meet, not something to infer around.
+    ``audio_filepath`` is the documented NeMo manifest key, and guessing which other column
+    might hold the audio means guessing wrong on some dataset and silently curating the
+    wrong field. So this refuses with a precise, actionable message instead: an unreadable
+    source is a blocking error, and the fix is either to convert the manifest or to say
+    explicitly which column holds the audio.
+
+    Fires only when ALL of the following hold, so a correctly-configured pipeline is never
+    false-flagged: a manifest was profiled, its columns were observed, none of them carries
+    the ``audio_filepath`` role, and no stage was pointed at one of the columns that IS
+    present -- an explicit ``audio_filepath_key`` is the caller stating the format, which is
+    exactly what this asks for.
+    """
+    from nemo_curator.stages.audio._roles import role_for_value
+
+    profile = ctx.data_profile or {}
+    if profile.get("kind") != "manifest":
+        return CheckResult()
+    columns = {str(c) for c in (profile.get("manifest_keys") or [])}
+    if not columns:
+        return CheckResult()  # nothing observed -> no evidence, so no claim
+    if any(role_for_value(column) == "audio_filepath" for column in columns):
+        return CheckResult()  # the conventional column is present
+    # A stage explicitly pointed at one of the real columns is correctly configured.
+    for stage in ctx.recipe.stages:
+        for key_field in _AUDIO_PATH_KEY_FIELDS:
+            if str(stage.params.get(key_field) or "") in columns:
+                return CheckResult()
+    return CheckResult(
+        issues=[
+            Issue(
+                "source_schema_mismatch", "error",
+                f"the manifest's columns {sorted(columns)} contain no 'audio_filepath', which is the "
+                "key every audio stage reads; this recipe would validate, run, and yield no rows",
+                fix=(
+                    "convert the manifest to the NeMo format, where each row carries its audio under "
+                    "'audio_filepath' -- or, if the column is deliberately named something else, say so "
+                    "explicitly on the reading stage (audio_filepath_key='<column>')"
+                ),
+                escalate_to="user",
+            )
+        ]
+    )

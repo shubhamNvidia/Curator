@@ -28,9 +28,9 @@ priority order:
   ``direction`` (``higher_better`` -> ``ge``, ``lower_better`` -> ``le``).
 
 Everything is generic: metric/param/label/direction are read from the card; there
-are no metric names in the logic. **Path B (data-informed relative selection) is
-deferred** behind the ``data_driven`` flag — a *relative* request with the flag
-off returns an ``ask`` (get an explicit/absolute bar) rather than guessing.
+are no metric names in the logic. Path B (data-informed selection) lives in
+:func:`resolve_from_data`, which the ``resolve`` verb calls separately when it is given
+data; this function is Path A only and never consults the dataset.
 """
 
 from __future__ import annotations
@@ -41,6 +41,10 @@ from typing import Any
 from nemo_curator.audio_agent.contracts import ConfigStrategyEntry
 
 _OP_FOR_DIRECTION = {"higher_better": "ge", "lower_better": "le"}
+# Path A's "you gave me no outcome to resolve" question. Named so the caller can drop it
+# when Path B did supply configuration -- otherwise a data-informed resolve reports that
+# nothing was provided while simultaneously returning the parameters it derived.
+NO_OUTCOME_ASK = "provide one of: label (outcome), use_case (preset), or explicit ({param: value})"
 _RANGE_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*-\s*(-?\d+(?:\.\d+)?)\s*$")
 
 
@@ -50,7 +54,6 @@ def resolve(
     label: str | None = None,
     use_case: str | None = None,
     explicit: dict[str, Any] | None = None,
-    data_driven: bool = False,
 ) -> dict[str, Any]:
     """Resolve an outcome to concrete config for ``stage_id`` (Path A).
 
@@ -98,7 +101,7 @@ def resolve(
         _resolve_label(stage_id, label, metrics, out)
         return out
 
-    out["asks"].append("provide one of: label (outcome), use_case (preset), or explicit ({param: value})")
+    out["asks"].append(NO_OUTCOME_ASK)
     return out
 
 
@@ -158,3 +161,69 @@ def _value_from_range(range_key: str, direction: str | None) -> Any:  # noqa: AN
         return range_key
     lo, hi = float(m.group(1)), float(m.group(2))
     return hi if direction == "lower_better" else lo
+
+
+def resolve_from_data(stage_id: str, data_profile: dict[str, Any] | None) -> dict[str, Any]:
+    """Path B: bind the parameters the DATA determines, for one stage.
+
+    Path A maps a user's *outcome* to a value via the card. This is its counterpart: values
+    that are not a matter of preference at all because the dataset already fixes them --
+    which column holds the audio path, and what rate that audio actually is.
+
+    Deliberately configures the STAGE rather than changing any stage default: the defaults
+    are what the tutorials and hand-written pipelines rely on, and an agent that rewrites
+    them would fix its own recipes by breaking everyone else's.
+
+    Returns the same ``{stage, params, strategy, asks}`` shape as :func:`resolve`. Ambiguity
+    becomes an ``ask``, never a guess: a manifest with two plausible audio columns, or none,
+    is a question for the user.
+    """
+    from nemo_curator.stages.audio._agent_registry import stage_params
+
+    out: dict[str, Any] = {"stage": stage_id, "params": {}, "filter_stage": None, "strategy": [], "asks": []}
+    profile = data_profile or {}
+    if not profile:
+        return out
+    try:
+        from nemo_curator.audio_agent._resolve import resolve_stage_class
+
+        accepted = {p.name for p in stage_params(resolve_stage_class(stage_id))}
+    except Exception:  # noqa: BLE001 - an unresolvable stage simply gets no data-derived config
+        return out
+
+    _bind_observed_sample_rate(stage_id, profile, accepted, out)
+    return out
+
+
+def _bind_observed_sample_rate(
+    stage_id: str, profile: dict[str, Any], accepted: set[str], out: dict[str, Any]
+) -> None:
+    """Set a rate-verifying stage to the rate the data actually is.
+
+    ``MonoConversionStage`` verifies rather than converts and DROPS every row that does not
+    match, so its 48 kHz default silently discards a 16 kHz corpus. The default stays as the
+    tutorials expect; the agent supplies the observed rate for the recipe it builds.
+    """
+    if "output_sample_rate" not in accepted:
+        return
+    rates = {int(r) for r in (profile.get("sample_rates") or {}) if str(r).lstrip("-").isdigit()}
+    if len(rates) != 1:
+        if len(rates) > 1:
+            out["asks"].append(
+                f"{stage_id}: the data carries mixed sample rates {sorted(rates)}; resample to a single "
+                "rate upstream, or say which rate this stage should require"
+            )
+        return
+    value = rates.pop()
+    out["params"]["output_sample_rate"] = value
+    out["strategy"].append(
+        ConfigStrategyEntry(
+            param="output_sample_rate", value=value, kind="relative", mode="data_informed",
+            source={"from": "observed_sample_rates", "ref": "data_profile"},
+            recompute_on="data_change",
+            rationale=(
+                f"the data is {value} Hz; this stage verifies the rate and drops non-matching rows, "
+                "so the default would discard the corpus"
+            ),
+        ).to_dict()
+    )

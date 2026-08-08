@@ -369,6 +369,17 @@ def _profile_manifest(
     else:
         prof.stat_digest = digest
     _probe_files(audio_paths, prof)
+    # Rows were read but not one audio reference was found: the audio-path column is named
+    # something other than ``audio_filepath_key``. Say so, because a silently EMPTY audio
+    # profile (no rates, no durations, no unreadable entries) is indistinguishable from a
+    # healthy one, and every downstream decision that reads those fields is then reasoning
+    # from evidence that was never gathered.
+    if count and not audio_paths:
+        prof.notes.append(
+            f"no rows carried an audio path under {audio_filepath_key!r}; the manifest's columns are "
+            f"{prof.manifest_keys} -- sample rates, durations and codecs were NOT read. "
+            "Point the reading stage (and this profile) at the real column."
+        )
 
 
 def _fold_identity_files(prof: DataProfile, paths: list[str] | tuple[str, ...]) -> None:

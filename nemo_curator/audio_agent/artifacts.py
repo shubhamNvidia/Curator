@@ -368,12 +368,19 @@ def _record_path(step_key: str) -> str:
 
 
 def save(artifact: Artifact) -> str:
-    """Persist an artifact record as JSON and index it. Returns the record path."""
+    """Persist an artifact record as JSON and index it. Returns the record path.
+
+    Written owner-only for the same reason as a run record: it names dataset keys and
+    output locations, and agent state should not be readable by every other account on a
+    shared machine. (The ``_COMPLETE`` marker beside the user's OUTPUT is deliberately
+    left alone -- that directory belongs to the user, not to the agent.)
+    """
+    from nemo_curator.audio_agent.run_store import _ensure_private_dir, _write_private_json
+
     directory = artifacts_dir()
-    os.makedirs(directory, exist_ok=True)
+    _ensure_private_dir(directory)
     path = _record_path(artifact.step_key)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(artifact.to_dict(), f, indent=2, ensure_ascii=False, default=str)
+    _write_private_json(path, artifact.to_dict())
     with contextlib.suppress(Exception):  # the index is a rebuildable cache; JSON is the truth
         from nemo_curator.audio_agent import run_index
 

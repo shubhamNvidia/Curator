@@ -31,20 +31,41 @@ needs judgment a deterministic tool can't make, so it stays a skill/policy conce
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import hmac
+import itertools
+import json
 import os
 import re
 import secrets
+import tempfile
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
 _SMOKE_SECRET_ENV = "AUDIO_AGENT_SMOKE_SECRET"
+# Same variable ``run_store`` reads; the smoke secret prefers the agent's own state dir
+# so a deployment that already redirects run records keeps its secret beside them.
+_RUNS_DIR_ENV = "AUDIO_AGENT_RUNS_DIR"
+_WORKSPACE_ENV = "AUDIO_AGENT_WORKSPACE"
 _LOCAL_URI_SCHEMES = frozenset({"file", "local"})
 
-# Substrings that mark a dict key as holding a secret (redacted from returns).
-_SECRET_HINTS = ("token", "api_key", "apikey", "secret", "password", "aws_access_key", "credential")
+# Key names that hold a secret (redacted from returns). Matched on the key's WORDS, not as
+# bare substrings: a substring match reads ``tokenizer_path`` -- a real, card-advertised
+# parameter -- as a credential and destroys it, and a destroyed value is then persisted into
+# run records and compared during reuse, so the corruption outlives the display.
+_SECRET_WORDS = frozenset(
+    {"token", "tokens", "secret", "secrets", "password", "passwd", "pwd", "apikey", "credential", "credentials"}
+)
+# Secret names that span a separator, so they survive the word split as adjacent pairs
+# (``api_key`` -> ``api`` + ``key``). ``key`` alone is deliberately NOT a secret word: it
+# ends most semantic field names in this codebase (``audio_filepath_key``, ``score_key``).
+_SECRET_WORD_PAIRS = frozenset(
+    {("api", "key"), ("access", "key"), ("secret", "key"), ("private", "key"), ("auth", "key")}
+)
+_KEY_WORD_SPLIT = re.compile(r"[^a-z0-9]+")
 _SECRET_ASSIGNMENT = re.compile(
     r"""(?ix)
     (?P<prefix>
@@ -112,14 +133,79 @@ _PATH_PARAM_NAMES = frozenset(
         "resampled_audio_dir",
         "rttm_out_dir",
         "separated_audio_dir",
+        # Always a filesystem location: a model-download cache and a pipeline config file.
+        # Both are written/read by the agent, so a workspace lock that ignored them left a
+        # recipe free to populate a cache outside the root it was told to stay inside.
+        "cache_dir",
+        "config_path",
     }
+)
+# Parameters that hold EITHER a local path or a hub id, so membership alone cannot decide.
+# ``SpeakerSeparationStage`` DEFAULTS ``model_path`` to ``nvidia/diar_sortformer_4spk-v1``
+# and ``tokenizer_path`` is documented as an HF tokenizer: locking those by name would make
+# the agent refuse its own default recipe, while ignoring them would miss a real local path.
+_HUB_OR_PATH_PARAM_NAMES = frozenset({"model_path", "tokenizer_path"})
+# Suffixes that mark a value as a concrete local artifact even when written relatively.
+_LOCAL_ARTIFACT_SUFFIXES = (
+    ".nemo", ".joblib", ".onnx", ".model", ".pt", ".pth", ".ckpt", ".bin", ".yaml", ".yml", ".json",
 )
 
 
+def names_local_path(value: str) -> bool:
+    """Whether a dual-purpose value names a filesystem path rather than a hub id.
+
+    Hub ids are bare ``org/name`` (``nvidia/diar_sortformer_4spk-v1``): no anchor, no file
+    suffix, nothing on disk. A local path is anchored (``/``, ``./``, ``../``, ``~``),
+    carries a checkpoint/config suffix, or actually exists.
+    """
+    text = value.strip()
+    if not text:
+        return False
+    if text.startswith(("~", "./", "../", os.sep)):
+        return True
+    expanded = os.path.expanduser(text)
+    if os.path.isabs(expanded):
+        return True
+    if text.lower().endswith(_LOCAL_ARTIFACT_SUFFIXES):
+        return True
+    return os.path.exists(expanded)
+
+
+def workspace_config_error() -> str | None:
+    """Why ``AUDIO_AGENT_WORKSPACE`` is unusable, or None when it is unset or valid.
+
+    A MISCONFIGURED lock must never be indistinguishable from an ABSENT one: reading it
+    as "no lock" silently removes the containment a deployment deliberately opted into.
+    Callers fail closed on a non-None result.
+
+    Rejected: a relative value (the allowed root would then change with the working
+    directory, so the same configuration means different boundaries depending on where
+    the process was launched) and anything that is not an existing directory.
+    """
+    raw = os.environ.get(_WORKSPACE_ENV)
+    if not raw:
+        return None  # unset: the lock is deliberately disabled
+    expanded = os.path.expanduser(raw)
+    if not os.path.isabs(expanded):
+        return (
+            f"{_WORKSPACE_ENV}={raw!r} is relative, so the allowed root would depend on the "
+            "working directory; set an absolute path"
+        )
+    if not os.path.isdir(expanded):
+        return f"{_WORKSPACE_ENV}={raw!r} is not an existing directory"
+    return None
+
+
 def workspace_root() -> str | None:
-    """The allowed workspace root, or None when the lock is not configured (default)."""
-    root = os.environ.get("AUDIO_AGENT_WORKSPACE")
-    return os.path.realpath(os.path.expanduser(root)) if root else None
+    """The allowed workspace root, or None when the lock is unset OR misconfigured.
+
+    Returning None for a misconfigured value is safe only because every enforcement path
+    consults :func:`workspace_config_error` first and refuses; see :func:`path_violations`.
+    """
+    raw = os.environ.get(_WORKSPACE_ENV)
+    if not raw or workspace_config_error():
+        return None
+    return os.path.realpath(os.path.expanduser(raw))
 
 
 def path_violations(paths: list[str | None]) -> list[str]:
@@ -128,6 +214,10 @@ def path_violations(paths: list[str | None]) -> list[str]:
     No-op (returns ``[]``) unless ``AUDIO_AGENT_WORKSPACE`` is set, so normal use
     with data outside the CWD is not blocked; locked-down deployments opt in.
     """
+    # A broken lock blocks the operation rather than silently permitting everything.
+    misconfigured = workspace_config_error()
+    if misconfigured:
+        return [misconfigured]
     root = workspace_root()
     if not root:
         return []
@@ -152,10 +242,17 @@ def recipe_path_params(recipe: Any) -> list[str]:  # noqa: ANN401
     paths: list[str] = []
     for s in getattr(recipe, "stages", []) or []:
         for k, v in (getattr(s, "params", {}) or {}).items():
-            if str(k).lower() not in _PATH_PARAM_NAMES:
+            key = str(k).lower()
+            dual_purpose = key in _HUB_OR_PATH_PARAM_NAMES
+            if key not in _PATH_PARAM_NAMES and not dual_purpose:
                 continue
             values = v if isinstance(v, (list, tuple)) else [v]
-            paths.extend(item for item in values if isinstance(item, str) and item)
+            for item in values:
+                if not isinstance(item, str) or not item:
+                    continue
+                if dual_purpose and not names_local_path(item):
+                    continue  # a hub id names no filesystem location to contain
+                paths.append(item)
     return paths
 
 
@@ -204,8 +301,10 @@ def redact(obj: Any, *, redact_transcripts: bool = True) -> Any:  # noqa: ANN401
     """
 
     def _is_secret(k: Any) -> bool:  # noqa: ANN401
-        lk = str(k).lower()
-        return any(h in lk for h in _SECRET_HINTS)
+        words = [w for w in _KEY_WORD_SPLIT.split(str(k).lower()) if w]
+        if any(w in _SECRET_WORDS for w in words):
+            return True
+        return any(pair in _SECRET_WORD_PAIRS for pair in itertools.pairwise(words))
 
     def _r(o: Any) -> Any:  # noqa: ANN401
         if isinstance(o, dict):
@@ -233,33 +332,100 @@ def _process_smoke_secret() -> bytes:
     return secrets.token_bytes(32)
 
 
+def _secret_dir_candidates() -> list[str]:
+    """Directories that may hold the shared smoke secret, most-preferred first.
+
+    A single hardcoded ``~/.cache`` breaks the officially recommended container path: on
+    a read-only rootfs, or a UID with no passwd entry (``expanduser`` then yields a
+    literal ``"~"``), every write raised and the agent silently fell back to a
+    per-process secret -- so a smoke in one process could never satisfy the ``run`` in
+    another and ``AUDIO_AGENT_REQUIRE_SMOKE`` refused forever. Falling through to the
+    agent's own state dir, the XDG dirs, then the temp dir keeps the token verifiable
+    across processes wherever *something* is writable.
+    """
+    out: list[str] = []
+
+    def add(base: str | None, *parts: str) -> None:
+        if not base:
+            return
+        # Expanded here so every source is treated the same way ``run_store.runs_dir``
+        # treats AUDIO_AGENT_RUNS_DIR. Without it that one variable meant two different
+        # directories: the run records went to the real home while the secret beside them
+        # went to a literal "~" folder created under the working directory -- so the secret
+        # moved with the CWD and stopped being shared, which is the one thing it is for.
+        base = os.path.expanduser(base)
+        if base.startswith("~"):  # no HOME / no passwd entry -> never create a "~" dir
+            return
+        path = os.path.join(base, *parts)
+        if path not in out:
+            out.append(path)
+
+    add(os.environ.get(_RUNS_DIR_ENV), "secrets")
+    add(workspace_root(), ".audio_agent_state")
+    add(os.environ.get("XDG_STATE_HOME"), "nemo_curator")
+    add(os.environ.get("XDG_CACHE_HOME"), "nemo_curator")
+    add("~", ".cache", "nemo_curator")
+    add(tempfile.gettempdir(), "nemo_curator")
+    return out
+
+
+def _stored_secret(file: Path) -> bytes | None:
+    """The secret held in an existing file, or None when it is absent or unusable."""
+    try:
+        payload = json.loads(file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    value = payload.get("secret") if isinstance(payload, dict) else None
+    return str(value).encode() if value else None
+
+
+def _read_or_create_secret(path: str) -> bytes | None:
+    """Read the shared smoke secret at ``path``, creating it once if absent.
+
+    The create-or-lose-the-race step is the package's own
+    :func:`~nemo_curator.utils.atomic_io.write_json_atomically_if_absent` -- the same
+    fsynced-temp-then-``os.link`` algorithm this used to hand-roll, already relied on by
+    ``backends/slurm_array.py``, and it leaves the file owner-only (0600) because the temp
+    file it links in is created that way.
+    """
+    from nemo_curator.utils.atomic_io import write_json_atomically_if_absent
+
+    file = Path(path)
+    try:
+        file.parent.mkdir(parents=True, exist_ok=True)
+        for _attempt in (0, 1):
+            secret = _stored_secret(file)
+            if secret:
+                return secret
+            # Present but empty or unparseable is NOT a usable secret, and leaving it in
+            # place is what made this unrecoverable before: ``os.link`` kept failing against
+            # the dead file, so every process silently fell back to its own per-process key
+            # and cross-process smoke evidence never worked again. Clear it, then create.
+            with contextlib.suppress(OSError):
+                file.unlink(missing_ok=True)
+            write_json_atomically_if_absent(file, {"secret": secrets.token_hex(32)})
+    except OSError:
+        return None
+    return None
+
+
 @lru_cache(maxsize=1)
 def _smoke_secret() -> bytes:
     """HMAC key for smoke tokens.
 
-    Precedence: ``AUDIO_AGENT_SMOKE_SECRET`` env (pin across machines / CI) > a
-    per-deployment secret persisted once under the user cache (so a smoke in one
-    process and the run in another share it) > a random per-process secret (still
-    unforgeable within this process, e.g. the long-lived MCP server).
+    Precedence: ``AUDIO_AGENT_SMOKE_SECRET`` env (pin across machines / CI) > a secret
+    persisted in the first writable candidate directory (so a smoke in one process and
+    the run in another share it) > a random per-process secret (still unforgeable within
+    this process, e.g. a long-lived MCP server, but not shareable across them).
     """
     env = os.environ.get(_SMOKE_SECRET_ENV)
     if env:
         return env.encode("utf-8")
-    cache = os.path.join(os.path.expanduser("~/.cache/nemo_curator"), "audio_agent_smoke.secret")
-    try:
-        if os.path.isfile(cache):
-            with open(cache, "rb") as f:
-                data = f.read().strip()
-            if data:
-                return data
-        os.makedirs(os.path.dirname(cache), exist_ok=True)
-        fd = os.open(cache, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "wb") as f:
-            secret = secrets.token_hex(32).encode("utf-8")
-            f.write(secret)
-        return secret
-    except OSError:
-        return _process_smoke_secret()
+    for directory in _secret_dir_candidates():
+        secret = _read_or_create_secret(os.path.join(directory, "audio_agent_smoke.secret"))
+        if secret:
+            return secret
+    return _process_smoke_secret()
 
 
 def smoke_token(config_hash: str | None) -> str:
@@ -269,7 +435,7 @@ def smoke_token(config_hash: str | None) -> str:
     :func:`_smoke_secret`), so — unlike a plain hash of the public config_hash — it
     cannot be minted by anything that merely knows the config_hash.
     """
-    mac = hmac.new(_smoke_secret(), f"audio_agent_smoke|{config_hash}".encode("utf-8"), hashlib.sha256)
+    mac = hmac.new(_smoke_secret(), f"audio_agent_smoke|{config_hash}".encode(), hashlib.sha256)
     return mac.hexdigest()[:24]
 
 

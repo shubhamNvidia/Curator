@@ -46,6 +46,20 @@ class RunReport:
     # mistaken for retained source items.
     source_items: int | None = None
     output_rows: int | None = None
+    # Rows found by READING BACK the written output, against ``output_rows`` counted from the
+    # tasks still in memory. The two answer different questions and a disagreement is itself
+    # the finding: the second says what the pipeline handed on, the first what the user has.
+    output_rows_written: int | None = None
+    sparse_fields: list[dict[str, Any]] = field(default_factory=list)
+    """Written fields that carry no value in some rows, worst first.
+
+    A row count flatters an output whose rows are mostly blank. One real run wrote a 4-row
+    manifest holding 21 ALM windows and reported "4 rows"; three of those rows had an empty
+    ``filtered_windows`` and 20 of the 21 windows held a single speaker, and it was announced
+    as complete. The per-field fill counts that contradict this were already being computed
+    -- but only for a run that declared acceptance criteria, so the runs least likely to be
+    checked were also the only ones reporting nothing.
+    """
     cardinality_proven: bool = False
     per_filter_counts: dict[str, Any] = field(default_factory=dict)
     per_stage_metrics: dict[str, Any] = field(default_factory=dict)
@@ -132,6 +146,47 @@ def _row_count(tasks: list[Any] | None) -> int:
     (e.g. after ``AudioToDocumentStage``). Summing ``num_items`` gives the true row count.
     """
     return sum(int(getattr(t, "num_items", 1) or 0) for t in (tasks or []))
+
+
+def rows_written_in(output_scan: dict[str, Any] | None) -> int | None:
+    """Rows read back from the written output, or ``None`` when it could not be read.
+
+    Zero is a claim -- "the output is there and holds nothing" -- and must not be how an
+    unreadable or undeclared output is reported, because that reads as a run that produced
+    nothing rather than one whose result was never inspected.
+    """
+    scan = output_scan or {}
+    if int(scan.get("readable_files") or 0) <= 0:
+        return None
+    return int(scan.get("valid_rows") or 0)
+
+
+def sparse_fields_in(output_scan: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Which written fields are blank in some rows, worst first.
+
+    Measures every field against the output's total row count, so a field MISSING from a row
+    counts the same as one present but empty -- from the reader's side both mean "no value
+    here", and distinguishing them would only invite the reply that the field was technically
+    present. Fields full in every row are omitted: they are the unremarkable case, and listing
+    them would bury the one that isn't.
+
+    The list is bounded by how wide the manifest schema is, not by corpus size, so it stays
+    small in a persisted run record.
+    """
+    scan = output_scan or {}
+    rows = int(scan.get("valid_rows") or 0)
+    fields = scan.get("fields")
+    if rows <= 0 or not isinstance(fields, dict):
+        return []
+    out: list[dict[str, Any]] = []
+    for name, stat in fields.items():
+        if not isinstance(stat, dict):
+            continue
+        filled = min(int(stat.get("non_empty") or 0), rows)
+        if filled < rows:
+            out.append({"field": str(name), "rows": rows, "non_empty": filled, "empty": rows - filled})
+    out.sort(key=lambda entry: (-int(entry["empty"]), str(entry["field"])))
+    return out
 
 
 def build_run_report(  # noqa: PLR0913 - a report intentionally gathers many fields

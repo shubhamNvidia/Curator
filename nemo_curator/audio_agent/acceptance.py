@@ -313,7 +313,19 @@ def _weakened_reason(  # noqa: PLR0911 - explicit comparison outcomes aid audita
     if op == "~=":
         if frozen_value != used_value:
             return f"value {frozen_value!r} -> {used_value!r}"
-        if float(used["tolerance"]) > float(frozen["tolerance"]):
+        # Keep the tolerance comparison defensive for manually constructed objects
+        # (strict schema validation guarantees numerics on the normal path), matching
+        # the numeric-threshold branch below -- a non-numeric tolerance must not raise
+        # out of the honesty guard.
+        try:
+            frozen_tol, used_tol = float(frozen["tolerance"]), float(used["tolerance"])
+        except (TypeError, ValueError):
+            return (
+                f"tolerance {frozen['tolerance']!r} -> {used['tolerance']!r}"
+                if frozen["tolerance"] != used["tolerance"]
+                else None
+            )
+        if used_tol > frozen_tol:
             return (
                 f"tolerance {frozen['tolerance']!r} -> {used['tolerance']!r} "
                 "(wider/easier to satisfy)"

@@ -17,5 +17,5 @@ pitfalls:
   - "match the ASR checkpoint to the data's language (model-card fact)"
   - "don't filter before wer is produced"
 presets:
-  english_parakeet: {model_name: "nvidia/parakeet-tdt-0.6b-v2", wer_threshold: 25.0}
+  english_parakeet: {model_name: "nvidia/parakeet-tdt-0.6b-v2", target_value: 25.0}
 provenance: {derived_from: "tutorials/audio/fleurs", version: 1, validated: true}

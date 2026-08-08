@@ -24,3 +24,21 @@ stages:
     params: {overlap_percentage: 50, target_duration: 120.0}
   - ref: ManifestWriterStage
     params: {output_path: "REQUIRED_output_manifest"}
+# What "done" means, checked against the written rows rather than against the fact that every
+# stage exited zero. Present in the template on purpose: a shipped recipe with no success
+# contract teaches the next author to omit one, and then a run that writes rows nothing can use
+# still reports complete. Retune the thresholds for the job; deleting the block is the one edit
+# that removes the only check on whether the output is worth having.
+acceptance_criteria:
+  - id: every_row_yields_a_window
+    type: output_completeness
+    description: "every written row carries at least one window -- catches files the duration and
+      speaker gates silently reduced to nothing, which a row count still reports as success"
+    check: {field: filtered_windows}
+    severity: must
+  - id: windows_survive_overlap_filter
+    type: yield
+    description: "the pipeline retained rows at all (counts rows, not windows -- pair it with the
+      completeness criterion above, which is the one that sees empty windows)"
+    check: {op: ">", value: 0}
+    severity: must

@@ -218,40 +218,36 @@ def _stage_need(
 def _execution_needs(
     stages: list[Any], contracts: list[Any], idx: Any, calib_for: Any  # noqa: ANN401
 ) -> list[StageNeed]:
-    """Flatten composite stages (via ``decompose()``) into the stages the backend runs.
+    """Flatten composite stages into the stages the backend runs, and price those.
 
     A ``CompositeStage`` (e.g. ``SplitASRAlignJoinStage``) advertises only its own
     ``resources`` while hiding the inner stages it expands into at runtime. Summing the
     composite alone undercounts the concurrent Ray GPU reservation / VRAM / CPU and can
     wrongly pick streaming (which the executor then aborts). Expanding here makes mode
-    selection match reality for ANY composite -- not one specific recipe. Falls back to
-    treating a stage as a leaf if it does not decompose at plan time.
-    """
-    try:
-        from nemo_curator.stages.base import CompositeStage
-    except Exception:  # noqa: BLE001 - if unavailable, treat every stage as a leaf
-        CompositeStage = ()  # type: ignore[assignment]
+    selection match reality for ANY composite -- not one specific recipe.
 
+    The traversal itself lives in :mod:`nemo_curator.stages.audio._composite`, shared with
+    pipeline validation: a composite that resolves to one set of stages for resource planning
+    and a different set for correctness checking would be worse than either alone.
+    """
+    from nemo_curator.stages.audio._composite import expand_composites
+
+    expansion = expand_composites(stages)
+    grouped = expansion.by_recipe_index()
     out: list[StageNeed] = []
 
-    def visit(stage: Any, contract: Any, index: int, depth: int) -> None:  # noqa: ANN401
-        inner: list[Any] | None = None
-        if depth < 8 and CompositeStage and isinstance(stage, CompositeStage):
-            try:
-                # Match Pipeline._decompose_stages: this carries any configured
-                # ``CompositeStage.with_`` resource/worker overrides into the
-                # concrete stages that the backend will schedule.
-                inner = list(stage.decompose_and_apply_with() or [])
-            except Exception:  # noqa: BLE001 - a composite that cannot plan-time decompose stays a leaf
-                inner = None
-        if inner:
-            for sub in inner:
-                visit(sub, None, index, depth + 1)
-        else:
-            out.append(_stage_need(index, stage, contract, idx.card(type(stage).__name__), calib_for(stage)))
+    def need(index: int, stage: Any, contract: Any) -> StageNeed:  # noqa: ANN401
+        return _stage_need(index, stage, contract, idx.card(type(stage).__name__), calib_for(stage))
 
     for i, st in enumerate(stages):
-        visit(st, contracts[i] if i < len(contracts) else None, i, 0)
+        contract = contracts[i] if i < len(contracts) else None
+        if i in expansion.opaque:
+            # A composite nobody could open still occupies the cluster. Counting it as a single
+            # leaf understates its inner concurrency, but skipping it would budget nothing at all.
+            out.append(need(i, st, contract))
+            continue
+        for item in grouped.get(i, []):
+            out.append(need(i, item.stage, contract if item.stage is st else None))
     return out
 
 
@@ -282,6 +278,48 @@ def _valid_calibration_number(value: Any) -> bool:  # noqa: ANN401
         and math.isfinite(float(value))
         and float(value) >= 0
     )
+
+
+def cpu_fallback(stages: list[Any], env: Any, *, index: Any = None) -> list[str]:  # noqa: ANN401
+    """Drop the Ray GPU reservation of GPU-OPTIONAL stages on a host with no GPU.
+
+    ``audio_cpu`` is a supported install profile, and a stage whose card declares
+    ``resource.gpu_optional: true`` runs on CPU. Such stages nevertheless declare a GPU
+    reservation by default (``Resources(gpus=0.5)`` on UTMOS/SIGMOS), which a GPU-less
+    scheduler can never satisfy -- so the plan was refused for a recipe that would in
+    fact have run. Zero the reservation for exactly those stages (replacing entries with
+    ``.with_()`` copies, which the caller then executes) and report what changed.
+
+    Deliberately conservative: a stage is downgraded only when its card EXPLICITLY says
+    the GPU is optional. A stage that requires a GPU -- or one with no card to vouch for
+    it -- keeps its reservation and still escalates, so a genuinely GPU-bound recipe is
+    never quietly turned into a CPU run.
+
+    Not applied when the GPU is merely MASKED (present but unreachable from this
+    process): there a device is assumed present and the reservation must stand.
+    """
+    from nemo_curator.audio_agent.index import get_index
+    from nemo_curator.stages.resources import Resources
+
+    if int(getattr(env, "gpu_count", 0) or 0) > 0 or bool(getattr(env, "gpu_possibly_masked", False)):
+        return []
+    idx = index or get_index()
+    notes: list[str] = []
+    for i, stage in enumerate(stages):
+        resources = getattr(stage, "resources", None)
+        reserved = float(getattr(resources, "gpus", 0.0) or 0.0)
+        if reserved <= 0:
+            continue
+        card_resource = (idx.card(type(stage).__name__) or {}).get("resource") or {}
+        if card_resource.get("gpu_optional") is not True:
+            continue  # required, or unvouched: leave it to escalate honestly
+        cpus = float(getattr(resources, "cpus", 1.0) or 1.0)
+        stages[i] = stage.with_(resources=Resources(cpus=cpus))
+        notes.append(
+            f"{type(stage).__name__}: released a {reserved} GPU reservation and scheduled on CPU "
+            "(card declares gpu_optional; no GPU on this host)"
+        )
+    return notes
 
 
 def plan(
@@ -358,7 +396,7 @@ def plan(
         return clean
 
     needs = [
-        _stage_need(i, st, contracts[i], idx.card(type(st).__name__), _calib_for(st))
+        _stage_need(i, st, contracts[i] if i < len(contracts) else None, idx.card(type(st).__name__), _calib_for(st))
         for i, st in enumerate(stages)
     ]
     # Feasibility math runs over the EXECUTION stages (composites flattened), so a

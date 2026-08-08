@@ -302,7 +302,7 @@ class TestPostHocReportIntegrity:
         monkeypatch.setattr(
             verbs,
             "probe_env",
-            lambda: SimpleNamespace(to_dict=lambda: {}),
+            lambda: SimpleNamespace(to_dict=dict),
         )
 
         result = verbs.report(str(output))
@@ -341,7 +341,7 @@ class TestPostHocReportIntegrity:
         monkeypatch.setattr(
             verbs,
             "probe_env",
-            lambda: SimpleNamespace(to_dict=lambda: {}),
+            lambda: SimpleNamespace(to_dict=dict),
         )
         criteria = [
             {
@@ -383,7 +383,7 @@ class TestPostHocReportIntegrity:
         monkeypatch.setattr(
             verbs,
             "probe_env",
-            lambda: SimpleNamespace(to_dict=lambda: {}),
+            lambda: SimpleNamespace(to_dict=dict),
         )
         criteria = [
             {
@@ -418,7 +418,7 @@ class TestPostHocReportIntegrity:
         monkeypatch.setattr(
             verbs,
             "probe_env",
-            lambda: SimpleNamespace(to_dict=lambda: {}),
+            lambda: SimpleNamespace(to_dict=dict),
         )
 
         result = verbs.report(str(output))
@@ -441,7 +441,7 @@ class TestPostHocReportIntegrity:
         monkeypatch.setattr(
             verbs,
             "probe_env",
-            lambda: SimpleNamespace(to_dict=lambda: {}),
+            lambda: SimpleNamespace(to_dict=dict),
         )
 
         result = verbs.report(str(output))
@@ -603,7 +603,7 @@ class TestRunAcceptanceResult:
         env = SimpleNamespace(
             has_gpu=False,
             gpu_count=0,
-            to_dict=lambda: {},
+            to_dict=dict,
         )
         resource_plan = SimpleNamespace(
             feasible=True,
@@ -696,3 +696,91 @@ class TestRowCount:
         assert _row_count([_T(1), _T(1)]) == 2  # AudioTask-like: 1 row each
         assert _row_count([_T(500)]) == 500  # DocumentBatch-like: one task, 500 rows
         assert _row_count(None) == 0
+
+
+class TestCatalogDisclosure:
+    """A shorter catalog must never be mistaken for a smaller library."""
+
+    def test_a_healthy_environment_reports_no_unavailable_key(self) -> None:
+        """The key is absent when everything imported, so healthy output is unchanged."""
+        assert "unavailable" not in aa.discover()
+
+    def test_a_module_that_failed_to_import_is_disclosed(self, monkeypatch) -> None:
+        """On a supported CPU-only install the ASR stages are simply gone; the host must be
+        able to say 'unavailable here' rather than 'this cannot be done'."""
+        from nemo_curator.stages.audio import _catalog
+
+        monkeypatch.setattr(
+            _catalog,
+            "_SKIPPED",
+            [{"module": "nemo_curator.stages.audio.inference.asr.asr_nemo",
+              "error": "ModuleNotFoundError: No module named 'nemo'"}],
+        )
+        result = aa.discover()
+        assert result["unavailable"][0]["module"].endswith("asr_nemo")
+        assert "ModuleNotFoundError" in result["unavailable"][0]["error"]
+        assert result["count"] == len(result["stages"])  # the present stages still list normally
+
+
+class TestDataInformedConfig:
+    """Path B: values the DATASET fixes, bound onto the stage -- never onto a stage default.
+
+    Stage defaults are what tutorials and hand-written pipelines rely on, so the agent
+    configures the recipe it builds instead of changing what the stage does by default.
+    """
+
+    def _manifest(self, tmp_path, name, row, rate=16000):
+        import numpy as np
+        import soundfile as sf
+        wav = tmp_path / "a.wav"
+        sf.write(str(wav), np.zeros(rate, dtype="float32"), rate)
+        row = {k: (str(wav) if v == "@wav" else v) for k, v in row.items()}
+        path = tmp_path / name
+        path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+        return str(path)
+
+    def test_the_observed_rate_is_bound_so_the_default_does_not_discard_the_corpus(self, tmp_path) -> None:
+        """MonoConversion VERIFIES the rate and drops non-matching rows; its 48 kHz default
+        would silently discard a 16 kHz corpus."""
+        manifest = self._manifest(tmp_path, "nemo.jsonl", {"audio_filepath": "@wav", "text": "hi"})
+        result = aa.resolve("MonoConversionStage", data_driven=True, data=manifest)
+        assert result["params"]["output_sample_rate"] == 16000
+        assert result["asks"] == []
+
+    def test_a_folder_source_needs_no_column_question(self, tmp_path) -> None:
+        """The agent creates the manifest for a folder, so the schema is known by construction."""
+        import numpy as np
+        import soundfile as sf
+        sf.write(str(tmp_path / "a.wav"), np.zeros(16000, dtype="float32"), 16000)
+        result = aa.resolve("MonoConversionStage", data_driven=True, data=str(tmp_path))
+        assert result["params"]["output_sample_rate"] == 16000
+        assert result["asks"] == []
+
+    def test_an_explicit_value_outranks_the_inferred_one(self, tmp_path) -> None:
+        manifest = self._manifest(tmp_path, "nemo.jsonl", {"audio_filepath": "@wav", "text": "hi"})
+        result = aa.resolve(
+            "MonoConversionStage", explicit={"output_sample_rate": 48000}, data_driven=True, data=manifest
+        )
+        assert result["params"]["output_sample_rate"] == 48000
+
+    def test_the_derivation_is_recorded_as_recomputable(self, tmp_path) -> None:
+        """A data-derived value must be stamped so a different dataset recomputes it."""
+        manifest = self._manifest(tmp_path, "nemo.jsonl", {"audio_filepath": "@wav", "text": "hi"})
+        entry = next(
+            e for e in aa.resolve("MonoConversionStage", data_driven=True, data=manifest)["strategy"]
+            if e["param"] == "output_sample_rate"
+        )
+        assert entry["mode"] == "data_informed"
+        assert entry["recompute_on"] == "data_change"
+
+    def test_path_a_alone_is_unchanged(self) -> None:
+        assert aa.resolve("UTMOSFilterStage", label="studio")["params"] == {"mos_threshold": 4.0}
+
+    def test_a_profile_that_read_no_audio_says_so(self, tmp_path) -> None:
+        """An empty audio profile must not be mistaken for a healthy one."""
+        from nemo_curator.audio_agent.profiler import profile_data
+
+        manifest = self._manifest(tmp_path, "cv.jsonl", {"path": "@wav", "sentence": "hi"})
+        notes = profile_data(manifest).to_dict()["notes"]
+        assert any("no rows carried an audio path" in n for n in notes)
+        assert profile_data(manifest, audio_filepath_key="path").to_dict()["notes"] == []

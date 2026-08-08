@@ -58,6 +58,36 @@ OptionKind = Literal[
 Availability = Literal["available", "conditional", "unavailable", "unknown"]
 _RANK: dict[str, int] = {"ok": 0, "warn": 1, "fail": 2}
 _DOCS = "nemo_curator/audio_agent/ENVIRONMENT.md"
+# The project's own audio install guidance is versioned and is re-published with each
+# release. Point at it instead of restating a command here, which would silently go
+# stale; we only decide the SHAPE of the command from the detected install mode below.
+_AUDIO_SETUP_DOC = "https://docs.nvidia.com/nemo/curator/get-started/audio"
+
+
+def _from_source_checkout() -> bool:
+    """Whether this package is running from a source checkout rather than an install.
+
+    ``uv sync`` resolves a project's ``pyproject``/lock, so prescribing it to someone who
+    installed the published package points them at a command that cannot run in their
+    environment. Resolved from the package location (never the CWD), so it is correct
+    regardless of where the caller happens to be.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.isfile(os.path.join(root, "pyproject.toml"))
+
+
+def _dependency_profile_steps(extra: str) -> list[str]:
+    """Steps to install/restore an audio dependency profile, matched to the install mode.
+
+    Deliberately does not spell out the published install command (it carries release
+    specifics such as an override file); it names the documented source of truth instead.
+    """
+    if _from_source_checkout():
+        return [f"run `uv sync --extra {extra}`", "then launch that environment's interpreter directly"]
+    return [
+        f"reinstall the published package with the `{extra}` extra",
+        f"use the exact current command from {_AUDIO_SETUP_DOC}",
+    ]
 _LOW_DISK_GB = 5.0  # below this, model downloads and intermediates start failing mid-run
 
 
@@ -297,9 +327,9 @@ def _gpu(env: EnvProfile) -> HealthCheck:  # noqa: C901, PLR0912 - failure modes
             _option(
                 "sync_gpu_project_environment",
                 "environment_change",
-                "Restore the GPU project environment",
-                "Create/sync the repository environment from its GPU dependency profile.",
-                steps=["run `uv sync --extra audio_cuda12`", "launch `.venv/bin/python` directly"],
+                "Provide the GPU dependency profile",
+                "Install/sync the GPU audio dependency profile (`audio_cuda12`) for this environment.",
+                steps=_dependency_profile_steps("audio_cuda12"),
                 availability="available" if hardware_visible else "conditional",
                 reason=(
                     ""
@@ -528,26 +558,29 @@ def _audio_extras(env: EnvProfile) -> HealthCheck:
     return HealthCheck(
         "audio_extras", "warn", f"audio packages not discoverable: {missing}",
         impact="selected stages that depend on these may fail to import or initialize",
-        fix=["`uv sync --extra audio_cuda12` (GPU) or `--extra audio_cpu` (CPU)"],
+        fix=[
+            "install an audio dependency profile: `audio_cuda12` (GPU) or `audio_cpu` (CPU)",
+            f"current install commands: {_AUDIO_SETUP_DOC}",
+        ],
         confidence="medium",
         capabilities=["audio_dependencies"],
         options=[
             _option(
                 "sync_audio_cuda_extra",
                 "environment_change",
-                "Sync the GPU audio dependencies",
-                "Restore the repository's GPU audio dependency profile.",
-                steps=["run `uv sync --extra audio_cuda12`", "launch `.venv/bin/python` directly"],
-                tradeoffs=["changes the project environment"],
+                "Install the GPU audio dependencies",
+                "Provide the GPU audio dependency profile (`audio_cuda12`).",
+                steps=_dependency_profile_steps("audio_cuda12"),
+                tradeoffs=["changes the environment this agent runs in"],
                 recommended=bool(env.has_gpu),
             ),
             _option(
                 "sync_audio_cpu_extra",
                 "environment_change",
-                "Sync the CPU audio dependencies",
-                "Restore the repository's CPU audio dependency profile.",
-                steps=["run `uv sync --extra audio_cpu`", "launch `.venv/bin/python` directly"],
-                tradeoffs=["changes the project environment; GPU-only stages remain unavailable"],
+                "Install the CPU audio dependencies",
+                "Provide the CPU audio dependency profile (`audio_cpu`).",
+                steps=_dependency_profile_steps("audio_cpu"),
+                tradeoffs=["changes the environment this agent runs in; GPU-only stages remain unavailable"],
                 recommended=not bool(env.has_gpu),
             ),
         ],

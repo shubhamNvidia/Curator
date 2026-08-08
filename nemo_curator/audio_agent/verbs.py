@@ -52,7 +52,13 @@ from nemo_curator.audio_agent.recipe import (
     Recipe,
     build_stages,
 )
-from nemo_curator.audio_agent.report import _row_count, build_run_report, stage_duration_sec
+from nemo_curator.audio_agent.report import (
+    _row_count,
+    build_run_report,
+    rows_written_in,
+    sparse_fields_in,
+    stage_duration_sec,
+)
 
 # How many output rows a success contract may read back as evidence. Enough to judge coverage
 # on a real corpus; small enough that verifying a finished run never becomes the expensive part.
@@ -71,24 +77,6 @@ _SMOKE_DIR_OUTPUT_PARAMS = frozenset(
     - {"raw_data_dir"}
 )
 
-# A contract that says ``writes_to_disk`` must have one reviewed smoke adapter.
-# Unknown writers fail closed even if their parameter happens to look path-like.
-_SMOKE_DISK_ADAPTERS: dict[str, tuple[str, ...]] = {
-    "CreateInitialManifestReadSpeechStage": (),
-    "DocumentBatchJsonlWriterStage": ("output_path",),
-    "InferenceSortformerStage": ("rttm_out_dir",),
-    "ManifestGroupExportStage": ("output_dir",),
-    "ManifestWriterStage": ("output_path",),
-    "MonoConversionStage": ("output_dir",),
-    "PretrainMetricsAggregatorStage": ("output_path",),
-    "ResampleAudioStage": ("resampled_audio_dir",),
-    "SegmentConcatenationStage": ("output_dir",),
-    "SegmentExtractionStage": ("output_dir",),
-    "SnippetExtractionStage": ("output_dir", "output_audio_tar_path"),
-    "SnippetManifestWriterStage": ("output_path",),
-    "SpeakerSeparationStage": ("separated_audio_dir",),
-    "SplitLongAudioStage": ("output_dir",),
-}
 
 
 # --------------------------------------------------------------------------- #
@@ -518,13 +506,26 @@ def _derive_initial(data_profile: dict[str, Any] | None) -> tuple[set[str], set[
 # discovery + routing (L0/L1/L2)
 # --------------------------------------------------------------------------- #
 def discover() -> dict[str, Any]:
-    """List every agent-ready audio stage with its category + one-liner."""
+    """List every agent-ready audio stage with its category + one-liner.
+
+    Also reports stage modules that failed to import (``unavailable``), so a shorter
+    catalog is never mistaken for a smaller library: on a supported CPU-only install the
+    ASR/diarization stages are absent, and the host must be able to say "unavailable here,
+    install the GPU extra" instead of "this cannot be done". The key is omitted entirely
+    when everything imported, so a healthy environment's output is unchanged.
+    """
+    from nemo_curator.stages.audio._catalog import unavailable_modules
+
     idx = get_index()
     stages = [
         {"stage": name, "category": idx.category_of(name), "summary": idx.one_liner(name), "tags": idx.tags_of(name)}
         for name in idx.stage_names()
     ]
-    return {"count": len(stages), "stages": stages}
+    out: dict[str, Any] = {"count": len(stages), "stages": stages}
+    unavailable = unavailable_modules()
+    if unavailable:
+        out["unavailable"] = unavailable
+    return out
 
 
 def describe(name: str) -> dict[str, Any]:
@@ -589,21 +590,49 @@ def resolve(
     use_case: str | None = None,
     explicit: dict[str, Any] | None = None,
     data_driven: bool = False,
+    data: str | None = None,
 ) -> dict[str, Any]:
-    """Resolve an outcome to concrete stage config via the card (1A.2, Path A).
+    """Resolve an outcome to concrete stage config via the card (1A.2).
 
-    Maps a user-facing outcome — a quality ``label`` ("studio"), a named
+    Path A maps a user-facing outcome — a quality ``label`` ("studio"), a named
     ``use_case`` preset, or an ``explicit`` ``{param: value}`` — to concrete
     params (or, for an annotator, a ``PreserveByValueStage`` filter), plus an
     auditable ``strategy`` trail. Keeps internal thresholds out of user questions
-    and never invents a number. Relative objectives need Path B (``data_driven``,
-    deferred): with it off they return an ``ask`` for an explicit bar.
+    and never invents a number.
+
+    Path B (``data_driven`` with ``data``) adds the values the DATASET fixes rather than
+    the user — currently the rate the audio actually is. It configures the stage for this
+    recipe and never changes a stage default, so hand-written pipelines and tutorials are
+    unaffected. Ambiguity comes back as an ``ask``: mixed sample rates are a question for
+    the user rather than something to guess at.
+
+    It does NOT infer which column holds the audio. ``audio_filepath`` is the NeMo manifest
+    key, and supplying a manifest in that format is the caller's responsibility; a source
+    that does not carry it is refused by the ``source_schema`` check with the columns it
+    does have, rather than guessed at. Guessing would mean guessing wrong on some dataset
+    and silently curating the wrong field.
     """
     from nemo_curator.audio_agent import config_strategy
 
-    return config_strategy.resolve(
-        stage, label=label, use_case=use_case, explicit=explicit, data_driven=data_driven
+    result = config_strategy.resolve(
+        stage, label=label, use_case=use_case, explicit=explicit
     )
+    if not (data_driven and data):
+        return result
+    profile: dict[str, Any] | None = None
+    with contextlib.suppress(Exception):  # a source we cannot profile simply adds nothing
+        profile = profile_data(data).to_dict()
+    derived = config_strategy.resolve_from_data(stage, profile)
+    # Path A wins on conflict: an outcome the user asked for outranks an inference.
+    result["params"] = {**derived["params"], **result["params"]}
+    result["strategy"] = list(result["strategy"]) + list(derived["strategy"])
+    asks = list(result["asks"]) + list(derived["asks"])
+    if derived["params"] or derived["asks"]:
+        # Path B answered (or asked something concrete), so Path A's "you gave me no
+        # outcome" prompt is no longer true and would only add noise.
+        asks = [a for a in asks if a != config_strategy.NO_OUTCOME_ASK]
+    result["asks"] = asks
+    return result
 
 
 def diagnose(
@@ -1745,12 +1774,21 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
     )
     if pretrain_output_rows is not None:
         report_obj.accepted = pretrain_output_rows
-    _terminal_outputs, cardinality_proven = _terminal_evidence_outputs(
+    terminal_outputs, cardinality_proven = _terminal_evidence_outputs(
         rec,
         list(getattr(report_obj, "output_paths", []) or []),
     )
+    # Read the output back on EVERY run, not only one that declared a success contract. The
+    # counts below are what tell a caller its 4-row manifest has 3 blank rows, and gating them
+    # on acceptance criteria left the runs nobody was checking as the only ones reporting
+    # nothing. The scan streams and keeps counts, so it costs a pass over the manifest the run
+    # just wrote -- and it is now that pass rather than a second one: _acceptance_result is
+    # handed this result instead of repeating the read.
+    _preview, output_scan = _scan_terminal_output(terminal_outputs, limit=0)
     report_obj.source_items = int(getattr(report_obj, "input_count", 0))
     report_obj.output_rows = int(getattr(report_obj, "accepted", 0))
+    report_obj.output_rows_written = rows_written_in(output_scan)
+    report_obj.sparse_fields = sparse_fields_in(output_scan)
     report_obj.cardinality_proven = cardinality_proven
     report_obj.rejected = (
         max(0, report_obj.source_items - report_obj.output_rows)
@@ -1768,6 +1806,7 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
         roles,
         keys,
         list(getattr(report_obj, "output_paths", []) or []),
+        output_scan=output_scan,
     )
     provenance: dict[str, Any] = {
         "run_record_persisted": False,
@@ -2132,6 +2171,8 @@ def _acceptance_result(
     produced_roles: list[str] | None,
     produced_keys: list[str] | None,
     outputs: list[str] | None = None,
+    *,
+    output_scan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Verify the run's own success contract against the evidence it just produced.
 
@@ -2143,6 +2184,11 @@ def _acceptance_result(
     ``outputs`` are read back as row-level evidence so the contract judges the DATA, not the
     role labels ``validate`` declared. Declaration-level checking passes a field that every
     row left null -- the precise failure the contract exists to prevent.
+
+    ``output_scan`` lets a caller that already read the output hand the result over instead of
+    paying for a second pass. It is accepted only if it names the same terminal output this
+    contract would have scanned; anything else is re-read, so passing the wrong scan costs
+    time rather than judging one run's contract against another run's bytes.
     """
     if not rec.acceptance_criteria:
         return {}
@@ -2151,11 +2197,11 @@ def _acceptance_result(
             rec,
             list(outputs or []),
         )
-        per_item, output_scan = (
-            _scan_terminal_output(evidence_outputs, limit=0)
-            if _needs_terminal_evidence(rec)
-            else ([], {})
-        )
+        per_item: list[dict[str, Any]] = []
+        if not _needs_terminal_evidence(rec):
+            output_scan = {}
+        elif not _scan_covers(output_scan, evidence_outputs):
+            per_item, output_scan = _scan_terminal_output(evidence_outputs, limit=0)
         expected_output_rows = (
             int(getattr(report, "accepted", 0))
             if cardinality_proven
@@ -2176,6 +2222,18 @@ def _acceptance_result(
         )
     except Exception as e:  # noqa: BLE001 - report the failure, but do not fail a completed run
         return {"overall": "unverifiable", "reason": f"could not verify the success contract: {e}"}
+
+
+def _scan_covers(output_scan: dict[str, Any] | None, evidence_outputs: list[str]) -> bool:
+    """Whether an already-taken scan read the output this contract has to judge.
+
+    The scan records the location it read, so this is a comparison rather than a promise the
+    caller has to keep. Sharing a read is only safe if it is provably the same read.
+    """
+    if not output_scan:
+        return False
+    terminal = str(evidence_outputs[-1]) if evidence_outputs else ""
+    return str(output_scan.get("terminal_output") or "") == terminal
 
 
 def _needs_terminal_evidence(rec: Recipe) -> bool:
@@ -3307,13 +3365,20 @@ def _plan_resources(stages: list[Any], env_obj: Any, data_profile: dict[str, Any
     from nemo_curator.audio_agent import planner
     from nemo_curator.stages.audio import agent as foundation
 
+    # Release GPU reservations held by gpu-OPTIONAL stages when this host has none, so a
+    # supported CPU-only (audio_cpu) install plans and runs instead of being refused.
+    # Mutates `stages` in place, which is the same list the caller then executes.
+    cpu_notes = planner.cpu_fallback(stages, env_obj)
     contracts: list[Any] = []
     for st in stages:
         try:
             contracts.append(foundation.build_contract(st))
         except Exception:  # noqa: BLE001 - a stage that can't describe itself gets conservative defaults
             contracts.append(None)
-    return planner.plan(stages, contracts, env_obj, data_profile, calibration=calibration)
+    rplan = planner.plan(stages, contracts, env_obj, data_profile, calibration=calibration)
+    for note in cpu_notes:
+        rplan.notes.append("cpu_fallback: " + note)
+    return rplan
 
 
 def _make_executor(mode: str) -> Any:  # noqa: ANN401
@@ -3566,10 +3631,15 @@ def _smoke_write_issues(
             continue
         if not contract.gates.writes_to_disk:
             continue
-        adapter = _SMOKE_DISK_ADAPTERS.get(name)
+        # The stage declares its own output params, so a new writer needs no edit here.
+        # ``None`` still means NOT DECLARED and still fails closed: a stage that says it
+        # writes to disk without naming where cannot be proven isolated, and guessing from
+        # parameter names would risk a smoke writing into the caller's real output tree.
+        adapter = contract.gates.output_path_params
         if adapter is None:
             issues.append(
-                f"{name}: declares writes_to_disk=True but has no smoke-output adapter"
+                f"{name}: declares writes_to_disk=True but does not declare "
+                "output_path_params, so its output cannot be redirected into smoke storage"
             )
             continue
         if name == "CreateInitialManifestReadSpeechStage":

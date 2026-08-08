@@ -1,10 +1,13 @@
 stage_id: ALMDataBuilderStage
 category: alm
-summary: "Build ALM training windows from audio segments, filtered by rate/bandwidth/speaker-count/duration."
+summary: "Build ALM training windows from diarized+transcribed segments, filtered by rate/bandwidth/speaker-count/duration."
 tags: []
 model_id: null
 domain: {language: any, style: any}
-constraints: {}
+constraints:
+  min_segments_per_window: 2   # MIN_SEGMENTS_PER_WINDOW; a 1-segment window is discarded whatever min_speakers says
+  window_duration_gate: "a window is kept only if its span lands in target_window_duration +/- (target_window_duration * tolerance)"
+  required_input_keys: [audio_filepath, segments, audio_sample_rate]   # inputs(); all three must PRESENT or the stage refuses to start
 resource:
   cpus: 1.0
   gpu_mem_gb: 0.0
@@ -12,20 +15,41 @@ resource:
   bound: cpu
   throughput_hint: "CPU; windowing over segments"
 use_cases:
-  good_for: ["assembling fixed-duration audio-language-model training windows from segmented audio"]
-  avoid_for: ["non-ALM curation"]
+  good_for: ["assembling fixed-duration audio-language-model training windows from multi-speaker segmented audio"]
+  avoid_for:
+    - "non-ALM curation"
+    - "short single-speaker clips -- a window needs >=2 segments AND a span inside the duration gate, so a clip
+       shorter than the window (or one the diarizer returns as a single turn) yields nothing however low you set
+       min_speakers. Shrinking target_window_duration to fit such clips fragments the long recordings instead and
+       pads windows with empty segments; transcribe those files to a plain manifest rather than windowing them."
 composition:
-  typical_upstream: [MergeAlignmentDiarizationStage, PrepareModuleSegmentsStage]
+  typical_upstream: [MergeAlignmentDiarizationStage]
   typical_downstream: [ALMDataOverlapStage]
+  incompatible_upstream:
+    PrepareModuleSegmentsStage: "writes metrics.bandwidth as a LIST (one entry per word) while this stage compares
+      that value against min_bandwidth with `<` -- chaining them raises TypeError: '<' not supported between
+      'list' and 'int'. Feed MergeAlignmentDiarizationStage instead, whose segments carry no metrics key
+      (_get_bandwidth then returns 0, so keep min_bandwidth=0 unless a real per-segment bandwidth exists)."
 params_of_note:
   target_window_duration: "target ALM window length in seconds (default 120)"
-  tolerance: "allowed deviation from target duration (fraction)"
-  min_bandwidth: "minimum bandwidth (Hz) to keep a segment"
-  min_sample_rate: "minimum sample rate to keep a segment"
-  min_speakers: "minimum speaker count to keep a window"
+  tolerance: "allowed deviation as a FRACTION of the target (default 0.1 -> a 120 s target keeps only 108-132 s windows)"
+  min_bandwidth: "minimum bandwidth (Hz) to keep a segment. Default 8000 drops every segment when the upstream
+    segments carry no metrics key, because _get_bandwidth then returns 0 -- set 0 unless bandwidth was measured"
+  min_sample_rate: "minimum sample rate to keep a segment, read from audio_sample_rate_key (default 16000)"
+  min_speakers: "minimum distinct speakers per window. Lowering it to 1 does NOT admit single-turn clips: the
+    >=2-segments rule is separate and applies first"
   max_speakers: "maximum speaker count to keep a window"
   truncation: "allow truncating windows to fit the target duration"
+  drop_fields_top_level: "comma-separated top-level keys removed from the output entry (default 'words,segments').
+    Add 'waveform' when an upstream stage kept one in the task, or it reaches the sink and fails to serialize"
+param_dependencies:
+  audio_sample_rate_key: "nothing in a raw-audio pipeline writes `audio_sample_rate`. ResampleAudioStage /
+    MonoConversionStage only emit `sample_rate`, and only with keep_waveform_in_task=true -- so point this at
+    `sample_rate` and add `waveform` to drop_fields_top_level, or the stage refuses to start on a missing key."
 notes:
   - "Mutates each entry in-place, adding 'windows', 'stats', and 'truncation_events'."
-verified: {params: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess}
-provenance: {model_card_url: null, card_version: 1, last_validated: "2026-07-20"}
+  - "A window that clears every gate can still be low value: with min_speakers=1 and a short target the builder
+     emits single-speaker windows whose second segment is empty and zero-length, which satisfies the >=2 rule
+     without adding content. Check the output for empty-text segments before treating a window count as yield."
+verified: {params: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess, constraints: mechanical}
+provenance: {model_card_url: null, card_version: 2, last_validated: "2026-08-06"}

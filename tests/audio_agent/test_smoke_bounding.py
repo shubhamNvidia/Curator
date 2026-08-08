@@ -479,6 +479,10 @@ def test_unknown_disk_writer_fails_the_future_stage_guard(
     from nemo_curator.stages.audio import agent as foundation
     from nemo_curator.stages.audio._agent_ready import Gates, StageContract
 
+    # A stage that claims writes_to_disk without naming WHERE cannot be sandboxed. Guessing
+    # which of its params look path-like would risk a smoke writing into the caller's real
+    # output tree, so an undeclared writer must refuse -- this is the property that had to
+    # survive moving the declaration from a central table onto the stage itself.
     monkeypatch.setattr(
         foundation,
         "build_contract",
@@ -487,9 +491,30 @@ def test_unknown_disk_writer_fails_the_future_stage_guard(
 
     issues = verbs._smoke_write_issues([object()], str(tmp_path))
 
-    assert issues == [
-        "object: declares writes_to_disk=True but has no smoke-output adapter"
-    ]
+    assert len(issues) == 1
+    assert "does not declare output_path_params" in issues[0]
+
+
+def test_a_writer_declaring_no_redirectable_output_is_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """``[]`` is a positive claim and must stay distinguishable from "never declared".
+
+    ``CreateInitialManifestReadSpeechStage`` writes to disk through no redirectable path
+    parameter, so an empty declaration is the honest answer -- and collapsing it into the
+    undeclared case would refuse a stage that is in fact fine.
+    """
+    from nemo_curator.stages.audio import agent as foundation
+    from nemo_curator.stages.audio._agent_ready import Gates, StageContract
+
+    monkeypatch.setattr(
+        foundation,
+        "build_contract",
+        lambda _stage: StageContract(gates=Gates(writes_to_disk=True, output_path_params=[])),
+    )
+
+    assert verbs._smoke_write_issues([object()], str(tmp_path)) == []
 
 
 def test_smoke_token_is_issued_only_after_sampled_goals_are_met(

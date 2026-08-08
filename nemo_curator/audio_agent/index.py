@@ -222,6 +222,18 @@ class KnowledgeIndex:
 
     @staticmethod
     def _top_k(items: list[dict[str, Any]], goal: dict[str, Any], k: int, fields: tuple[str, ...]) -> list[dict[str, Any]]:
+        """Entries whose text overlaps the goal, best first; EMPTY when none overlap.
+
+        Returning an arbitrary few on no match was actively misleading: these are presented
+        as ``matched_blueprints``/``matched_recipes`` and their presets are pulled into the
+        planning context, so a Japanese diarization goal was handed the three bundled
+        English read-speech examples -- complete with an English-Parakeet preset -- as
+        though they had been selected for it. No match is a real answer: the host composes
+        from the catalog instead, which the skill already describes.
+
+        A goal with no usable tokens is different: nothing was asked, so offering what
+        exists is a browse, not a claim of relevance.
+        """
         goal_tokens = _tokens(" ".join(str(v) for v in goal.values()))
         if not goal_tokens:
             return items[:k]
@@ -230,7 +242,7 @@ class KnowledgeIndex:
             text = " ".join(str(it.get(f, "")) for f in fields)
             scored.append((len(goal_tokens & _tokens(text)), it))
         scored.sort(key=lambda t: t[0], reverse=True)
-        return [it for score, it in scored if score > 0][:k] or items[:k]
+        return [it for score, it in scored if score > 0][:k]
 
     # ------------------------------------------------------------------ #
     # role graph

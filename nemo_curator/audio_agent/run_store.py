@@ -46,6 +46,51 @@ def runs_dir() -> str:
     return os.path.join(root, ".audio_agent_runs")
 
 
+def _ensure_private_dir(path: str) -> None:
+    """Create a state directory readable only by its owner.
+
+    Run records carry dataset paths, dataset keys, goals and output locations. Created
+    under a normal umask (002/022) they are group- and world-readable, which on a shared
+    build agent, HPC project space or team NFS share exposes one user's curation history
+    to every other. Only a directory this call actually CREATES is tightened -- one that
+    already exists was configured deliberately and is left as the deployment set it.
+    """
+    try:
+        os.makedirs(path)
+    except FileExistsError:
+        return
+    except OSError:
+        raise
+    with contextlib.suppress(OSError):  # best-effort: a filesystem may not honour chmod
+        os.chmod(path, 0o700)
+
+
+def _write_private_json(path: str, payload: dict) -> None:
+    """Write JSON to a file created owner-only (0600); pre-existing files keep their mode."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False, default=str)
+
+
+def scratch_dir() -> str:
+    """Where to put a recipe written for one job, created on demand.
+
+    A recipe assembled for a single request is working material, not a contribution, but it has
+    to live in a file because every verb takes a path. With nowhere designated, it lands in
+    whatever directory the caller happened to start in -- which for anyone working inside a
+    checkout is the repository root. Five such files have accumulated there, each looking like
+    an untracked change someone forgot to commit.
+
+    Sits under :func:`runs_dir`, which is already git-ignored and already moves with
+    ``AUDIO_AGENT_RUNS_DIR``, so a scratch recipe is discardable by the same gesture that
+    discards the run records describing what it did.
+    """
+    path = os.path.join(runs_dir(), "recipes")
+    _ensure_private_dir(runs_dir())
+    _ensure_private_dir(path)
+    return path
+
+
 def new_run_id(config_hash: str | None = None) -> str:
     """A sortable, collision-resistant run id: ``run-<UTC ts.microseconds>Z-<hash8>-<rand4>``.
 
@@ -68,10 +113,9 @@ def save(record: RunRecord) -> str:
     to index is swallowed rather than losing the record.
     """
     directory = runs_dir()
-    os.makedirs(directory, exist_ok=True)
+    _ensure_private_dir(directory)
     path = os.path.join(directory, f"{record.run_id}.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(record.to_dict(), f, indent=2, ensure_ascii=False, default=str)
+    _write_private_json(path, record.to_dict())
     with contextlib.suppress(Exception):  # the index is a cache; never fail a save over it
         from nemo_curator.audio_agent import run_index
 

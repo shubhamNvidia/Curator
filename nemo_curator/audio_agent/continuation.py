@@ -127,6 +127,7 @@ def _resume_breaks_on_disk_boundary(new_recipe: Recipe, prefix: int) -> str | No
         from nemo_curator.audio_agent.recipe import build_stages
         from nemo_curator.stages.audio import agent as foundation
         from nemo_curator.stages.audio._conformance import produced_roles
+        from nemo_curator.stages.audio._roles import role_for_value
 
         built, _ = build_stages(new_recipe)
         if not built or not 0 < prefix < len(built):
@@ -140,11 +141,16 @@ def _resume_breaks_on_disk_boundary(new_recipe: Recipe, prefix: int) -> str | No
             roles |= produced_roles(c)
             keys |= set(c.writes.data_keys) | set(c.writes.segment_data_keys)
 
-        def _errs(initial_roles: set[str]) -> set[tuple[str, str]]:
-            rep = foundation.validate_pipeline(suffix_built, initial_roles=initial_roles, initial_keys=keys)
+        def _errs(initial_roles: set[str], initial_keys: set[str]) -> set[tuple[str, str]]:
+            rep = foundation.validate_pipeline(suffix_built, initial_roles=initial_roles, initial_keys=initial_keys)
             return {(i.stage_name, i.code) for i in rep.issues if i.severity == "error"}
 
-        new_breaks = _errs(roles - {"waveform"}) - _errs(roles)  # roles broken only by dropping the waveform
+        # Persisting to disk drops the waveform ITSELF, not merely the role it was filed under, so
+        # the boundary has to be modelled on both. Withholding only the role leaves the carrier key
+        # visible, and a suffix stage reading that key by name is then judged satisfied -- the
+        # simulation quietly stops simulating anything and every waveform suffix looks resumable.
+        waveform_keys = {k for k in keys if role_for_value(k) == "waveform"}
+        new_breaks = _errs(roles - {"waveform"}, keys - waveform_keys) - _errs(roles, keys)
         if new_breaks:
             return "waveform needed by " + ", ".join(sorted({name for name, _ in new_breaks}))
         return None

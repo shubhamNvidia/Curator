@@ -15,8 +15,14 @@
 """Unit tests for the deterministic safety guardrails (nemo_curator.audio_agent._safety)."""
 
 import hashlib
+import os
+import tempfile
+from pathlib import Path
+
+import pytest
 
 from nemo_curator.audio_agent import _safety
+from nemo_curator.audio_agent.recipe import Recipe
 
 
 class TestRedact:
@@ -193,3 +199,126 @@ class TestRequireSmoke:
             assert _safety.require_smoke() is True
         monkeypatch.setenv("AUDIO_AGENT_REQUIRE_SMOKE", "0")
         assert _safety.require_smoke() is False
+
+
+class TestDualPurposePathParams:
+    """model_path/tokenizer_path hold either a local path or a hub id; only paths are locked."""
+
+    @pytest.mark.parametrize(
+        "hub_id",
+        [
+            "nvidia/diar_sortformer_4spk-v1",  # SpeakerSeparationStage's real default
+            "nvidia/parakeet-tdt-0.6b-v2",
+            "openai/whisper-large-v3",
+            "bert-base-uncased",
+        ],
+    )
+    def test_hub_ids_are_not_treated_as_workspace_paths(self, hub_id: str) -> None:
+        assert _safety.names_local_path(hub_id) is False
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/models/asr.nemo", "./local/band.joblib", "~/models/tok.model", "../shared/m.onnx", "models/asr.nemo"],
+    )
+    def test_local_artifacts_are_treated_as_paths(self, path: str) -> None:
+        assert _safety.names_local_path(path) is True
+
+    def test_default_recipe_with_a_hub_id_is_not_refused(self, monkeypatch, tmp_path) -> None:
+        """Locking model_path by name alone would refuse the agent's own default recipe."""
+        monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))
+        recipe = Recipe.from_dict(
+            {"stages": [{"ref": "SpeakerSeparationStage", "params": {"model_path": "nvidia/diar_sortformer_4spk-v1"}}]}
+        )
+        assert _safety.path_violations(_safety.recipe_path_params(recipe)) == []
+
+    def test_a_local_model_path_outside_the_workspace_is_blocked(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))
+        recipe = Recipe.from_dict(
+            {"stages": [{"ref": "SpeakerSeparationStage", "params": {"model_path": "/etc/evil.nemo"}}]}
+        )
+        assert len(_safety.path_violations(_safety.recipe_path_params(recipe))) == 1
+
+    def test_cache_dir_escaping_the_workspace_is_blocked(self, monkeypatch, tmp_path) -> None:
+        """cache_dir is always a filesystem location and was previously unchecked."""
+        monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))
+        recipe = Recipe.from_dict(
+            {"stages": [{"ref": "InferenceAsrNemoStage", "params": {"cache_dir": "/etc/cache"}}]}
+        )
+        assert len(_safety.path_violations(_safety.recipe_path_params(recipe))) == 1
+
+
+class TestWorkspaceConfigValidation:
+    """A misconfigured lock must never read as an absent one."""
+
+    @pytest.mark.parametrize("bad", ["relative_ws", "/nonexistent/path/xyz"])
+    def test_invalid_workspace_fails_closed(self, monkeypatch, bad: str) -> None:
+        monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", bad)
+        assert _safety.workspace_config_error() is not None
+        assert _safety.workspace_root() is None
+        # Any path at all: a misconfigured lock must reject rather than silently allow.
+        assert _safety.path_violations([os.path.join(tempfile.gettempdir(), "anything")]) != []
+
+    def test_valid_workspace_is_unaffected(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))
+        assert _safety.workspace_config_error() is None
+        assert _safety.path_violations([str(tmp_path / "a.jsonl")]) == []
+
+
+def test_an_empty_secret_file_heals_instead_of_stranding_smoke_evidence(tmp_path: Path) -> None:
+    """A 0-byte secret used to be terminal, and silently so.
+
+    ``os.link`` kept failing against the dead file, so every process fell back to its own
+    per-process key: ``AUDIO_AGENT_REQUIRE_SMOKE`` then refused forever, which is exactly
+    the cross-process failure the shared secret exists to prevent. Reachable from a crash
+    mid-write, a full disk, or a stray ``touch``.
+    """
+    path = tmp_path / "audio_agent_smoke.secret"
+    path.write_bytes(b"")
+
+    first = _safety._read_or_create_secret(str(path))
+    second = _safety._read_or_create_secret(str(path))
+
+    assert first, "an unusable file must be replaced, not inherited"
+    assert first == second, "every process must end up with the same shared secret"
+    assert path.stat().st_mode & 0o777 == 0o600, "the secret stays owner-only"
+
+
+def test_a_concurrent_creator_never_overwrites_the_winners_secret(tmp_path: Path) -> None:
+    """Create-once-share-the-winner, delegated to utils/atomic_io."""
+    path = tmp_path / "audio_agent_smoke.secret"
+
+    winner = _safety._read_or_create_secret(str(path))
+    again = _safety._read_or_create_secret(str(path))
+
+    assert winner == again
+    assert _safety._stored_secret(path) == winner
+
+
+def test_the_secret_dir_expands_a_tilde_like_the_run_store_does(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """One env var must not mean two different directories.
+
+    ``run_store.runs_dir`` expands ``AUDIO_AGENT_RUNS_DIR``; the secret beside it did not.
+    A tilde-valued setting therefore put the run records in the real home and the secret in
+    a literal "~" folder under the working directory -- so the secret moved with the CWD and
+    stopped being shared, which is the only thing it exists to do.
+    """
+    from nemo_curator.audio_agent import run_store
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("AUDIO_AGENT_RUNS_DIR", "~/agent_runs")
+
+    first = _safety._secret_dir_candidates()[0]
+
+    assert "~" not in first
+    assert first.startswith(run_store.runs_dir()), "both resolve under the same home"
+
+
+def test_no_home_still_never_proposes_a_tilde_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``expanduser`` returns the input unchanged with no passwd entry, so the guard has to
+    catch a tilde that survived expansion -- not just a bare "~"."""
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.setenv("AUDIO_AGENT_RUNS_DIR", "~/agent_runs")
+
+    assert [c for c in _safety._secret_dir_candidates() if "~" in c] == []

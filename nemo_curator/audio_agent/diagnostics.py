@@ -38,27 +38,6 @@ ExecutionTarget = Literal["local", "external_ray", "custom_executor"]
 _GPU_BLOCKERS = frozenset({"gpu_unavailable", "cuda_driver_toolkit"})
 _SAFE_ERROR_LIMIT = 500
 
-# Canonical package names match ``profiler._AUDIO_PACKAGES`` / ``EnvProfile``.
-# Keep this deliberately conservative: only list optional stacks whose imports
-# are unambiguous from the concrete stage module.  Generic transitive
-# dependencies are not inferred here.
-_STAGE_RUNTIME_PACKAGES: dict[str, tuple[str, ...]] = {
-    "BandwidthEstimationStage": ("librosa",),
-    "BandFilterStage": ("librosa",),
-    "ComputeWERStage": ("nemo_text_processing", "nemo_toolkit[asr]"),
-    "GetPairwiseWerStage": ("nemo_text_processing", "nemo_toolkit[asr]"),
-    "InferenceAsrNemoStage": ("nemo_toolkit[asr]",),
-    "InferenceSortformerStage": ("nemo_toolkit[asr]",),
-    "InverseTextNormalizationStage": ("nemo_text_processing",),
-    "NeMoASRAlignerStage": ("nemo_toolkit[asr]", "torchaudio"),
-    "PyAnnoteDiarizationStage": ("pyannote-audio", "whisperx"),
-    "SIGMOSFilterStage": ("librosa", "onnxruntime"),
-    "SpeakerSeparationStage": ("nemo_toolkit[asr]",),
-    "TorchSquimQualityMetricsStage": ("librosa", "soundfile", "torchaudio"),
-    "UTMOSFilterStage": ("torchaudio",),
-    "VADSegmentationStage": ("silero-vad", "torchaudio"),
-    "WhisperXVADStage": ("whisperx",),
-}
 
 
 @dataclass
@@ -76,7 +55,6 @@ class StageEnvironmentRequirement:
     writes_to_disk: bool = False
     runtime_secrets: list[str] = field(default_factory=list)
     satisfied_runtime_secrets: list[str] = field(default_factory=list)
-    required_packages: list[str] = field(default_factory=list)
     metadata_known: bool = True
     note: str = ""
 
@@ -152,7 +130,6 @@ def _execution_requirements(stages: list[Any]) -> list[StageEnvironmentRequireme
                     uses_gpu=reservation > 0,
                     hard_gpu=hard_gpu,
                     gpu_optional=gpu_optional,
-                    required_packages=list(_STAGE_RUNTIME_PACKAGES.get(name, ())),
                     metadata_known=False,
                     note=f"contract unavailable: {type(exc).__name__}",
                 )
@@ -196,7 +173,6 @@ def _execution_requirements(stages: list[Any]) -> list[StageEnvironmentRequireme
                 writes_to_disk=bool(getattr(gates, "writes_to_disk", False)),
                 runtime_secrets=runtime_secrets,
                 satisfied_runtime_secrets=satisfied_runtime_secrets,
-                required_packages=list(_STAGE_RUNTIME_PACKAGES.get(name, ())),
                 metadata_known=known,
                 note=note,
             )
@@ -685,35 +661,15 @@ def environment_preflight(  # noqa: C901, PLR0912, PLR0915 - one auditable decis
             )
         )
 
-    missing_packages = {
-        str(package)
-        for package in (env_data.get("missing_packages") or [])
-        if package
-    }
-    missing_package_stages: dict[str, list[str]] = {}
-    if execution_target == "local" and missing_packages:
-        for req in requirements:
-            for package in req.required_packages:
-                if package in missing_packages:
-                    missing_package_stages.setdefault(package, []).append(req.stage)
-    audio_extras = checks.get("audio_extras") or {}
-    for package, affected in sorted(missing_package_stages.items()):
-        issues.append(
-            _issue(
-                "missing_dependency",
-                blocking=True,
-                finding=f"required package {package!r} is not discoverable",
-                impact=(
-                    "the affected execution stage cannot import or initialize its "
-                    "required optional audio stack"
-                ),
-                affected=affected,
-                confidence=str(audio_extras.get("confidence") or "high"),
-                source_check="audio_extras",
-                resolution_key=f"missing_dependency:{package}",
-                options=_option_dicts(audio_extras),
-            )
-        )
+    # A package that is genuinely absent removes its stages from the catalog entirely --
+    # ``_catalog._ensure_audio_stages_imported`` records the ImportError and
+    # ``discover()['unavailable']`` reports it -- so such a stage can never appear in a
+    # recipe to be flagged here. ``missing_packages`` is derived from the same
+    # ``importlib.util.find_spec`` probe, so the two cannot disagree. A per-stage package
+    # table therefore added a maintenance burden for every new module while gating on a
+    # condition it could not observe; the environment remediation below still tells the
+    # caller to install the audio extra, which is the actionable answer either way:
+    # ``env_health._audio_extras`` still reports the missing packages as a health check.
 
     available_secrets = set(env_data.get("available_secrets") or [])
     missing_secret_stages: dict[str, list[str]] = {}

@@ -47,7 +47,7 @@ verified: {params: mechanical, resource: best_guess, model_version: measured, us
 | `constraints` | rec. | only **real** facts: `supported_sample_rates`, `max_speakers`, `batch_size:{fixed,reason}`, `input_duration_sweetspot_sec:{min,max}`. |
 | `resource` | rec. | `{cpus, gpu_mem_gb, host_mem_gb, gpu_optional, bound: cpu\|gpu\|io, throughput_hint, disk_expansion}`. Feeds the resource planner. |
 | `use_cases` | rec. | `{good_for: [...], avoid_for: [...]}` — `best_guess`. |
-| `composition` | rec. | `{typical_upstream: [...], typical_downstream: [...]}` — idiomatic ordering. |
+| `composition` | rec. | `{typical_upstream: [...], typical_downstream: [...]}` — idiomatic ordering. Every stage id must resolve (gate-checked). Optional `incompatible_upstream: {stage_id: why}` records a pairing that is known to *break*, not merely be unidiomatic — a stage id may not appear in both, and the reason is required, because "don't use X" without "because X writes a list where this reads an int" is a rule the next reader will discount. |
 | `params_of_note` | rec. | `{param: description}` — **keys must be real constructor params** (gate-checked). |
 | `presets` | opt. | `{name: {param: value}}` — **keys must be real params** (gate-checked). |
 | `metrics` | opt. | `{metric: {scale:{min,max,direction}, threshold_param, valid_range:[lo,hi], presets}}` — the deterministic source of score directions/targets (1A.2) that keeps a filter from being inverted. `scale.direction` must be `higher_better`/`lower_better`; `threshold_param` (if set) must be a real param; `valid_range` must be `[lo, hi]` (all gate-checked). Omit `threshold_param` for annotate-only stages that are filtered downstream (e.g. `ComputeWERStage` → `PreserveByValueStage`). |

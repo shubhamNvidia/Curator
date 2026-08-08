@@ -218,62 +218,47 @@ def test_external_ray_does_not_treat_other_driver_facts_as_worker_facts(
     }
 
 
-@pytest.mark.parametrize(
-    ("ref", "params", "package"),
-    [
-        (
-            "InferenceAsrNemoStage",
-            {
-                "model_name": "nvidia/parakeet-tdt-0.6b-v2",
-                "resources": {"cpus": 1, "gpus": 1},
-            },
-            "nemo_toolkit[asr]",
-        ),
-        (
-            "PyAnnoteDiarizationStage",
-            {
-                "hf_token": "configured-outside-chat",
-                "resources": {"cpus": 1, "gpus": 1},
-            },
-            "pyannote-audio",
-        ),
-        (
-            "WhisperXVADStage",
-            {"resources": {"cpus": 1, "gpus": 1}},
-            "whisperx",
-        ),
-        ("VADSegmentationStage", {}, "silero-vad"),
-        ("InverseTextNormalizationStage", {}, "nemo_text_processing"),
-        ("SIGMOSFilterStage", {}, "onnxruntime"),
-    ],
-)
-def test_selected_stage_blocks_when_its_known_optional_stack_is_missing(
-    ref: str,
-    params: dict,
-    package: str,
-) -> None:
-    decision = environment_preflight(
-        _build((ref, params)),
-        _healthy_env(missing_packages=[package]),
-    )
+def test_a_genuinely_missing_package_is_caught_earlier_than_preflight() -> None:
+    """A per-stage package table used to gate this, and could never observe the condition.
 
-    dependency = next(
-        issue
-        for issue in decision["issues"]
-        if issue["resolution_key"] == f"missing_dependency:{package}"
+    ``missing_packages`` comes from ``importlib.util.find_spec`` -- the SAME probe the
+    catalog uses to decide which stage modules imported. So a package that is really absent
+    removes its stages from the catalog, the recipe cannot reference them at all, and the
+    per-stage gate never saw a recipe it could act on. Every new module still had to be
+    added to that table to keep it honest.
+
+    What actually protects the caller is checked here: the stage is not registered, and
+    ``discover()`` reports the import error that explains why.
+    """
+    import json
+    import subprocess
+    import sys
+
+    script = """
+import sys
+from importlib.abc import MetaPathFinder
+class Block(MetaPathFinder):
+    def find_spec(self, name, path=None, target=None):
+        if name.split(".")[0] == "whisperx":
+            raise ImportError("No module named 'whisperx'")
+        return None
+sys.meta_path.insert(0, Block())
+from nemo_curator import audio_agent as aa
+out = aa.validate({"stages": [{"ref": "WhisperXVADStage", "params": {}}]})
+print("RESULT" + json.dumps({
+    "codes": [i["code"] for i in out["issues"]],
+    "unavailable": bool(aa.discover().get("unavailable")),
+}))
+""".replace("json.dumps", "__import__('json').dumps")
+
+    proc = subprocess.run(  # noqa: S603 - fixed argv, this interpreter, no shell
+        [sys.executable, "-c", script], capture_output=True, text=True, check=False
     )
-    requirement = next(
-        item for item in decision["requirements"] if item["stage"] == ref
-    )
-    assert decision["status"] == "action_required"
-    assert decision["can_execute"] is False
-    assert dependency["blocking"] is True
-    assert dependency["affected_stages"] == [ref]
-    assert package in requirement["required_packages"]
-    assert {
-        "sync_audio_cpu_extra",
-        "sync_audio_cuda_extra",
-    }.issubset({choice["id"] for choice in decision["choices"]})
+    payload = next(line[len("RESULT"):] for line in proc.stdout.splitlines() if line.startswith("RESULT"))
+    result = json.loads(payload)
+
+    assert "unknown_stage" in result["codes"], "the stage is not registered when its package is absent"
+    assert result["unavailable"], "discover() reports WHY the module is unavailable"
 
 
 def test_missing_unselected_audio_package_does_not_block_recipe() -> None:

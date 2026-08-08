@@ -181,6 +181,92 @@ def _tag_gate_violations(stage_id: str, card: dict[str, Any]) -> list[str]:
 _REQUIRED_FIELDS = ("category", "summary", "verified")
 
 
+def _composition_violations(stage_id: str, card: dict[str, Any]) -> list[str]:
+    """Check the stages a card recommends chaining with actually exist and don't contradict.
+
+    ``composition`` is the part of a card an agent acts on most directly -- it is read as "these
+    are the stages to put either side of this one" -- so a wrong name here is worse than a
+    missing one. ``ALMDataBuilderStage`` recommended ``PrepareModuleSegmentsStage`` upstream for
+    two card versions while that pairing raised ``TypeError`` on the first window, because the
+    one writes ``metrics.bandwidth`` as a per-word list and the other compares it to an int.
+    Nothing caught it: the recommendation was prose pointing at a name.
+
+    Full edge simulation was considered and rejected -- building two default-constructed stages
+    and validating them flags every pair needing params or a seed, and a gate that cries wolf
+    gets ignored. These are the checks that cannot false-positive: a name must resolve, and a
+    stage cannot be recommended and forbidden at once.
+    """
+    comp = card.get("composition")
+    if not isinstance(comp, dict):
+        return []
+    v: list[str] = []
+    typical: set[str] = set()
+    for field in ("typical_upstream", "typical_downstream"):
+        names = comp.get(field) or []
+        if not isinstance(names, list):
+            v.append(f"{stage_id}: composition.{field} must be a list of stage ids")
+            continue
+        if field == "typical_upstream":
+            typical |= set(names)
+        v += [
+            f"{stage_id}: composition.{field} names {name!r}, which is not a registered stage"
+            for name in names
+            if _stage_param_names(str(name)) is None
+        ]
+    return v + _incompatible_violations(stage_id, comp, typical)
+
+
+def _incompatible_violations(stage_id: str, comp: dict[str, Any], typical: set[str]) -> list[str]:
+    """Violations in the optional ``incompatible_upstream`` map."""
+    incompatible = comp.get("incompatible_upstream") or {}
+    if not isinstance(incompatible, dict):
+        return [f"{stage_id}: composition.incompatible_upstream must be a mapping of stage id -> reason"]
+    v: list[str] = []
+    for name, reason in incompatible.items():
+        if _stage_param_names(str(name)) is None:
+            v.append(f"{stage_id}: composition.incompatible_upstream names {name!r}, which is not a registered stage")
+        if not str(reason or "").strip():
+            v.append(f"{stage_id}: composition.incompatible_upstream[{name!r}] must say WHY, not just name the stage")
+        if name in typical:
+            v.append(f"{stage_id}: composition lists {name!r} as both typical_upstream and incompatible_upstream")
+    return v
+
+
+def _composite_legibility(stage_id: str) -> list[str]:
+    """A composite must reveal its stages, or declare its own I/O; silence is not an option.
+
+    A ``CompositeStage`` whose ``describe()`` returns a bare ``StageContract(wrappable=False)``
+    tells a reader it has no reads and no writes, which is not the same as having unknown ones.
+    Validation opens composites now, so this holds the door open: a new composite that neither
+    decomposes at plan time nor states its own contract reintroduces the blind spot that let a
+    ``segments``/``diar_segments`` mismatch survive validation and fail after two model
+    downloads and a GPU diarization pass.
+    """
+    from nemo_curator.audio_agent._resolve import resolve_stage_class
+    from nemo_curator.stages.audio._composite import expand_composites
+
+    try:
+        cls = resolve_stage_class(stage_id)
+        from nemo_curator.stages.base import CompositeStage
+
+        if not (isinstance(cls, type) and issubclass(cls, CompositeStage)):
+            return []
+        instance = cls()
+    except Exception:  # noqa: BLE001 - a composite needing constructor args is exercised by its own tests
+        return []
+    if expand_composites([instance]).fully_resolved:
+        return []
+    contract = getattr(instance, "describe", lambda: None)()
+    if contract is not None and (contract.reads.data_keys or contract.writes.data_keys):
+        return []
+    return [
+        (
+            f"{stage_id}: composite neither decomposes at plan time nor declares its own "
+            f"reads/writes, so nothing downstream of it can be validated"
+        ),
+    ]
+
+
 def check_card(stage_id: str, card: Any) -> list[str]:  # noqa: ANN401
     """Return a list of mechanical conformance violations for one card (empty = ok)."""
     if not isinstance(card, dict):
@@ -222,6 +308,9 @@ def check_card(stage_id: str, card: Any) -> list[str]:  # noqa: ANN401
                 v.append(f"{stage_id}: resource.{k} must be a number or null, got {val!r}")
             elif k == "bound" and val is not None and val not in _KNOWN_BOUND:
                 v.append(f"{stage_id}: resource.bound must be one of {sorted(_KNOWN_BOUND)} or null, got {val!r}")
+
+    v.extend(_composition_violations(stage_id, card))
+    v.extend(_composite_legibility(stage_id))
 
     # a model stage must pin a model_version (so an upgrade can't silently change facts).
     if card.get("model_id") and not _model_version(card):
@@ -315,6 +404,59 @@ def audit(index: Any = None) -> dict[str, Any]:  # noqa: ANN401
     }
 
 
+def _blueprint_violations(blueprint_id: str, blueprint: Any) -> list[str]:  # noqa: ANN401
+    """Check a blueprint's stage refs resolve and its presets name real parameters.
+
+    Blueprints are shown to the planner as worked examples, and its presets are read as
+    "these are the knobs for this pipeline" -- so a preset naming a parameter that does not
+    exist is a confident instruction to do something impossible. Every shipped preset was
+    wrong this way (``utmos_mos_threshold`` for what the stage calls ``mos_threshold``,
+    ``wer_threshold`` for ``target_value``), and nothing caught it: the conformance gate
+    covered cards only, while the blueprints declared ``validated: true``.
+
+    A preset parameter is accepted when SOME stage the blueprint lists accepts it -- the
+    presets are pipeline-level, so they are not attributable to one stage.
+    """
+    if not isinstance(blueprint, dict):
+        return [f"{blueprint_id}: blueprint is not a mapping"]
+    v: list[str] = []
+    refs = [str(s.get("ref")) for s in (blueprint.get("stages") or []) if isinstance(s, dict) and s.get("ref")]
+    accepted: set[str] = set()
+    for ref in refs:
+        params = _stage_param_names(ref)
+        if params is None:
+            v.append(f"{blueprint_id}: stages names {ref!r}, which is not a registered stage")
+            continue
+        accepted |= params
+    presets = blueprint.get("presets") or {}
+    if not isinstance(presets, dict):
+        return [*v, f"{blueprint_id}: presets must be a mapping of name -> {{param: value}}"]
+    for name, values in presets.items():
+        if not isinstance(values, dict):
+            v.append(f"{blueprint_id}: preset {name!r} must be a mapping of {{param: value}}")
+            continue
+        v += [
+            f"{blueprint_id}: preset {name!r} sets {param!r}, which no stage in this blueprint accepts"
+            for param in values
+            if refs and param not in accepted
+        ]
+    return v
+
+
+def audit_blueprints(index: Any = None) -> dict[str, Any]:  # noqa: ANN401
+    """Mechanical violations across every blueprint (same contract as :func:`audit`)."""
+    from nemo_curator.audio_agent.index import get_index
+
+    idx = index or get_index()
+    violations: dict[str, list[str]] = {}
+    for blueprint in idx.blueprints():
+        blueprint_id = str((blueprint or {}).get("blueprint_id") or "<unnamed>")
+        found = _blueprint_violations(blueprint_id, blueprint)
+        if found:
+            violations[blueprint_id] = found
+    return {"violations": violations, "blueprint_count": len(idx.blueprints())}
+
+
 def main(argv: list[str] | None = None) -> int:
     """Print the audit as JSON; exit non-zero if any card has a mechanical violation."""
     import argparse
@@ -324,9 +466,14 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     result = audit()
+    # Blueprints are planner-facing worked examples, so a preset naming a parameter that
+    # does not exist misleads exactly like a drifted card; gate them the same way.
+    blueprints = audit_blueprints()
+    result["blueprint_violations"] = blueprints["violations"]
+    result["blueprint_count"] = blueprints["blueprint_count"]
     print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
     # Drift (violations) or orphan cards are hard failures; coverage gaps are reported only.
-    ok = not result["violations"] and not result["orphan_cards"]
+    ok = not result["violations"] and not result["orphan_cards"] and not blueprints["violations"]
     return 0 if ok else 1
 
 

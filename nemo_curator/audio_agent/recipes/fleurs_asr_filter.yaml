@@ -20,3 +20,21 @@ stages:
     params: {input_value_key: "wer_pct", target_value: 25.0, operator: "le"}
   - ref: ManifestWriterStage
     params: {output_path: "REQUIRED_output_manifest"}
+# What "done" means, checked against the written rows. Retune for the job; keep the block.
+acceptance_criteria:
+  - id: transcripts_present
+    type: output_completeness
+    description: "every kept row carries a transcript -- a WER filter over blank predictions
+      passes trivially, because a blank prediction scores no worse than a wrong one here"
+    check: {field: pred_text}
+    severity: must
+  - id: wer_threshold_holds
+    type: quality_standard
+    description: "every kept row is at or under the WER threshold the filter was set to"
+    check: {scope: per_retained_item, field: wer_pct, op: "<=", value: 25.0}
+    severity: must
+  - id: filter_kept_something
+    type: yield
+    description: "the WER filter did not discard the entire split"
+    check: {op: ">", value: 0}
+    severity: must
