@@ -30,10 +30,10 @@ so normal Curator users with their own cluster are unaffected.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import socket
-import subprocess
 import sys
 import tempfile
 from typing import Any
@@ -45,19 +45,69 @@ _STARTED: dict[str, Any] = {}
 _API_LIMIT = "40000"
 
 
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+# Ray binds its plasma/raylet sockets at
+#   <root>/ray_audio_agent_XXXXXXXX/session_<26-char timestamp>_<pid>/sockets/plasma_store
+# and validates the result itself (ray/_private/utils.py::validate_socket_filepath), so an
+# over-long root does not fail at bind time but aborts ``ray start`` with an AF_UNIX length
+# error. That fixed suffix is 25 (our mkdtemp component) + 64 (Ray's session dir and socket)
+# = 89 bytes, worst-cased on a 7-digit pid. Budgeting the ROOT by what is actually left is
+# the point of the check: a flat 60 was over three times too permissive, so precisely the
+# long per-job scratch paths this indirection exists to honour passed it and then failed
+# inside ray start. Too long now means "prefer a shorter root", not "fail late".
+_AF_UNIX_MAX = 103 if sys.platform.startswith("darwin") else 107
+_RAY_SESSION_SUFFIX = 89
+_AF_UNIX_ROOT_BUDGET = _AF_UNIX_MAX - _RAY_SESSION_SUFFIX
+
+
+def _temp_root_candidates() -> list[str]:
+    """Resolved, de-duplicated temp roots this module may use, most-preferred first.
+
+    Honors an explicitly configured ``RAY_TMPDIR``/``TMPDIR`` (per-job scratch on HPC, a
+    sized volume in a container) before falling back to the platform temp dir.
+    """
+    roots: list[str] = []
+    for candidate in (os.environ.get("RAY_TMPDIR"), os.environ.get("TMPDIR"), tempfile.gettempdir(), "/tmp"):
+        if not candidate:
+            continue
+        resolved = os.path.realpath(os.path.expanduser(candidate))
+        if resolved not in roots:
+            roots.append(resolved)
+    return roots
+
+
+def _ray_temp_root() -> str:
+    """A writable, short-enough directory to host Ray's session temp and plasma store.
+
+    Previously hardcoded to ``/tmp``, which ignored ``$TMPDIR`` (so HPC jobs filled a tiny
+    node-local ``/tmp``) and put the object store on a size-capped tmpfs in containers.
+    Prefers the first configured root that is writable AND short enough for the socket
+    limit, so an over-long scratch path degrades to a usable one instead of failing.
+    """
+    usable = [r for r in _temp_root_candidates() if os.path.isdir(r) and os.access(r, os.W_OK)]
+    if not usable:
+        return tempfile.gettempdir()
+    short_enough = [r for r in usable if len(r) <= _AF_UNIX_ROOT_BUDGET]
+    return (short_enough or usable)[0]
 
 
 def _reachable(address: str, timeout: float = 1.0) -> bool:
-    """True if something is listening at ``host:port`` (cheap liveness probe)."""
+    """True if something is listening at ``host:port`` (cheap liveness probe).
+
+    Parsed with :func:`_address_identity` so this agrees with every other address decision
+    in the module. Splitting on the last colon instead disagreed on IPv6: Ray brackets the
+    literals it advertises (``[::1]:6379``), and the bracketed host it produced was rejected
+    by ``getaddrinfo``, so a live head always probed as unreachable. That silently turned the
+    teardown's ground-truth gate into a rubber stamp on IPv6-only nodes -- failing open in
+    precisely the direction it exists to prevent -- and made cluster reuse always refuse.
+    """
+    identity = _address_identity(address)
+    if identity is None:
+        return False
+    _scheme, host, port = identity
+    if port is None:  # no port -> not a probeable address
+        return False
     try:
-        host, sep, port = address.rpartition(":")
-        if not sep or not port.isdigit():  # no "host:port" -> not a probeable address
-            return False
-        with socket.create_connection((host or "127.0.0.1", int(port)), timeout=timeout):
+        with socket.create_connection((host, port), timeout=timeout):
             return True
     except (OSError, ValueError):
         return False
@@ -127,49 +177,6 @@ def _detect_gpus() -> int:
         return 0
 
 
-def _ray_binary() -> str:
-    """Locate the ``ray`` CLI next to the running interpreter, else on PATH."""
-    candidate = os.path.join(os.path.dirname(sys.executable), "ray")
-    if os.path.exists(candidate):
-        return candidate
-    from shutil import which
-
-    found = which("ray")
-    if found:
-        return found
-    msg = "the 'ray' CLI was not found next to the interpreter or on PATH"
-    raise RuntimeError(msg)
-
-
-def _adopt_started_address(port: int) -> str:
-    """The address Ray actually advertises for a head we just started on ``port``.
-
-    Ray's GCS commonly reports the node's LAN IP even when reached via loopback, so a
-    hardcoded ``127.0.0.1:port`` disagrees with it and ``cluster_resources`` then refuses
-    to read the very cluster we started (the multi-NIC/cloud failure). Probe the real
-    ``gcs_address`` once (via loopback, which does reach the local head) and adopt it, so
-    ``RAY_ADDRESS`` is self-consistent with what Ray reports -- exactly how RayClient
-    behaves. Falls back to loopback if the probe is unreadable.
-    """
-    fallback = f"127.0.0.1:{port}"
-    try:
-        import ray
-    except Exception:  # noqa: BLE001 - the CLI-only bootstrap path keeps the loopback default
-        return fallback
-    opened = not ray.is_initialized()
-    gcs: str | None = None
-    try:
-        if opened:
-            ray.init(address=fallback, ignore_reinit_error=True, logging_level="ERROR")
-        gcs = _connected_address(ray)
-    except Exception:  # noqa: BLE001 - a probe failure keeps the loopback default
-        gcs = None
-    finally:
-        if opened and ray.is_initialized():
-            ray.shutdown()
-    return gcs if (gcs and _address_identity(gcs)) else fallback
-
-
 def ensure_cluster(
     *,
     num_cpus: int | None = None,
@@ -211,7 +218,7 @@ def ensure_cluster(
     if external and external.strip():
         try:
             cluster_resources(external)
-        except Exception as exc:  # noqa: BLE001 - reframe all connection failures
+        except Exception as exc:
             msg = (
                 f"externally supplied RAY_ADDRESS={external!r} could not be "
                 "validated; refusing to replace it with a local Ray cluster"
@@ -248,60 +255,52 @@ def ensure_cluster(
         os.environ.setdefault("RAY_MAX_LIMIT_FROM_API_SERVER", _API_LIMIT)
         return connected
 
-    # 4. No external, owned, or initialized cluster: start a fresh local head.
-    port = _free_port()
-    dashboard_port = _free_port()
-    # Ray sockets/plasma need the short, writable /tmp path.
-    temp_dir = tempfile.mkdtemp(prefix="ray_audio_agent_", dir="/tmp")  # noqa: S108
-    gpus = _detect_gpus() if num_gpus is None else num_gpus
-    cpus = num_cpus if num_cpus is not None else min(os.cpu_count() or 4, 8)
-
-    cmd = [
-        _ray_binary(), "start", "--head",
-        f"--port={port}",
-        f"--dashboard-port={dashboard_port}",
-        f"--temp-dir={temp_dir}",
-        f"--plasma-directory={temp_dir}",   # avoid /dev/shm (may be unwritable)
-        f"--object-store-memory={object_store_memory}",
-        f"--num-cpus={cpus}",
-        f"--num-gpus={gpus}",
-        "--disable-usage-stats",
-    ]
+    # 4. No external, owned, or initialized cluster: start a fresh local head -- through the
+    # SHARED RayClient, not a private bootstrap. Curator already solves this for the text and
+    # video pipelines, and the two properties that matter here are both consequences of how
+    # it starts Ray: ``ray start --block`` under ``Popen(start_new_session=True)`` keeps the
+    # CLI alive as a supervised child in its own process group, and ``--block`` is what makes
+    # Ray enable its OWN cleanup (``shutdown_at_exit`` and ``spawn_reaper``; ray/scripts/
+    # scripts.py:970). Teardown is then one ``killpg`` on a known pid.
+    #
+    # The private bootstrap this replaces used a non-blocking ``ray start``, which turns both
+    # of those off: the CLI exits, the daemons detach, and stopping them again required
+    # re-discovering processes by scanning /proc and matching command lines. That search was
+    # where the real defects lived -- renamed workers it could not see, bystanders it could,
+    # and a re-scan that went blind once the parents died. None of it is reachable from a
+    # process group.
+    temp_dir = tempfile.mkdtemp(prefix="ray_audio_agent_", dir=_ray_temp_root())
     previous_address = os.environ.get("RAY_ADDRESS")
     previous_api_limit = os.environ.get("RAY_MAX_LIMIT_FROM_API_SERVER")
-    env = {
-        **os.environ,
-        "RAY_MAX_LIMIT_FROM_API_SERVER": previous_api_limit or _API_LIMIT,
-        "RAY_TMPDIR": "/tmp",
-    }
+    os.environ.setdefault("RAY_MAX_LIMIT_FROM_API_SERVER", _API_LIMIT)
+
+    from nemo_curator.core.client import RayClient
+
+    client = RayClient(
+        ray_temp_dir=temp_dir,
+        num_cpus=num_cpus if num_cpus is not None else min(os.cpu_count() or 4, 8),
+        num_gpus=_detect_gpus() if num_gpus is None else num_gpus,
+        object_store_memory=object_store_memory,
+        # The agent is a library caller, not an operator session: registering Ray with a
+        # shared Prometheus/Grafana install is a side effect on state we do not own.
+        include_dashboard=False,
+    )
     try:
-        subprocess.run(cmd, env=env, check=True, capture_output=True, text=True, timeout=180)  # noqa: S603
-    except subprocess.CalledProcessError as e:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        msg = (
-            "failed to start a local Ray head. This node may have a port/GCS or shared-memory "
-            f"restriction. stderr:\n{(e.stderr or '')[-1500:]}"
-        )
-        raise RuntimeError(msg) from e
-    except subprocess.TimeoutExpired as e:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        msg = "timed out starting a local Ray head (raylet/GCS did not become responsive)"
-        raise RuntimeError(msg) from e
-    except Exception:
+        # Verifies the head is responsive and stops what it started if it is not, so there is
+        # no window in which a live head exists with nothing recorded to reach it.
+        client.start()
+        address = os.environ["RAY_ADDRESS"]  # set by RayClient to the node IP it bound
+    except BaseException:  # KeyboardInterrupt too: Ctrl-C must not orphan a live head
+        with contextlib.suppress(Exception):
+            client.stop()
         shutil.rmtree(temp_dir, ignore_errors=True)
         raise
 
-    # Adopt the address Ray actually advertises (its GCS commonly reports the node's LAN
-    # IP even when reached via loopback). Being self-consistent -- like RayClient -- avoids
-    # the mismatch that made cluster_resources() refuse to read the cluster we just started.
-    address = _adopt_started_address(port)
-    os.environ["RAY_ADDRESS"] = address
-    os.environ.setdefault("RAY_MAX_LIMIT_FROM_API_SERVER", _API_LIMIT)
     _STARTED.update(
         {
             "address": address,
             "temp_dir": temp_dir,
-            "port": port,
+            "client": client,
             "owned": True,
             "owner_pid": os.getpid(),
             "previous_address": previous_address,
@@ -342,7 +341,7 @@ def cluster_resources(address: str) -> dict[str, float]:
                 logging_level="ERROR",
             )
             opened_connection = True
-        except Exception as exc:  # noqa: BLE001 - expose a stable fail-closed error
+        except Exception as exc:
             msg = f"failed to connect to Ray cluster at {address!r}"
             raise RuntimeError(msg) from exc
         connected = _connected_address(ray)
@@ -393,15 +392,36 @@ def _restore_owned_environment(state: dict[str, Any]) -> None:
         os.environ.pop("RAY_MAX_LIMIT_FROM_API_SERVER", None)
 
 
+def _within_any_temp_root(real_path: str) -> bool:
+    """Whether a RESOLVED path sits inside one of the plausible temp roots.
+
+    Compares resolved path against resolved root, so a site whose temp dir is a symlink
+    (a scratch mount) is recognized instead of silently failing containment -- which
+    previously meant the bootstrap directory was never cleaned up. ``commonpath`` raises
+    when two paths share no root, which is a non-match, never a crash.
+    """
+    for root in _temp_root_candidates():
+        try:
+            if os.path.commonpath((root, real_path)) == root:
+                return True
+        except ValueError:  # no shared root (e.g. different drives) -> simply not a match
+            continue
+    return False
+
+
 def _safe_temp_dir(path: Any) -> str | None:  # noqa: ANN401
-    """Return an owned Ray temp path only when it is safe to remove recursively."""
+    """Return an owned Ray temp path only when it is safe to remove recursively.
+
+    Three independent gates, all of which must hold: the entry itself is not a symlink
+    (so a swapped link is never followed), the RESOLVED target is inside a temp root,
+    and it carries this module's own prefix.
+    """
     if not isinstance(path, str):
         return None
-    absolute_path = os.path.abspath(path)
-    real_path = os.path.realpath(path)
-    if os.path.islink(absolute_path) or real_path != absolute_path:
+    if os.path.islink(os.path.abspath(path)):
         return None
-    if os.path.commonpath(("/tmp", real_path)) != "/tmp":
+    real_path = os.path.realpath(path)
+    if not _within_any_temp_root(real_path):
         return None
     if not os.path.basename(real_path).startswith("ray_audio_agent_"):
         return None
@@ -426,7 +446,7 @@ def _disconnect_owned_driver(address: str) -> bool:
     return True
 
 
-def shutdown_cluster(address: str | None = None) -> bool:
+def shutdown_cluster(address: str | None = None) -> bool:  # noqa: PLR0911 - one guard clause per refusal reason; flattening them would hide which check failed
     """Stop and clean a local head owned by this exact process.
 
     ``ray stop`` is node-wide, so ownership, process identity, the optional
@@ -440,23 +460,31 @@ def shutdown_cluster(address: str | None = None) -> bool:
     owned_address = state["address"]
     if os.environ.get("RAY_ADDRESS") != owned_address:
         return False
+
+    # Resolved BEFORE the driver is disconnected. ``ray.shutdown()`` is irreversible and
+    # closes the caller's own session, so every gate that can refuse without side effects
+    # belongs above it -- otherwise a refusal that promises "nothing changed, retry safely"
+    # has already dropped the caller's actor handles and object refs on the floor.
+    temp_dir = _safe_temp_dir(state.get("temp_dir"))
+    if not temp_dir:
+        return False
     if not _disconnect_owned_driver(owned_address):
         return False
-    try:
-        completed = subprocess.run(  # noqa: S603
-            [_ray_binary(), "stop", "--force"],
-            check=False,
-            capture_output=True,
-            timeout=60,
-        )
-    except Exception:  # noqa: BLE001
+
+    # One signal to the process group RayClient started, which is the whole point of going
+    # through it: ``ray start --block`` keeps that group's supervisor alive, so killpg reaches
+    # every component and nothing else. ``ray stop`` is never used -- it has no scoping
+    # options and stops every Ray process on the machine (ray-project/ray#54989), which on a
+    # shared box or CI runner would take a co-tenant's cluster down with ours.
+    client = state.get("client")
+    if client is None:
         return False
-    if completed.returncode != 0:
+    try:
+        client.stop()
+    except Exception:  # noqa: BLE001 - preserve ownership state for a safe retry
         return False
 
-    temp_dir = _safe_temp_dir(state.get("temp_dir"))
-    if temp_dir:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+    shutil.rmtree(temp_dir, ignore_errors=True)
     _restore_owned_environment(state)
     _STARTED.clear()
     return True

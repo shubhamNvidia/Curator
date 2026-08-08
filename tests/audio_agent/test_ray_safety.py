@@ -17,11 +17,11 @@
 from __future__ import annotations
 
 import os
-import subprocess
+import socket
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -37,6 +37,11 @@ def _isolated_bootstrap_state(monkeypatch: pytest.MonkeyPatch):
     yield
     _ray._STARTED.clear()
     _ray._STARTED.update(saved)
+    # ``ensure_cluster`` sets RAY_ADDRESS through os.environ directly, and monkeypatch has
+    # no undo recorded for a variable that was absent at delenv time. Leaving it set makes a
+    # LATER test (e.g. smoke bounding) try to reach a cluster that no longer exists and hang.
+    os.environ.pop("RAY_ADDRESS", None)
+    os.environ.pop("RAY_MAX_LIMIT_FROM_API_SERVER", None)
 
 
 @pytest.mark.parametrize(
@@ -55,9 +60,8 @@ def test_every_external_ray_address_is_validated_and_never_overwritten(
         lambda candidate: probes.append(candidate) or {"CPU": 4.0},
     )
     monkeypatch.setattr(
-        _ray,
-        "_free_port",
-        lambda: pytest.fail("external addresses must never reach local bootstrap"),
+        "nemo_curator.core.client.RayClient",
+        lambda **_kwargs: pytest.fail("external addresses must never reach local bootstrap"),
     )
 
     assert _ray.ensure_cluster() == address
@@ -77,9 +81,8 @@ def test_failed_external_connection_fails_closed_without_local_bootstrap(
 
     monkeypatch.setattr(_ray, "cluster_resources", fail_probe)
     monkeypatch.setattr(
-        _ray,
-        "_free_port",
-        lambda: pytest.fail("failed external connection must not start a local head"),
+        "nemo_curator.core.client.RayClient",
+        lambda **_kwargs: pytest.fail("failed external connection must not start a local head"),
     )
 
     with pytest.raises(RuntimeError, match="refusing to replace it"):
@@ -103,9 +106,8 @@ def test_preinitialized_ray_without_environment_is_reused_not_replaced(
         lambda candidate: probes.append(candidate) or {"CPU": 4.0},
     )
     monkeypatch.setattr(
-        _ray,
-        "_free_port",
-        lambda: pytest.fail("an initialized driver must not trigger local bootstrap"),
+        "nemo_curator.core.client.RayClient",
+        lambda **_kwargs: pytest.fail("an initialized driver must not trigger local bootstrap"),
     )
 
     assert _ray.ensure_cluster() == address
@@ -194,103 +196,156 @@ def test_cluster_probe_disconnects_a_new_connection_that_resolves_elsewhere(
     assert shutdowns == 1
 
 
-def _mock_local_start(
-    monkeypatch: pytest.MonkeyPatch,
-    temp_dir: Path,
-    run: Any,  # noqa: ANN401
-) -> None:
-    ports = iter((6381, 8266))
-    temp_dir.mkdir()
-    monkeypatch.setattr(_ray, "_free_port", lambda: next(ports))
+
+class _FakeRayClient:
+    """Stand-in for the shared ``RayClient``, with the same externally visible contract.
+
+    The real one starts ``ray start --block`` under ``Popen(start_new_session=True)`` and
+    stops it with ``killpg`` on that process group. Everything this module needs to be
+    correct about is at that seam: it owns ``RAY_ADDRESS``, and stopping is one call.
+    """
+
+    instances: ClassVar[list[_FakeRayClient]] = []
+    address = "127.0.0.1:6381"
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+        self.started = False
+        self.stops = 0
+        self.start_error: BaseException | None = None
+        self.stop_error: BaseException | None = None
+        _FakeRayClient.instances.append(self)
+
+    def start(self) -> None:
+        if self.start_error is not None:
+            raise self.start_error
+        self.started = True
+        os.environ["RAY_ADDRESS"] = self.address
+
+    def stop(self) -> None:
+        self.stops += 1
+        if self.stop_error is not None:
+            raise self.stop_error
+        os.environ.pop("RAY_ADDRESS", None)
+
+
+@pytest.fixture(autouse=True)
+def _reset_fake_clients():
+    _FakeRayClient.instances.clear()
+    yield
+    _FakeRayClient.instances.clear()
+
+
+def _mock_local_start(monkeypatch: pytest.MonkeyPatch, temp_dir: Path) -> None:
+    """Route the bootstrap through a fake RayClient and a known session directory."""
+    temp_dir.mkdir(exist_ok=True)
+    monkeypatch.setattr("nemo_curator.core.client.RayClient", _FakeRayClient)
     monkeypatch.setattr(_ray, "_detect_gpus", lambda: 0)
-    monkeypatch.setattr(_ray, "_ray_binary", lambda: "/mock/ray")
-    monkeypatch.setattr(
-        _ray,
-        "_adopt_started_address",
-        lambda port: f"127.0.0.1:{port}",
-    )
     monkeypatch.setattr(_ray.tempfile, "mkdtemp", lambda **_kwargs: str(temp_dir))
-    monkeypatch.setattr(_ray.subprocess, "run", run)
+
+
+def test_the_bootstrap_goes_through_the_shared_ray_client(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Curator already solves starting and stopping Ray; the agent must not re-solve it.
+
+    A private ``ray start`` without ``--block`` turns off Ray's own cleanup
+    (``shutdown_at_exit``/``spawn_reaper``), which is what forced teardown to hunt for
+    detached processes by scanning /proc -- where every real defect in this file lived.
+    """
+    temp_dir = tmp_path / "ray_audio_agent_shared"
+    _mock_local_start(monkeypatch, temp_dir)
+
+    address = _ray.ensure_cluster(num_cpus=3, object_store_memory=1234)
+
+    assert address == _FakeRayClient.address
+    client = _FakeRayClient.instances[-1]
+    assert client.started
+    assert client.kwargs["ray_temp_dir"] == str(temp_dir)
+    assert client.kwargs["num_cpus"] == 3
+    assert client.kwargs["object_store_memory"] == 1234
+    # The agent is a library caller: registering with a shared Prometheus/Grafana install
+    # would be a side effect on state it does not own.
+    assert client.kwargs["include_dashboard"] is False
 
 
 def test_owned_local_cluster_is_cleaned_and_environment_is_restored(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    calls: list[list[str]] = []
-
-    def run(command: list[str], **_kwargs: Any) -> SimpleNamespace:
-        calls.append(command)
-        return SimpleNamespace(returncode=0)
-
     temp_dir = tmp_path / "ray_audio_agent_owned"
-    _mock_local_start(monkeypatch, temp_dir, run)
+    _mock_local_start(monkeypatch, temp_dir)
 
     address = _ray.ensure_cluster()
 
-    assert address == "127.0.0.1:6381"
     assert _ray.owns_cluster(address)
     assert _ray._STARTED["owner_pid"] == os.getpid()
     assert os.environ["RAY_ADDRESS"] == address
     assert temp_dir.exists()
 
     assert _ray.shutdown_cluster(address) is True
-    assert calls[0][1] == "start"
-    assert calls[1] == ["/mock/ray", "stop", "--force"]
+
+    assert _FakeRayClient.instances[-1].stops == 1
     assert not temp_dir.exists()
     assert "RAY_ADDRESS" not in os.environ
     assert "RAY_MAX_LIMIT_FROM_API_SERVER" not in os.environ
     assert _ray._STARTED == {}
 
 
-def test_failed_local_start_removes_temp_directory(
+@pytest.mark.parametrize(
+    "failure",
+    [RuntimeError("did not become responsive"), KeyboardInterrupt()],
+    ids=["unresponsive", "interrupted"],
+)
+def test_a_failed_start_stops_the_client_and_removes_the_temp_directory(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    failure: BaseException,
 ) -> None:
-    def run(command: list[str], **_kwargs: Any) -> SimpleNamespace:
-        raise subprocess.CalledProcessError(1, command, stderr="boom")
+    """RayClient stops what it started; the session directory is ours to remove.
 
+    Ctrl-C is included deliberately: a ``KeyboardInterrupt`` is not an ``Exception``, so a
+    bare ``except Exception`` would let it orphan a live head with no ownership recorded.
+    """
     temp_dir = tmp_path / "ray_audio_agent_failed"
-    _mock_local_start(monkeypatch, temp_dir, run)
+    _mock_local_start(monkeypatch, temp_dir)
 
-    with pytest.raises(RuntimeError, match="failed to start"):
+    original_start = _FakeRayClient.start
+
+    def failing_start(self: _FakeRayClient) -> None:
+        self.start_error = failure
+        original_start(self)
+
+    monkeypatch.setattr(_FakeRayClient, "start", failing_start)
+
+    with pytest.raises(type(failure)):
         _ray.ensure_cluster()
 
+    assert _FakeRayClient.instances[-1].stops == 1
     assert not temp_dir.exists()
     assert "RAY_ADDRESS" not in os.environ
     assert _ray._STARTED == {}
 
 
-def test_shutdown_refuses_address_mismatch_before_node_wide_stop(
+def test_shutdown_refuses_address_mismatch(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     temp_dir = tmp_path / "ray_audio_agent_mismatch"
-    temp_dir.mkdir()
-    _ray._STARTED.update(
-        {
-            "address": "127.0.0.1:6381",
-            "temp_dir": str(temp_dir),
-            "owned": True,
-            "owner_pid": os.getpid(),
-        }
-    )
-    monkeypatch.setenv("RAY_ADDRESS", "127.0.0.1:9999")
-    monkeypatch.setattr(
-        _ray.subprocess,
-        "run",
-        lambda *_args, **_kwargs: pytest.fail("mismatch must not invoke node-wide ray stop"),
-    )
+    _mock_local_start(monkeypatch, temp_dir)
+    address = _ray.ensure_cluster()
 
-    assert _ray.shutdown_cluster("127.0.0.1:6381") is False
+    assert _ray.shutdown_cluster("127.0.0.1:9999") is False
+    assert _FakeRayClient.instances[-1].stops == 0
+    assert _ray.owns_cluster(address)
     assert temp_dir.exists()
-    assert _ray.owns_cluster("127.0.0.1:6381")
 
 
 def test_shutdown_refuses_inherited_ownership_from_another_process(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    """A forked child inherits ``_STARTED`` by copy-on-write but owns nothing."""
     temp_dir = tmp_path / "ray_audio_agent_inherited"
     temp_dir.mkdir()
     address = "127.0.0.1:6381"
@@ -298,43 +353,26 @@ def test_shutdown_refuses_inherited_ownership_from_another_process(
         {
             "address": address,
             "temp_dir": str(temp_dir),
+            "client": _FakeRayClient(),
             "owned": True,
-            "owner_pid": os.getpid() + 1,
+            "owner_pid": os.getpid() + 1,  # a different process started it
         }
     )
-    monkeypatch.setenv("RAY_ADDRESS", address)
-    monkeypatch.setattr(
-        _ray.subprocess,
-        "run",
-        lambda *_args, **_kwargs: pytest.fail("a child process must not stop its parent's Ray head"),
-    )
+    os.environ["RAY_ADDRESS"] = address
 
     assert _ray.shutdown_cluster(address) is False
+    assert _FakeRayClient.instances[-1].stops == 0
     assert temp_dir.exists()
 
 
-def test_failed_stop_preserves_state_and_temp_directory_for_retry(
+def test_a_failed_stop_preserves_state_and_temp_directory_for_retry(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     temp_dir = tmp_path / "ray_audio_agent_retry"
-    temp_dir.mkdir()
-    address = "127.0.0.1:6381"
-    _ray._STARTED.update(
-        {
-            "address": address,
-            "temp_dir": str(temp_dir),
-            "owned": True,
-            "owner_pid": os.getpid(),
-        }
-    )
-    monkeypatch.setenv("RAY_ADDRESS", address)
-    monkeypatch.setattr(_ray, "_ray_binary", lambda: "/mock/ray")
-    monkeypatch.setattr(
-        _ray.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=1),
-    )
+    _mock_local_start(monkeypatch, temp_dir)
+    address = _ray.ensure_cluster()
+    _FakeRayClient.instances[-1].stop_error = OSError("killpg failed")
 
     assert _ray.shutdown_cluster(address) is False
     assert _ray.owns_cluster(address)
@@ -346,34 +384,96 @@ def test_shutdown_refuses_a_driver_connected_to_a_different_cluster(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    temp_dir = tmp_path / "ray_audio_agent_driver_mismatch"
-    temp_dir.mkdir()
-    address = "127.0.0.1:6381"
+    """Disconnecting a driver aimed elsewhere would tear down someone else's session."""
+    temp_dir = tmp_path / "ray_audio_agent_driver"
+    _mock_local_start(monkeypatch, temp_dir)
+    address = _ray.ensure_cluster()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "ray",
+        SimpleNamespace(
+            is_initialized=lambda: True,
+            shutdown=lambda: pytest.fail("a driver on another cluster must not be shut down"),
+        ),
+    )
+    monkeypatch.setattr(_ray, "_connected_address", lambda _module: "127.0.0.1:7777")
+
+    assert _ray.shutdown_cluster(address) is False
+    assert _FakeRayClient.instances[-1].stops == 0
+    assert _ray.owns_cluster(address)
+    assert temp_dir.exists()
+
+
+def test_an_unverifiable_session_dir_refuses_before_touching_the_callers_driver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refusal promises "nothing changed, retry safely" -- so it must cost nothing.
+
+    ``ray.shutdown()`` is irreversible and closes the CALLER's session, dropping their actor
+    handles and object refs. Running it before a gate that can still refuse broke that
+    promise: shutdown reported failure while the caller's Ray connection was already gone.
+    """
+    shutdowns = 0
+
+    def shutdown() -> None:
+        nonlocal shutdowns
+        shutdowns += 1
+
+    address = "127.0.0.1:6399"
+    monkeypatch.setitem(sys.modules, "ray", SimpleNamespace(is_initialized=lambda: True, shutdown=shutdown))
+    monkeypatch.setattr(_ray, "_connected_address", lambda _module: address)
     _ray._STARTED.update(
         {
             "address": address,
-            "temp_dir": str(temp_dir),
+            "temp_dir": "/not/a/temp/root/ray_audio_agent_x",  # fails _safe_temp_dir
+            "client": _FakeRayClient(),
             "owned": True,
             "owner_pid": os.getpid(),
         }
     )
-    monkeypatch.setenv("RAY_ADDRESS", address)
-    fake_ray = SimpleNamespace(
-        is_initialized=lambda: True,
-        shutdown=lambda: pytest.fail("mismatched driver must not be disconnected"),
-    )
-    monkeypatch.setitem(sys.modules, "ray", fake_ray)
-    monkeypatch.setattr(
-        _ray,
-        "_connected_address",
-        lambda _module: "127.0.0.1:9999",
-    )
-    monkeypatch.setattr(
-        _ray.subprocess,
-        "run",
-        lambda *_args, **_kwargs: pytest.fail("mismatched driver must not trigger ray stop"),
-    )
+    os.environ["RAY_ADDRESS"] = address
 
     assert _ray.shutdown_cluster(address) is False
-    assert temp_dir.exists()
-    assert _ray.owns_cluster(address)
+    assert shutdowns == 0, "a refusal must not close the caller's Ray session"
+    assert _ray.owns_cluster(address), "ownership must survive for a retry"
+
+
+def test_the_socket_budget_leaves_room_for_the_path_ray_actually_binds() -> None:
+    """The budget must cover Ray's whole suffix, not just our own directory.
+
+    A root that passes this check but yields an over-long plasma socket does not fail at
+    bind time -- ``ray start`` aborts with an AF_UNIX length error, which is a mysterious
+    failure for exactly the long per-job scratch paths honouring $TMPDIR exists to support.
+    Checked against Ray's own validator so its limit, not our copy of it, is the authority.
+    """
+    root = "/" + "x" * (_ray._AF_UNIX_ROOT_BUDGET - 1)
+    assert len(root) == _ray._AF_UNIX_ROOT_BUDGET
+
+    session = f"session_2026-08-06_18-16-46_301241_{4194304}"  # worst-case 7-digit pid
+    socket_path = f"{root}/ray_audio_agent_{'a' * 8}/{session}/sockets/plasma_store"
+
+    assert len(socket_path.encode()) <= _ray._AF_UNIX_MAX
+
+    from ray._private.utils import validate_socket_filepath
+
+    validate_socket_filepath(socket_path)  # Ray's own check must accept it
+
+
+def test_the_reuse_probe_agrees_with_the_module_on_ipv6_addresses() -> None:
+    """Ray brackets the IPv6 literals it advertises, and the probe must parse them.
+
+    ``_address_identity`` accepted ``[::1]:6379`` while ``_reachable`` split on the last
+    colon and handed ``getaddrinfo`` the bracketed host, so a live IPv6 head always probed
+    as unreachable and cluster reuse always refused to reuse it.
+    """
+    sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    sock.bind(("::1", 0))
+    sock.listen(1)
+    address = f"[::1]:{sock.getsockname()[1]}"
+    try:
+        assert _ray._address_identity(address) is not None, "the module accepts this form"
+        assert _ray._reachable(address) is True, "so the probe must too"
+    finally:
+        sock.close()
+    assert _ray._reachable(address) is False
