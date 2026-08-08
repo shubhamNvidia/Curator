@@ -160,6 +160,9 @@ benchmark_results/
 
 # Agent related files
 AGENTS.md
+# ...but the packaged audio-agent driving doc must ship (it is referenced by
+# nemo_curator/audio_agent/__init__.py and is part of the tool surface).
+!nemo_curator/audio_agent/AGENTS.md
 CLAUDE.md
 .claude/settings.local.json
 

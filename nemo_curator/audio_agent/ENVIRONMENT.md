@@ -100,7 +100,12 @@ Needed for resample/convert and compressed formats (mp3/opus/…). Install with
 `apt-get install ffmpeg`, `conda install -c conda-forge ffmpeg`, or `brew install ffmpeg`.
 
 ### `audio_extras` — importable audio dependencies
-Install the audio extra: `uv sync --extra audio_cuda12` (GPU) or `--extra audio_cpu` (CPU).
+Install an audio dependency profile: `audio_cuda12` (GPU) or `audio_cpu` (CPU). In a
+source checkout that is `uv sync --extra <profile>`; for an installed package the
+command differs (and carries release-specific details), so take the current one from
+the project's audio setup guide rather than from this file:
+<https://docs.nvidia.com/nemo/curator/get-started/audio>.
+`doctor` already picks the form that matches how this package is installed.
 The fast probe checks package discoverability; a later native-library/ABI import
 failure is classified from its actual error and analyzed with `diagnose`.
 

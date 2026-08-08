@@ -56,6 +56,7 @@ from nemo_curator.audio_agent.env_health import (
 )
 from nemo_curator.audio_agent.recipe import Recipe, StageRef
 from nemo_curator.audio_agent.report import RunReport
+from nemo_curator.audio_agent.run_store import scratch_dir
 from nemo_curator.audio_agent.semantic_review import (
     build_semantic_review,
     semantic_response_contract,
@@ -115,6 +116,7 @@ __all__ = [
     "reuse_scan",
     "run",
     "runs",
+    "scratch_dir",
     "semantic_response_contract",
     "smoke",
     "validate",

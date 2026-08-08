@@ -42,6 +42,13 @@ profiles the path because it runs before a recipe exists.
 ## Golden rules
 
 - Never invent stage/param names — only use what `discover`/`cards`/`describe` return.
+- Write scratch recipes to `nemo_curator.audio_agent.scratch_dir()`, not to the working
+  directory. That directory is git-ignored; the working directory is usually a checkout, where a
+  one-off recipe reads as an untracked file someone forgot to finish. Write elsewhere only when
+  the recipe itself is the deliverable the user asked for.
+- Start from a template in `nemo_curator/audio_agent/recipes/`. Each ships a working
+  `acceptance_criteria` block, so the success contract is something to retune rather than to
+  invent — and skipping it means nothing checks the output against what was asked for.
 - Prune to the request: a stage earns its place only if it serves a stated goal. Every
   filter DROPS data, so each filter must trace to a criterion the user actually asked for
   ("clean" -> noise gate, "high-quality" -> MOS gate) — never add a filter for a dimension
@@ -101,6 +108,18 @@ profiles the path because it runs before a recipe exists.
   batch size, model IDs). Ask outcome-level ("studio/broadcast/general?", language, format) and
   resolve via card `anchors`/`presets`. Module choice: compare on card facts, then auto/recommend/ask
   (ask only if material + preference-dependent + not inferable).
+- An unchecked remedy is a guess, not an option. A parameter change is a fix only if the data
+  you just observed can produce the outcome it promises; check that before offering it, and if
+  you can't, label it unverified and say what would settle it. A knob whose whole range the
+  input's shape rules out (a grouping needing two of what upstream emitted once, a threshold
+  under every value present) is not a choice to put to the user at any setting. Once you expect
+  a choice to fail, say so BEFORE executing it, not in the caveats after — otherwise the user
+  pays full compute for data you already doubt.
+- Report the unit the request was about. A row count is not a deliverable count: one row can
+  carry a list of segments, windows or snippets, and a row can be blank. `run` returns
+  `output_rows_written` (read back from the file, not counted in memory) and `sparse_fields`
+  (each written field blank in some rows) — surface both, and never call an output ready while
+  a required field is mostly empty.
 - A green deterministic Verdict is **mechanically runnable, not intent-approved**. After
   `validate` passes and before `smoke`, emit a semantic critique with exactly
   `intent_status: pass|revise|ask`, and copy

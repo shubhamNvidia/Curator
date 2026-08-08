@@ -51,6 +51,19 @@ All commands print JSON. Run them with the repo virtualenv interpreter (base
   fine, framed as plain capability trade-offs from the cards. Ask only decisions that
   are **material + preference-dependent + not inferable**; otherwise use a safe
   default/inference and note it.
+- **An unchecked remedy is a guess, not an option.** When a result comes back thin or failed,
+  a parameter change is a *fix* only if the data you just observed can actually produce the
+  outcome it promises. Check that before offering it; if you cannot, present it as unverified
+  and name what would settle it. A knob whose whole range is ruled out by the input's shape —
+  a grouping that must contain two of something the upstream stage emitted once, a threshold
+  below every value present — is not a choice worth putting to the user, at any setting. And
+  once you expect a choice to fail, say so **before** executing it, not in the caveats
+  afterwards: running it spends the user's full compute to produce data you already doubt.
+- **Report the unit the request was about.** A row count is not a deliverable count — one row
+  can carry a list of segments, windows or snippets, and a row can be blank. `run` reports
+  `output_rows_written` (read back from the file rather than counted in memory) and
+  `sparse_fields`, naming each written field left blank in some rows — surface both. Never
+  call an output complete or ready while a field the request depends on is empty in most rows.
 
 ## The loop
 
@@ -226,12 +239,24 @@ omitted; it remains unkeyed and unreusable until aggregate identity is
 supported. (`context --data` is the pre-recipe exception: it profiles that path
 directly for planning.)
 
-Save the recipe and:
+Save the recipe **under the scratch directory**, not in the current directory. A recipe written
+for one request is working material, and the working directory is usually a git checkout, where
+it shows up as an untracked file that looks like unfinished work:
 
 ```bash
-python -m nemo_curator.audio_agent validate --recipe recipe.yaml --data /path/to/data \
-  --acceptance-criteria criteria.yaml --request-type quality_filter
+python -c 'import nemo_curator.audio_agent as aa; print(aa.scratch_dir())'
+# -> <workspace>/.audio_agent_runs/recipes   (git-ignored, moves with AUDIO_AGENT_RUNS_DIR)
 ```
+
+Put it somewhere else only when the user asks for the recipe itself as a deliverable. Then:
+
+```bash
+python -m nemo_curator.audio_agent validate --recipe "$(python -c 'import nemo_curator.audio_agent as aa; print(aa.scratch_dir())')/recipe.yaml" \
+  --data /path/to/data --acceptance-criteria criteria.yaml --request-type quality_filter
+```
+
+The three templates in `nemo_curator/audio_agent/recipes/` each ship a filled-in
+`acceptance_criteria` block; start from one rather than writing the list from scratch.
 
 The optional `--acceptance-criteria` file is a cross-check and must match the
 recipe's embedded `acceptance_criteria`; validation fails if they differ.
