@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import socket
 import sys
 from pathlib import Path
@@ -477,3 +478,93 @@ def test_the_reuse_probe_agrees_with_the_module_on_ipv6_addresses() -> None:
     finally:
         sock.close()
     assert _ray._reachable(address) is False
+
+
+class _RecordingRayClient(_FakeRayClient):
+    """Records what a spawned child would resolve ``ray`` to, at the moment of the spawn."""
+
+    resolved: ClassVar[list[str | None]] = []
+
+    def start(self) -> None:
+        _RecordingRayClient.resolved.append(shutil.which("ray"))
+        super().start()
+
+
+class TestTheInterpretersRayIsReachableByTheProcessWeSpawn:
+    """``RayClient`` runs ``Popen(["ray", ...])``, so only PATH decides whether that resolves.
+
+    Delegating the bootstrap to the shared client dropped the interpreter-relative lookup the
+    agent's own bootstrap had (``dirname(sys.executable)/ray`` first, PATH second). The
+    invocation this tool documents -- ``.venv/bin/python -m nemo_curator.audio_agent ...
+    --bootstrap-ray`` -- runs the right interpreter without activating the venv, so the next
+    real session died with ``FileNotFoundError: 'ray'`` before starting anything, against a
+    flag that advertises "no manual setup".
+    """
+
+    def _venv_without_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """An interpreter with ``ray`` beside it, and a PATH that cannot see either."""
+        bindir = tmp_path / "venv" / "bin"
+        bindir.mkdir(parents=True)
+        cli = bindir / "ray"
+        cli.write_text("#!/bin/sh\nexit 0\n")
+        cli.chmod(0o755)
+        monkeypatch.setattr(sys, "executable", str(bindir / "python"))
+        monkeypatch.setenv("PATH", "/nonexistent-bin")
+        return bindir
+
+    def _bootstrap(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        session = tmp_path / "session"
+        session.mkdir(exist_ok=True)
+        monkeypatch.setattr("nemo_curator.core.client.RayClient", _RecordingRayClient)
+        monkeypatch.setattr(_ray, "_detect_gpus", lambda: 0)
+        monkeypatch.setattr(_ray.tempfile, "mkdtemp", lambda **_kwargs: str(session))
+        _RecordingRayClient.resolved.clear()
+        _ray.ensure_cluster()
+
+    def test_it_resolves_although_path_never_mentions_the_virtualenv(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        bindir = self._venv_without_path(tmp_path, monkeypatch)
+
+        self._bootstrap(tmp_path, monkeypatch)
+
+        assert _RecordingRayClient.resolved == [str(bindir / "ray")]
+
+    def test_the_interpreters_ray_wins_over_one_already_on_path(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Restores the old precedence: next to the interpreter first, PATH second."""
+        bindir = self._venv_without_path(tmp_path, monkeypatch)
+        other = tmp_path / "system" / "bin"
+        other.mkdir(parents=True)
+        (other / "ray").write_text("#!/bin/sh\nexit 0\n")
+        (other / "ray").chmod(0o755)
+        monkeypatch.setenv("PATH", str(other))
+
+        self._bootstrap(tmp_path, monkeypatch)
+
+        assert _RecordingRayClient.resolved == [str(bindir / "ray")]
+
+    def test_the_callers_environment_is_left_as_it_was_found(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """``smoke``/``run`` are library calls; a verb must not permanently edit PATH."""
+        self._venv_without_path(tmp_path, monkeypatch)
+        before = os.environ["PATH"]
+
+        self._bootstrap(tmp_path, monkeypatch)
+
+        assert os.environ["PATH"] == before
+
+    def test_an_interpreter_with_no_ray_beside_it_changes_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        bindir = tmp_path / "bare" / "bin"
+        bindir.mkdir(parents=True)
+        monkeypatch.setattr(sys, "executable", str(bindir / "python"))
+        monkeypatch.setenv("PATH", "/nonexistent-bin")
+
+        self._bootstrap(tmp_path, monkeypatch)
+
+        assert _RecordingRayClient.resolved == [None], "nothing to offer, so nothing is claimed"
+        assert os.environ["PATH"] == "/nonexistent-bin"

@@ -36,8 +36,11 @@ import shutil
 import socket
 import sys
 import tempfile
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 # Info about a head THIS process started (for reuse and ownership-safe cleanup).
 _STARTED: dict[str, Any] = {}
@@ -177,6 +180,43 @@ def _detect_gpus() -> int:
         return 0
 
 
+@contextlib.contextmanager
+def _interpreter_ray_on_path() -> Iterator[None]:
+    """Let the ``ray`` CLI that belongs to this interpreter be found by the process we spawn.
+
+    ``RayClient`` starts the head with ``Popen(["ray", "start", ...])``, a bare name resolved
+    through ``PATH`` and nothing else. Nothing puts a virtualenv's ``bin`` on ``PATH``:
+    ``.venv/bin/python -m nemo_curator.audio_agent ... --bootstrap-ray`` -- the invocation this
+    tool documents -- runs the right interpreter without activating anything. A perfectly
+    installed ``.venv/bin/ray`` is then invisible and the bootstrap dies with
+    ``FileNotFoundError: 'ray'`` before starting a thing, which is what a flag advertising "no
+    manual setup" must never do.
+
+    The private bootstrap that delegating to ``RayClient`` replaced looked next to
+    ``sys.executable`` before consulting ``PATH``; prepending restores exactly that precedence
+    for the child, without editing a client the text and video pipelines also depend on.
+
+    Scoped and restored, because ``smoke``/``run`` are library calls as well as CLI ones and a
+    verb has no business permanently rewriting its caller's environment. Prepending even when
+    the directory is already present is deliberate: the point is which ``ray`` wins, not
+    whether one is reachable.
+    """
+    bindir = os.path.dirname(os.path.abspath(sys.executable))
+    cli = os.path.join(bindir, "ray")
+    if not (os.path.isfile(cli) and os.access(cli, os.X_OK)):
+        yield
+        return
+    previous = os.environ.get("PATH")
+    os.environ["PATH"] = os.pathsep.join([bindir, previous]) if previous else bindir
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = previous
+
+
 def ensure_cluster(
     *,
     num_cpus: int | None = None,
@@ -288,7 +328,8 @@ def ensure_cluster(
     try:
         # Verifies the head is responsive and stops what it started if it is not, so there is
         # no window in which a live head exists with nothing recorded to reach it.
-        client.start()
+        with _interpreter_ray_on_path():
+            client.start()
         address = os.environ["RAY_ADDRESS"]  # set by RayClient to the node IP it bound
     except BaseException:  # KeyboardInterrupt too: Ctrl-C must not orphan a live head
         with contextlib.suppress(Exception):
