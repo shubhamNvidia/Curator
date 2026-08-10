@@ -253,7 +253,7 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block
     r.add_argument("--checkpoint-path")
     r.add_argument("--bootstrap-ray", action="store_true", help="auto-start a local Ray head if none is reachable")
     r.add_argument("--smoke-token", help="smoke-evidence token from a prior smoke (required if AUDIO_AGENT_REQUIRE_SMOKE is set)")
-    r.add_argument("--calibration", help="path to a calibration JSON from a prior smoke (1C.2)")
+    r.add_argument("--calibration", help="path to a calibration JSON from a prior smoke; omit to apply the measurements the last smoke of this recipe stored")
     r.add_argument("--goal", help="what this run is FOR (JSON or free text); recorded so prior work stays legible")
 
     rp = sub.add_parser("report", help="post-hoc report from an output manifest/dir")
@@ -324,7 +324,7 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block
     cont.add_argument("--checkpoint-path")
     cont.add_argument("--bootstrap-ray", action="store_true", help="auto-start a local Ray head if none is reachable")
     cont.add_argument("--smoke-token", help="smoke token for the exact recipe branch that will execute")
-    cont.add_argument("--calibration", help="path to a calibration JSON from a prior smoke")
+    cont.add_argument("--calibration", help="path to a calibration JSON from a prior smoke; omit to apply the measurements the last smoke of this recipe stored")
     cont.add_argument("--goal", help="what this run is FOR (JSON or free text)")
 
     cal = sub.add_parser("calibrate", help="extract measured per-stage resources from a smoke report (1C.2)")

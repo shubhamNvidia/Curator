@@ -1651,6 +1651,20 @@ def smoke(
     from nemo_curator.audio_agent import calibration as _cal
 
     out["calibration"] = _cal.from_smoke(out, machine_fingerprint=rplan.machine_fingerprint)
+    # Keep the measurements where the next run can find them, so a plan is informed whether or
+    # not the caller remembers --calibration. Meeting the sampled goals is deliberately NOT a
+    # condition: what a stage used is a fact about resources, independent of whether the
+    # sampled data satisfied the recipe.
+    if rpt.ran and not rpt.errors and out["calibration"]:
+        from nemo_curator.audio_agent import calibration_store
+
+        out["calibration_stored"] = bool(
+            calibration_store.save(
+                rec.config_hash,
+                out["calibration"],
+                machine_fingerprint=rplan.machine_fingerprint,
+            )
+        )
     redacted = _safety.redact(out)
     if output_dir:
         redacted["warnings"] = [
@@ -1692,6 +1706,9 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
     ``checkpoint_path`` enables partial-run recovery (resume completed source
     partitions on a rerun) when the pipeline's stages are resumability-safe.
     ``bootstrap_ray`` opts into auto-starting a local Ray head when none is reachable.
+    ``calibration`` is optional because a prior ``smoke`` of this exact recipe already
+    stored its measurements: they are applied when none is passed, and the resource plan
+    records that it planned from them.
 
     On success every step that persisted output is published as a content-addressed
     artifact, so a later request can reuse it instead of recomputing it
@@ -1899,12 +1916,15 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
             execution_target,
         )
         env = env_obj.to_dict()
+        calibration, calibration_note = _calibration_for_run(calibration, rec.config_hash)
         rplan = _plan_resources(
             stages,
             env_obj,
             data_profile,
             calibration=calibration,
         )
+        if calibration_note:
+            rplan.notes.append(calibration_note)
         _adapt_resource_plan_for_target(
             rplan,
             execution_target=execution_target,
@@ -3456,8 +3476,13 @@ def calibrate(smoke_report: dict[str, Any]) -> dict[str, Any]:
     Returns ``{calibration: {stage: {gpu_mem_gb?, host_mem_gb?, ...}}}`` to pass to
     ``run(..., calibration=...)`` so the planner can raise card ``best_guess``
     facts when the smoke observed a larger peak. A bounded smoke never lowers a
-    card/default estimate. Empty on a CPU smoke (no VRAM to read) — the numbers
-    come from a real GPU smoke.
+    card/default estimate. A CPU smoke still measures host RAM and throughput (it
+    only lacks VRAM), and host RAM is what decides streaming vs batch.
+
+    Calling this is optional: ``smoke`` already stores its measurements under the
+    recipe's ``config_hash`` and ``run`` applies them when no calibration is passed.
+    Extract them here to inspect, archive, or hand a run measurements it would not
+    otherwise find (e.g. from a differently sized machine).
     """
     from nemo_curator.audio_agent import calibration as _cal
 
@@ -3943,6 +3968,34 @@ def _run_pipeline(stages: list[Any], executor: Any, *, checkpoint_path: str | No
     # host parsing the CLI's stdout never sees them interleaved with the result.
     with contextlib.redirect_stdout(sys.stderr):
         return pipeline.run(executor, checkpoint_path=checkpoint_path)
+
+
+def _calibration_for_run(
+    explicit: dict[str, Any] | None,
+    config_hash: str | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Pick the measurements to plan a run with, and say where they came from.
+
+    Returns ``(calibration, provenance_note)``. What the caller passed always wins: the store
+    is a fallback for the flag nobody remembered, never an override of the one they did pass.
+    The note records the substitution on the resource plan, because a run must never be
+    planned from evidence its operator cannot see. Whether each stored entry is actually
+    *applied* stays the planner's call -- it drops any measurement stamped with a different
+    machine, and says so in its own notes.
+    """
+    if explicit is not None:
+        return explicit, None
+    from nemo_curator.audio_agent import calibration_store
+
+    stored = calibration_store.load(config_hash)
+    if not stored:
+        return None, None
+    measured_at = stored.get("created_at")
+    return stored, (
+        "calibration: none passed; using the per-stage measurements a prior smoke of this "
+        + f"exact recipe stored{f' at {measured_at}' if measured_at else ''} "
+        + "(pass --calibration to override)"
+    )
 
 
 def _plan_resources(stages: list[Any], env_obj: Any, data_profile: dict[str, Any] | None, calibration: dict[str, Any] | None = None):  # noqa: ANN401

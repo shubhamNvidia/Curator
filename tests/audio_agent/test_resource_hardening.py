@@ -16,13 +16,16 @@
 
 from __future__ import annotations
 
+import json
+import os
+import stat
 from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from nemo_curator.audio_agent import _ray, calibration, planner, verbs
+from nemo_curator.audio_agent import _ray, calibration, calibration_store, planner, verbs
 from nemo_curator.audio_agent.contracts import EnvProfile
 from nemo_curator.audio_agent.report import _dedup_stage_perf
 from nemo_curator.stages.audio.common import ManifestReader
@@ -781,3 +784,155 @@ def test_env_fingerprint_changes_with_total_ram() -> None:
     more_ram = EnvProfile(total_cpus=8, total_ram_gb=64)
 
     assert base.fingerprint() != more_ram.fingerprint()
+
+
+def _pair_plan(env: EnvProfile, calibration_facts: dict[str, Any] | None = None):
+    """Two identical stages whose card declares no host-RAM fact (so the 1 GB floor applies)."""
+    stages = [
+        _Stage(resources=Resources(cpus=1.0), name="stage-a"),
+        _Stage(resources=Resources(cpus=1.0), name="stage-b"),
+    ]
+    return planner.plan(
+        stages,
+        [_contract(), _contract()],
+        env,
+        index=_Index({"_Stage": {"resource": {"cpus": 1.0}}}),
+        calibration=calibration_facts,
+    )
+
+
+class TestMeasurementsReachTheRunThatNeedsThem:
+    """A smoke measures what each stage really used; the next run has to plan with it.
+
+    That hand-off used to depend on the caller passing ``--calibration``, and nothing could
+    warn when they didn't: a run with no measurements is legitimate, so a forgotten flag was
+    indistinguishable from having nothing to apply. The planner then fell back to a 1 GB
+    per-stage floor -- the number that decides streaming vs batch.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_store(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("AUDIO_AGENT_RUNS_DIR", str(tmp_path / "runs"))
+
+    def test_a_run_with_no_flag_plans_from_the_stored_measurements(self) -> None:
+        calibration_store.save("cfg-1", {"stage-a": {"host_mem_gb": 9.0, "source": "measured"}})
+
+        resolved, note = verbs._calibration_for_run(None, "cfg-1")
+
+        assert resolved["calibration"]["stage-a"]["host_mem_gb"] == 9.0
+        assert "none passed" in note
+
+    def test_what_the_caller_passed_is_never_overridden(self) -> None:
+        calibration_store.save("cfg-1", {"stage-a": {"host_mem_gb": 9.0}})
+        explicit = {"calibration": {"stage-a": {"host_mem_gb": 2.0}}}
+
+        resolved, note = verbs._calibration_for_run(explicit, "cfg-1")
+
+        assert resolved is explicit
+        assert note is None
+
+    def test_editing_the_recipe_does_not_inherit_the_old_measurements(self) -> None:
+        calibration_store.save("cfg-1", {"stage-a": {"host_mem_gb": 9.0}})
+
+        assert verbs._calibration_for_run(None, "cfg-2") == (None, None)
+
+    def test_stored_measurements_can_flip_streaming_to_batch(self) -> None:
+        # The whole point of the hand-off: 2 x 1 GB of card floor fits a 16 GB box and plans
+        # every stage concurrently; 2 x 9 GB of measured truth does not and has to serialize.
+        env = EnvProfile(total_cpus=8, total_ram_gb=16)
+        calibration_store.save(
+            "cfg-1",
+            {
+                "stage-a": {"host_mem_gb": 9.0, "source": "measured"},
+                "stage-b": {"host_mem_gb": 9.0, "source": "measured"},
+            },
+            machine_fingerprint=env.fingerprint(),
+        )
+        resolved, _note = verbs._calibration_for_run(None, "cfg-1")
+
+        assert _pair_plan(env).mode == "streaming"
+        informed = _pair_plan(env, resolved)
+        assert informed.mode == "batch"
+        assert [s["host_mem_gb"] for s in informed.per_stage] == [9.0, 9.0]
+        assert {s["source"] for s in informed.per_stage} == {"measured"}
+
+    def test_measurements_carried_from_another_machine_are_dropped(self) -> None:
+        env = EnvProfile(total_cpus=8, total_ram_gb=16)
+        calibration_store.save(
+            "cfg-1",
+            {"stage-a": {"host_mem_gb": 9.0}, "stage-b": {"host_mem_gb": 9.0}},
+            machine_fingerprint="a-much-larger-box",
+        )
+        resolved, _note = verbs._calibration_for_run(None, "cfg-1")
+
+        result = _pair_plan(env, resolved)
+
+        assert result.mode == "streaming"  # planned from card facts, not a foreign machine's
+        assert any("machine_fingerprint does not match" in n for n in result.notes)
+
+
+class TestTheMeasurementStoreIsHardened:
+    @pytest.fixture(autouse=True)
+    def _isolated_store(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("AUDIO_AGENT_RUNS_DIR", str(tmp_path / "runs"))
+
+    def test_it_follows_the_configured_run_directory(self, tmp_path) -> None:
+        assert calibration_store.store_dir() == str(tmp_path / "runs" / "calibration")
+
+    def test_a_half_written_record_plans_from_card_facts_rather_than_half_a_measurement(self) -> None:
+        path = calibration_store.save("cfg-1", {"stage-a": {"host_mem_gb": 9.0}})
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('{"calibration": {"stage-a"')
+
+        assert calibration_store.load("cfg-1") is None
+
+    def test_a_record_with_no_measurements_is_not_treated_as_one(self) -> None:
+        assert calibration_store.save("cfg-1", {}) is None
+        assert calibration_store.load("cfg-1") is None
+
+    def test_a_key_that_is_not_filename_shaped_is_refused(self) -> None:
+        # The key comes from a caller-supplied recipe, so it never reaches a path unchecked.
+        assert calibration_store.path_for("../../etc/passwd") is None
+        assert calibration_store.save("../../etc/passwd", {"stage-a": {"host_mem_gb": 1.0}}) is None
+        assert calibration_store.load("../../etc/passwd") is None
+
+    def test_records_are_no_more_readable_than_the_run_records_beside_them(self) -> None:
+        # Stage names and machine shape are the same class of local history as a run record.
+        path = calibration_store.save("cfg-1", {"stage-a": {"host_mem_gb": 9.0}})
+
+        assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+
+    def test_what_is_written_is_what_calibrate_returns(self) -> None:
+        path = calibration_store.save(
+            "cfg-1",
+            {"stage-a": {"host_mem_gb": 9.0}},
+            machine_fingerprint="machine-A",
+        )
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+
+        # planner._calibration_mapping unwraps exactly this envelope, so a stored calibration
+        # and one passed by hand are the same thing to the planner.
+        assert payload["calibration"] == {"stage-a": {"host_mem_gb": 9.0}}
+        assert payload["machine_fingerprint"] == "machine-A"
+        assert payload["config_hash"] == "cfg-1"
+        assert payload["created_at"].endswith("Z")
+
+    @pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root ignores mode bits")
+    def test_a_store_it_cannot_write_never_fails_the_smoke_that_produced_it(self) -> None:
+        os.makedirs(calibration_store.store_dir(), mode=0o500)
+
+        assert calibration_store.save("cfg-1", {"stage-a": {"host_mem_gb": 9.0}}) is None
+
+    def test_a_read_only_filesystem_is_reported_rather_than_raised(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The permission test above cannot run as root, and this path must hold everywhere:
+        # storing telemetry is never worth failing the smoke that produced it.
+        def _refuse(*_args: Any, **_kwargs: Any) -> None:
+            msg = "Read-only file system"
+            raise OSError(msg)
+
+        monkeypatch.setattr(calibration_store, "_write_private_json", _refuse)
+
+        assert calibration_store.save("cfg-1", {"stage-a": {"host_mem_gb": 9.0}}) is None

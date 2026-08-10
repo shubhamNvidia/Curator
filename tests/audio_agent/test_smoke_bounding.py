@@ -27,8 +27,9 @@ import pytest
 
 from nemo_curator.audio_agent.contracts import SmokeReport
 from nemo_curator.audio_agent.recipe import Recipe
-from nemo_curator.audio_agent import verbs
+from nemo_curator.audio_agent import calibration_store, verbs
 from nemo_curator.tasks import DocumentBatch
+from nemo_curator.utils.performance_utils import StagePerfStats
 
 
 def _source_recipe(ref: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -588,6 +589,66 @@ def test_smoke_token_is_issued_only_after_sampled_goals_are_met(
     assert result["goals_met"] is True
     assert result["smoke_token"]
     assert "smoke_token_status" not in result
+
+
+def test_a_smokes_measurements_are_waiting_for_the_next_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The measurements have to reach the planner without the caller passing them back.
+
+    The smoke token cannot carry them -- it is an HMAC over the config hash, not an address --
+    so smoke stores them under that same hash and run picks them up.
+    """
+    source = tmp_path / "source.jsonl"
+    source.write_text('{"audio_filepath":"clip.wav"}\n', encoding="utf-8")
+    monkeypatch.setenv("AUDIO_AGENT_RUNS_DIR", str(tmp_path / "runs"))
+
+    monkeypatch.setattr(verbs, "_profile_binding", lambda _binding: None)
+    monkeypatch.setattr(verbs, "probe_env", lambda: object())
+    monkeypatch.setattr(
+        verbs,
+        "_plan_resources",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            mode="batch",
+            escalations=[],
+            machine_fingerprint="smoke-test-machine",
+        ),
+    )
+    monkeypatch.setattr(
+        verbs,
+        "_run_pipeline_autofallback",
+        lambda *_args, **_kwargs: (
+            [
+                SimpleNamespace(
+                    data={"audio_filepath": "clip.wav"},
+                    num_items=1,
+                    _stage_perf=[
+                        StagePerfStats(
+                            stage_name="ManifestReader",
+                            custom_metrics={"peak_host_mem_gb": 9.0},
+                        )
+                    ],
+                )
+            ],
+            "batch",
+        ),
+    )
+
+    result = verbs.smoke(
+        _source_recipe("ManifestReader", {"manifest_path": str(source)}),
+        sample=1,
+    )
+
+    assert result["calibration"]["ManifestReader"]["host_mem_gb"] == 9.0
+    assert result["calibration_stored"] is True
+
+    resolved, note = verbs._calibration_for_run(None, result["config_hash"])
+
+    assert resolved["calibration"] == result["calibration"]
+    assert resolved["machine_fingerprint"] == "smoke-test-machine"
+    assert "none passed" in note
+    assert calibration_store.load("a-different-recipe") is None
 
 
 def test_document_batch_required_output_is_checked_beyond_preview_rows(
