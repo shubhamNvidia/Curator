@@ -110,8 +110,9 @@ def build_audio_pretrain_pipeline(  # noqa: PLR0913
        recovery mode after an exception so a no-shard failure preserves
        prior outputs while recoverable partial shards are still merged. For
        ``dry_run=True``, also pass ``audio_tar_expected=False`` so the preview
-       manifest is not reconciled against an intentionally absent tar.
-       ``run.py`` wires both outcomes automatically.
+       manifest is not reconciled against an intentionally absent tar. The audio
+       agent's pretrain driver wires both outcomes; any other driver passes them
+       itself.
 
     Args:
         input_manifest: Path to the input JSONL manifest, one row per
