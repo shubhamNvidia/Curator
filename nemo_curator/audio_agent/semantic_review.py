@@ -1099,7 +1099,14 @@ def build_semantic_review(
         # not wipe the keys an earlier source already produced.
         if group["is_source"]:
             for slot in declared_initial_writers:
-                active_writers.pop(slot, None)
+                # Match on what currently OCCUPIES the slot, not on the slot's name. The
+                # intent stated above is to strip declared keys and spare real upstream
+                # producers, but a real producer writing the same key name lands in the very
+                # same slot -- so a second source silently deleted the lineage of a key an
+                # earlier stage had genuinely produced, and every downstream read of it then
+                # looked like it came from nowhere.
+                if (active_writers.get(slot) or {}).get("basis") == "declared_initial_key":
+                    active_writers.pop(slot, None)
 
         for leaf in group["leaves"]:
             stage = leaf["stage"]

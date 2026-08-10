@@ -178,7 +178,53 @@ def _tag_gate_violations(stage_id: str, card: dict[str, Any]) -> list[str]:
     return out
 
 
+def _filter_tag_violations(stage_id: str, card: dict[str, Any]) -> list[str]:
+    """A contract declaring ``cardinality="filter"`` must carry the ``is_filter`` tag.
+
+    The contract is the stricter statement and the one a stage author is most likely to write
+    alone, having just made the stage drop rows. Without the tag nothing assembling a recipe
+    knows it can: a stage that silently discards most of a corpus reads as a pass-through
+    exactly where the decision to include it is made.
+
+    Only this direction. The tag is the broader planner-facing notion -- ``OverlapFilterStage``
+    and ``ALMDataOverlapStage`` filter WITHIN a row, shrinking a segment list while every row
+    survives -- so a tag without ``cardinality="filter"`` is a correct pairing, not a drift.
+    Checking the converse would demand those stages declare a row cardinality they do not have.
+    """
+    if "is_filter" in (card.get("tags") or []):
+        return []
+    from nemo_curator.audio_agent._resolve import resolve_stage_class
+    from nemo_curator.stages.audio import agent as foundation
+
+    try:
+        contract = foundation.build_contract(resolve_stage_class(stage_id)())
+    except Exception:  # noqa: BLE001 - not default-buildable -> can't verify (skip, not a failure)
+        return []
+    if getattr(contract, "cardinality", None) != "filter":
+        return []
+    return [
+        f"{stage_id}: the stage's DEFAULT contract declares cardinality='filter' but the card "
+        f"has no 'is_filter' tag, so nothing planning a recipe knows this stage can drop rows"
+    ]
+
+
 _REQUIRED_FIELDS = ("category", "summary", "verified")
+
+# Every top-level key a card may carry. A closed vocabulary because the failure it prevents is
+# silent: a card key nobody reads is not an error anywhere, it is simply absent from the packet
+# the host critic sees, and the card still passes conformance and still says ``validated``. Two
+# shipped cards wrote ``gotchas`` and ``relationships`` for what the readers call
+# ``counterexamples`` and ``comparison``, so carefully written disambiguation prose -- the exact
+# material meant to stop a stage being confused with its neighbour -- reached nobody at all.
+# Adding a key here is the deliberate half of adding a reader for it.
+_KNOWN_CARD_FIELDS = frozenset(
+    {
+        "stage_id", "category", "summary", "tags", "model_id", "model_version", "domain",
+        "constraints", "resource", "use_cases", "composition", "verified", "params_of_note",
+        "provenance", "notes", "param_dependencies", "comparison", "semantic_facts",
+        "conflicts_with", "presets", "caveats", "metrics", "versions", "deterministic",
+    }
+)
 
 
 def _composition_violations(stage_id: str, card: dict[str, Any]) -> list[str]:
@@ -283,6 +329,13 @@ def check_card(stage_id: str, card: Any) -> list[str]:  # noqa: ANN401
         if not card.get(f):
             v.append(f"{stage_id}: missing required field {f!r}")
 
+    v += [
+        f"{stage_id}: unknown top-level field {f!r}; nothing reads it, so its content reaches "
+        f"nobody (allowed: {sorted(_KNOWN_CARD_FIELDS)})"
+        for f in sorted(card)
+        if f not in _KNOWN_CARD_FIELDS
+    ]
+
     # params_of_note keys must be real constructor params (the drift catch).
     for k in (card.get("params_of_note") or {}):
         if k not in params:
@@ -382,6 +435,7 @@ def check_card(stage_id: str, card: Any) -> list[str]:  # noqa: ANN401
 
     # tag <-> default-gate consistency (M5b): a capability tag must reflect DEFAULT behavior.
     v.extend(_tag_gate_violations(stage_id, card))
+    v.extend(_filter_tag_violations(stage_id, card))
 
     return v
 

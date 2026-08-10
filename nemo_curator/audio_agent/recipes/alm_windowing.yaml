@@ -14,7 +14,12 @@ stages:
       target_window_duration: 120.0
       tolerance: 0.1
       min_sample_rate: 16000
-      min_bandwidth: 8000
+      # 0, not the stage default of 8000. Segments arriving from a diarized manifest carry no
+      # ``metrics`` key, so ``_get_bandwidth`` returns 0 for every one of them and an 8000 Hz
+      # floor rejects the entire corpus. The recipe would run clean, write nothing usable, and
+      # only the acceptance criteria below would notice. Raise this only when an upstream stage
+      # actually measured per-segment bandwidth.
+      min_bandwidth: 0
       min_speakers: 2
       max_speakers: 5
       truncation: true

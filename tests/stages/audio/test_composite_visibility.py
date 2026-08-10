@@ -25,9 +25,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from nemo_curator.stages.audio._composite import expand_composites
-from nemo_curator.stages.audio._planning import validate_pipeline
+from nemo_curator.stages.audio._planning import _forwarding_param, validate_pipeline
 from nemo_curator.stages.audio.alm.alm_data_builder import ALMDataBuilderStage
-from nemo_curator.stages.audio.common import ManifestWriterStage
+from nemo_curator.stages.audio.common import ManifestReader, ManifestWriterStage
 from nemo_curator.stages.audio.inference.speaker_diarization.sortformer import InferenceSortformerStage
 from nemo_curator.stages.audio.tagging.resample_audio import ResampleAudioStage
 from nemo_curator.stages.audio.tagging.split import SplitASRAlignJoinStage
@@ -84,6 +84,48 @@ class TestExpansion:
         assert not expansion.fully_resolved
         assert "RuntimeError" in expansion.opaque[0]
 
+    def test_a_single_child_composite_is_an_error_not_a_substitution(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``Pipeline._decompose_stages`` only substitutes children when there is more than
+        one, so a single-child decomposition leaves the COMPOSITE in the execution list and
+        ``CompositeStage.process`` raises on the first task. Substituting the child here would
+        model a pipeline the backend never runs and hand back a clean verdict for a recipe that
+        dies on contact -- after the user confirmed a full-scale run.
+        """
+        stage = SplitASRAlignJoinStage()
+        only_child = ResampleAudioStage(resampled_audio_dir="/tmp/x")
+        monkeypatch.setattr(stage, "decompose_and_apply_with", lambda: [only_child])
+
+        expansion = expand_composites([stage])
+
+        assert expansion.stages == [], "no leaf is invented for a stage that cannot run"
+        assert not expansion.fully_resolved
+        assert 0 not in expansion.opaque, "this is knowable, not merely unresolved"
+        assert "single stage" in expansion.unrunnable[0]
+
+        report = validate_pipeline([stage], initial_roles=set(_SEEDED))
+        assert not report.ok, "a recipe the executor will refuse must not validate clean"
+        assert "composite_unrunnable" in _codes(report)
+
+    def test_a_single_child_that_is_itself_a_composite_is_still_unrunnable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The executor's nested-composite rejection lives inside its ``len(sub_stages) > 1``
+        branch, so it is never reached for a single child.
+
+        Asking the nested question first inverted the verdict here: reported as opaque, "we
+        cannot tell", when the executor can tell perfectly well -- it leaves the outer
+        composite in the list and raises on the first task.
+        """
+        stage = SplitASRAlignJoinStage()
+        monkeypatch.setattr(stage, "decompose_and_apply_with", lambda: [SplitASRAlignJoinStage()])
+
+        expansion = expand_composites([stage])
+
+        assert 0 not in expansion.opaque, "this is knowable, not merely unresolved"
+        assert "single stage" in expansion.unrunnable[0]
+
 
 class TestInnerRequirementsAreVisible:
     def test_the_key_mismatch_that_survived_validation_is_now_reported(self) -> None:
@@ -112,6 +154,28 @@ class TestInnerRequirementsAreVisible:
         )
         assert "unsatisfied_reads_in_composite" not in _codes(report)
 
+    def test_a_list_valued_parameter_does_not_crash_the_search_for_a_remedy(self) -> None:
+        """Hunting for the composite parameter to blame tests each shared field against the set
+        of missing keys, and testing a value against a set hashes it. Real stages share list and
+        dict parameters (``ManifestReader`` and its ``FilePartitioningStage`` child already share
+        ``file_extensions`` and ``storage_options``), so that raises TypeError -- which escapes
+        ``run_checks`` and kills the verb, handing the caller a traceback instead of a verdict
+        over a remedy hint that was never going to apply to a list anyway.
+        """
+        composite = ManifestReader(manifest_path="/tmp/m.jsonl")
+        inner = next(
+            child for child in composite.decompose() if hasattr(child, "file_extensions")
+        )
+        assert isinstance(inner.file_extensions, list), "the shared field really is unhashable"
+
+        assert _forwarding_param(inner, composite, {"segments"}) is None
+
+    def test_a_shared_string_parameter_is_still_offered_as_the_remedy(self) -> None:
+        composite = SplitASRAlignJoinStage()
+        inner = composite.decompose()[0]
+
+        assert _forwarding_param(inner, composite, {inner.segments_key}) == "segments_key"
+
     def test_an_inner_requirement_is_a_warning_not_a_block(self) -> None:
         # Expansion is new; it earns the right to hard-fail a pipeline only after it has been
         # shown not to false-positive. Until then it informs and does not stop anyone.
@@ -132,6 +196,21 @@ class TestUnreadableChildrenStayOpaque:
         report = validate_pipeline([ManifestReader(manifest_path="x.jsonl")], initial_keys=_SEEDED)
         assert "contract_error" not in _codes(report)
         assert "composite" in _codes(report)
+        assert report.ok, report.summary()
+
+    def test_the_siblings_that_do_describe_themselves_are_still_used(self) -> None:
+        """One illegible child made the whole composite invisible.
+
+        ``ManifestReader`` expands through ``FilePartitioningStage``, which has no describe(),
+        so the reader that starts nearly every recipe contributed NOTHING -- not the keys its
+        legible siblings write, not their gate checks. Unknown is the right verdict for the
+        unknown part only; the rest is fact and is worth keeping.
+        """
+        from nemo_curator.stages.audio.common import ManifestReader
+
+        report = validate_pipeline([ManifestReader(manifest_path="x.jsonl")], initial_keys=set())
+
+        assert report.produced_keys, "the legible siblings' writes were thrown away with the rest"
         assert report.ok, report.summary()
 
 
@@ -186,3 +265,24 @@ class TestKeyIdentitySatisfiesAReadRoleNamingDoesNot:
 
         report = validate_pipeline([GetAudioDurationStage()], initial_roles=set())
         assert not report.ok
+
+    def test_a_role_with_no_column_of_that_name_is_not_seeded_as_one(self) -> None:
+        """Roles and key values are different vocabularies. They coincide for the conventional
+        ones -- ``audio_filepath``, ``pred_text`` -- and part company for the rest.
+
+        A caller describing a task that carries speaker information says the role
+        ``speaker``; the column is called something else entirely (``speaker_id``, ``spk``).
+        Seeding the role name straight into the key set invented a column the task does not
+        carry, and the literal-key route then declared satisfied a read of it.
+        """
+        from nemo_curator.stages.audio._roles import role_for_value
+
+        assert role_for_value("speaker") == "unknown", "no column is conventionally named this"
+
+        report = validate_pipeline(
+            [ManifestWriterStage(output_path="out.jsonl")],
+            initial_roles={"audio_filepath", "speaker"},
+        )
+
+        assert "speaker" not in report.produced_keys
+        assert "audio_filepath" in report.produced_keys, "a role that IS its own column stays"

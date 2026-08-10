@@ -109,6 +109,15 @@ class TestChannelConversion:
         with pytest.raises(ValueError, match="target_channels"):
             ChannelConversionStage(target_channels=0)
 
+    @pytest.mark.parametrize("bad", [2.0, "2", None])
+    def test_a_non_integer_channel_count_is_rejected_at_construction(self, bad: object) -> None:
+        """YAML reads ``target_channels: 2.0`` as a float. It used to construct fine and then
+        die inside a worker at ``waveform.repeat(2.0, 1)`` with a TypeError, which is not one
+        of the errors this stage drops rows for -- so it propagated and took the run down
+        partway through the corpus rather than being caught at the recipe."""
+        with pytest.raises(ValueError, match="whole number of channels"):
+            ChannelConversionStage(target_channels=bad)
+
 
 class TestSampleRateFilter:
     @pytest.mark.parametrize(
@@ -155,15 +164,51 @@ class TestSampleRateFilter:
         assert result.data["sample_rate"] == 16000
 
     def test_a_resident_rate_avoids_touching_disk_entirely(self) -> None:
-        """An upstream stage that already resolved the rate makes this free."""
+        """A rate carried alongside resident audio describes audio this pipeline is holding,
+        so it is reused and the file is never opened."""
         stage = SampleRateFilterStage(allowed_sample_rates=[16000])
         task = AudioTask(
             task_id="t", dataset_name="d",
-            data={"audio_filepath": "/nonexistent/never-opened.wav", "sample_rate": 16000},
+            data={
+                "audio_filepath": "/nonexistent/never-opened.wav",
+                "sample_rate": 16000,
+                "waveform": object(),
+            },
         )
 
         result = stage.process(task)
 
+        assert result != []
+        assert result.data["sample_rate"] == 16000
+
+    def test_a_manifest_rate_with_no_resident_audio_is_verified_against_the_file(
+        self, tmp_path: Path
+    ) -> None:
+        """``sample_rate`` is a standard manifest column, and a stale one used to decide the
+        filter outright: a genuinely 48 kHz file labelled 16000 was KEPT for a 16 kHz-only
+        corpus and then re-stamped with the wrong rate, so the model downstream silently got
+        pitch-shifted audio. With nothing resident to back the number, the header wins."""
+        path = _wav(tmp_path, rate=48000, name="mislabelled.wav")
+        task = AudioTask(
+            task_id="t", dataset_name="d",
+            data={"audio_filepath": path, "sample_rate": 16000},
+        )
+
+        assert SampleRateFilterStage(allowed_sample_rates=[16000]).process(task) == []
+
+        task = AudioTask(
+            task_id="t", dataset_name="d",
+            data={"audio_filepath": path, "sample_rate": 16000},
+        )
+        kept = SampleRateFilterStage(allowed_sample_rates=[48000]).process(task)
+        assert kept != []
+        assert kept.data["sample_rate"] == 48000, "the recorded rate is the measured one"
+
+    def test_an_unverifiable_rate_is_used_rather_than_dropping_the_row(self) -> None:
+        """No resident audio and no path leaves nothing to check against. Filtering on the
+        declared rate beats discarding a row that may well be fine."""
+        task = AudioTask(task_id="t", dataset_name="d", data={"sample_rate": 16000})
+        result = SampleRateFilterStage(allowed_sample_rates=[16000]).process(task)
         assert result != []
         assert result.data["sample_rate"] == 16000
 
@@ -179,6 +224,28 @@ class TestSampleRateFilter:
     def test_an_inverted_range_is_rejected_at_construction(self) -> None:
         with pytest.raises(ValueError, match="nothing can pass"):
             SampleRateFilterStage(min_sample_rate=48000, max_sample_rate=16000)
+
+
+class TestRowDroppingIsDeclared:
+    """A stage that drops rows has to say ``cardinality="filter"``, because that is the only
+    thing that puts a filter seam in the semantic review packet. Left at the ``1:1`` default,
+    a reviewer is never told the corpus can shrink here and nobody asks how much of it
+    survives -- a run over a 90%-telephony corpus then reports success on 10% of the data.
+    """
+
+    def test_sample_rate_selection_declares_itself_a_filter(self) -> None:
+        from nemo_curator.stages.audio import agent as foundation
+
+        contract = foundation.build_contract(SampleRateFilterStage(min_sample_rate=16000))
+        assert contract.cardinality == "filter"
+
+    def test_channel_conversion_declares_a_filter_only_when_it_can_refuse(self) -> None:
+        """Downmixing to mono always succeeds. Any other target refuses the conversions it
+        cannot do correctly (N > target > 1) and drops those rows."""
+        from nemo_curator.stages.audio import agent as foundation
+
+        assert foundation.build_contract(ChannelConversionStage(target_channels=1)).cardinality == "1:1"
+        assert foundation.build_contract(ChannelConversionStage(target_channels=2)).cardinality == "filter"
 
 
 class TestTheyCompose:

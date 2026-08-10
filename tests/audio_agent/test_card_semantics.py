@@ -71,6 +71,65 @@ def test_semantic_facts_require_an_honest_evidence_tier() -> None:
     assert any("verified.semantic_facts" in item for item in violations)
 
 
+def test_a_card_key_nobody_reads_is_a_violation_not_a_shrug() -> None:
+    """An unknown top-level key fails silently in the worst way: no error anywhere, the card
+    still passes conformance, and its content simply never reaches the host critic. Two shipped
+    cards wrote ``gotchas`` and ``relationships`` for what the readers call ``counterexamples``
+    and ``comparison``, so the disambiguation prose written to stop a stage being confused with
+    its neighbour was read by nobody at all.
+    """
+    violations = check_card(
+        "GetAudioDurationStage",
+        {
+            "category": "export",
+            "summary": "Duration evidence.",
+            "verified": {"params": "mechanical"},
+            "gotchas": ["what the readers call counterexamples"],
+            "relationships": {"OtherStage": "what the readers call comparison"},
+        },
+    )
+
+    assert any("unknown top-level field 'gotchas'" in item for item in violations)
+    assert any("unknown top-level field 'relationships'" in item for item in violations)
+
+
+def test_a_row_dropping_stage_cannot_ship_a_card_that_omits_the_filter_tag() -> None:
+    """The contract is the stricter statement and the one an author writes alone, having just
+    made the stage drop rows. Without the tag nothing assembling a recipe knows it can, so a
+    stage silently discarding most of a corpus reads as a pass-through exactly where the
+    decision to include it is made.
+    """
+    violations = check_card(
+        "SampleRateFilterStage",
+        {
+            "category": "preprocess",
+            "summary": "Selects rows by sample rate.",
+            "verified": {"params": "mechanical"},
+            "tags": [],
+        },
+    )
+
+    assert any("cardinality='filter'" in item and "is_filter" in item for item in violations)
+
+
+def test_filtering_within_a_row_is_not_required_to_claim_a_row_cardinality() -> None:
+    """The tag is the broader planner-facing notion. ``OverlapFilterStage`` shrinks a segment
+    list while every row survives, so tag-without-cardinality is a correct pairing; demanding
+    the converse would make it declare a row cardinality it does not have.
+    """
+    violations = check_card(
+        "OverlapFilterStage",
+        {
+            "category": "preprocess",
+            "summary": "Drops overlapping segments within a row.",
+            "verified": {"params": "mechanical"},
+            "tags": ["is_filter"],
+        },
+    )
+
+    assert not any("is_filter" in item for item in violations)
+
+
 def test_verified_trust_metadata_must_be_a_mapping() -> None:
     violations = check_card(
         "GetAudioDurationStage",

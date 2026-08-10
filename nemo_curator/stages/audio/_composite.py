@@ -81,9 +81,17 @@ class Expansion:
     opaque: dict[int, str] = field(default_factory=dict)
     """recipe_index -> why that composite could not be expanded."""
 
+    unrunnable: dict[int, str] = field(default_factory=dict)
+    """recipe_index -> why the executor will refuse this stage outright.
+
+    Separate from :attr:`opaque` because the two demand opposite answers. Opaque means "we
+    cannot tell" and degrades to a warning; this means "we can tell, and it will fail", which
+    has to reach the caller as an error before they confirm a full-scale run.
+    """
+
     @property
     def fully_resolved(self) -> bool:
-        return not self.opaque
+        return not self.opaque and not self.unrunnable
 
     def by_recipe_index(self) -> dict[int, list[ExpandedStage]]:
         """Leaves grouped under the recipe stage that produced them, in run order.
@@ -122,9 +130,6 @@ def _decompose(stage: Any) -> tuple[list[Any], str | None]:  # noqa: ANN401 - an
     alien = next((c for c in children if not isinstance(c, ProcessingStage)), None)
     if alien is not None:
         return [], f"decomposition returned {type(alien).__name__}, not a ProcessingStage"
-    nested = next((c for c in children if _nested_composite(c)), None)
-    if nested is not None:
-        return [], f"decomposition returned another composite ({type(nested).__name__}); nested composition is not supported"
     return children, None
 
 
@@ -148,6 +153,7 @@ def expand_composites(stages: list[Any]) -> Expansion:
     """
     out: list[ExpandedStage] = []
     opaque: dict[int, str] = {}
+    unrunnable: dict[int, str] = {}
 
     for index, stage in enumerate(stages):
         if not isinstance(stage, CompositeStage):
@@ -157,10 +163,33 @@ def expand_composites(stages: list[Any]) -> Expansion:
         if reason is not None:
             opaque[index] = reason
             continue
+        if len(children) == 1:
+            # ``Pipeline._decompose_stages`` only substitutes children when there is more than
+            # one, so a single-child decomposition leaves the COMPOSITE in the execution list --
+            # and ``CompositeStage.process`` raises "should not be executed directly" on the
+            # first task. Substituting the child here would model a pipeline the backend will
+            # never run and hand the caller a clean verdict for a recipe that dies on contact.
+            unrunnable[index] = (
+                f"decomposes into a single stage ({type(children[0]).__name__}), which the "
+                f"executor does not substitute -- it runs the composite itself and raises"
+            )
+            continue
+        # After the length check, exactly as the executor orders it: the nested-composite
+        # rejection lives inside its ``len(sub_stages) > 1`` branch and is never reached for a
+        # single child. Asking first inverted the verdict for a composite that decomposes into
+        # one decomposing composite -- reported as opaque, "we cannot tell", when the executor
+        # can tell perfectly well that it will run the outer composite and raise.
+        nested = next((c for c in children if _nested_composite(c)), None)
+        if nested is not None:
+            opaque[index] = (
+                f"decomposition returned another composite ({type(nested).__name__}); "
+                "nested composition is not supported"
+            )
+            continue
         ref = type(stage).__name__
         out.extend(
             ExpandedStage(index, child, (child_index,), ref)
             for child_index, child in enumerate(children)
         )
 
-    return Expansion(stages=out, opaque=opaque)
+    return Expansion(stages=out, opaque=opaque, unrunnable=unrunnable)

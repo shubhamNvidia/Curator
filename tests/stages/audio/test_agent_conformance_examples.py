@@ -56,8 +56,10 @@ def test_example_transform_stage_conformance(tmp_path: Path) -> None:
     def fixture() -> AudioTask:
         return AudioTask(dataset_name="t", data={"audio_filepath": wav})
 
+    # ``strict_sample_rate`` (the default) drops rows whose rate differs, which is a
+    # filter; relaxing it gives the plain 1:1 transform this template is meant to show.
     assert_agent_ready(
-        MonoConversionStage(),
+        MonoConversionStage(strict_sample_rate=False),
         fixture,
         expected_cardinality="1:1",
         available_keys={"audio_filepath"},

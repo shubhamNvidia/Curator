@@ -147,6 +147,12 @@ class MonoConversionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             ),
             writes=IOSpec(data_keys=writes, produces=produces),
             gates=Gates(writes_to_disk=self.write_to_disk, output_path_params=["output_dir"]),
+            # With ``strict_sample_rate`` -- the DEFAULT -- a row whose rate differs from
+            # ``output_sample_rate`` returns ``[]``. That is row-dropping, and undeclared it
+            # made this stage the one place the rule was invisible: the newer stages doing the
+            # same thing say so, so validation treated a 48 kHz default silently discarding a
+            # 16 kHz corpus as a pass-through, while flagging its neighbours for less.
+            cardinality="filter" if self.strict_sample_rate else "1:1",
         )
 
     def _write_audio(self, waveform: torch.Tensor, sample_rate: int, task: AudioTask) -> str:

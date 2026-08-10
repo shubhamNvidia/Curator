@@ -339,6 +339,24 @@ class TestStagesDeclareTheirOwnAgentFacts:
         # ...and it is still undeclared for a stage that did not claim it.
         assert not field_has_declared_role("num_channels_key")
 
+    def test_a_subclass_declaring_its_own_key_does_not_disown_its_parents(self) -> None:
+        """``getattr`` returns only the most-derived declaration.
+
+        A subclass that declares one internal field of its own therefore shadowed every field
+        its parent declared, and those fields -- still inherited, still bookkeeping -- began
+        failing the conformance check as though a role had been forgotten for them. The fix a
+        subclass author would reach for is to re-list keys they did not write, which is how a
+        shared table gets copied downwards one subclass at a time.
+        """
+        from nemo_curator.stages.audio._roles import field_has_declared_role
+        from nemo_curator.stages.audio.preprocessing import ChannelConversionStage
+
+        class NarrowerChannelConversion(ChannelConversionStage):
+            INTERNAL_KEY_FIELDS = frozenset({"my_own_key"})
+
+        assert field_has_declared_role("my_own_key", NarrowerChannelConversion)
+        assert field_has_declared_role("num_channels_key", NarrowerChannelConversion)
+
     def test_an_undeclared_key_is_still_caught(self) -> None:
         """The gate must keep catching a genuinely forgotten role mapping."""
         from nemo_curator.stages.audio._roles import field_has_declared_role

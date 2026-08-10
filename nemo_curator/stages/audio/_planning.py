@@ -327,7 +327,15 @@ def _forwarding_param(inner: Any, composite: Any, missing: set[str]) -> str | No
     inner_fields = getattr(type(inner), "__dataclass_fields__", {})
     composite_fields = getattr(type(composite), "__dataclass_fields__", {})
     for attr in inner_fields:
-        if attr in composite_fields and getattr(inner, attr, None) in missing:
+        if attr not in composite_fields:
+            continue
+        value = getattr(inner, attr, None)
+        # ``missing`` holds key names, so only a string can ever match -- and testing anything
+        # else against a set hashes it, which raises TypeError on the list and dict parameters
+        # real stages carry (``file_extensions``, ``storage_options``). That exception escapes
+        # ``run_checks`` and kills the whole verb, so the recipe gets a traceback instead of a
+        # verdict over a remedy hint that was never going to apply.
+        if isinstance(value, str) and value in missing:
             return attr
     return None
 
@@ -351,6 +359,15 @@ def _unreadable_child(group: list[Any]) -> str | None:
         except Exception as e:  # noqa: BLE001 - any failure to describe means the same thing here
             return f"{type(item.stage).__name__} does not describe its I/O ({type(e).__name__})"
     return None
+
+
+def _describes_itself(stage: Any) -> bool:  # noqa: ANN401 - any child stage
+    """Whether a contract can be built for this stage at all."""
+    try:
+        build_contract(stage)
+    except Exception:  # noqa: BLE001 - any failure to describe means the same thing here
+        return False
+    return True
 
 
 def _dangling_read_keys(contract: StageContract, available_keys: set[str]) -> set[str]:
@@ -479,7 +496,7 @@ def _advance(walk: _Walk, contract: StageContract, name: str) -> None:
         walk.available_keys.discard(rk)
         # Dropping the carrier ends the tensor residency as surely as sanitizing does.
         walk.tensor_keys.discard(rk)
-        role = role_for_value(rk)
+        role = contract.key_roles.get(rk, role_for_value(rk))
         if (
             role != "unknown"
             and role not in produced
@@ -488,7 +505,19 @@ def _advance(walk: _Walk, contract: StageContract, name: str) -> None:
             walk.available.discard(role)
             walk.removed_roles.add(role)
     if "tensor" in contract.writes.produces:
-        walk.tensor_keys |= {k for k in written if role_for_value(k) == _TENSOR_ROLE} or {_UNNAMED_TENSOR}
+        # The stage's OWN key_roles first, and the global name map only as a fallback. A
+        # producer that parks its waveform under a name the global map has never heard of --
+        # any custom ``waveform_key`` -- still declares that key as ``waveform`` in its
+        # contract, but the global lookup returned "unknown" for it, so residency was tracked
+        # as ``_UNNAMED_TENSOR`` instead of against the real carrier. Nothing could then
+        # match it, and a downstream stage that DROPS the carrier left the pipeline still
+        # believing a tensor was resident -- which is a spurious ``tensor_into_sink`` error
+        # on a recipe that correctly cleaned up after itself.
+        carriers = {
+            k for k in written
+            if contract.key_roles.get(k, role_for_value(k)) == _TENSOR_ROLE
+        }
+        walk.tensor_keys |= carriers or {_UNNAMED_TENSOR}
     if contract.gates.sanitizes_output:
         walk.tensor_keys.clear()
 
@@ -527,7 +556,13 @@ def validate_pipeline(
         # who says "this task carries no roles" does not mean "and also the default columns".
         # Left independent, an empty role seed still admitted a seeded ``audio_filepath`` key and
         # the literal-key route below then declared the read satisfied.
-        seed_keys = set(initial_roles)
+        #
+        # Only the roles that ARE their own key name, though. Roles and key values are
+        # different vocabularies that coincide for ``audio_filepath`` and part company
+        # immediately after: seeding the role ``transcript`` as a literal column named
+        # "transcript" invented a key the task does not carry, and the literal-key route then
+        # declared satisfied a read of whatever the recipe actually calls that field.
+        seed_keys = {r for r in initial_roles if role_for_value(r) == r}
     else:
         seed_keys = set(_DEFAULT_INITIAL_KEYS)
     walk = _Walk(
@@ -537,14 +572,31 @@ def validate_pipeline(
     expansion = expand_composites(stages)
     leaves = expansion.by_recipe_index()
     opaque = dict(expansion.opaque)
+    # A composite with one illegible child is not the same as a composite nobody could open.
+    # Discarding the whole group threw away the siblings that DO describe themselves, so an
+    # eight-stage composite went unchecked because one piece of plumbing lacks describe() --
+    # ``ManifestReader`` expands through ``FilePartitioningStage``, which has none, so the
+    # reader that starts most recipes contributed no keys and got no gate checks at all. The
+    # legible siblings are kept: their writes are facts, and their GPU and serialization gates
+    # are worth reporting. Only the unknown part is treated as unknown, via ``past_composite``.
+    partly_opaque: dict[int, str] = {}
     for index, group in list(leaves.items()):
         reason = _unreadable_child(group)
         if reason:
-            opaque[index] = reason
-            del leaves[index]
+            partly_opaque[index] = reason
+            leaves[index] = [item for item in group if _describes_itself(item.stage)]
     issues: list[PipelineIssue] = []
 
     for index, recipe_stage in enumerate(stages):
+        if index in expansion.unrunnable:
+            issues.append(
+                PipelineIssue(
+                    index, type(recipe_stage).__name__, "error", "composite_unrunnable",
+                    f"the executor will refuse this stage: {expansion.unrunnable[index]}",
+                )
+            )
+            walk.past_composite = True
+            continue
         if index in opaque:
             issues.append(
                 PipelineIssue(
@@ -555,6 +607,21 @@ def validate_pipeline(
             )
             walk.past_composite = True
             continue
+        if index in partly_opaque:
+            issues.append(
+                PipelineIssue(
+                    index, type(recipe_stage).__name__, "warning", "composite",
+                    f"composite stage — part of it is unreadable ({partly_opaque[index]}), "
+                    f"so reads after it cannot be judged by role; its remaining stages are "
+                    f"still checked",
+                )
+            )
+            # Set BEFORE its own legible children are walked, not after. One child's writes
+            # are unknown, and this composite's later children may be the very readers of
+            # them -- judging those reads against a key set that is missing exactly the
+            # unknown part is how a working pipeline gets failed on the name of a stage the
+            # caller never wrote.
+            walk.past_composite = True
 
         for item in leaves.get(index, []):
             stage = item.stage

@@ -72,10 +72,11 @@ class SampleRateFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         min_sample_rate: Lowest acceptable rate, inclusive. None = unbounded below.
         max_sample_rate: Highest acceptable rate, inclusive. None = unbounded above.
         audio_filepath_key: Key in data dict for the audio file path.
-        sample_rate_key: Key where the observed sample rate is written. Read from here
-            first when a previous stage already resolved it, which avoids touching disk.
-        waveform_key: Key a resident waveform would occupy. Only consulted to know whether
-            the sample rate in task.data belongs to resident audio.
+        sample_rate_key: Key where the observed sample rate is written. Reused without a
+            disk read only when a resident waveform backs it (see ``waveform_key``).
+        waveform_key: Key a resident waveform would occupy. Consulted to know whether the
+            sample rate in task.data belongs to resident audio; a rate standing alone is
+            manifest metadata and is re-read from the file header instead of trusted.
     """
 
     allowed_sample_rates: list[int] | None = None
@@ -115,6 +116,10 @@ class SampleRateFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 IOSpec(data_keys=[self.audio_filepath_key], accepts=["file"]),
             ],
             writes=IOSpec(data_keys=[self.sample_rate_key]),
+            # Dropping rows is this stage's whole purpose, and "filter" is what puts a seam in
+            # the semantic review packet. Left at the 1:1 default the reviewer is never told the
+            # corpus can shrink here, so nobody asks how much of it survives.
+            cardinality="filter",
         )
 
     def accepts(self, sample_rate: int) -> bool:
@@ -137,14 +142,32 @@ class SampleRateFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         return " and ".join(parts) or "any rate"
 
     def _observed_rate(self, task: AudioTask) -> int | None:
-        """The row's sample rate, from resident audio if present, else from the file header."""
-        resident = task.data.get(self.sample_rate_key)
-        if isinstance(resident, (int, float)) and int(resident) > 0:
-            return int(resident)
+        """The row's sample rate, from resident audio if present, else from the file header.
+
+        An existing ``sample_rate_key`` is only believed when a resident waveform is there to
+        back it, because then it describes audio this pipeline is carrying. Standing alone it
+        is manifest metadata about a file nobody re-read, and trusting it lets a stale or wrong
+        column decide the filter: a genuinely 48 kHz file labelled 16000 would be kept for a
+        16 kHz-only corpus AND re-stamped with the wrong rate. The header read is cheap enough
+        that guessing is never worth it.
+        """
+        declared = task.data.get(self.sample_rate_key)
+        declared = int(declared) if isinstance(declared, (int, float)) and int(declared) > 0 else None
+        if declared is not None and self.waveform_key in task.data:
+            return declared
+
         path = task.data.get(self.audio_filepath_key)
         if not path:
-            logger.error(f"No sample rate and no audio path under {self.audio_filepath_key!r}")
-            return None
+            if declared is None:
+                logger.error(f"No sample rate and no audio path under {self.audio_filepath_key!r}")
+                return None
+            # Nothing to verify against, so the declared rate is all there is. Say so rather
+            # than dropping a row that may well be fine.
+            logger.warning(
+                f"Filtering on an unverified sample rate ({declared}Hz): no resident waveform "
+                f"and no path under {self.audio_filepath_key!r}"
+            )
+            return declared
         try:
             # Header only: the rate is metadata, so decoding samples to read it would cost
             # ~186x more per file for information already sitting in the first few bytes.

@@ -1,6 +1,6 @@
 stage_id: ChannelConversionStage
 category: preprocess
-summary: "Bring audio to a requested channel count, in memory. Downmix to mono averages all channels; mono upmixes by duplication. It does NOT resample and does NOT filter."
+summary: "Bring audio to a requested channel count, in memory. Downmix to mono averages all channels; mono upmixes by duplication. It never resamples, and it drops only the rows whose requested conversion cannot be done correctly (target_channels > 1 from more channels)."
 tags: []   # default keeps the waveform in-task; disk output is opt-in (write_to_disk)
 model_id: null
 domain: {language: any, style: any}
@@ -32,11 +32,12 @@ semantic_facts:
     meaning: "The channel count the stage produces. Not a rate, and not a filter -- rows are only dropped when the requested conversion cannot be done correctly."
     unit: "channels (integer >= 1)"
     propagation: "Writes num_channels (the resulting count). Duplicating mono into T channels adds no information: the result is the same signal T times."
-    gotchas:
+    counterexamples:
       - "target_channels=2 does NOT downmix 5.1 to stereo -- that row is dropped with a warning. Use ResampleAudioStage, which drives ffmpeg and knows channel layouts."
       - "This stage never resamples. Pair it with SampleRateFilterStage (select rates) or ResampleAudioStage (convert rates)."
       - "Upmix is duplication, so a 2-channel result may be synthetic stereo rather than a genuine two-channel recording."
-relationships:
+      - "Any target above 1 makes this a filter: the contract reports cardinality 'filter' because a mixed-channel corpus can shrink here. target_channels=1 never refuses and stays 1:1."
+comparison:
   ResampleAudioStage: "converts rate and channels via ffmpeg on disk, and knows channel layouts. Use it to change a sample rate, or for a surround downmix this stage refuses."
   SampleRateFilterStage: "selects which sample rates pass and records each. Put it upstream so rows that will be rejected are never decoded."
   MonoConversionStage: "an alternative that applies a mono downmix and a single-rate gate together. Use this stage instead when channel policy and rate policy should be set independently."

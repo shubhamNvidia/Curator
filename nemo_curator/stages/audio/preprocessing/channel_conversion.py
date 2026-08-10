@@ -128,6 +128,16 @@ class ChannelConversionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
 
     def __post_init__(self):
         super().__init__()
+        # Type as well as range. YAML reads ``target_channels: 2.0`` as a float, which used to
+        # construct fine and then die inside a worker at ``waveform.repeat(2.0, 1)`` with a
+        # TypeError -- not one of the (OSError, RuntimeError) this stage drops rows for, so it
+        # propagated and took the run down mid-corpus instead of being caught at the recipe.
+        if isinstance(self.target_channels, bool) or not isinstance(self.target_channels, int):
+            msg = (
+                f"target_channels must be a whole number of channels, got "
+                f"{self.target_channels!r} ({type(self.target_channels).__name__})"
+            )
+            raise ValueError(msg)
         if self.target_channels < 1:
             msg = f"target_channels must be at least 1, got {self.target_channels}"
             raise ValueError(msg)
@@ -165,6 +175,11 @@ class ChannelConversionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 sample_rate_key=self.sample_rate_key,
             ),
             writes=IOSpec(data_keys=self._written_keys(), produces=produces),
+            # Downmixing to mono always succeeds, but any other target refuses the conversions
+            # it cannot do correctly (N > target > 1) and drops those rows. That makes the stage
+            # a filter for those configurations, and saying so is what puts a seam in the
+            # semantic review packet for a reviewer to ask about.
+            cardinality="filter" if self.target_channels > 1 else "1:1",
             # Declared here, by the stage that owns the parameter, so a caller running
             # this in a sandbox knows what to redirect without a central table entry.
             gates=Gates(

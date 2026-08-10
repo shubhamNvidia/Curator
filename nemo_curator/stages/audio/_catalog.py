@@ -74,7 +74,13 @@ def _ensure_audio_stages_imported() -> None:
             # Recorded, not just warned: a warning goes to stderr, where the agent's JSON
             # consumer never sees it, and a silently shorter catalog is indistinguishable
             # from a smaller library. See :func:`unavailable_modules`.
-            _SKIPPED.append({"module": modinfo.name, "error": f"{type(e).__name__}: {e}"})
+            # Recorded once per module. ``_IMPORTED`` is only set after the loop completes,
+            # so anything escaping it -- an error filter turning the warning above into an
+            # exception, a Ctrl-C -- leaves the flag False and the next call walks the whole
+            # package again, appending a second copy of every failure. The report then lists
+            # the same missing module several times and reads like a worsening install.
+            if not any(entry["module"] == modinfo.name for entry in _SKIPPED):
+                _SKIPPED.append({"module": modinfo.name, "error": f"{type(e).__name__}: {e}"})
     _IMPORTED = True
 
 

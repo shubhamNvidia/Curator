@@ -42,8 +42,13 @@ semantic_facts:
       - "It reflects the configured target, so a sample_rate == 16000 check verifies the resample target, not the source rate."
 param_dependencies:
   resampled_audio_dir: "required: the stage writes converted files here (needs write_to_disk, the default). Not optional."
+comparison:
+  SampleRateFilterStage: "SELECTS rows by the rate they already are; this stage CONVERTS the rate. Filtering discards a corpus you could have converted, so reach for it only when a rate is genuinely unacceptable rather than merely wrong."
+  MonoConversionStage: "verifies a single rate and drops mismatches, and downmixes to mono. Whenever the answer to a mismatch is 'convert it', put this stage upstream of it instead."
+  ChannelConversionStage: "changes channel count in memory without touching the rate, and refuses surround downmixes. This stage handles both rate and channels via ffmpeg, and does know channel layouts."
 notes:
   - "Requires ffmpeg on PATH. Placing resample once, upstream, avoids each model stage re-resampling."
+  - "ORDERING TRAP: the converted audio lands in `resampled_audio_filepath` and `audio_filepath` still points at the ORIGINAL file. Anything downstream reading `audio_filepath` therefore reads the un-resampled audio, and does so silently -- there is no error, just the old rate. Put a rate gate (MonoConversionStage, SampleRateFilterStage) UPSTREAM of this stage, or point the downstream stage's path key at `resampled_audio_filepath`. Placed downstream while still reading `audio_filepath`, a rate gate sees the source rate and rejects the whole corpus this stage just converted for it."
 caveats:
   - "Writes converted files to disk."
 verified: {params: mechanical, semantic_facts: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess}

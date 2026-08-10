@@ -183,9 +183,24 @@ def field_has_declared_role(field_name: str, stage_cls: type | None = None) -> b
         return True
     if stage_cls is None:
         return False
-    return field_name in role_overrides_for(stage_cls) or field_name in (
-        getattr(stage_cls, "INTERNAL_KEY_FIELDS", frozenset()) or frozenset()
+    return field_name in role_overrides_for(stage_cls) or field_name in internal_key_fields_for(
+        stage_cls
     )
+
+
+def internal_key_fields_for(stage_cls: type) -> frozenset[str]:
+    """A stage's own bookkeeping ``*_key`` fields, UNIONED across its bases.
+
+    ``getattr`` alone returns only the most-derived declaration, so a subclass that declares
+    one internal field of its own shadows every field its parent declared -- and the parent's
+    fields, still inherited and still bookkeeping, start failing the conformance check as
+    though someone had forgotten a role for them. The subclass author's fix is then to
+    re-list fields they did not write, which is how a shared table gets copied downwards.
+    """
+    fields: set[str] = set()
+    for base in getattr(stage_cls, "__mro__", (stage_cls,)):
+        fields |= set(base.__dict__.get("INTERNAL_KEY_FIELDS") or ())
+    return frozenset(fields)
 
 
 def role_overrides_for(stage_cls: type) -> Mapping[str, Role]:

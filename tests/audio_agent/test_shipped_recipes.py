@@ -21,6 +21,7 @@ shipped a dataset whose rows were empty, reported as complete.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,30 @@ _RECIPES = sorted((Path(__file__).resolve().parents[2] / "nemo_curator/audio_age
 
 def _load(path: Path) -> dict:
     return yaml.safe_load(path.read_text())
+
+
+def _keys_the_recipe_writes(recipe: dict) -> set[str]:
+    """Every key the recipe's stages declare they write, composites expanded.
+
+    Built from the same contracts validation uses, so this asks the question the acceptance
+    check will ask at runtime rather than a parallel approximation of it.
+    """
+    from nemo_curator.audio_agent._resolve import resolve_stage_class
+    from nemo_curator.stages.audio._agent_registry import build_contract
+    from nemo_curator.stages.audio._composite import expand_composites
+
+    # Placeholders are passed through as the strings they are. Stripping them instead removes
+    # the arguments a stage requires, and the template stops being constructible at all.
+    instances = [
+        resolve_stage_class(str(spec["ref"]))(**(spec.get("params") or {}))
+        for spec in (recipe.get("stages") or [])
+    ]
+    written: set[str] = set()
+    for leaf in expand_composites(instances).stages:
+        with contextlib.suppress(Exception):  # plumbing without a contract writes nothing we can name
+            contract = build_contract(leaf.stage)
+            written |= set(contract.writes.data_keys) | set(contract.writes.segment_data_keys)
+    return written
 
 
 def test_there_are_recipes_to_check() -> None:
@@ -58,6 +83,30 @@ class TestEveryTemplateShipsASuccessContract:
         # A template should not ship work for the reviewer by default.
         criteria = parse_criteria(_load(path).get("acceptance_criteria"))
         assert all(c.is_deterministic for c in criteria)
+
+    def test_a_criterion_checks_a_field_the_recipe_actually_writes(self, path: Path) -> None:
+        """A success contract naming a field nothing produces is worse than none at all.
+
+        ``output_completeness`` asks "is this field populated on every row". Point it at a key
+        no stage writes -- a typo, or a key an edit to the stage list removed -- and it reports
+        every row incomplete, on a run that was fine. The contract that exists to catch an
+        empty dataset then cries wolf on a good one, which is how a team learns to ignore it.
+        Nothing checked the name, so it was prose pointing at a key.
+        """
+        recipe = _load(path)
+        fields = {
+            str((criterion.get("check") or {}).get("field"))
+            for criterion in (recipe.get("acceptance_criteria") or [])
+            if isinstance(criterion, dict) and (criterion.get("check") or {}).get("field")
+        }
+        if not fields:
+            pytest.skip("no field-checking criterion in this template")
+
+        written = _keys_the_recipe_writes(recipe)
+        assert fields <= written, (
+            f"{path.name}: acceptance criteria check field(s) {sorted(fields - written)}, "
+            f"which no stage in the recipe writes; it writes {sorted(written)}"
+        )
 
 
 class TestScratchRecipesHaveAHome:
