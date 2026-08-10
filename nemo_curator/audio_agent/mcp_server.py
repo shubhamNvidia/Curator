@@ -48,9 +48,18 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
         return aa.discover()
 
     @server.tool()
-    def describe(name: str) -> dict[str, Any]:
-        """Return the static contract (and card) for one stage."""
-        return aa.describe(name)
+    def describe(name: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Return one stage's contract (and card), resolved against the params you will use.
+
+        Reads and writes follow from params, so pass the ones the recipe will set; without them
+        the answer describes the defaults.
+        """
+        return aa.describe(name, params)
+
+    @server.tool()
+    def producers(role: str) -> dict[str, Any]:
+        """Return the stages that write a role or key -- "which stage produces segments?"."""
+        return aa.producers(role)
 
     @server.tool()
     def catalog_tree() -> dict[str, Any]:

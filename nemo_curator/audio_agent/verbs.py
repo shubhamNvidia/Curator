@@ -529,21 +529,260 @@ def discover() -> dict[str, Any]:
     return out
 
 
-def describe(name: str) -> dict[str, Any]:
-    """Return the static contract (+ card, if any) for a single stage."""
-    from nemo_curator.audio_agent._resolve import static_contract_for
+def describe(name: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return the contract (+ card, if any) for one stage, resolved against ``params``.
+
+    Pass the params the recipe will use. Reads and writes follow from them --
+    ``SplitLongAudioStage(segments_key="diar_segments")`` reads ``diar_segments`` -- so a
+    contract asked for without them describes the defaults, not the pipeline. Params a stage
+    does not accept, or required ones left out, produce a labelled fallback naming what to
+    supply rather than a contract that appears to require nothing.
+    """
+    from nemo_curator.audio_agent._resolve import resolved_contract_for
 
     out: dict[str, Any] = {"stage": name, "category": get_index().category_of(name)}
     try:
-        out["contract"] = static_contract_for(name).to_dict()
+        resolved = resolved_contract_for(name, params)
     except KeyError:
         return {"stage": name, "error": f"{name!r} is not a registered agent-ready audio stage"}
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001 - e.g. an optional dependency failing to import
         out["contract_error"] = f"{type(e).__name__}: {e}"
+    else:
+        out["contract"] = resolved.contract.to_dict()
+        detail = resolved.unresolved_detail()
+        if detail is not None:
+            out["contract_unresolved"] = detail
+        inner = _composite_detail(resolved.instance)
+        if inner is not None:
+            out["expands_to"] = inner
+        varies = _contract_variants(name, resolved, params)
+        if varies:
+            out["contract_varies_with"] = varies
     card = get_index().card(name)
     if card:
         out["card"] = card
     return out
+
+
+def _contract_variants(
+    name: str,
+    resolved: Any,  # noqa: ANN401 - ResolvedContract
+    params: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Which other settings of an enumerable param would change what this stage reads or writes.
+
+    A resolved contract answers for ONE configuration, and the caller cannot tell from it whether
+    that was the only possibility. ``input_residency`` is the case that matters: at its ``file``
+    default a stage reads ``audio_filepath``, at ``waveform`` it reads ``waveform`` +
+    ``sample_rate``, and at ``auto`` it takes either. A caller holding an in-task waveform and
+    reading only the default contract concludes the stage cannot consume it, and either inserts a
+    needless write-to-disk or abandons the stage.
+
+    Derived by resolving each declared choice and keeping only those whose reads or writes
+    actually differ, so this reports facts rather than restating the parameter list -- and stays
+    empty for the 37 stages with nothing enumerable to say. Every alternative costs one more
+    constructor call, which is why this can be exhaustive: 53 across the whole catalog.
+    """
+    instance = resolved.instance
+    if instance is None:
+        return []
+    from nemo_curator.audio_agent._resolve import resolved_contract_for
+
+    baseline = _io_view(resolved.contract)
+    out: list[dict[str, Any]] = []
+    for spec in resolved.contract.params:
+        if not spec.choices:
+            continue
+        current = getattr(instance, spec.name, spec.default)
+        differing: list[dict[str, Any]] = []
+        for choice in spec.choices:
+            if choice == current:
+                continue
+            trial = dict(params or {})
+            trial[spec.name] = choice
+            candidate = resolved_contract_for(name, trial)
+            if not candidate.resolved:
+                continue
+            view = _io_view(candidate.contract)
+            if view != baseline:
+                differing.append({"value": choice, **view})
+        if differing:
+            out.append({"param": spec.name, "current": current, "changes_it_to": differing})
+    return out
+
+
+def _composite_detail(instance: Any) -> dict[str, Any] | None:  # noqa: ANN401 - any configured stage
+    """What a composite requires and produces, from the stages it actually expands into.
+
+    A composite describes only itself: ``SplitASRAlignJoinStage.describe()`` declares no reads
+    and no writes, so its resolved contract is as empty as the unresolved one and for a different
+    reason. The work -- and the requirements -- live in ``decompose()``.
+
+    ``requires_upstream`` is the actionable part: each inner read that no earlier inner stage
+    produces, which is what the caller has to arrange before the composite will start. For a
+    ``SplitASRAlignJoinStage`` that is ``segments``, the requirement that a pipeline producing
+    ``diar_segments`` failed to meet after two model downloads and a GPU diarization pass.
+
+    Uses the expansion primitive that pipeline validation and resource planning already share, so
+    a composite cannot report one shape here and a different one when it runs.
+    """
+    if instance is None:
+        return None
+    from nemo_curator.stages.audio._composite import expand_composites
+
+    expansion = expand_composites([instance])
+    leaves = [item for item in expansion.stages if item.stage is not instance]
+    if not leaves:
+        # Two different answers, and only one of them means "we could not tell". A stage the
+        # executor will refuse outright contributes no leaf either, and reporting that as
+        # silence -- or as mere opacity -- is the same "empty is not an answer" failure this
+        # whole verb exists to end: the caller would read no requirements and conclude there
+        # are none, for a stage that cannot run at all.
+        unrunnable = expansion.unrunnable.get(0)
+        if unrunnable:
+            return {"unrunnable": unrunnable}
+        reason = expansion.opaque.get(0)
+        return {"opaque": reason} if reason else None
+
+    from nemo_curator.stages.audio._agent_registry import build_contract
+
+    produced: set[str] = set()
+    required: list[str] = []
+    alternatives: list[dict[str, Any]] = []
+    stages: list[dict[str, Any]] = []
+    for item in leaves:
+        try:
+            contract = build_contract(item.stage)
+        except Exception as e:  # noqa: BLE001 - one unreadable child does not hide its siblings
+            stages.append({"stage": type(item.stage).__name__, "error": f"{type(e).__name__}: {e}"})
+            continue
+        entry: dict[str, Any] = {"stage": type(item.stage).__name__, **_io_view(contract)}
+        stages.append(entry)
+        required.extend(k for k in contract.reads.data_keys if k not in produced and k not in required)
+        unmet = _unmet_alternatives(contract, produced)
+        if unmet:
+            alternatives.append({"stage": entry["stage"], "one_of": unmet})
+        produced.update(contract.writes.data_keys)
+
+    out: dict[str, Any] = {"stages": stages, "requires_upstream": required, "produces": sorted(produced)}
+    if alternatives:
+        # Kept separate from ``requires_upstream`` rather than flattened into it. A stage reading
+        # audio accepts a file path OR an in-task waveform; listing both as required would demand
+        # a form the caller does not need, and picking one for them would hide the other -- the
+        # same "an empty field is not an answer" failure in a different costume.
+        out["requires_one_of"] = alternatives
+    return out
+
+
+def _io_view(contract: Any) -> dict[str, Any]:  # noqa: ANN401 - StageContract
+    """The keys a contract reads and writes, including alternatives it would accept."""
+    view: dict[str, Any] = {
+        "reads": list(contract.reads.data_keys),
+        "writes": list(contract.writes.data_keys),
+    }
+    one_of = [list(spec.data_keys) for spec in contract.reads_one_of if spec.data_keys]
+    if one_of:
+        view["reads_one_of"] = one_of
+    return view
+
+
+def _unmet_alternatives(contract: Any, produced: set[str]) -> list[list[str]]:  # noqa: ANN401
+    """Alternative read-sets when none of them is already satisfied, else nothing.
+
+    Many stages declare no flat ``reads`` at all and put every requirement here --
+    ``BandwidthEstimationStage`` reads ``audio_filepath`` plus one of ``segments``/``duration``
+    through this field alone. Consulting only ``reads.data_keys`` would report such a stage as
+    needing nothing from upstream.
+    """
+    options = [list(spec.data_keys) for spec in contract.reads_one_of if spec.data_keys]
+    if not options or any(set(option) <= produced for option in options):
+        return []
+    return options
+
+
+def producers(role: str) -> dict[str, Any]:
+    """Which stages write ``role`` -- by semantic role, or by literal key name.
+
+    Answers the question that otherwise sends a caller into the source tree: a stage requires
+    ``segments`` and nothing says who makes one. Matching accepts either vocabulary because a
+    caller reading a contract has a key name in hand and a caller reading a request has a role,
+    and making them guess which to ask with is how the question gets abandoned.
+
+    Built from contracts resolved at DEFAULT params, so it answers "which stage can produce
+    this" rather than "which stage will, as configured". A stage whose output key is renamed
+    through a param still appears under its default key; ``describe`` with the real params is
+    the authority on any specific recipe.
+    """
+    from nemo_curator.audio_agent._resolve import resolved_contract_for
+    from nemo_curator.stages.audio._roles import role_for_value
+
+    wanted = str(role)
+    proven: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
+    not_searched: list[str] = []
+
+    for entry in discover().get("stages", []):
+        stage = str(entry.get("stage") or "")
+        category = entry.get("category")
+        try:
+            resolved = resolved_contract_for(stage)
+        except Exception as e:  # noqa: BLE001 - an unimportable stage is reported, not fatal
+            not_searched.append(f"{stage} ({type(e).__name__})")
+            continue
+        if resolved.resolved:
+            hit = _writes_role(resolved.contract, wanted, role_for_value)
+            if hit:
+                proven.append({"stage": stage, "category": category, **hit})
+            continue
+        # Unresolvable at defaults, so its writes are unknown -- but its params still DECLARE
+        # the roles of the keys it names, and that declaration is data rather than a guess.
+        # Kept apart from ``producers`` because a declared role does not distinguish a key the
+        # stage reads from one it writes: enough to point the caller at ``describe``, not enough
+        # to answer for it. Placeholder values were the alternative and they fabricate keys --
+        # probing PreserveByValueStage that way has it "writing" a key called `placeholder`.
+        if wanted in set(resolved.contract.key_roles.values()):
+            candidate: dict[str, Any] = {
+                "stage": stage,
+                "category": category,
+                "matched": "declared_role",
+                "confirm_with": f"describe({stage!r}, params={{...}})",
+                "reason": resolved.unresolved_reason,
+            }
+            if resolved.required_params:
+                candidate["needs_params"] = list(resolved.required_params)
+            candidates.append(candidate)
+        else:
+            not_searched.append(stage)
+
+    out: dict[str, Any] = {"role": wanted, "producers": proven}
+    if candidates:
+        out["candidates"] = candidates
+    if not_searched:
+        # "Nothing produces this" and "some stages could not be asked" are different answers and
+        # only one of them means stop looking, so an incomplete search never presents as complete.
+        out["not_searched"] = sorted(not_searched)
+    return out
+
+
+def _writes_role(
+    contract: Any,  # noqa: ANN401 - StageContract, imported lazily by callers
+    wanted: str,
+    role_for_value: Any,  # noqa: ANN401
+) -> dict[str, Any] | None:
+    """How ``contract`` produces ``wanted``, or ``None`` if it does not."""
+    writes = getattr(contract, "writes", None)
+    keys = list(getattr(writes, "data_keys", []) or [])
+    segment_keys = list(getattr(writes, "segment_data_keys", []) or [])
+    key_roles = dict(getattr(contract, "key_roles", {}) or {})
+
+    if wanted in keys:
+        return {"writes_key": wanted, "matched": "key"}
+    if wanted in segment_keys:
+        return {"writes_segment_key": wanted, "matched": "segment_key"}
+    for key in keys + segment_keys:
+        if (key_roles.get(key) or role_for_value(key)) == wanted:
+            return {"writes_key": key, "matched": "role"}
+    return None
 
 
 def catalog_tree() -> dict[str, Any]:

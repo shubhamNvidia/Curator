@@ -163,6 +163,21 @@ def _parse_goal(raw: str | None) -> dict[str, Any]:
     return goal
 
 
+def _parse_params(raw: str | None) -> dict[str, Any] | None:
+    """Stage params as a JSON object, or ``None`` when none were given.
+
+    Refuses a non-object rather than passing it on: ``describe`` would report it as a stage that
+    "could not be configured", blaming the stage for the caller's quoting.
+    """
+    if not raw:
+        return None
+    params = json.loads(raw)
+    if not isinstance(params, dict):
+        msg = f"--params must be a JSON object mapping param names to values, got {type(params).__name__}"
+        raise ValueError(msg)
+    return params
+
+
 def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block per subcommand
     p = argparse.ArgumentParser(prog="nemo_curator.audio_agent", description="Audio Agent (P1) tool surface")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -170,8 +185,18 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block
     sub.add_parser("discover", help="list agent-ready audio stages with category + one-liner")
     sub.add_parser("catalog-tree", help="L0 category tree for coarse-to-fine routing")
 
-    d = sub.add_parser("describe", help="static contract (+ card) for one stage")
+    d = sub.add_parser("describe", help="contract (+ card) for one stage, resolved against --params")
     d.add_argument("name")
+    d.add_argument(
+        "--params",
+        help=(
+            "JSON object of the params the recipe will use; reads/writes follow from them "
+            '(e.g. \'{"segments_key": "diar_segments"}\'). Omitting them describes the defaults'
+        ),
+    )
+
+    pr = sub.add_parser("producers", help="which stages write a role or key (answers 'who makes segments?')")
+    pr.add_argument("role", help="a semantic role (segments, pred_text) or a literal key name")
 
     c = sub.add_parser("cards", help="L1 (one-liners for a category) or L2 (full cards for names)")
     c.add_argument("--category")
@@ -322,7 +347,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0912 - a flat 
         elif cmd == "catalog-tree":
             return _finish(cmd, aa.catalog_tree())
         elif cmd == "describe":
-            return _finish(cmd, aa.describe(args.name))
+            return _finish(cmd, aa.describe(args.name, _parse_params(args.params)))
+        elif cmd == "producers":
+            return _finish(cmd, aa.producers(args.role))
         elif cmd == "cards":
             return _finish(cmd, aa.cards(category=args.category, names=args.names))
         elif cmd == "context":
