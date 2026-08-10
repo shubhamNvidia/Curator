@@ -163,7 +163,12 @@ def _value_from_range(range_key: str, direction: str | None) -> Any:  # noqa: AN
     return hi if direction == "lower_better" else lo
 
 
-def resolve_from_data(stage_id: str, data_profile: dict[str, Any] | None) -> dict[str, Any]:
+def resolve_from_data(
+    stage_id: str,
+    data_profile: dict[str, Any] | None,
+    *,
+    already_set: set[str] | None = None,
+) -> dict[str, Any]:
     """Path B: bind the parameters the DATA determines, for one stage.
 
     Path A maps a user's *outcome* to a value via the card. This is its counterpart: values
@@ -173,6 +178,14 @@ def resolve_from_data(stage_id: str, data_profile: dict[str, Any] | None) -> dic
     Deliberately configures the STAGE rather than changing any stage default: the defaults
     are what the tutorials and hand-written pipelines rely on, and an agent that rewrites
     them would fix its own recipes by breaking everyone else's.
+
+    ``already_set`` names the params Path A resolved. They are skipped outright rather than
+    computed and then out-voted by the caller's merge. The value was always Path A's, but the
+    ``strategy`` trail still gained an entry stating the data-informed number and the reason
+    it was chosen -- an audit record of a binding that never happened, which is worse than no
+    record at all for the one param a user is most likely to have set on purpose: an
+    ``output_sample_rate`` a user pinned as a strict gate would read as though the agent had
+    quietly widened it to whatever the data happened to be.
 
     Returns the same ``{stage, params, strategy, asks}`` shape as :func:`resolve`. Ambiguity
     becomes an ``ask``, never a guess: a manifest with two plausible audio columns, or none,
@@ -190,6 +203,7 @@ def resolve_from_data(stage_id: str, data_profile: dict[str, Any] | None) -> dic
         accepted = {p.name for p in stage_params(resolve_stage_class(stage_id))}
     except Exception:  # noqa: BLE001 - an unresolvable stage simply gets no data-derived config
         return out
+    accepted -= already_set or set()
 
     _bind_observed_sample_rate(stage_id, profile, accepted, out)
     return out

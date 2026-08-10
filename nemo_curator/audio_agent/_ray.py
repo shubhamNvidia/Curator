@@ -201,6 +201,13 @@ def _interpreter_ray_on_path() -> Iterator[None]:
     the directory is already present is deliberate: the point is which ``ray`` wins, not
     whether one is reachable.
     """
+    # Embedded interpreters leave ``sys.executable`` empty. ``abspath("")`` is the working
+    # directory, whose PARENT would then be prepended to PATH for a child process -- so an
+    # unrelated executable named ``ray`` sitting next to the CWD would be started as the
+    # cluster head. There is no interpreter to find a sibling ``ray`` for; leave PATH alone.
+    if not sys.executable:
+        yield
+        return
     bindir = os.path.dirname(os.path.abspath(sys.executable))
     cli = os.path.join(bindir, "ray")
     if not (os.path.isfile(cli) and os.access(cli, os.X_OK)):
@@ -234,6 +241,18 @@ def ensure_cluster(
     """
     owned_address = _STARTED.get("address")
     external = os.environ.get("RAY_ADDRESS")
+    # Set, but to whitespace. Every branch below asks either "is it truthy" or "is it truthy
+    # AND non-blank", so such a value slid past the authoritative-external check and silently
+    # started a LOCAL head -- the exact substitution this function refuses to make for any
+    # other external value, performed without a word. Someone who exported RAY_ADDRESS meant
+    # to point at a cluster; a typo or a variable that expanded to nothing is a broken
+    # instruction, and a broken instruction must not read as an absent one.
+    if external is not None and not external.strip():
+        msg = (
+            f"RAY_ADDRESS is set to {external!r}, which names no cluster; unset it to use a "
+            "local head, or set it to a reachable address"
+        )
+        raise RuntimeError(msg)
     owned_by_this_process = (
         bool(owned_address)
         and _STARTED.get("owned") is True
@@ -309,38 +328,53 @@ def ensure_cluster(
     # where the real defects lived -- renamed workers it could not see, bystanders it could,
     # and a re-scan that went blind once the parents died. None of it is reachable from a
     # process group.
-    temp_dir = tempfile.mkdtemp(prefix="ray_audio_agent_", dir=_ray_temp_root())
+    temp_root = _ray_temp_root()
+    temp_dir = tempfile.mkdtemp(prefix="ray_audio_agent_", dir=temp_root)
     previous_address = os.environ.get("RAY_ADDRESS")
     previous_api_limit = os.environ.get("RAY_MAX_LIMIT_FROM_API_SERVER")
-    os.environ.setdefault("RAY_MAX_LIMIT_FROM_API_SERVER", _API_LIMIT)
 
-    from nemo_curator.core.client import RayClient
-
-    client = RayClient(
-        ray_temp_dir=temp_dir,
-        num_cpus=num_cpus if num_cpus is not None else min(os.cpu_count() or 4, 8),
-        num_gpus=_detect_gpus() if num_gpus is None else num_gpus,
-        object_store_memory=object_store_memory,
-        # The agent is a library caller, not an operator session: registering Ray with a
-        # shared Prometheus/Grafana install is a side effect on state we do not own.
-        include_dashboard=False,
-    )
+    # Everything after the directory exists is inside the cleanup, including the import and
+    # the RayClient construction. They were outside it, so an ImportError from a partial
+    # install -- or a constructor that rejected its arguments -- propagated with the temp
+    # directory already on disk and nothing left holding a reference to remove it. That is
+    # the failure mode most likely to repeat (a broken install fails on every attempt), so it
+    # leaked a directory per try, in the temp root the object store then had to fit into.
+    client = None
     try:
+        os.environ.setdefault("RAY_MAX_LIMIT_FROM_API_SERVER", _API_LIMIT)
+        from nemo_curator.core.client import RayClient
+
+        client = RayClient(
+            ray_temp_dir=temp_dir,
+            num_cpus=num_cpus if num_cpus is not None else min(os.cpu_count() or 4, 8),
+            num_gpus=_detect_gpus() if num_gpus is None else num_gpus,
+            object_store_memory=object_store_memory,
+            # The agent is a library caller, not an operator session: registering Ray with a
+            # shared Prometheus/Grafana install is a side effect on state we do not own.
+            include_dashboard=False,
+        )
         # Verifies the head is responsive and stops what it started if it is not, so there is
         # no window in which a live head exists with nothing recorded to reach it.
         with _interpreter_ray_on_path():
             client.start()
         address = os.environ["RAY_ADDRESS"]  # set by RayClient to the node IP it bound
     except BaseException:  # KeyboardInterrupt too: Ctrl-C must not orphan a live head
-        with contextlib.suppress(Exception):
-            client.stop()
+        if client is not None:
+            with contextlib.suppress(Exception):
+                client.stop()
         shutil.rmtree(temp_dir, ignore_errors=True)
+        _restore_owned_environment(
+            {"previous_address": previous_address, "previous_api_limit": previous_api_limit}
+        )
         raise
 
     _STARTED.update(
         {
             "address": address,
             "temp_dir": temp_dir,
+            # The root as it resolved AT BOOTSTRAP. Shutdown validates containment against
+            # this rather than re-reading TMPDIR, which may have changed by then.
+            "temp_root": temp_root,
             "client": client,
             "owned": True,
             "owner_pid": os.getpid(),
@@ -418,9 +452,16 @@ def owns_cluster(address: str | None = None) -> bool:
 
 
 def _restore_owned_environment(state: dict[str, Any]) -> None:
-    """Undo only environment values that still equal values we installed."""
-    address = state["address"]
-    if os.environ.get("RAY_ADDRESS") == address:
+    """Undo only environment values that still equal values we installed.
+
+    A state with no ``address`` is a bootstrap that FAILED before one was established. There
+    is no value to match against, and whatever ``RayClient`` may have exported before it
+    raised points at a head that does not exist, so the restore is unconditional -- leaving
+    it in place would hand the next ``ensure_cluster`` an "externally supplied" address that
+    it is bound to treat as authoritative and refuse to replace.
+    """
+    address = state.get("address")
+    if address is None or os.environ.get("RAY_ADDRESS") == address:
         previous_address = state.get("previous_address")
         if previous_address is None:
             os.environ.pop("RAY_ADDRESS", None)
@@ -433,15 +474,18 @@ def _restore_owned_environment(state: dict[str, Any]) -> None:
         os.environ.pop("RAY_MAX_LIMIT_FROM_API_SERVER", None)
 
 
-def _within_any_temp_root(real_path: str) -> bool:
+def _within_any_temp_root(real_path: str, roots: list[str] | None = None) -> bool:
     """Whether a RESOLVED path sits inside one of the plausible temp roots.
 
     Compares resolved path against resolved root, so a site whose temp dir is a symlink
     (a scratch mount) is recognized instead of silently failing containment -- which
     previously meant the bootstrap directory was never cleaned up. ``commonpath`` raises
     when two paths share no root, which is a non-match, never a crash.
+
+    ``roots`` lets the caller supply the root RECORDED AT BOOTSTRAP instead of recomputing
+    the candidates now; see :func:`_safe_temp_dir` for why that distinction matters.
     """
-    for root in _temp_root_candidates():
+    for root in roots if roots is not None else _temp_root_candidates():
         try:
             if os.path.commonpath((root, real_path)) == root:
                 return True
@@ -450,19 +494,30 @@ def _within_any_temp_root(real_path: str) -> bool:
     return False
 
 
-def _safe_temp_dir(path: Any) -> str | None:  # noqa: ANN401
+def _safe_temp_dir(path: Any, temp_root: Any = None) -> str | None:  # noqa: ANN401
     """Return an owned Ray temp path only when it is safe to remove recursively.
 
     Three independent gates, all of which must hold: the entry itself is not a symlink
     (so a swapped link is never followed), the RESOLVED target is inside a temp root,
     and it carries this module's own prefix.
+
+    The containment gate prefers ``temp_root``, the root this bootstrap actually chose and
+    recorded. Re-deriving the candidate list at shutdown asks a question about the CURRENT
+    environment, but the directory was created under the environment as it was at bootstrap:
+    a caller that set ``TMPDIR`` for the run and cleared it afterwards -- or an HPC job whose
+    scratch variable is unset during teardown -- made the containment check fail on a
+    directory this module had just created itself. ``shutdown_cluster`` then refused every
+    time and never retried differently, so the cluster stayed up and the temp tree leaked, on
+    the one path whose job is cleanup. The recorded root is falsifiable in the same way (the
+    prefix and symlink gates are unchanged); it is simply the right root to ask about.
     """
     if not isinstance(path, str):
         return None
     if os.path.islink(os.path.abspath(path)):
         return None
     real_path = os.path.realpath(path)
-    if not _within_any_temp_root(real_path):
+    roots = [temp_root] if isinstance(temp_root, str) and temp_root else None
+    if not _within_any_temp_root(real_path, roots):
         return None
     if not os.path.basename(real_path).startswith("ray_audio_agent_"):
         return None
@@ -506,7 +561,7 @@ def shutdown_cluster(address: str | None = None) -> bool:  # noqa: PLR0911 - one
     # closes the caller's own session, so every gate that can refuse without side effects
     # belongs above it -- otherwise a refusal that promises "nothing changed, retry safely"
     # has already dropped the caller's actor handles and object refs on the floor.
-    temp_dir = _safe_temp_dir(state.get("temp_dir"))
+    temp_dir = _safe_temp_dir(state.get("temp_dir"), state.get("temp_root"))
     if not temp_dir:
         return False
     if not _disconnect_owned_driver(owned_address):

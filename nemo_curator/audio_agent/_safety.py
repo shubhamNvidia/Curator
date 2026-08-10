@@ -17,7 +17,9 @@
 A weaker host, or a direct verb/CLI call, cannot bypass these:
 
 * Workspace path lock  - file paths must resolve under an allowed root (opt-in via
-  ``AUDIO_AGENT_WORKSPACE``); blocks traversal / reads-writes outside it.
+  ``AUDIO_AGENT_WORKSPACE``); blocks traversal / reads-writes outside it. It governs the
+  dataset and the outputs. Shared dependency locations (``cache_dir``, ``config_path``) are
+  exempt, so a locked deployment can still share one model cache across projects.
 * Secrets/transcript redaction - secret-looking keys and transcript text are
   stripped from verb return values before they reach the host LLM.
 * Require-smoke evidence - a ``run`` can be made to refuse unless handed a valid
@@ -57,7 +59,10 @@ _LOCAL_URI_SCHEMES = frozenset({"file", "local"})
 # parameter -- as a credential and destroys it, and a destroyed value is then persisted into
 # run records and compared during reuse, so the corruption outlives the display.
 _SECRET_WORDS = frozenset(
-    {"token", "tokens", "secret", "secrets", "password", "passwd", "pwd", "apikey", "credential", "credentials"}
+    {
+        "token", "tokens", "secret", "secrets", "password", "passwords", "passwd", "pwd",
+        "apikey", "credential", "credentials",
+    }
 )
 # Secret names that span a separator, so they survive the word split as adjacent pairs
 # (``api_key`` -> ``api`` + ``key``). ``key`` alone is deliberately NOT a secret word: it
@@ -65,7 +70,23 @@ _SECRET_WORDS = frozenset(
 _SECRET_WORD_PAIRS = frozenset(
     {("api", "key"), ("access", "key"), ("secret", "key"), ("private", "key"), ("auth", "key")}
 )
+# The same pairs written without a separator. ``secretkey`` has no boundary of any kind to
+# split on, so the pair rule cannot see it and it would otherwise read as one unknown word.
+_SECRET_GLUED_PAIRS = frozenset(first + second for first, second in _SECRET_WORD_PAIRS)
 _KEY_WORD_SPLIT = re.compile(r"[^a-z0-9]+")
+# Field names the agent itself issues, which the word rule above would otherwise destroy.
+# ``smoke_token`` is not a credential -- it is the evidence a smoke ran for this exact recipe,
+# produced by ``smoke`` and handed straight back to ``run``. Redacting it broke the one
+# workflow it exists for: with ``AUDIO_AGENT_REQUIRE_SMOKE`` set, ``smoke`` returned
+# ``<redacted-secret>`` and there was then no value on earth the caller could pass to ``run``,
+# which refused every time. An HMAC over a config hash reveals nothing; withholding it only
+# disables the gate it was built to satisfy.
+_OWN_TOKEN_FIELDS = frozenset({"smoke_token"})
+# camelCase carries its word boundaries in the case changes alone, so they have to become
+# separators BEFORE the key is lowercased -- lowercasing first collapses ``apiToken`` into one
+# unknown word and the credential survives redaction. Two boundaries: lower/digit followed by
+# upper (``apiToken``), and an acronym running into a word (``APIToken`` -> ``API`` + ``Token``).
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _SECRET_ASSIGNMENT = re.compile(
     r"""(?ix)
     (?P<prefix>
@@ -133,13 +154,17 @@ _PATH_PARAM_NAMES = frozenset(
         "resampled_audio_dir",
         "rttm_out_dir",
         "separated_audio_dir",
-        # Always a filesystem location: a model-download cache and a pipeline config file.
-        # Both are written/read by the agent, so a workspace lock that ignored them left a
-        # recipe free to populate a cache outside the root it was told to stay inside.
-        "cache_dir",
-        "config_path",
     }
 )
+# Filesystem locations that are deliberately NOT locked, though they look like the ones above.
+# The lock governs the dataset and the outputs -- the things this run reads and produces. A
+# model-download cache and a packaged pipeline config are neither: they are shared dependencies,
+# closer to site-packages than to user data. Locking them refused the natural
+# ``cache_dir: ~/.cache/huggingface`` outright, with no override, on every one of validate,
+# smoke and run -- so a deployment that set a workspace could no longer share a model cache
+# between projects, and re-downloaded multi-gigabyte checkpoints per recipe instead. Pointing
+# either INSIDE the workspace still works; they are simply not required to be.
+_UNLOCKED_LOCATION_PARAM_NAMES = frozenset({"cache_dir", "config_path"})
 # Parameters that hold EITHER a local path or a hub id, so membership alone cannot decide.
 # ``SpeakerSeparationStage`` DEFAULTS ``model_path`` to ``nvidia/diar_sortformer_4spk-v1``
 # and ``tokenizer_path`` is documented as an HF tokenizer: locking those by name would make
@@ -149,26 +174,42 @@ _HUB_OR_PATH_PARAM_NAMES = frozenset({"model_path", "tokenizer_path"})
 _LOCAL_ARTIFACT_SUFFIXES = (
     ".nemo", ".joblib", ".onnx", ".model", ".pt", ".pth", ".ckpt", ".bin", ".yaml", ".yml", ".json",
 )
+# A hub id is a bare name (``bert-base-uncased``) or one ``org/name`` pair. A second slash
+# means a directory tree, which no hub id has, so it can only be a path.
+_HUB_ID_SHAPE = re.compile(r"^[\w.-]+(?:/[\w.-]+)?$")
 
 
 def names_local_path(value: str) -> bool:
     """Whether a dual-purpose value names a filesystem path rather than a hub id.
 
-    Hub ids are bare ``org/name`` (``nvidia/diar_sortformer_4spk-v1``): no anchor, no file
-    suffix, nothing on disk. A local path is anchored (``/``, ``./``, ``../``, ``~``),
-    carries a checkpoint/config suffix, or actually exists.
+    Only the hub-id SHAPE is treated as not-a-path: a bare ``org/name`` with no anchor and no
+    artifact suffix (``nvidia/diar_sortformer_4spk-v1``). Everything else is checked.
+
+    Stated that way round on purpose. Asking "does this look like a path?" and defaulting to
+    no let a bare relative value such as ``out/mymodel`` fall through unchecked, after which the
+    stage resolves it against the process working directory -- which may sit anywhere. The
+    narrow question has one ambiguous answer (``out/mymodel`` is shaped exactly like a hub id)
+    and the containment check below settles it: an ``org/name`` that exists under the workspace
+    is a path, and one that does not is the hub id it looks like.
+
+    Existence is probed against the WORKSPACE ROOT, never the working directory. The old
+    ``os.path.exists`` probe was CWD-relative, so merely running the agent next to a directory
+    named ``nvidia/`` reclassified the default model id as a local file and refused the agent's
+    own default recipe -- the same command passing or failing depending on where it was typed.
     """
     text = value.strip()
     if not text:
         return False
     if text.startswith(("~", "./", "../", os.sep)):
         return True
-    expanded = os.path.expanduser(text)
-    if os.path.isabs(expanded):
+    if os.path.isabs(os.path.expanduser(text)):
         return True
     if text.lower().endswith(_LOCAL_ARTIFACT_SUFFIXES):
         return True
-    return os.path.exists(expanded)
+    if not _HUB_ID_SHAPE.match(text):
+        return True
+    root = workspace_root()
+    return bool(root) and os.path.exists(os.path.join(root, text))
 
 
 def workspace_config_error() -> str | None:
@@ -243,6 +284,10 @@ def recipe_path_params(recipe: Any) -> list[str]:  # noqa: ANN401
     for s in getattr(recipe, "stages", []) or []:
         for k, v in (getattr(s, "params", {}) or {}).items():
             key = str(k).lower()
+            if key in _UNLOCKED_LOCATION_PARAM_NAMES:
+                # Skipped deliberately and visibly, rather than by silent absence from the
+                # set above, so the next person to add a path-looking param sees the choice.
+                continue
             dual_purpose = key in _HUB_OR_PATH_PARAM_NAMES
             if key not in _PATH_PARAM_NAMES and not dual_purpose:
                 continue
@@ -301,10 +346,29 @@ def redact(obj: Any, *, redact_transcripts: bool = True) -> Any:  # noqa: ANN401
     """
 
     def _is_secret(k: Any) -> bool:  # noqa: ANN401
-        words = [w for w in _KEY_WORD_SPLIT.split(str(k).lower()) if w]
-        if any(w in _SECRET_WORDS for w in words):
+        if str(k).lower() in _OWN_TOKEN_FIELDS:
+            return False
+        split_case = _CAMEL_BOUNDARY.sub("_", str(k))
+        words = [w for w in _KEY_WORD_SPLIT.split(split_case.lower()) if w]
+        if any(w in _SECRET_WORDS or w in _SECRET_GLUED_PAIRS for w in words):
             return True
         return any(pair in _SECRET_WORD_PAIRS for pair in itertools.pairwise(words))
+
+    def _redacted_transcript(value: Any) -> Any:  # noqa: ANN401
+        """Transcript text under a transcript key, whatever shape it arrives in.
+
+        Only bare strings were handled, so a transcript key holding a LIST -- per-segment
+        text, per-word text, the shape every segmenting stage produces -- fell through to the
+        generic walk and reached the host LLM in full. The key had already been identified as
+        transcript-bearing; it was the container that hid it.
+        """
+        if isinstance(value, str):
+            return f"<redacted-transcript:{len(value)}chars>"
+        if isinstance(value, list):
+            return [_redacted_transcript(item) for item in value]
+        if isinstance(value, dict):
+            return {k: _redacted_transcript(v) for k, v in value.items()}
+        return value
 
     def _r(o: Any) -> Any:  # noqa: ANN401
         if isinstance(o, dict):
@@ -312,8 +376,8 @@ def redact(obj: Any, *, redact_transcripts: bool = True) -> Any:  # noqa: ANN401
             for k, v in o.items():
                 if _is_secret(k):
                     out[k] = "<redacted-secret>"
-                elif redact_transcripts and str(k).lower() in _TRANSCRIPT_KEYS and isinstance(v, str):
-                    out[k] = f"<redacted-transcript:{len(v)}chars>"
+                elif redact_transcripts and str(k).lower() in _TRANSCRIPT_KEYS:
+                    out[k] = _redacted_transcript(v)
                 else:
                     out[k] = _r(v)
             return out

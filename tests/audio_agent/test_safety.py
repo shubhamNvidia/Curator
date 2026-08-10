@@ -47,6 +47,24 @@ class TestRedact:
     def test_can_keep_transcripts(self) -> None:
         assert _safety.redact({"text": "hi"}, redact_transcripts=False)["text"] == "hi"
 
+    @pytest.mark.parametrize(
+        "key",
+        ["apiToken", "authToken", "accessToken", "APIToken", "passwords", "secretkey", "accesskey"],
+    )
+    def test_secret_keys_without_a_separator_are_still_redacted(self, key: str) -> None:
+        """Matching on the key's WORDS is what keeps ``tokenizer_path`` intact, but the word
+        boundary in ``apiToken`` is the case change alone -- lowercasing before splitting
+        collapses it into one unknown word and the credential rides out to the host LLM in a
+        stage's error payload, where no value-level pattern can catch an opaque token either.
+        """
+        assert _safety.redact({key: "9f3c1e-real-credential"})[key] == "<redacted-secret>"
+
+    @pytest.mark.parametrize("key", ["tokenizer_path", "tokenizerPath", "audio_filepath_key", "score_key"])
+    def test_case_splitting_does_not_start_redacting_ordinary_fields(self, key: str) -> None:
+        """The other half of the same rule: a destroyed value is persisted into run records and
+        compared during reuse, so over-redaction outlives the display it was meant to protect."""
+        assert _safety.redact({key: "keep-me"})[key] == "keep-me"
+
     def test_strips_secret_values_embedded_in_error_strings(self) -> None:
         out = _safety.redact(
             {
@@ -163,6 +181,31 @@ class TestWorkspaceLock:
         assert _safety.recipe_path_params(recipe) == ["inside.jsonl"]
 
 
+class TestRedactionDoesNotDefeatTheAgentsOwnWorkflow:
+    def test_the_smoke_token_survives_the_word_rule_that_matches_it(self) -> None:
+        """``smoke_token`` is evidence, not a credential.
+
+        ``smoke`` produces it and ``run`` consumes it. Redacting it broke the one workflow it
+        exists for: with AUDIO_AGENT_REQUIRE_SMOKE set, smoke returned ``<redacted-secret>``
+        and no value the caller could pass would satisfy run, which refused every time.
+        """
+        out = _safety.redact({"smoke_token": "9f3c1e", "api_token": "9f3c1e"})
+
+        assert out["smoke_token"] == "9f3c1e"
+        assert out["api_token"] == "<redacted-secret>", "real credentials are still redacted"
+
+    def test_a_transcript_is_redacted_whatever_container_holds_it(self) -> None:
+        """Only bare strings were handled, so a transcript key holding a LIST -- per-segment
+        or per-word text, the shape every segmenting stage produces -- fell through to the
+        generic walk and reached the host LLM in full. The key was already known to be
+        transcript-bearing; the container hid it.
+        """
+        out = _safety.redact({"text": ["first segment", "second segment"]})
+
+        assert all("segment" not in str(item) for item in out["text"]), out["text"]
+        assert all(str(item).startswith("<redacted-transcript:") for item in out["text"])
+
+
 class TestSmokeToken:
     def test_not_derivable_from_public_config_hash(self) -> None:
         """H2: the token must not be a plain hash of the (public) config_hash."""
@@ -238,11 +281,56 @@ class TestDualPurposePathParams:
         )
         assert len(_safety.path_violations(_safety.recipe_path_params(recipe))) == 1
 
-    def test_cache_dir_escaping_the_workspace_is_blocked(self, monkeypatch, tmp_path) -> None:
-        """cache_dir is always a filesystem location and was previously unchecked."""
+    def test_a_nested_path_is_never_mistaken_for_a_hub_id(self) -> None:
+        """No hub id has a directory tree in it, so a second slash settles the question even
+        for a value that is relative and does not exist."""
+        assert _safety.names_local_path("out/models/mymodel") is True
+
+    def test_classification_does_not_depend_on_where_the_agent_was_launched(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """The old existence probe ran against the working directory, so merely running next
+        to a directory named ``nvidia/`` reclassified the default model id as a local file and
+        refused the agent's own default recipe -- the same command passing or failing depending
+        on where it was typed. Existence is a question about the workspace, not the CWD.
+        """
+        (tmp_path / "nvidia").mkdir()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("AUDIO_AGENT_WORKSPACE", raising=False)
+
+        assert _safety.names_local_path("nvidia/diar_sortformer_4spk-v1") is False
+
+
+class TestSharedDependencyLocationsAreNotLocked:
+    """The lock governs the dataset and the outputs, not shared dependencies.
+
+    ``cache_dir`` is a model-download cache and ``config_path`` a packaged pipeline config --
+    closer to site-packages than to user data. Locking them refused the natural
+    ``~/.cache/huggingface`` on validate, smoke and run alike with no override, so a locked
+    deployment could no longer share one cache between projects and re-downloaded
+    multi-gigabyte checkpoints per recipe.
+    """
+
+    def test_a_shared_model_cache_outside_the_workspace_is_allowed(self, monkeypatch, tmp_path) -> None:
         monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))
         recipe = Recipe.from_dict(
-            {"stages": [{"ref": "InferenceAsrNemoStage", "params": {"cache_dir": "/etc/cache"}}]}
+            {"stages": [{"ref": "InferenceAsrNemoStage", "params": {"cache_dir": "~/.cache/huggingface"}}]}
+        )
+        assert _safety.path_violations(_safety.recipe_path_params(recipe)) == []
+
+    def test_a_packaged_config_outside_the_workspace_is_allowed(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))
+        recipe = Recipe.from_dict(
+            {"stages": [{"ref": "AudioDataFilterStage", "params": {"config_path": "/opt/pkg/default_config.yaml"}}]}
+        )
+        assert _safety.path_violations(_safety.recipe_path_params(recipe)) == []
+
+    def test_the_dataset_and_outputs_are_still_locked(self, monkeypatch, tmp_path) -> None:
+        """The exemption is narrow: everything the run reads as data or writes as output stays
+        contained, which is what the lock was opted into for."""
+        monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))
+        recipe = Recipe.from_dict(
+            {"stages": [{"ref": "ManifestWriterStage", "params": {"output_path": "/etc/out.jsonl"}}]}
         )
         assert len(_safety.path_violations(_safety.recipe_path_params(recipe))) == 1
 

@@ -241,9 +241,15 @@ def _execution_needs(
 
     for i, st in enumerate(stages):
         contract = contracts[i] if i < len(contracts) else None
-        if i in expansion.opaque:
+        if i in expansion.opaque or i in expansion.unrunnable:
             # A composite nobody could open still occupies the cluster. Counting it as a single
             # leaf understates its inner concurrency, but skipping it would budget nothing at all.
+            #
+            # ``unrunnable`` is here for the same reason and reaches the same answer by a
+            # different route: the executor refuses to substitute a single-child
+            # decomposition and runs the COMPOSITE, so the composite's own resources are
+            # exactly what gets reserved. It contributes no leaf either, and left out it
+            # would price at zero -- letting a plan look feasible by omitting a stage.
             out.append(need(i, st, contract))
             continue
         for item in grouped.get(i, []):

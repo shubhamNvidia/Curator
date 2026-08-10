@@ -242,6 +242,11 @@ def _mock_local_start(monkeypatch: pytest.MonkeyPatch, temp_dir: Path) -> None:
     temp_dir.mkdir(exist_ok=True)
     monkeypatch.setattr("nemo_curator.core.client.RayClient", _FakeRayClient)
     monkeypatch.setattr(_ray, "_detect_gpus", lambda: 0)
+    # The stub ignores ``dir=``, so the root has to be pinned to the one the session
+    # directory is actually under. Otherwise the harness records a root the directory does
+    # not live in -- a disagreement no real bootstrap can produce, and one that would make
+    # the containment gate look broken here while being right in production.
+    monkeypatch.setattr(_ray, "_ray_temp_root", lambda: os.path.realpath(temp_dir.parent))
     monkeypatch.setattr(_ray.tempfile, "mkdtemp", lambda **_kwargs: str(temp_dir))
 
 
@@ -438,6 +443,95 @@ def test_an_unverifiable_session_dir_refuses_before_touching_the_callers_driver(
     assert _ray.shutdown_cluster(address) is False
     assert shutdowns == 0, "a refusal must not close the caller's Ray session"
     assert _ray.owns_cluster(address), "ownership must survive for a retry"
+
+
+def test_cleanup_asks_about_the_root_it_used_not_the_one_configured_now(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Containment is a question about where the directory WAS created.
+
+    Re-deriving the candidate roots at shutdown asks about the environment as it is then. A
+    caller that set ``TMPDIR`` for the run and cleared it afterwards -- or an HPC job whose
+    scratch variable is gone by teardown -- made that check fail on a directory this module
+    had just created itself. Shutdown then refused identically on every retry, so the head
+    stayed up and the tree leaked, on the one path whose entire job is cleanup.
+    """
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setenv("TMPDIR", str(scratch))
+    temp_dir = scratch / "ray_audio_agent_scratch"
+    _mock_local_start(monkeypatch, temp_dir)
+    address = _ray.ensure_cluster()
+
+    monkeypatch.delenv("TMPDIR", raising=False)  # the run is over; the scratch var is gone
+
+    assert _ray.shutdown_cluster(address) is True
+    assert not temp_dir.exists()
+
+
+def test_a_blank_ray_address_is_refused_rather_than_quietly_going_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Set-but-empty is a broken instruction, and must not read as an absent one.
+
+    Every branch asks "is it truthy" or "is it truthy and non-blank", so whitespace slid past
+    the authoritative-external check and started a LOCAL head -- the exact substitution this
+    function refuses to make for any other external value, performed without a word.
+    """
+    monkeypatch.setenv("RAY_ADDRESS", "   ")
+
+    with pytest.raises(RuntimeError, match="names no cluster"):
+        _ray.ensure_cluster()
+
+
+def test_a_bootstrap_that_dies_before_starting_leaves_no_directory_behind(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The import and the client construction sat outside the cleanup.
+
+    An ImportError from a partial install, or a constructor rejecting its arguments, escaped
+    with the temp directory already on disk and nothing holding a reference to remove it --
+    and a broken install fails on every attempt, so it leaked one directory per try into the
+    very root the object store then had to fit inside.
+    """
+    temp_dir = tmp_path / "ray_audio_agent_ctor"
+    _mock_local_start(monkeypatch, temp_dir)
+
+    def exploding_client(**_kwargs: Any) -> None:
+        msg = "no acceptable RayClient"
+        raise TypeError(msg)
+
+    monkeypatch.setattr("nemo_curator.core.client.RayClient", exploding_client)
+
+    with pytest.raises(TypeError, match="no acceptable RayClient"):
+        _ray.ensure_cluster()
+
+    assert not temp_dir.exists()
+    assert _ray._STARTED == {}
+    assert "RAY_MAX_LIMIT_FROM_API_SERVER" not in os.environ
+
+
+def test_an_embedded_interpreter_does_not_put_the_working_directorys_parent_on_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Embedded interpreters leave ``sys.executable`` empty.
+
+    ``abspath("")`` is the working directory, so its PARENT was prepended to PATH -- and an
+    unrelated executable named ``ray`` sitting there would have been started as the head.
+    """
+    (tmp_path / "ray").write_text("#!/bin/sh\nexit 1\n")
+    (tmp_path / "ray").chmod(0o755)
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+    monkeypatch.setattr(sys, "executable", "")
+    before = os.environ.get("PATH")
+
+    with _ray._interpreter_ray_on_path():
+        assert os.environ.get("PATH") == before
 
 
 def test_the_socket_budget_leaves_room_for_the_path_ray_actually_binds() -> None:

@@ -283,19 +283,23 @@ def test_smoke_stops_only_the_ray_head_it_bootstrapped(
     source = tmp_path / "source.jsonl"
     source.write_text('{"audio_filepath":"clip.wav"}\n', encoding="utf-8")
     stopped: list[str] = []
-    ownership_checks = 0
+    bootstrapped = False
+
+    def bootstrap():
+        nonlocal bootstrapped
+        bootstrapped = True
+        return "127.0.0.1:62000"
 
     def owns_after_bootstrap(address=None):
-        nonlocal ownership_checks
-        ownership_checks += 1
-        return ownership_checks > 1 and address in {
-            None,
-            "127.0.0.1:62000",
-        }
+        # Keyed off the bootstrap itself rather than a count of how many times ownership
+        # happens to be consulted. The count encoded the call sequence of one version of
+        # the verb, so any additional ownership check -- such as the guarantee that a head
+        # is stopped when the verb raises -- silently inverted the stub's answer.
+        return bootstrapped and address in {None, "127.0.0.1:62000"}
 
     monkeypatch.delenv("RAY_ADDRESS", raising=False)
     monkeypatch.setattr(verbs, "_profile_binding", lambda _binding: None)
-    monkeypatch.setattr(verbs, "_bootstrap_ray", lambda: "127.0.0.1:62000")
+    monkeypatch.setattr(verbs, "_bootstrap_ray", bootstrap)
     monkeypatch.setattr(_ray, "owns_cluster", owns_after_bootstrap)
     monkeypatch.setattr(
         _ray,
@@ -336,6 +340,67 @@ def test_smoke_stops_only_the_ray_head_it_bootstrapped(
     assert result["status"] == "completed"
     assert stopped == ["127.0.0.1:62000"]
     assert "ray_bootstrap_cleanup=completed" in result["notes"]
+
+
+def test_an_unexpected_error_after_execution_still_stops_the_head_run_started(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """``run`` stops its head on every path it anticipates -- and the tail is not one.
+
+    ``smoke`` puts its stop in a ``finally``; ``run`` does not. Between execution and its
+    final stop sit dataset re-binding, artifact publishing and report assembly, none of it
+    inside a handler. An error there escaped past the stop and left a live local head behind
+    in a process that had already given up. The next call then found RAY_ADDRESS pointing at
+    it and refused as ambiguous, so one unrelated failure made every later run refuse until
+    the process was restarted.
+    """
+    source = tmp_path / "source.jsonl"
+    source.write_text('{"audio_filepath": "/tmp/a.wav"}\n', encoding="utf-8")
+    stopped: list[str] = []
+    bootstrapped = False
+
+    def bootstrap():
+        nonlocal bootstrapped
+        bootstrapped = True
+        return "127.0.0.1:62000"
+
+    def exploding_tail(*_args, **_kwargs):
+        msg = "artifact publishing blew up"
+        raise RuntimeError(msg)
+
+    monkeypatch.delenv("RAY_ADDRESS", raising=False)
+    monkeypatch.delenv("AUDIO_AGENT_REQUIRE_SMOKE", raising=False)
+    monkeypatch.setattr(verbs, "_bootstrap_ray", bootstrap)
+    monkeypatch.setattr(
+        _ray, "owns_cluster", lambda address=None: bootstrapped and address in {None, "127.0.0.1:62000"}
+    )
+    monkeypatch.setattr(_ray, "shutdown_cluster", lambda address=None: stopped.append("stopped") or True)
+    monkeypatch.setattr(verbs, "_apply_ray_cluster_capacity", lambda env, _address: env)
+    monkeypatch.setattr(verbs, "probe_env", lambda: EnvProfile(total_cpus=8, total_ram_gb=32))
+    monkeypatch.setattr(verbs, "build_stages", lambda _rec: ([object()], []))
+    monkeypatch.setattr(
+        verbs,
+        "_plan_resources",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            mode="batch",
+            feasible=True,
+            escalations=[],
+            machine_fingerprint="machine",
+            to_dict=lambda: {"mode": "batch"},
+        ),
+    )
+    monkeypatch.setattr(verbs, "_run_pipeline_autofallback", lambda *_a, **_k: ([object()], "batch"))
+    monkeypatch.setattr(verbs, "_publish_artifacts", exploding_tail)
+
+    with pytest.raises(RuntimeError, match="artifact publishing blew up"):
+        verbs.run(
+            {"stages": [{"ref": "ManifestReader", "params": {"manifest_path": str(source)}}]},
+            confirm=True,
+            bootstrap_ray=True,
+        )
+
+    assert stopped == ["stopped"]
 
 
 def test_fixed_workers_multiply_cpu_and_gpu_scheduling_footprints() -> None:

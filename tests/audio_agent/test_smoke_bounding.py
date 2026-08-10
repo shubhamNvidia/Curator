@@ -495,7 +495,7 @@ def test_unknown_disk_writer_fails_the_future_stage_guard(
     assert "does not declare output_path_params" in issues[0]
 
 
-def test_a_writer_declaring_no_redirectable_output_is_allowed(
+def test_an_empty_declaration_is_accepted_from_the_stage_it_is_true_of(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -508,13 +508,43 @@ def test_a_writer_declaring_no_redirectable_output_is_allowed(
     from nemo_curator.stages.audio import agent as foundation
     from nemo_curator.stages.audio._agent_ready import Gates, StageContract
 
+    class CreateInitialManifestReadSpeechStage:
+        auto_download = False
+
     monkeypatch.setattr(
         foundation,
         "build_contract",
         lambda _stage: StageContract(gates=Gates(writes_to_disk=True, output_path_params=[])),
     )
 
-    assert verbs._smoke_write_issues([object()], str(tmp_path)) == []
+    assert verbs._smoke_write_issues([CreateInitialManifestReadSpeechStage()], str(tmp_path)) == []
+
+
+def test_an_empty_declaration_from_any_other_writer_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Accepted from anyone, ``[]`` is the easiest way past this check entirely.
+
+    A writer with a hardcoded or derived destination declares an empty list, the redirect
+    loop has nothing to iterate, and the smoke is pronounced isolated while the stage writes
+    into the caller's real output tree. Isolation that cannot be proven fails closed, exactly
+    as it does for a writer that never declared at all -- so the exemption is a name, not a
+    shape anyone can adopt.
+    """
+    from nemo_curator.stages.audio import agent as foundation
+    from nemo_curator.stages.audio._agent_ready import Gates, StageContract
+
+    monkeypatch.setattr(
+        foundation,
+        "build_contract",
+        lambda _stage: StageContract(gates=Gates(writes_to_disk=True, output_path_params=[])),
+    )
+
+    issues = verbs._smoke_write_issues([object()], str(tmp_path))
+
+    assert len(issues) == 1
+    assert "empty output_path_params" in issues[0]
 
 
 def test_smoke_token_is_issued_only_after_sampled_goals_are_met(

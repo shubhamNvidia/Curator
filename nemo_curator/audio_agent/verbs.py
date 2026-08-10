@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import functools
 import ipaddress
 import json
 import math
@@ -36,7 +37,7 @@ import shutil
 import sys
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -622,8 +623,13 @@ def resolve(
     profile: dict[str, Any] | None = None
     with contextlib.suppress(Exception):  # a source we cannot profile simply adds nothing
         profile = profile_data(data).to_dict()
-    derived = config_strategy.resolve_from_data(stage, profile)
-    # Path A wins on conflict: an outcome the user asked for outranks an inference.
+    # Path A wins on conflict: an outcome the user asked for outranks an inference. Telling
+    # Path B what is already decided, rather than merging over it afterwards, keeps the
+    # ``strategy`` trail honest -- it used to record the data-informed value and its rationale
+    # for a param the merge then discarded.
+    derived = config_strategy.resolve_from_data(
+        stage, profile, already_set=set(result["params"])
+    )
     result["params"] = {**derived["params"], **result["params"]}
     result["strategy"] = list(result["strategy"]) + list(derived["strategy"])
     asks = list(result["asks"]) + list(derived["asks"])
@@ -984,6 +990,44 @@ def _run_pipeline_autofallback(
         raise
 
 
+def _stops_a_head_it_started(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Guarantee that a Ray head bootstrapped by this call is stopped if the call raises.
+
+    ``run`` and ``smoke`` stop their own head on every path they ANTICIPATE: a planning
+    error, an infeasible plan, a normal return. What they cannot cover is the long tail
+    between execution and that final stop -- re-binding the dataset, publishing artifacts,
+    assembling the report -- which is not inside any handler. An unexpected error there
+    escaped past the stop and left a live local head, with its ownership record and temp
+    directory, behind in a process that had already given up on the work. The next call then
+    found ``RAY_ADDRESS`` pointing at that head and refused as ambiguous, so one unrelated
+    failure made every subsequent run refuse until the process was restarted.
+
+    Ownership is module state in ``_ray``, so what needs stopping is knowable from outside
+    the verb: anything owned on the way out that was not owned on the way in was started
+    here. A successful return has already stopped and cleared it, so this finds nothing to
+    do -- which is why it can wrap the verb whole instead of re-indenting its body.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        from nemo_curator.audio_agent._ray import owns_cluster, shutdown_cluster
+
+        owned_before = owns_cluster()
+        try:
+            return fn(*args, **kwargs)
+        except BaseException:  # KeyboardInterrupt too: Ctrl-C must not orphan a live head
+            if not owned_before and owns_cluster():
+                # No address argument: ownership is the whole question, and it has just been
+                # answered. ``shutdown_cluster`` re-checks it and stops what this process
+                # owns, with the same refusal gates as every other teardown path.
+                with contextlib.suppress(Exception):
+                    shutdown_cluster()
+            raise
+
+    return wrapper
+
+
+@_stops_a_head_it_started
 def smoke(
     recipe: Recipe | dict[str, Any],
     *,
@@ -1385,6 +1429,7 @@ def smoke(
     return redacted
 
 
+@_stops_a_head_it_started
 def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat on purpose)
     recipe: Recipe | dict[str, Any],
     *,
@@ -3647,6 +3692,20 @@ def _smoke_write_issues(
                 issues.append(
                     f"{name}: auto_download must be disabled for a pre-staged smoke"
                 )
+            continue
+        if not adapter:
+            # ``[]`` is a positive claim -- "I write to disk through no redirectable
+            # parameter" -- and for the one stage above that is both true and safe, which is
+            # why it is handled by name just before this. Accepted from ANY stage, though, it
+            # became the easiest way past the whole check: a writer with a hardcoded or
+            # derived destination declares an empty list, the loop below has nothing to
+            # iterate, and the smoke is pronounced isolated while the stage writes into the
+            # caller's real output tree. Same reasoning as the undeclared case -- unprovable
+            # isolation fails closed -- so the exemption is a name, not a shape.
+            issues.append(
+                f"{name}: declares writes_to_disk=True with an empty output_path_params, so "
+                "there is no parameter to redirect and its isolation cannot be proven"
+            )
             continue
         for param in adapter:
             value = getattr(stage, param, None)

@@ -763,6 +763,19 @@ class TestDataInformedConfig:
         )
         assert result["params"]["output_sample_rate"] == 48000
 
+    def test_an_overridden_inference_leaves_no_trace_claiming_it_applied(self, tmp_path) -> None:
+        """The value was always the user's, but the strategy trail also gained a data_informed
+        entry stating 16000 and why it was chosen -- an audit record of a binding that never
+        happened. On the one param a user is most likely to have pinned deliberately, as a
+        strict gate, that reads as the agent having quietly widened it to fit the data.
+        """
+        manifest = self._manifest(tmp_path, "nemo.jsonl", {"audio_filepath": "@wav", "text": "hi"})
+        result = aa.resolve(
+            "MonoConversionStage", explicit={"output_sample_rate": 48000}, data_driven=True, data=manifest
+        )
+        rate_entries = [e for e in result["strategy"] if e["param"] == "output_sample_rate"]
+        assert [e["value"] for e in rate_entries] == [48000]
+
     def test_the_derivation_is_recorded_as_recomputable(self, tmp_path) -> None:
         """A data-derived value must be stamped so a different dataset recomputes it."""
         manifest = self._manifest(tmp_path, "nemo.jsonl", {"audio_filepath": "@wav", "text": "hi"})
