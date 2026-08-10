@@ -289,6 +289,32 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
         """Return machine health plus structured, non-executing remediation options."""
         return aa.doctor()
 
+    @server.tool()
+    def install_skill(
+        scope: str = "project",
+        host: str = "all",
+        mode: str = "copy",
+        skills: list[str] | None = None,
+        dest: str | None = None,
+        force: bool = False,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Install the packaged audio skills into the host discovery directories.
+
+        ``dry_run`` defaults to true here, unlike the CLI: this tool writes files
+        outside the curation flow, so an MCP host must ask for the write explicitly
+        rather than get it from a tool call that reads like an inspection. Refuses to
+        replace a target whose content differs unless ``force`` is set."""
+        return aa.install_skill(
+            scope=scope,
+            host=host,
+            mode=mode,
+            skills=skills,
+            dest=dest,
+            force=force,
+            dry_run=dry_run,
+        )
+
     return server
 
 

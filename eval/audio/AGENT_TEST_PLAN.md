@@ -17,7 +17,7 @@ strategy; the harness is the machine-facing enforcement of it.
 
 | Plane | What it is | What it owns | How we test it |
 | --- | --- | --- | --- |
-| **LLM plane** | The host model (Claude / Cursor) following `.claude/skills/audio-curation/SKILL.md` | Intent understanding, clarification, capability & module selection, ordering rationale, outcome→parameter decisions, explanations, recovery loop | Golden tool-call **trace assertions** (`trace_check.py`), **LLM-as-judge** (`judge.py`), and **human review** |
+| **LLM plane** | The host model (Claude / Cursor) following `nemo_curator/audio_agent/skills/audio-curation/SKILL.md` | Intent understanding, clarification, capability & module selection, ordering rationale, outcome→parameter decisions, explanations, recovery loop | Golden tool-call **trace assertions** (`trace_check.py`), **LLM-as-judge** (`judge.py`), and **human review** |
 | **Deterministic core** | `nemo_curator.audio_agent` verbs + `nemo_curator.stages.audio` contracts | Validation codes, `resolve`, `verify`/honesty, `plan_continuation`, planner feasibility, guardrails, card gate | Fully automated in `run_eval.py` (`queries.yaml`) — GPU-free |
 
 The LLM proposes; the deterministic core disposes. Most "agent got it wrong"

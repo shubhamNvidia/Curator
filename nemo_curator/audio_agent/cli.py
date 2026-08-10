@@ -332,6 +332,23 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block
 
     dr = sub.add_parser("doctor", help="check environment health (driver/CUDA, ffmpeg, deps, ...) + get fix steps")
     dr.add_argument("--json", action="store_true", help="emit the JSON report instead of human-readable text")
+
+    ins = sub.add_parser("install-skill", help="install the packaged skills where Codex/Cursor/Claude Code find them")
+    ins.add_argument("--scope", choices=["project", "user"], default="project",
+                     help="project: the current directory; user: the home-directory equivalents (default: project)")
+    ins.add_argument("--host", choices=["all", "claude", "codex", "cursor"], default="all",
+                     help="which host's discovery directory to write (default: all)")
+    ins.add_argument("--skill", dest="skills", nargs="*",
+                     help="install only these packaged skills (default: all of them)")
+    ins.add_argument("--dest", help="project-scope root to install into instead of the current directory")
+    mode = ins.add_mutually_exclusive_group()
+    mode.add_argument("--copy", dest="mode", action="store_const", const="copy",
+                      help="copy the files (default; works without symlink support)")
+    mode.add_argument("--symlink", dest="mode", action="store_const", const="symlink",
+                      help="link to the installed package so the skill tracks upgrades")
+    ins.set_defaults(mode="copy")
+    ins.add_argument("--force", action="store_true", help="replace a target whose content differs")
+    ins.add_argument("--dry-run", action="store_true", help="report what would be written, and write nothing")
     return p
 
 
@@ -494,6 +511,19 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0912 - a flat 
                 return _finish(cmd, rep)
             print(aa.render_doctor(rep))
             return _result_exit_code(cmd, rep)
+        elif cmd == "install-skill":
+            return _finish(
+                cmd,
+                aa.install_skill(
+                    scope=args.scope,
+                    host=args.host,
+                    mode=args.mode,
+                    skills=args.skills,
+                    dest=args.dest,
+                    force=args.force,
+                    dry_run=args.dry_run,
+                ),
+            )
         else:  # pragma: no cover - argparse enforces the choices
             return 2
     except Exception as e:  # noqa: BLE001 - CLI failures must remain structured

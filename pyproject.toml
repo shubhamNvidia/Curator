@@ -289,6 +289,11 @@ all = [
     "nemo_curator[video_cuda12]",
 ]
 
+[project.scripts]
+# A stable command the audio skills can document, instead of asking every host to
+# reconstruct `python -m nemo_curator.audio_agent` with the right interpreter.
+nemo-curator-audio = "nemo_curator.audio_agent.cli:main"
+
 [dependency-groups]
 build = ["setuptools", "torch<=2.10.0", "Cython", "packaging"]
 dev = ["jupyter"]
@@ -485,6 +490,7 @@ ignore = [
   ".secrets.baseline",
   ".pre-commit-config.yaml",
   "api-design.md",
+  ".agents/**",
   ".claude/**",
   ".cursor/**",
   ".github/**",

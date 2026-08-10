@@ -160,10 +160,14 @@ benchmark_results/
 
 # Agent related files
 AGENTS.md
-# ...but the packaged audio-agent driving doc must ship (it is referenced by
-# nemo_curator/audio_agent/__init__.py and is part of the tool surface).
-!nemo_curator/audio_agent/AGENTS.md
 CLAUDE.md
+# ...but the audio agent's own instructions are part of the tool surface and must ship:
+# each AGENTS.md auto-attaches for work in its directory, and each CLAUDE.md is the
+# one-line `@AGENTS.md` import that gives Claude Code the same text.
+!nemo_curator/audio_agent/AGENTS.md
+!nemo_curator/audio_agent/CLAUDE.md
+!nemo_curator/stages/audio/AGENTS.md
+!nemo_curator/stages/audio/CLAUDE.md
 .claude/settings.local.json
 
 # Fern: generated API reference from `libraries` in docs.yml (`fern docs md generate`).

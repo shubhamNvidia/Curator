@@ -47,7 +47,7 @@ def _components_reference() -> list[str]:
         "## Components & flow reference",
         "",
         "The agent is two planes: an LLM **planner/critic** (host model following "
-        "`.claude/skills/audio-curation/SKILL.md`) and a deterministic **core** "
+        "`nemo_curator/audio_agent/skills/audio-curation/SKILL.md`) and a deterministic **core** "
         "(`nemo_curator.audio_agent`, exposed as CLI + MCP tools). The LLM proposes; "
         "the core grounds and checks every decision.",
         "",
