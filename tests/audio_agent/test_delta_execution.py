@@ -135,6 +135,36 @@ class TestDeltaExecution:
         scan = verbs.reuse_scan(rec, data=str(folder))
         assert scan["decision"] == "already_done", scan["rationale"]
 
+    def test_a_second_delta_resumes_from_what_the_first_one_merged(self, tmp_path: Path) -> None:
+        """A corpus grows more than once, so a delta has to be able to follow a delta.
+
+        The merged manifest is published under the full pipeline's own key, which means the next
+        delta reads its record like any other -- and refuses if that record describes an
+        execution that never happened. Pairing the merged row count with either run's input
+        makes a row-preserving writer look like it took 2 rows and produced 3, which
+        ``contradictions`` correctly treats as the stage disproving its contract. Without this,
+        the first delta is the last one a pipeline can ever run.
+        """
+        folder, out = tmp_path / "audio", tmp_path / "out" / "m.jsonl"
+        for name in ("a.wav", "b.wav"):
+            _wav(folder / name)
+        rec = _recipe(folder, out)
+        assert _run(rec, folder)["status"] == "completed"
+
+        _wav(folder / "c.wav")
+        assert verbs.delta_run(rec, data=str(folder), confirm=True)["status"] == "completed"
+
+        _wav(folder / "d.wav")
+        offered = verbs.reuse_scan(rec, data=str(folder))["delta"]
+        assert offered["status"] == "ready", offered["reason"]
+
+        done = verbs.delta_run(rec, data=str(folder), confirm=True)
+        assert done["status"] == "completed", done
+        assert done["ran_files"] == [str(folder / "d.wav")]
+        assert done["merged"][0]["rows_kept"] == 3
+        assert done["merged"][0]["rows_added"] == 1
+        assert {os.path.basename(r["audio_filepath"]) for r in _rows(out)} == {"a.wav", "b.wav", "c.wav", "d.wav"}
+
     def test_a_removed_file_loses_its_rows_without_running_anything(self, tmp_path: Path) -> None:
         folder, out = tmp_path / "audio", tmp_path / "out" / "m.jsonl"
         for name in ("a.wav", "b.wav"):

@@ -747,7 +747,14 @@ def republish(  # noqa: PLR0913 - an artifact record's fields, none of them deri
             contract_hash=recipe.contract_hash,
             uri=sink.uri,
             kind=art_mod.classify_output(sink.uri) or step.kind,
-            rows_in=getattr(prior, "rows_in", 0),
+            # Not the prior run's input count. ``publish`` fills ``rows_out`` by counting the
+            # merged file, and pairing that total with the input of one of the two runs behind it
+            # describes no execution that ever happened: a 1:1 writer ends up recorded as having
+            # taken 2 rows and produced 3, which ``contradictions`` reads as the stage disproving
+            # its own contract -- so the first delta would be the last one this pipeline could
+            # ever run. Zero is what the field already means by "not recorded", and a merged
+            # artifact genuinely has no single-run input count to record.
+            rows_in=0,
             produced_roles=list(getattr(prior, "produced_roles", []) or []),
             produced_keys=list(getattr(prior, "produced_keys", []) or []),
             cumulative_sec=round(float(getattr(prior, "cumulative_sec", 0.0)) + added_sec, 3),
