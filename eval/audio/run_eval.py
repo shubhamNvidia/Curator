@@ -127,6 +127,12 @@ def _seed_source(root: str, rows: int) -> str:
     return src
 
 
+def _rows_of(src: str) -> list[str]:
+    """The audio paths the seeded manifest names."""
+    with open(src, encoding="utf-8") as f:
+        return [json.loads(line)["audio_filepath"] for line in f if line.strip()]
+
+
 def _expand(obj: object, root: str, src: str) -> object:
     """Substitute ``{root}``/``{src}`` in a scenario recipe so it points at the temp store."""
     if isinstance(obj, str):
@@ -138,27 +144,47 @@ def _expand(obj: object, root: str, src: str) -> object:
     return obj
 
 
-def _materialize(uri: str, kind: str) -> None:
-    """Create the output an artifact will claim to have produced."""
+def _materialize(uri: str, kind: str, *, sources: list[str] | None = None) -> None:
+    """Create the output an artifact will claim to have produced.
+
+    A manifest names its source files, as the pipeline's own writer would: a row that cannot be
+    traced back to an input is a row no delta can decide about, so a placeholder path here would
+    quietly make the changed-file cases untestable.
+    """
     if kind == "manifest" or uri.endswith((".jsonl", ".json")):
         os.makedirs(os.path.dirname(uri) or ".", exist_ok=True)
+        rows = sources or ["clip0.wav"]
         with open(uri, "w", encoding="utf-8") as f:
-            f.write(json.dumps({"audio_filepath": "clip0.wav", "duration": 1.0}) + "\n")
+            for path in rows:
+                f.write(json.dumps({"audio_filepath": path, "duration": 1.0}) + "\n")
         return
     os.makedirs(uri, exist_ok=True)
     with open(os.path.join(uri, "clip0.wav"), "wb") as f:
         f.write(b"RIFF" + bytes(40))
 
 
-def _publish_prefix(recipe: object, dataset_key: str, *, prefix: int, duration_sec: float) -> list:
-    """Publish artifacts for the first ``prefix`` steps, as a finished run would have."""
+def _publish_prefix(  # noqa: PLR0913 - the finished run this fakes is described by all of them
+    recipe: object,
+    dataset_key: str,
+    *,
+    prefix: int,
+    duration_sec: float,
+    sources: list[str] | None = None,
+    coverage: dict[str, str] | None = None,
+) -> list:
+    """Publish artifacts for the first ``prefix`` steps, as a finished run would have.
+
+    ``coverage`` is the per-file inventory a real run records beside each artifact. Passing it is
+    what makes a changed-file delta possible, so a scenario that omits it exercises the older
+    world where only the whole-corpus key is known.
+    """
     from nemo_curator.audio_agent import artifacts as art_mod
 
     published = []
     for plan in art_mod.plan_steps(recipe, dataset_key)[:prefix]:
         if not plan.persists():
             continue
-        _materialize(plan.uri, plan.kind)
+        _materialize(plan.uri, plan.kind, sources=sources)
         published.append(
             art_mod.publish(
                 art_mod.Artifact(
@@ -172,14 +198,19 @@ def _publish_prefix(recipe: object, dataset_key: str, *, prefix: int, duration_s
                     produced_roles=["audio_filepath"],
                     produced_keys=["audio_filepath"],
                     duration_sec=duration_sec,
+                    cumulative_sec=duration_sec,
                     dataset_key=dataset_key,
                     fingerprint_tier="stat",
+                    impl_version=plan.impl_version,
                     code_version=art_mod.code_version(),
                     deterministic=plan.deterministic,
                     ttl_sec=plan.ttl_sec,
+                    covers_files=len(coverage or {}),
                 )
             )
         )
+        if coverage:
+            art_mod.save_coverage(plan.step_key, coverage)
     return published
 
 
@@ -230,11 +261,14 @@ def _check_reuse(query: dict) -> tuple[bool, str]:
             src = _seed_source(root, int(spec.get("rows", 3)))
             recipe_dict = _expand(spec["recipe"], root, src)
             recipe = Recipe.from_dict(recipe_dict).freeze()
+            before = profile_data(src)
             published = _publish_prefix(
                 recipe,
-                profile_data(src).dataset_key(),
+                before.dataset_key(),
                 prefix=int(spec.get("publish_prefix", 0)),
                 duration_sec=float(spec.get("duration_sec", 120.0)),
+                sources=_rows_of(src),
+                coverage=dict(before.inventory) if spec.get("coverage") else None,
             )
             _break(spec.get("break"), published=published, src=src, root=root)
             scan = aa.reuse_scan(recipe_dict, data=src)
@@ -245,6 +279,7 @@ def _check_reuse(query: dict) -> tuple[bool, str]:
             else:
                 os.environ["AUDIO_AGENT_RUNS_DIR"] = old_runs
 
+    delta = scan.get("delta") or {}
     actual = {
         "reuse_decision": scan["decision"],
         "reuse_stages": scan.get("reuse_stages", []),
@@ -252,6 +287,8 @@ def _check_reuse(query: dict) -> tuple[bool, str]:
         "prompt_user": scan["prompt_user"],
         "recommended": scan["recommended"],
         "artifact_count": n_artifacts,
+        "delta_status": delta.get("status", "absent"),
+        "delta_files": delta.get("file_count", 0),
     }
     for field, got in actual.items():
         if field in expect and got != expect[field]:
@@ -260,7 +297,8 @@ def _check_reuse(query: dict) -> tuple[bool, str]:
         return False, f"rationale={scan['rationale']!r} missing {expect['rationale_contains']!r}"
     return True, (
         f"decision={scan['decision']} reuse={scan.get('reuse_stages', [])} "
-        f"prompt={scan['prompt_user']} rec={scan['recommended']} artifacts={n_artifacts}"
+        f"prompt={scan['prompt_user']} rec={scan['recommended']} artifacts={n_artifacts} "
+        f"delta={actual['delta_status']}({actual['delta_files']} file(s))"
     )
 
 

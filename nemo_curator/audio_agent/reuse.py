@@ -112,7 +112,7 @@ def scan(recipe: Recipe, *, dataset_key: str, limit: int = 5) -> dict[str, Any]:
             "recommended": "fresh",
             "prior_on_other_data": elsewhere,
             "prior_unsaved": unsaved,
-            "offer": _persist_offer(unsaved),
+            "offer": _persist_offer(recipe, unsaved),
             "rationale": _fresh_rationale(probes, elsewhere, unsaved),
         }
 
@@ -131,7 +131,7 @@ def scan(recipe: Recipe, *, dataset_key: str, limit: int = 5) -> dict[str, Any]:
             "prompt_user": False,
             "recommended": "fresh",
             "rationale": (
-                f"prior output exists through {plan.stage_ref}, but the remaining stage(s) need in-memory audio "
+                f"prior output exists through {plan.stage_ref}, but the remaining stage(s) need in-memory state "
                 f"that a persisted artifact cannot carry ({lost}); resuming would silently drop it"
             ),
         }
@@ -178,6 +178,13 @@ def _fresh_rationale(
         return str(unsaved["note"])
     if elsewhere:
         when = f" on {elsewhere['created_at']}" if elsewhere.get("created_at") else ""
+        if elsewhere.get("saved") is False:
+            return (
+                "this pipeline ran before on source data that has since changed "
+                f"({elsewhere['dataset_key']}{when}), and it persisted nothing that a later run could "
+                f"resume from -- add-checkpoint says where a manifest through {elsewhere['stage']} would go, "
+                "which is also what a changed-file delta would then need"
+            )
         return (
             "this pipeline has run before, but the detected source identity changed since then "
             f"(prior output through {elsewhere['stage']} came from {elsewhere['dataset_key']}{when}); "
@@ -348,7 +355,7 @@ def _prefix_seconds(rec: Any, plans: list[StepPlan]) -> float | None:  # noqa: A
     return round(total, 1)
 
 
-def _persist_offer(unsaved: dict[str, Any] | None) -> dict[str, Any] | None:
+def _persist_offer(recipe: Recipe, unsaved: dict[str, Any] | None) -> dict[str, Any] | None:
     """How to make this prefix reusable next time, using machinery that already exists.
 
     Deliberately a suggestion for the gate rather than something the agent does on its own. The
@@ -356,18 +363,26 @@ def _persist_offer(unsaved: dict[str, Any] | None) -> dict[str, Any] | None:
     the cost of an eviction policy, a staleness window, and a new way to serve wrong data
     silently. A writer the user agreed to is a visible file in a path they chose, and it already
     publishes an artifact through the normal path.
+
+    Where that writer goes is asked of :mod:`checkpoint`, which simulates it, rather than being
+    read off the end of the recomputed prefix. Those are different positions whenever the
+    pipeline is still holding audio in memory there -- in the ALM recipe the prefix ends at the
+    ASR stage and a manifest written after it crashes on the resident waveform, so the obvious
+    advice was advice to break the run.
     """
     # A prefix that already ends in a writer needs no writer. Its output went to disk and the
     # missing piece is the artifact record, so this advice would not apply.
     if not unsaved or unsaved.get("resume_point_persists"):
         return None
-    last = unsaved["stages"][-1]
-    return {
-        "action": "persist_prefix",
-        "after_stage": last,
-        "how": f"add a writer stage after {last} so its output lands on disk",
-        "effect": "a later request that starts the same way can resume from it instead of recomputing",
-    }
+    from nemo_curator.audio_agent import checkpoint
+
+    spot, why = checkpoint.advise(recipe)
+    if spot is not None:
+        return spot.as_dict()
+    # One action for every negative, with the distinction ("not worth it" / "you already have
+    # one" / "the audio is still in memory") carried in prose. A code per case would be a
+    # taxonomy to keep in sync with sentences that already say it.
+    return {"action": "no_checkpoint", "why": why} if why else None
 
 
 def _prior_on_other_data(recipe: Recipe, dataset_key: str) -> dict[str, Any] | None:
@@ -391,6 +406,36 @@ def _prior_on_other_data(recipe: Recipe, dataset_key: str) -> dict[str, Any] | N
                 "dataset_key": other,
                 "stage": hits[-1].stage_ref,
                 "created_at": getattr(art, "created_at", ""),
+            }
+    return _ran_unsaved_elsewhere(recipe, dataset_key)
+
+
+def _ran_unsaved_elsewhere(recipe: Recipe, dataset_key: str) -> dict[str, Any] | None:
+    """A completed run of this pipeline on other data that left nothing on disk.
+
+    Reached only when the artifact probe found nothing anywhere, and it looks where that probe
+    structurally cannot: :func:`_known_dataset_keys` lists datasets that HAVE artifacts, so a
+    pipeline computing entirely in memory is invisible to it. Saying "no prior artifact matches"
+    about a pipeline that ran yesterday is true and reads as "this is new", which sends the user
+    to the wrong problem -- the work is being paid for twice for want of somewhere to put it.
+    """
+    from nemo_curator.audio_agent import artifacts as art_mod
+    from nemo_curator.audio_agent import run_store
+
+    for summary in run_store.list_runs()[:_MAX_PRIOR_RUNS]:
+        other = str(summary.get("dataset_key") or "")
+        if not other or other == dataset_key or summary.get("status") != "completed":
+            continue
+        rec = run_store.load(str(summary.get("run_id") or ""))
+        chain = art_mod.plan_steps(recipe, other)
+        shared = _shared_prefix_len([p.step_key for p in chain], list(getattr(rec, "steps", None) or []))
+        if shared:
+            return {
+                "dataset_key": other,
+                "stage": chain[shared - 1].stage_ref,
+                "created_at": getattr(rec, "created_at", ""),
+                "saved": False,
+                "run_id": getattr(rec, "run_id", None),
             }
     return None
 

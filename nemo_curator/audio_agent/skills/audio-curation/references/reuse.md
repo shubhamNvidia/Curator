@@ -16,8 +16,9 @@ dataset key at the reported trust tier), `incremental` (the first *N* stages are
 already done — e.g. resample + VAD + quality-filter exist and only ASR is new),
 or `fresh`. Reuse survives things that do NOT change output bytes: a different
 batch size, different `resources`, a different output path, or a **stricter
-success bar** (the data is reused and the contract re-verified). A detected
-dataset-key change, a missing completion marker, or a Curator version change
+success bar** (the data is reused and the contract re-verified), and a Curator
+build change that did not touch the stages in play. A detected dataset-key
+change, a missing completion marker, or an edit to a stage's own implementation
 prevents reuse. Shape-tier matches are low trust and default fresh because
 metadata gaps may hide changes. A stage declared non-deterministic is not
 refused—it is offered with that said and `fresh` pre-selected, because the result
@@ -58,6 +59,58 @@ python -m nemo_curator.audio_agent continue --recipe new.yaml --data /path/to/da
 `--parent-run-id <id>` is optional and additive: it diffs against that specific run, and
 whichever engine reuses more wins. `runs --data /path/to/data` shows everything already
 done to a corpus; `reindex` rebuilds the lookup index from the JSON records if it is lost.
+
+## When only a few files changed
+
+A dataset key names the whole corpus, so adding one file to a curated folder misses every step
+key and the plain reading of that miss is "recompute all thousand files". When the scan can do
+better it says so on the same card: `delta.status: ready`, `recommended: delta`, and a `choices`
+list whose first entry is running the changed files only. The `delta` block names them
+(`change.added_files`, `modified_files`, `removed_files`), says which stages would run
+(`run_stages`), how many prior rows survive (`rows_kept`) and how many are dropped and
+recomputed (`rows_dropped`).
+
+```bash
+python -m nemo_curator.audio_agent delta-run --recipe recipe.yaml --data /path/to/data \
+  --confirm <config_hash>
+```
+
+This runs the user's own stages over the changed files, merges the rows into the existing
+manifest, and republishes it under the key the full pipeline has for the enlarged corpus — so
+the next `reuse-scan` answers `already_done` by an ordinary probe. It rewrites the manifest in
+place after merging, which is why it is confirm-gated like `run`. Relay its `next`: when the
+delta covers only a prefix of the recipe, the remaining stages still run over every row, via
+`continue --choice extend`.
+
+`status: no_delta` is an answer, not an error, and its `reason` is worth relaying because it
+says what would have to change. Common ones: nothing is persisted early enough to merge into
+(`add-checkpoint` fixes it), a stage in the prefix has not declared that it computes each row
+from that row alone, the prior rows cannot be traced back to the files that produced them, or
+the two corpora share no file at all — a different dataset rather than a changed one. A refusal
+means a full run; it never means a partial result presented as a whole one.
+
+## When the scan says the work was done but nothing was saved
+
+A stage only leaves something to resume from if it was configured to write somewhere. A
+pipeline whose GPU stages hand their rows to the next stage in memory has nothing on disk, so
+`decision` is `fresh` even though the transcription ran last week — the scan discloses this as
+`prior_unsaved` and attaches an `offer`.
+
+When the offer's `action` is `add_checkpoint`, relay it: one `ManifestWriterStage` in their
+recipe makes the expensive stages resumable from then on. Get the recipe rather than editing
+by hand — the position is not always where the expensive work ends, because a manifest cannot
+hold a waveform that is still in memory, nor state some stages pass to each other outside the
+row:
+
+```bash
+python -m nemo_curator.audio_agent add-checkpoint --recipe recipe.yaml \
+  --output-path /path/they/choose/checkpoint.jsonl
+```
+
+This returns the recipe with the writer in place and changes nothing on disk. Save it, then
+`validate` → smoke → `run` as usual. `action: no_checkpoint` means don't raise it: the `why`
+says whether the work is too cheap to be worth a file, a writer is already there, or the
+pipeline holds audio in memory to the end. Never propose a checkpoint the offer did not.
 
 Record what a run was FOR with `run --goal "..."` — that objective is what makes the
 candidate legible to a human months later.

@@ -90,9 +90,21 @@ class DataProfile:
     # manifests/folders better than the sampled shape, but remains a low-trust ``shape`` key.
     identity_digest: str = ""
     excluded_intermediates: int = 0  # stage-written files (e.g. split chunks) skipped in the scan
+    # Per-file identity behind the ``stat`` key: ``{relpath: token}``. The digest answers "did
+    # this dataset change", which is all reuse needed; the inventory answers "which files
+    # changed", which is what a delta run needs to process only those (REUSE_ARCHITECTURE.md
+    # §7). Populated only in the ``stat`` tier -- a partial inventory would report untouched
+    # files as absent and delete their prior results, so incomplete means empty here.
+    inventory: dict[str, str] = field(default_factory=dict)
+    # The directory the inventory's relative paths are relative to.
+    inventory_root: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         d = _clean(asdict(self))
+        # Deliberately not serialized: this rides along on every run record, report and plan
+        # that carries a profile, and a corpus of any size would bury the fields a human reads.
+        # It is persisted once, per artifact, by ``artifacts.save_coverage``.
+        d.pop("inventory", None)
         d["dataset_key"] = self.dataset_key()
         d["fingerprint_tier"] = self.fingerprint_tier
         return d

@@ -146,3 +146,46 @@ def test_diagnose_cli_forwards_recipe_context_and_signals_action_required(
 
 def test_unknown_diagnosis_returns_nonzero() -> None:
     assert cli._result_exit_code("diagnose", {"status": "unknown"}) == 1
+
+
+def test_delta_run_cli_forwards_the_execution_knobs_it_shares_with_run(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    recipe = tmp_path / "recipe.yaml"
+    recipe.write_text("stages: []\n", encoding="utf-8")
+    called: dict[str, object] = {}
+
+    def fake_delta_run(rec: object, **kwargs: object) -> dict[str, object]:
+        called["recipe"] = rec
+        called.update(kwargs)
+        return {"status": "completed"}
+
+    monkeypatch.setattr(aa, "delta_run", fake_delta_run)
+    rc = cli.main(
+        [
+            "delta-run",
+            "--recipe",
+            str(recipe),
+            "--data",
+            "/data/audio",
+            "--confirm",
+            "the-hash",
+            "--goal",
+            "keep the corpus current",
+        ]
+    )
+
+    assert json.loads(capsys.readouterr().out) == {"status": "completed"}
+    assert rc == 0
+    assert called["recipe"] == {"stages": []}
+    assert called["data"] == "/data/audio"
+    assert called["confirm"] == "the-hash"
+    assert called["goal"] == {"task": "keep the corpus current"}
+
+
+def test_no_delta_available_is_an_answer_rather_than_a_shell_failure() -> None:
+    """A script that tries a delta and falls back to a full run must see success here."""
+    assert cli._result_exit_code("delta-run", {"status": "no_delta", "delta": {"reason": "why"}}) == 0
+    assert cli._result_exit_code("delta-run", {"status": "refused"}) == 1

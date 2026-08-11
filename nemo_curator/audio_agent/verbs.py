@@ -2132,6 +2132,11 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
             run_id=run_id,
             input_count=int(getattr(report_obj, "input_count", 0)),
             data_profile=data_profile,
+            # A continuation's profile describes the artifact it physically read, not the corpus
+            # its logical dataset key names, so recording that as the corpus coverage would
+            # describe one dataset with another's file list. Withholding it costs a later delta
+            # (which says so by name) instead of computing one against the wrong inventory.
+            inventory=(None if logical_identity else _consumed_inventory(rec, dp_obj)),
             started_at=started_at,
             ended_at=ended_at,
             elapsed_sec=elapsed,
@@ -2244,6 +2249,23 @@ def _stage_cost(per_stage: dict[str, Any], stage: Any) -> tuple[float, float]:  
     return round(duration, 3), round(duration * gpus, 3)
 
 
+def _consumed_inventory(rec: Recipe, dp: Any) -> dict[str, str] | None:  # noqa: ANN401 - DataProfile
+    """The files this run actually read, which is what its artifacts cover.
+
+    Normally every file the profiler found. A run whose source was narrowed to a named subset
+    (``include_files``, how a delta processes only what changed) consumed only those, and
+    recording the whole corpus as its coverage would claim results it never computed.
+    """
+    if dp is None or not dp.inventory:
+        return None
+    named = rec.stages[0].params.get("include_files") if rec.stages else None
+    if not isinstance(named, list):
+        return dict(dp.inventory)
+    root = dp.inventory_root or ""
+    wanted = {os.path.relpath(os.path.abspath(os.path.expanduser(str(p))), root) for p in named}
+    return {rel: token for rel, token in dp.inventory.items() if rel in wanted}
+
+
 def _publish_artifacts(  # noqa: PLR0913 - publishing gathers the run's whole context
     rec: Recipe,
     stages: list[Any],
@@ -2254,6 +2276,7 @@ def _publish_artifacts(  # noqa: PLR0913 - publishing gathers the run's whole co
     run_id: str,
     input_count: int,
     data_profile: dict[str, Any] | None,
+    inventory: dict[str, str] | None = None,
     started_at: str,
     ended_at: str,
     elapsed_sec: float = 0.0,
@@ -2358,6 +2381,8 @@ def _publish_artifacts(  # noqa: PLR0913 - publishing gathers the run's whole co
             ended_at=ended_at,
             dataset_key=dataset_key,
             fingerprint_tier=fingerprint_tier,
+            covers_files=len(inventory or {}),
+            impl_version=plan.impl_version,
             code_version=art_mod.code_version(),
             model_version=plan.model_version,
             deterministic=plan.deterministic,
@@ -2366,6 +2391,9 @@ def _publish_artifacts(  # noqa: PLR0913 - publishing gathers the run's whole co
         )
         try:
             art_mod.publish(art)
+            if inventory:
+                # After publish, so a coverage file never outlives the artifact it describes.
+                art_mod.save_coverage(art.step_key, inventory)
         except Exception as exc:  # noqa: BLE001 - compute completion stays separate
             if persistence_warnings is not None:
                 persistence_warnings.append(
@@ -2961,7 +2989,308 @@ def reuse_scan(recipe: Recipe | dict[str, Any], *, data: str | None = None, limi
         result["data_profile"] = dp.to_dict()
     if _binding_blocks_execution(binding, data):
         result["rationale"] = f"prior work was not considered: {binding.reason}"
+    if result.get("decision") == "fresh" and dataset_key and dp is not None:
+        _attach_delta(result, rec, dp)
     return _safety.redact(result)
+
+
+def _attach_delta(result: dict[str, Any], rec: Recipe, dp: Any) -> None:  # noqa: ANN401 - DataProfile
+    """Add the changed-file option to a card whose key missed, when there is one.
+
+    A miss is where this belongs: a key names the whole corpus, so adding one file misses every
+    key even though almost all of the work behind it still holds. Left alone the card says
+    "nothing matches" and the honest reading of that is "recompute everything" -- which is how a
+    one-file addition comes to cost a full run.
+
+    A refusal is attached too when the change itself was understood. "Prior work exists but
+    these stages cannot be split per file" is a different fact from "this has never run", it is
+    the reason the full run is unavoidable, and it names what would have to change for it not
+    to be -- usually a checkpoint, or a stage that has not declared per-row independence.
+    """
+    from nemo_curator.audio_agent import delta as _delta
+
+    decision = _delta.plan(
+        rec,
+        dataset_key=dp.dataset_key(),
+        inventory=dp.inventory or None,
+        inventory_root=dp.inventory_root,
+    )
+    if decision.status != "ready" and decision.change is None and not result.get("prior_on_other_data"):
+        # Nothing ran before, so there is nothing a delta could have narrowed and no reason to
+        # mention one. When a prior run IS known, the same silence would hide why this costs
+        # full price -- usually an inventory that was never recorded, which is fixable.
+        return
+    result["delta"] = decision.to_dict()
+    if decision.status != "ready":
+        result["rationale"] = (
+            f"{result.get('rationale', '')}; running only the changed file(s) is not available "
+            f"here: {decision.reason}"
+        ).lstrip("; ")
+        return
+    change = decision.change
+    result.update(
+        recommended="delta",
+        prompt_user=True,
+        estimated_saving_sec=decision.estimated_saving_sec,
+        saving_is_lower_bound=True,
+        choices=[
+            {
+                "id": "delta",
+                "label": f"Run the {len(decision.files)} changed file(s) only",
+                "effect": (
+                    f"run {decision.prefix} stage(s) over the changed file(s) and merge the rows into "
+                    f"the prior result, keeping {decision.keeps} row(s) and replacing {decision.drops}"
+                ),
+                "verb": "delta_run",
+            },
+            {"id": "fresh", "label": "Run fresh", "effect": "recompute every file from the start"},
+        ],
+        rationale=(
+            f"no artifact matches this exact corpus, but {change.phrase()} since a prior run of this same "
+            f"pipeline: the other {len(change.unchanged)} file(s)' results through {decision.stage_ref} still "
+            f"hold, so delta_run processes only the changed file(s) and merges them in"
+        ),
+    )
+
+
+def add_checkpoint(
+    recipe: Recipe | dict[str, Any],
+    *,
+    output_path: str | None = None,
+    after: str | None = None,
+) -> dict[str, Any]:
+    """Where a mid-pipeline manifest would make the expensive work reusable, and the recipe for it.
+
+    Without ``output_path`` this answers only where such a checkpoint may go and what a later
+    run would then skip. With one, it returns the same recipe carrying a ``ManifestWriterStage``
+    at that position -- as a recipe to look at, never written to disk and never run. Adding it
+    is a recipe change the user makes, so it goes back through ``validate`` -> confirm ->
+    ``run`` like any other, and the checkpoint is a file they chose rather than a hidden cache.
+
+    Both halves of the position are simulated rather than assumed: a manifest cannot serialize a
+    resident waveform, and the stages after it have to survive being handed a manifest. ``after``
+    names a stage to place it behind instead, and is still checked against both.
+    """
+    from nemo_curator.audio_agent import checkpoint as _checkpoint
+
+    rec = _as_recipe(recipe).freeze()
+    pviol = _safety.path_violations([output_path, *_safety.recipe_path_params(rec)])
+    if pviol:
+        return {
+            "status": "refused",
+            "reason": "path(s) resolve outside the allowed workspace",
+            "violations": pviol,
+        }
+    spot, why = _checkpoint.advise(rec)
+    if after:
+        chosen = [i for i, s in enumerate(rec.stages) if s.ref == after]
+        if not chosen:
+            return {"status": "error", "reason": f"no stage named {after!r} in this recipe"}
+        spot, why = _checkpoint.at(rec, index=chosen[-1] + 1)
+    if spot is None:
+        return {"status": "no_checkpoint", "reason": why, "advice": None}
+    advice = spot.as_dict()
+    if not output_path:
+        return {"status": "advice", "advice": advice, "next": "call again with output_path to get the recipe"}
+    checkpointed, err = _checkpoint.insert(rec, index=spot.index, output_path=output_path)
+    if checkpointed is None:
+        return {"status": "error", "reason": err, "advice": advice}
+    return _safety.redact({
+        "status": "ok",
+        "advice": advice,
+        "recipe": checkpointed.to_dict(),
+        "next": "save this recipe, then validate -> smoke -> run it as usual",
+    })
+
+
+def delta_run(  # noqa: PLR0913 - the same execution knobs as run(), which it delegates to
+    recipe: Recipe | dict[str, Any],
+    *,
+    data: str | None = None,
+    confirm: bool | str = False,
+    executor: Any = None,  # noqa: ANN401
+    bootstrap_ray: bool = False,
+    smoke_token: str | None = None,
+    calibration: dict[str, Any] | None = None,
+    goal: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run only the files that changed since a prior run, and merge them into its result.
+
+    Without ``confirm`` this is a card: which files are new, changed or gone, which manifests
+    would be rewritten, how many rows survive, and what it saves. With ``confirm`` it executes
+    -- as an ordinary run of the user's own stages over the changed files (the source is
+    narrowed by ``include_files``; no stage is told anything about being incremental), then
+    merges each manifest and republishes it under the step key the full pipeline has for the
+    enlarged corpus, so the next ordinary reuse probe finds it.
+
+    Every question that has to be true first is answered by ``delta.plan`` and refused by name:
+    which files moved, how deep per-file work stays independent of the other files, whether the
+    stages' declarations survive their own recorded row counts, and which prior row came from
+    which file. A refusal here is a full run, never a partial result presented as a whole one.
+    """
+    from nemo_curator.audio_agent import delta as _delta
+
+    rec = _as_recipe(recipe).freeze()
+    pviol = _safety.path_violations([data, *_safety.recipe_path_params(rec)])
+    if pviol:
+        return {
+            "status": "refused",
+            "reason": "path(s) resolve outside the allowed workspace",
+            "violations": pviol,
+        }
+    binding = _dataset_binding(rec, data)
+    dp = _profile_binding(binding)
+    if dp is not None and _profile_error(dp):
+        return _safety.redact(_profile_refusal(binding, dp))
+    if _binding_blocks_execution(binding, data):
+        return _safety.redact(_binding_refusal(binding))
+    if dp is None:
+        return {
+            "status": "no_delta",
+            "reason": "the source could not be profiled, so which files changed is unknown",
+            "data_binding": binding.to_dict(),
+        }
+
+    decision = _delta.plan(
+        rec,
+        dataset_key=dp.dataset_key(),
+        inventory=dp.inventory or None,
+        inventory_root=dp.inventory_root,
+    )
+    card = {
+        "status": "no_delta" if decision.status != "ready" else "ready",
+        "recipe_id": rec.recipe_id,
+        "config_hash": rec.config_hash,
+        "delta": decision.to_dict(),
+        "data_binding": binding.to_dict(),
+    }
+    if decision.status != "ready":
+        card["next"] = "run the pipeline normally; a delta is not available for this input"
+        return _safety.redact(card)
+    if confirm is not True and confirm != rec.config_hash:
+        card.update(
+            status="refused",
+            reason=(
+                "a delta run rewrites the prior manifests in place after merging; "
+                "confirm it like any other run"
+            ),
+            confirm_with=f"pass confirm={rec.config_hash!r} (or confirm=True) to proceed",
+        )
+        return _safety.redact(card)
+    return _safety.redact(
+        _execute_delta(
+            rec,
+            decision,
+            dp=dp,
+            data=data,
+            card=card,
+            executor=executor,
+            bootstrap_ray=bootstrap_ray,
+            smoke_token=smoke_token,
+            calibration=calibration,
+            goal=goal,
+        )
+    )
+
+
+def _execute_delta(  # noqa: PLR0913 - forwards run()'s knobs and the plan it executes
+    rec: Recipe,
+    decision: Any,  # noqa: ANN401 - delta.Delta without an eager import
+    *,
+    dp: Any,  # noqa: ANN401 - DataProfile
+    data: str | None,
+    card: dict[str, Any],
+    executor: Any,  # noqa: ANN401
+    bootstrap_ray: bool,
+    smoke_token: str | None,
+    calibration: dict[str, Any] | None,
+    goal: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the changed files, merge, republish. Any failure leaves the prior result untouched."""
+    import shutil
+    import time
+
+    from nemo_curator.audio_agent import delta as _delta
+
+    sandbox = os.path.join(os.path.dirname(os.path.expanduser(decision.uri)), ".audio_agent_delta")
+    prefix_rec, redirect, err = _delta.prefix_recipe(
+        rec,
+        prefix=decision.prefix,
+        files=decision.files,
+        sandbox=sandbox,
+        sinks_=list(decision.sinks),
+    )
+    if prefix_rec is None:
+        return {**card, "status": "no_delta", "reason": err}
+    try:
+        os.makedirs(sandbox, exist_ok=True)
+    except OSError as exc:
+        return {**card, "status": "error", "reason": f"the delta's working directory could not be created: {exc}"}
+
+    started = time.perf_counter()
+    inner: dict[str, Any] = {"status": "completed", "note": "nothing to run: every changed file was removed"}
+    if decision.files:
+        inner = run(
+            prefix_rec,
+            confirm=prefix_rec.config_hash,
+            data=data,
+            executor=executor,
+            bootstrap_ray=bootstrap_ray,
+            smoke_token=smoke_token,
+            calibration=calibration,
+            goal=goal,
+        )
+        if inner.get("status") != "completed":
+            return {**card, "status": "failed", "reason": "the delta's run did not complete", "run": inner}
+    elapsed = round(time.perf_counter() - started, 3)
+
+    stale = set(decision.change.stale)
+    merges: list[dict[str, Any]] = []
+    for sink in decision.sinks:
+        kept, added, why = _delta.merge(
+            sink,
+            produced=redirect[sink.uri],
+            stale=stale,
+            key=sink.key,
+            root=dp.inventory_root,
+        )
+        if why:
+            # The failing sink's manifest is untouched, and any already merged hold a superset of
+            # their prior rows. Those no longer match the digest their artifact was published
+            # with, so the registry stops offering them ("serialized output changed after the
+            # artifact was published") and the next run recomputes instead of serving a manifest
+            # whose record understates it. Losing reuse is the safe direction; losing rows is not.
+            return {**card, "status": "failed", "reason": why, "merged": merges}
+        merges.append({**sink.summary(), "rows_kept": kept, "rows_added": added})
+
+    published, problems = _delta.republish(
+        rec,
+        decision,
+        dataset_key=dp.dataset_key(),
+        fingerprint_tier=dp.fingerprint_tier,
+        inventory=dict(dp.inventory),
+        run_id=str(inner.get("run_id") or ""),
+        added_sec=elapsed,
+    )
+    with contextlib.suppress(OSError):
+        shutil.rmtree(sandbox)
+    remaining = len(rec.stages) - decision.prefix
+    return {
+        **card,
+        "status": "completed",
+        "ran_files": list(decision.files),
+        "merged": merges,
+        "published": published,
+        "warnings": problems,
+        "elapsed_sec": elapsed,
+        "run": {k: inner.get(k) for k in ("status", "run_id", "output_paths") if k in inner},
+        "next": (
+            "the merged output covers every file; nothing further is needed"
+            if remaining <= 0
+            else f"run the remaining {remaining} stage(s) with plan_continuation(execute=True, choice='extend'), "
+            "which now finds the merged manifest by an ordinary reuse probe"
+        ),
+    }
 
 
 def plan_continuation(  # noqa: PLR0913 - one verb covering plan + the three-way choice

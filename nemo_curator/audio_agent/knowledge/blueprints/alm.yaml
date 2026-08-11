@@ -12,5 +12,9 @@ stages:
 
 pitfalls:
   - "input must already carry per-segment metadata (speaker/start/end); this blueprint does not diarize"
+  - "if that metadata is already present and conforms, preserve it -- diarization/transcription are conditional
+    preparation steps for raw or incomplete inputs, not mandatory parts of ALM windowing"
+  - "normalize producer-specific sentinels before windowing (for example, remove speaker='no-speaker' gap rows);
+    compatibility is determined by the final segment schema, not by the diarizer's identity"
   - "CPU-only and fixture-fast -- a good local smoke test"
-provenance: {derived_from: "tutorials/audio/alm", version: 1, validated: true}
+provenance: {derived_from: "tutorials/audio/alm", version: 2, validated: true}

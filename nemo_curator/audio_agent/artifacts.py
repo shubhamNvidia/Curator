@@ -19,12 +19,14 @@ with these semantics and the same resolved dataset identity at its recorded
 tier, already produced an artifact?". Identity is a Merkle chain over the
 pipeline::
 
-    step_key(0) = H(dataset_key,   ref, semantic_params, code_version, model_version)
-    step_key(i) = H(step_key(i-1), ref, semantic_params, code_version, model_version)
+    step_key(0) = H(dataset_key,   ref, semantic_params, impl_version, model_version)
+    step_key(i) = H(step_key(i-1), ref, semantic_params, impl_version, model_version)
 
 One mechanism then gives whole-pipeline, prefix and single-stage reuse, and invalidation
 falls out of the chain instead of needing hand-written rules: change a param at step *i* and
-keys ``i..n`` change while ``0..i-1`` stay reusable.
+keys ``i..n`` change while ``0..i-1`` stay reusable. ``impl_version`` is per stage (see
+:mod:`nemo_curator.audio_agent.code_identity`), so editing one stage invalidates it and
+everything chained below it, and editing unrelated code invalidates nothing.
 
 Only steps that PERSIST a resumable result get an artifact -- you can only
 resume from disk. Source acquisition caches such as ``raw_data_dir`` are
@@ -50,12 +52,15 @@ import time
 from dataclasses import asdict, dataclass, field, fields
 from typing import TYPE_CHECKING, Any, Literal
 
+from nemo_curator.audio_agent.code_identity import impl_version
+
 if TYPE_CHECKING:
     from nemo_curator.audio_agent.recipe import Recipe, StageRef
 
 # Bump when the key construction changes, so old artifacts can never be matched by a
-# differently-computed key.
-STEP_KEY_VERSION = "v1"
+# differently-computed key. v2: per-stage ``impl_version`` replaced the repository-wide
+# package version, so every v1 key describes a different computation than its digits suggest.
+STEP_KEY_VERSION = "v2"
 
 ArtifactKind = Literal["manifest", "audio_dir", "rttm_dir", "text_dir", "archive", "unknown"]
 
@@ -130,6 +135,14 @@ class Artifact:
     # trust
     dataset_key: str = ""
     fingerprint_tier: str = ""
+    # How many input files this artifact's inventory covers, ``0`` when none was recorded. The
+    # inventory itself lives beside the record (``save_coverage``); this is here so a scan can
+    # tell whether a delta is even possible without opening the sidecar.
+    covers_files: int = 0
+    # What produced this: ``impl_version`` is the digest of the stage's own source and is what
+    # reuse is checked against. ``code_version`` is the package build, kept because a human
+    # reading a record wants to know which Curator wrote it -- it decides nothing.
+    impl_version: str = ""
     code_version: str = ""
     model_version: str = ""
     deterministic: bool = True
@@ -162,7 +175,13 @@ def _h(*parts: str) -> str:
 
 
 def code_version() -> str:
-    """The Curator version artifacts are stamped with (a change invalidates them)."""
+    """The Curator build an artifact was written by -- provenance only.
+
+    Reuse is decided by :func:`~nemo_curator.audio_agent.code_identity.impl_version`. This
+    string ends in the repository's git SHA, so using it as the test meant one commit
+    anywhere emptied the store; it is recorded because a human reading a record still wants
+    to know which build produced it.
+    """
     try:
         import nemo_curator
 
@@ -316,6 +335,7 @@ class StepPlan:
     deterministic: bool
     ttl_sec: int
     model_version: str
+    impl_version: str = ""
 
     def persists(self) -> bool:
         return bool(self.uri)
@@ -323,13 +343,13 @@ class StepPlan:
 
 def plan_steps(recipe: Recipe, dataset_key: str) -> list[StepPlan]:
     """Compute the Merkle step-key chain for a recipe over a given source dataset."""
-    cv = code_version()
     plans: list[StepPlan] = []
     prev = f"{STEP_KEY_VERSION}:{dataset_key}"
     for i, stage in enumerate(recipe.stages):
         sp = stage.semantic_params()
         mv = model_version(stage.params)
-        key = _h(STEP_KEY_VERSION, prev, stage.ref, _semantic_blob(stage.ref, sp), cv, mv)
+        iv = impl_version(stage.ref)
+        key = _h(STEP_KEY_VERSION, prev, stage.ref, _semantic_blob(stage.ref, sp), iv, mv)
         det, ttl = stage_trust(stage.ref)
         uri, kind = output_uri(stage)
         plans.append(
@@ -344,6 +364,7 @@ def plan_steps(recipe: Recipe, dataset_key: str) -> list[StepPlan]:
                 deterministic=det,
                 ttl_sec=ttl,
                 model_version=mv,
+                impl_version=iv,
             )
         )
         prev = key
@@ -386,6 +407,43 @@ def save(artifact: Artifact) -> str:
 
         run_index.index_artifact(artifact)
     return path
+
+
+def coverage_path(step_key: str) -> str:
+    return os.path.join(artifacts_dir(), "coverage", f"{step_key}.json")
+
+
+def save_coverage(step_key: str, inventory: dict[str, str]) -> str:
+    """Persist which input files an artifact covers, as ``{relpath: identity token}``.
+
+    Beside the record rather than inside it: a reuse scan loads one record per step to compare
+    keys, and a corpus-sized dict on each would make the cheap probe expensive. Only a delta
+    decision reads this, and only for the one artifact it is about to resume from.
+    """
+    from nemo_curator.audio_agent.run_store import _ensure_private_dir, _write_private_json
+
+    directory = os.path.join(artifacts_dir(), "coverage")
+    _ensure_private_dir(directory)
+    path = coverage_path(step_key)
+    _write_private_json(path, {"step_key": step_key, "files": inventory})
+    return path
+
+
+def load_coverage(step_key: str) -> dict[str, str] | None:
+    """The inventory an artifact covers, or ``None`` when it was never recorded.
+
+    ``None`` and ``{}`` differ and the distinction decides a delta: nothing recorded means the
+    comparison cannot be made, while an empty corpus is a fact about the data.
+    """
+    path = coverage_path(step_key)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            files = json.load(f).get("files")
+    except Exception:  # noqa: BLE001 - a corrupt sidecar means no delta, never a crash
+        return None
+    return files if isinstance(files, dict) else None
 
 
 def load(step_key: str) -> Artifact | None:
@@ -628,8 +686,8 @@ def invalid_reasons(
                 reasons.append("serialized output changed after the artifact was published")
     if dataset_key and artifact.dataset_key and dataset_key != artifact.dataset_key:
         reasons.append("source data changed since this artifact was produced")
-    if artifact.code_version and artifact.code_version != code_version():
-        reasons.append(f"produced by curator {artifact.code_version}, running {code_version()}")
+    if artifact.impl_version and artifact.impl_version != impl_version(artifact.stage_ref):
+        reasons.append(f"{artifact.stage_ref or 'the stage'}'s implementation changed since this artifact was produced")
     if artifact.ttl_sec and _age_sec(artifact) > artifact.ttl_sec:
         reasons.append(f"older than its {artifact.ttl_sec}s freshness window (re-fetch may differ)")
     if require_high_trust:

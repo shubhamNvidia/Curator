@@ -25,6 +25,9 @@ _WRITER = {"ref": "ManifestWriterStage", "params": {"output_path": "/tmp/out.jso
 _MONO_WF = {"ref": "MonoConversionStage", "params": {"keep_waveform_in_task": True}}
 _DUR_WAVE = {"ref": "GetAudioDurationStage", "params": {"input_residency": "waveform"}}
 _DUR_FILE = {"ref": "GetAudioDurationStage", "params": {"input_residency": "file"}}
+# One of the two pairs that pass state through ``task._metadata`` rather than the row.
+_OVERLAP_FILTER = {"ref": "OverlapFilterStage", "params": {}}
+_PRETRAIN_METRICS = {"ref": "PretrainMetricsAggregatorStage", "params": {"output_path": "/tmp/metrics.json"}}
 
 
 def _parent_prefix(new: Recipe, n: int) -> SimpleNamespace:
@@ -73,3 +76,20 @@ class TestResumeSafety:
         new = Recipe.from_dict({"stages": [_READER, _MONO_WF, _DUR_WAVE]})
         assert continuation._resume_breaks_on_disk_boundary(new, 99) is None
         assert continuation._resume_breaks_on_disk_boundary(new, 0) is None
+
+    def test_metadata_the_parent_produced_does_not_cross_the_boundary(self) -> None:
+        # A manifest holds task.data, so task._metadata is dropped -- and unlike a missing
+        # waveform, nothing raises: the reader gets an empty dict and the run "succeeds" with
+        # wrong counts. Both sides are declared (metadata_writes / metadata_reads), so the
+        # boundary can be checked rather than assumed.
+        new = Recipe.from_dict({"stages": [_READER, _OVERLAP_FILTER, _PRETRAIN_METRICS]})
+        r = continuation.plan_continuation(new, _parent_prefix(new, 2), data_fingerprint=None)
+        assert r["mode"] == "full_rerun"
+        assert "pretrain_long_form" in r["reason"]
+        assert "PretrainMetricsAggregatorStage" in r["reason"]
+
+    def test_a_suffix_that_remakes_the_key_is_not_blocked(self) -> None:
+        # The tail plans and then aggregates its own counters, so nothing needed crosses the
+        # boundary. Refusing here would penalize a suffix for reading what it just wrote.
+        new = Recipe.from_dict({"stages": [_READER, _OVERLAP_FILTER, _OVERLAP_FILTER, _PRETRAIN_METRICS]})
+        assert continuation._resume_breaks_on_disk_boundary(new.freeze(), 2) is None

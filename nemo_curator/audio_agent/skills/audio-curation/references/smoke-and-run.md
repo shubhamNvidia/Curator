@@ -17,19 +17,13 @@ retained, errors), read the structured `diagnosis` (when present). Adjust a
 threshold only for a grounded data/filter failure; environment/action-required
 failures go through the decision policy in `SKILL.md` step 2.
 
-The smoke result also carries a `calibration` block — what each stage actually
-used: peak host RAM and throughput on any smoke, peak VRAM when it ran on a GPU.
-**The next `run` of this exact recipe applies it for you.** Smoke stores it under
-the recipe's `config_hash` (`calibration_stored: true`), `run` loads it when no
-`--calibration` is passed, and the resource plan's notes say when it did. Pass
-`--calibration calib.json` (extract with `calibrate --smoke smoke.json`) only to
-override the stored copy.
-
-Measured facts only ever RAISE a card/default estimate — a bounded smoke cannot
-prove the full-run maximum, so it never lowers a baseline — and a measurement
-stamped with a different machine is dropped by the planner, with a note. Host RAM
-is the one that changes the most: its fallback is 1 GB per stage, and the total is
-what decides streaming (all stages at once) vs batch (sequential).
+On a GPU smoke the result also carries a `calibration` block (measured per-stage
+VRAM/throughput). Pass it to the full run so the resource planner can raise a
+card/default estimate when the smoke observed a larger peak; because a bounded
+smoke cannot prove the full-run maximum, calibration never lowers that baseline:
+`run ... --calibration calib.json` (extract it with `calibrate --smoke
+smoke.json`). On a CPU smoke there's no VRAM to measure, so the planner keeps
+using the card facts.
 
 ## 6. Confirm gate -> run
 

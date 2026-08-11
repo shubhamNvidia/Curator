@@ -574,7 +574,42 @@ queries:
     expect:
       reuse_decision: fresh
       prompt_user: false
-      rationale_contains: "source data changed"
+      rationale_contains: "source identity changed"
+
+  - id: reuse_added_file_offers_a_delta
+    label: reuse
+    prompt: "One clip was added to a curated corpus; only that clip should have to be processed."
+    reuse:
+      publish_prefix: 3
+      break: mutate_data
+      coverage: true  # what a real run records; without it only the whole-corpus key is known
+      recipe:
+        stages:
+          - {ref: ManifestReader, params: {manifest_path: "{src}"}}
+          - {ref: GetAudioDurationStage, params: {}}
+          - {ref: ManifestWriterStage, params: {output_path: "{root}/out/durations.jsonl"}}
+    expect:
+      reuse_decision: fresh  # the key genuinely misses; the delta is an addition to that answer
+      delta_status: ready
+      delta_files: 1
+      recommended: delta
+      prompt_user: true
+
+  - id: reuse_added_file_without_coverage_stays_a_full_run
+    label: reuse
+    prompt: "A run that recorded no per-file inventory must not be split into a partial one."
+    reuse:
+      publish_prefix: 3
+      break: mutate_data
+      recipe:
+        stages:
+          - {ref: ManifestReader, params: {manifest_path: "{src}"}}
+          - {ref: GetAudioDurationStage, params: {}}
+          - {ref: ManifestWriterStage, params: {output_path: "{root}/out/durations.jsonl"}}
+    expect:
+      reuse_decision: fresh
+      delta_status: none
+      recommended: fresh
 
   - id: reuse_partial_output_rejected
     label: reuse

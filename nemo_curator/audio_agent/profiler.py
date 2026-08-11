@@ -37,6 +37,9 @@ _AUDIO_EXTS = (".wav", ".flac", ".mp3", ".ogg", ".opus", ".m4a", ".aac")
 _TRANSCRIPT_KEYS = ("text", "text_ref", "reference_text", "transcript", "pred_text")
 # Cap how many files we probe so profiling a huge corpus stays fast (sampling).
 _MAX_PROBE = 256
+# How many per-file inventory entries are worth persisting for delta reuse (see
+# ``_keep_inventory``). Deliberately much smaller than the stat cap.
+_MAX_INVENTORY = 20_000
 # Cap how many files we stat for the content-ish dataset key. Beyond this the key falls back
 # to the cheap shape tier (and says so) rather than making profiling slow.
 _MAX_STAT = 100_000
@@ -81,6 +84,12 @@ def _stat_entry(path: str, *, root: str) -> tuple[str, bool]:
     except OSError:
         return f"{relpath}|?", False
     return f"{relpath}|{st.st_size}|{st.st_mtime_ns}", True
+
+
+def _split_entry(entry: str) -> tuple[str, str]:
+    """An identity token split into ``(relpath, rest)`` -- the inventory's key and value."""
+    relpath, _, rest = entry.partition("|")
+    return relpath, rest
 
 
 # --------------------------------------------------------------------------- #
@@ -223,11 +232,15 @@ def _stat_folder(paths: list[str], *, root: str, prof: DataProfile) -> None:
         return
     h = hashlib.sha256()
     failures = 0
+    inventory: dict[str, str] = {}
     for p in paths:
         entry, ok = _stat_entry(p, root=root)
         h.update(entry.encode("utf-8"))
         h.update(b"\n")
-        if not ok:
+        if ok:
+            relpath, token = _split_entry(entry)
+            inventory[relpath] = token
+        else:
             failures += 1
     digest = h.hexdigest()[:16]
     if failures:
@@ -237,6 +250,28 @@ def _stat_folder(paths: list[str], *, root: str, prof: DataProfile) -> None:
         )
     else:
         prof.stat_digest = digest
+        _keep_inventory(prof, inventory, root=root)
+
+
+def _keep_inventory(prof: DataProfile, inventory: dict[str, str], *, root: str) -> None:
+    """Attach the per-file inventory, or decline to when it is too large to carry.
+
+    The cap is far below the stat cap on purpose: statting 100k files costs one syscall each
+    and produces sixteen hex characters, while remembering them costs a file that has to be
+    written, read and kept in step on every run. Past the cap the dataset key still works
+    exactly as before and only delta reuse is unavailable, which ``delta`` reports by name.
+    """
+    if len(inventory) > _MAX_INVENTORY:
+        prof.notes.append(
+            f"{len(inventory)} files exceeds the inventory cap ({_MAX_INVENTORY}); "
+            "reuse still works, but a changed-file delta cannot be computed for this corpus"
+        )
+        return
+    prof.inventory = inventory
+    # Recorded rather than re-derived later: the root a relpath is relative to depends on the
+    # source kind and, for a manifest, on how it resolves audio paths. Re-deriving that in the
+    # delta would be a second copy of a rule that has to agree with this one exactly.
+    prof.inventory_root = root
 
 
 def _profile_manifest(
@@ -265,6 +300,8 @@ def _profile_manifest(
     stat_failures = 0
     relative_refs = 0
     remote_refs = 0
+    # relpath -> [stat token, row digest, ...]; folded into one token per file below.
+    row_identity: dict[str, list[str]] = {}
     try:
         with open(path, encoding="utf-8") as f:
             for line in f:
@@ -337,6 +374,15 @@ def _profile_manifest(
                             statted += 1
                             if not ok:
                                 stat_failures += 1
+                            else:
+                                relpath, token = _split_entry(entry)
+                                # The row's own bytes belong in this file's identity: a manifest
+                                # is edited far more often than the audio it points at, and a
+                                # corrected transcript with the wav untouched has to read as a
+                                # change to that file or a delta would skip it. Rows accumulate,
+                                # since several may reference one file.
+                                seen = row_identity.setdefault(relpath, [token])
+                                seen.append(hashlib.sha256(line.encode("utf-8")).hexdigest()[:12])
     except (OSError, UnicodeError) as exc:
         prof.unreadable.append(path)
         prof.source_errors.append(f"{path}: could not read complete UTF-8 manifest ({exc})")
@@ -368,6 +414,7 @@ def _profile_manifest(
         prof.identity_digest = digest
     else:
         prof.stat_digest = digest
+        _keep_inventory(prof, {rel: "|".join(parts) for rel, parts in row_identity.items()}, root=root)
     _probe_files(audio_paths, prof)
     # Rows were read but not one audio reference was found: the audio-path column is named
     # something other than ``audio_filepath_key``. Say so, because a silently EMPTY audio

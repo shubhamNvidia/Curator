@@ -213,6 +213,42 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
         return aa.reuse_scan(recipe, data=data, limit=limit)
 
     @server.tool()
+    def delta_run(
+        recipe: dict[str, Any],
+        data: str | None = None,
+        confirm: bool | str = False,
+        bootstrap_ray: bool = False,
+        smoke_token: str | None = None,
+        calibration: dict[str, Any] | None = None,
+        goal: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Run only the files that changed since a prior run of this recipe, and merge them in.
+
+        Without ``confirm`` this returns the card (which files moved, which manifests would be
+        rewritten, how many rows survive, what it saves). Everything a delta relies on is
+        checked first and refused by name, so a ``no_delta`` answer means run normally rather
+        than that a partial result was accepted."""
+        return aa.delta_run(
+            recipe,
+            data=data,
+            confirm=confirm,
+            bootstrap_ray=bootstrap_ray,
+            smoke_token=smoke_token,
+            calibration=calibration,
+            goal=goal,
+        )
+
+    @server.tool()
+    def add_checkpoint(
+        recipe: dict[str, Any],
+        output_path: str | None = None,
+        after: str | None = None,
+    ) -> dict[str, Any]:
+        """Say where a mid-pipeline manifest would make the expensive stages reusable, and with
+        an output_path return the recipe carrying it (nothing is written or run)."""
+        return aa.add_checkpoint(recipe, output_path=output_path, after=after)
+
+    @server.tool()
     def reindex() -> dict[str, Any]:
         """Rebuild the run/artifact lookup index from its JSON source records."""
         return aa.reindex()

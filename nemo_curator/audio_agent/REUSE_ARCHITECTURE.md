@@ -50,12 +50,30 @@ Identity is a Merkle chain over the pipeline:
 
 ```
 dataset_key   = tiered_fingerprint(resolved_recipe_source)
-step_key(0)   = H(dataset_key,   ref, semantic_params, code_version, model_version)
-step_key(i)   = H(step_key(i-1), ref, semantic_params, code_version, model_version)
+step_key(0)   = H(dataset_key,   ref, semantic_params, impl_version, model_version)
+step_key(i)   = H(step_key(i-1), ref, semantic_params, impl_version, model_version)
 ```
 
 One mechanism gives whole-pipeline, prefix, and single-stage reuse, and invalidation falls out
 of the chain instead of needing hand-written rules.
+
+### Code identity is per stage
+
+`impl_version` is a digest of the source that implements one stage: the module defining its
+class plus the `nemo_curator` modules that module transitively imports, read out of the files
+with `ast` so computing it imports nothing (`code_identity.py`). Editing `nemo_asr_align.py`
+invalidates ASR artifacts and everything chained below them; editing another modality, a test
+or a doc invalidates nothing.
+
+This replaced `nemo_curator.__version__`, which ends in the repository's git short SHA and was
+wrong in both directions at once. Too coarse: any commit anywhere moved the SHA and made every
+artifact in the store unreachable, so in an actively developed checkout an artifact survived
+about one commit. Too loose: editing a stage and not committing left the SHA alone, so results
+produced by code that no longer existed were served as current.
+
+A stage whose class, module or sources cannot be read falls back to the package version, which
+over-invalidates and never over-reuses. The package version is still recorded on every artifact
+as `code_version`, purely so a human can see which build wrote it; it decides nothing.
 
 ```mermaid
 flowchart TD
@@ -161,7 +179,8 @@ identity  step_key, input_key, stage_ref, stage_index, semantic_params, contract
 location  uri, kind (manifest | audio_dir | rttm_dir | text_dir | unknown), complete_marker
 evidence  rows_in, rows_out, bytes, content_digest, produced_roles, produced_keys, metrics
 cost      started_at, ended_at, duration_sec, cumulative_sec, gpu_seconds, device
-trust     dataset_key, fingerprint_tier, code_version, model_version, deterministic, status
+trust     dataset_key, fingerprint_tier, impl_version, model_version, deterministic, status
+          code_version (the package build that wrote it -- provenance, never a test)
 ```
 
 `deterministic` is declared, never assumed: a GPU stage whose output can differ run to run must
@@ -213,7 +232,7 @@ An artifact is **valid** only if *all* of:
 - the marker, registry record, and current serialized bytes share one content digest
 - the artifact URI is within `AUDIO_AGENT_WORKSPACE` when that lock is enabled
 - `dataset_key` matches at an acceptable tier
-- `code_version` (and `model_version`, where declared) are compatible
+- the stage's `impl_version` (and `model_version`, where declared) still match
 - it is not TTL-expired (download stages)
 - `status == "complete"`
 
@@ -245,6 +264,33 @@ add a writer after that prefix so the next request can resume from it. `plan_con
 forwards both onto the plan, so the approval gate can say "this ran before and is being
 recomputed" rather than presenting repeated work as new.
 
+### Where that writer may go — `checkpoint.py`
+
+The offer used to name the last stage of the recomputed prefix, which is where the work ends and
+not necessarily where a manifest can be written. On the ALM pipeline those differ by four stages:
+the prefix ends at ASR, and every position from there until `ALMDataBuilderStage` still carries a
+resident waveform that `json.dumps` cannot serialize. The advice was advice to break the run.
+
+`checkpoint.advise()` simulates the position instead of naming one, against two questions that
+already have machinery:
+
+| Question | Answered by |
+| --- | --- |
+| Can a manifest be written here? | Insert a `ManifestWriterStage` and run `validate_pipeline`; a resident tensor raises `tensor_into_sink` |
+| Can the rest of the run start from it? | `continuation._resume_breaks_on_disk_boundary` on the candidate — the dropped waveform *and* `task._metadata` a manifest cannot carry |
+
+It is placed at the *first* legal position after the last stage the cards call expensive — deep
+enough to protect the GPU work, shallow enough to leave the cheap tail editable, since an edit
+below the checkpoint reuses it and an edit above it cannot. A recipe that already has a writer
+between the expensive work and its final sink is told it has one, so the offer never repeats
+itself; the final sink alone does not count, because resuming from it only serves a request that
+was already finished, and the case this exists for is a changed tail.
+
+`add_checkpoint` (verb / CLI / MCP) returns the same recipe with the writer in place. It writes
+nothing and runs nothing: the user saves the recipe and it goes through `validate` → confirm →
+`run` like any other. That is deliberate — a hidden intermediate cache would buy back seconds at
+the price of an eviction policy, a staleness window, and a new way to serve wrong data quietly.
+
 ### Similarity tiers
 
 - **T0 exact** — `step_key` equality. Eligible for reuse.
@@ -258,7 +304,15 @@ recomputed" rather than presenting repeated work as new.
 Reuse resumes from a *persisted* artifact, which cannot carry an in-memory `waveform` tensor.
 `continuation._resume_breaks_on_disk_boundary` re-validates the suffix with and without the
 waveform role and only reports reads that break *specifically* because the waveform was dropped.
-That guard is kept as-is and gates every reuse point.
+That guard gates every reuse point.
+
+A manifest holds `task.data`, so `task._metadata` does not cross the boundary either, and that
+half is the more dangerous one: a dropped waveform raises, while dropped metadata is read as an
+empty dict and the run finishes successfully with wrong numbers. Two pairs pass state that way
+today — `SegmentConcatenationStage` → `TimestampMapperStage` via `segment_mappings`, and the
+pretrain planners → `PretrainMetricsAggregatorStage` via `pretrain_long_form`. Both sides are
+declared (`metadata_reads` / `metadata_writes`), so the guard reports any key the suffix reads
+that only the dropped prefix produced, and ignores one the suffix re-writes before reading.
 
 ---
 
@@ -298,8 +352,9 @@ Anti-nag rules, in priority order:
    (`resource.bound: gpu`, a declared model, a network fetch) is listed in `unpriced_stages` and
    forces the question. Cheap CPU/IO stages are taken at the card's word, or the gate would ask
    about every manifest read forever.
-3. **Low trust → default to fresh.** A `shape`-tier dataset key, a changed `code_version`, or a
-   `deterministic: false` stage says so on the card and pre-selects the fresh option.
+3. **Low trust → default to fresh.** A `shape`-tier dataset key or a `deterministic: false`
+   stage says so on the card and pre-selects the fresh option. (A changed `impl_version` is not
+   a trust downgrade but a miss: the step key itself differs, so there is no candidate at all.)
 4. Otherwise present the three-way choice: **as-is** / **extend** / **fresh**.
 
 Reuse is never silent. Even the auto-taken trivial case is disclosed in the run report's lineage.
@@ -340,6 +395,65 @@ reader over an intermediate file — so registering the tail under it would leav
 request finding nothing and recomputing the tail forever. Repeating the request now returns
 `already_done`.
 
+### 7b. Running only the files that changed — `delta.py`
+
+A dataset key names the whole corpus, so adding one file to a curated folder misses every step
+key in the chain. Everything above is then correct and useless: nothing matches, so a thousand
+already-transcribed files are transcribed again for the sake of one new one. Whole-corpus
+identity is the right thing for deciding *whether* prior work applies and the wrong unit for
+deciding *how much* of it does.
+
+The delta closes that gap without weakening the key. It is reached only on the miss path, and
+it answers five questions in order, refusing by name at the first one it cannot:
+
+1. **Which files moved.** Every artifact now carries a **coverage** sidecar — the per-file
+   `(relpath, size, mtime)` inventory the dataset key was folded from (`profiler`, capped at
+   20k files; past the cap the key still works and only the delta is unavailable). Comparing the
+   prior artifact's inventory with the current one classifies the change as `identical`,
+   `added_only`, `changed`, `removed` or `unrelated`. `unrelated` — no file in common — is a
+   different dataset rather than a changed one, and is refused: subtracting the two would drop
+   every prior row and call the result incremental.
+2. **How deep per-file work stays independent.** A delta is sound only through stages whose
+   output rows are each computed from one input row. Row-preserving and fan-out cardinalities
+   keep that property; `N:1` destroys it. Cardinality alone cannot see the undetectable case —
+   a `1:1` stage that normalises against a corpus-wide mean — so `Gates.per_row_independent` is
+   a tri-state: `True` (safe), `False` (needs the whole corpus), and undeclared, which refuses
+   and names the stage. Fail-closed, so a stage nobody has thought about cannot silently be
+   assumed safe.
+3. **Whether the stages' own numbers agree with their declarations.** A contract a stage's last
+   run contradicts is worth less than nothing, because a delta would rely on it. Published
+   `rows_in`/`rows_out` and the accept/reject counts in `per_stage_metrics` are checked against
+   the declared cardinality, and a disagreement refuses.
+4. **Which prior row came from which file.** Derived by inspection rather than by stamping a new
+   key into every source stage: the column whose every sampled value resolves to a file the
+   inventory knows is the provenance key. Found per sink, not once per pipeline — a deeper
+   manifest may have rewritten its paths to derived chunks, and then it has no delta even though
+   a shallower one does. If no column qualifies, or a changed file matches no row, it refuses.
+5. **Which manifests have to be merged.** `ManifestWriterStage.setup()` truncates its file, so
+   every manifest inside the delta's prefix would otherwise end up holding three rows where a
+   thousand used to be. Directory outputs are the opposite: a resampled copy is written per
+   file, so new files simply add theirs. The output *kind* decides, not the parameter name.
+
+Execution is an ordinary run of the user's own stages. The source is narrowed with
+`include_files` (a list of absolute paths; the same stage over the same input, not a filtered
+copy of it) and each manifest in the prefix is redirected into a sandbox, so no stage is told
+anything about being incremental and the user's manifests are never truncated by a partial run.
+Each produced manifest is then merged with its prior content — surviving rows plus new ones,
+written beside the target and moved into place, so a reader sees the whole old file or the whole
+new one — and republished under the step key the **full** pipeline has for the enlarged corpus,
+with the union coverage. The next ordinary probe therefore answers `already_done`.
+
+`include_files` is deliberately a *semantic* param, so a narrowed run's keys differ from the full
+run's throughout. Were it filtered out as an execution knob, a one-file run would publish under
+the key the full pipeline probes and a later scan would serve a one-row manifest as complete;
+`tests/audio_agent/test_delta.py` asserts it, and conformance requires any stage accepting the
+param to declare `per_row_independent`.
+
+Surfaced as `delta.status: ready` on the `reuse-scan` card (with `recommended: delta`) and as the
+`delta-run` verb / CLI command / MCP tool, confirm-gated like `run` because it rewrites the prior
+manifests after merging. The property under test is `N == (N-1) + delta`: a full run over every
+file and a run over all but one followed by a delta over that one produce the same rows.
+
 ### Invalidation needs no bespoke rules
 
 | Change | Effect |
@@ -348,7 +462,7 @@ request finding nothing and recomputing the tail forever. Repeating the request 
 | Execution knob (resources / batch size) | no key change → full reuse |
 | Output location | no key change → full reuse (published to the new location) |
 | Acceptance criteria | data reused, **contract re-verified** |
-| Detectable dataset-identity change | `dataset_key` changes → everything reruns (Phase 2 adds per-file deltas) |
+| Detectable dataset-identity change | `dataset_key` changes → every key misses, and the miss path offers a per-file delta (§7b) when the changed files can be run alone |
 
 So the worked example falls out naturally: `Resample → VAD → QualityFilter`, then "also generate
 transcripts" reuses three artifacts and runs only ASR.
@@ -387,7 +501,9 @@ Two related decisions:
 | Duplicate rows on re-run into the same path | publish is atomic; a completed artifact is served, not re-appended |
 | Same content at a different path | `stat` tier hashes *relative* paths, so a moved corpus still matches |
 | GPU nondeterminism | `deterministic` is declared per artifact; false ⇒ reusable only on an explicit yes |
-| Fan-out stages (VAD, speaker separation) | row cardinality recorded (`rows_in` / `rows_out`); row-level lineage is Phase 3 |
+| Fan-out stages (VAD, speaker separation) | row cardinality recorded (`rows_in` / `rows_out`), and a delta traces each row back to its file by inspection (§7b) — a stage that combines rows (`N:1`) ends the traceable region |
+| One file added to a curated corpus | the key misses; the delta runs that file alone and merges it into the prior manifest (§7b) |
+| A stage that has not declared per-row independence | the delta refuses and names it, rather than assuming the row is independent |
 | Model-download TTL / first-run network | `ttl_sec` on download-stage artifacts |
 | Secret redaction asymmetry | keys are computed pre-redaction; only the persisted copy is redacted |
 | Concurrent publish of the same `step_key` | last writer wins on an identical key; the marker makes it idempotent |
@@ -430,9 +546,15 @@ the confirm gate is untouched.
 and atomic publish, SQLite index, executable incremental continuation, the approval flow, the
 export stage, and tests.
 
-**Phase 2 (designed, not built).** Content-digest tiers above `stat`, per-file dataset deltas
-(process only new files), T2 superset reuse, artifact GC / retention, and a `why-rerun` explain
-verb that says which key changed and why.
+**Phase 2.** Per-stage code identity (`impl_version`), so editing one stage stops emptying the
+store; and the checkpoint advisor (`checkpoint.py`), which finds where a mid-pipeline manifest may
+legally go by simulating the insertion rather than guessing.
 
-**Phase 3.** Row-level lineage for fan-out stages, so a re-run after adding files can reuse
-per-row results across a VAD or speaker-separation boundary.
+**Phase 3 (this change).** Coverage-based per-file deltas (§7b): artifact coverage, change
+classification, the row-traceable region with `Gates.per_row_independent`, provenance by
+inspection, the narrowed run, the atomic merge, and `delta-run` on the card, CLI and MCP.
+
+**Still open.** Content-digest tiers above `stat`; T2 superset reuse (a corpus that strictly
+contains a previous one, without a per-file inventory); artifact GC / retention; a `why-rerun`
+verb that names which key changed; and a delta across an `N:1` boundary, which needs the
+aggregate itself to be updatable rather than merely traceable.

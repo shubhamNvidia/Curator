@@ -75,6 +75,8 @@ All verbs print JSON. Run them with the repo virtualenv interpreter from the rep
 .venv/bin/python -m nemo_curator.audio_agent report --output OUT --data DATA
 .venv/bin/python -m nemo_curator.audio_agent verify --criteria C.yaml --evidence E.json --recipe R.yaml
 .venv/bin/python -m nemo_curator.audio_agent continue --recipe R.yaml --data DATA --execute --choice extend --confirm <hash>
+.venv/bin/python -m nemo_curator.audio_agent add-checkpoint --recipe R.yaml --output-path CK.jsonl  # make GPU work resumable
+.venv/bin/python -m nemo_curator.audio_agent delta-run --recipe R.yaml --data DATA --confirm <hash>  # only the files that changed
 ```
 
 `smoke` and `run` need a Ray cluster. `--bootstrap-ray` starts a correctly-configured
@@ -96,7 +98,9 @@ clobbered).
    stopping at the first set.
 5. Mandatory semantic critique -> `pass` / `revise` / `ask`. Only `pass` may continue.
 6. `reuse-scan` before spending compute, then `smoke --sample N` and show
-   retained/rejected plus examples (at most 2 rounds).
+   retained/rejected plus examples (at most 2 rounds). When the scan reports
+   `delta.status: ready`, a few files changed since a prior run: offer `delta-run`
+   instead of recurating the whole corpus, and relay its `reason` when it refuses.
 7. Present the plan, the semantic pass, the smoke evidence, the scale estimate and the
    acceptance contract; get explicit user approval; then `run --confirm <hash>`.
 8. Summarize the `report`, verify acceptance, and propose a next action.

@@ -67,6 +67,7 @@ def test_mcp_exposes_reuse_provenance_and_health_tools(monkeypatch) -> None:
         "reuse_scan",
         "reindex",
         "plan_continuation",
+        "delta_run",
         "doctor",
         "diagnose",
     } <= server.tools.keys()
@@ -107,6 +108,15 @@ def test_mcp_parameter_contract_matches_public_verb_surface(monkeypatch) -> None
             "confirm",
             "output_dir",
             "checkpoint_path",
+            "bootstrap_ray",
+            "smoke_token",
+            "calibration",
+            "goal",
+        ],
+        "delta_run": [
+            "recipe",
+            "data",
+            "confirm",
             "bootstrap_ray",
             "smoke_token",
             "calibration",

@@ -111,8 +111,8 @@ def _common_prefix_len(a: list[dict[str, Any]], b: list[dict[str, Any]]) -> int:
 
 
 def _resume_breaks_on_disk_boundary(new_recipe: Recipe, prefix: int) -> str | None:
-    """Resident role(s) the appended suffix needs that the parent's *persisted* (on-disk)
-    output cannot carry, or ``None`` when resuming from disk is safe.
+    """What the appended suffix needs that the parent's *persisted* (on-disk) output cannot
+    carry, or ``None`` when resuming from disk is safe.
 
     Incremental reuse resumes the suffix from the parent's persisted output -- a manifest on
     disk, which cannot carry an in-memory ``waveform`` tensor. This re-validates *only the
@@ -122,6 +122,13 @@ def _resume_breaks_on_disk_boundary(new_recipe: Recipe, prefix: int) -> str | No
     pass-through columns) fail/pass in both runs and cancel out, so a legitimate incremental
     is never downgraded, and a suffix that reloads audio from file (``audio_filepath``
     survives) is correctly allowed. Best-effort: any internal error -> ``None`` (keep reuse).
+
+    A manifest holds ``task.data``, so ``task._metadata`` does not survive the boundary either
+    -- and unlike a missing waveform, nothing downstream raises. ``SegmentConcatenationStage``
+    parks its ``segment_mappings`` there and ``TimestampMapperStage`` reads them; the pretrain
+    planners park per-original counters that ``PretrainMetricsAggregatorStage`` reads. Resuming
+    across either pair would hand the reader an empty dict and finish successfully with
+    silently wrong timestamps or counts, which is the failure mode a guard is for.
     """
     try:
         from nemo_curator.audio_agent.recipe import build_stages
@@ -151,11 +158,39 @@ def _resume_breaks_on_disk_boundary(new_recipe: Recipe, prefix: int) -> str | No
         # simulation quietly stops simulating anything and every waveform suffix looks resumable.
         waveform_keys = {k for k in keys if role_for_value(k) == "waveform"}
         new_breaks = _errs(roles - {"waveform"}, keys - waveform_keys) - _errs(roles, keys)
+        reasons = []
         if new_breaks:
-            return "waveform needed by " + ", ".join(sorted({name for name, _ in new_breaks}))
-        return None
+            reasons.append("waveform needed by " + ", ".join(sorted({name for name, _ in new_breaks})))
+        dropped = _metadata_lost_across(parent_built, suffix_built)
+        if dropped:
+            reasons.append(dropped)
+        return "; ".join(reasons) or None
     except Exception:  # noqa: BLE001 - resume-safety is best-effort; never block reuse on a guard error
         return None
+
+
+def _metadata_lost_across(parent_built: list[Any], suffix_built: list[Any]) -> str:
+    """``task._metadata`` keys the suffix reads that only the dropped prefix produced.
+
+    A suffix stage that re-writes the key before reading it is unaffected, so production inside
+    the suffix is tracked in order -- otherwise a self-contained pretrain tail, which plans and
+    then aggregates its own counters, would be refused for needing something it makes itself.
+    """
+    from nemo_curator.stages.audio import agent as foundation
+
+    produced: dict[str, str] = {}
+    for stage in parent_built:
+        for key in foundation.build_contract(stage).metadata_writes:
+            produced.setdefault(key, type(stage).__name__)
+    lost: list[str] = []
+    available: set[str] = set()
+    for stage in suffix_built:
+        contract = foundation.build_contract(stage)
+        for key in contract.metadata_reads:
+            if key in produced and key not in available:
+                lost.append(f"{key!r} (from {produced[key]}) needed by {type(stage).__name__}")
+        available |= set(contract.metadata_writes)
+    return "task metadata does not survive a manifest: " + "; ".join(lost) if lost else ""
 
 
 def _source_changed(parent: RunRecord, *, data_fingerprint: str | None, dataset_key: str | None) -> bool:
@@ -231,9 +266,9 @@ def plan_continuation(
                 "parent_run_id": parent.run_id,
                 "diverged_at": prefix,
                 "reason": (
-                    f"the appended stage(s) need in-memory audio the parent's persisted output cannot "
+                    f"the appended stage(s) need in-memory state the parent's persisted output cannot "
                     f"carry ({lost}); resuming from disk would drop it, so rerun to regenerate it "
-                    f"(or persist audio to disk in the parent, e.g. keep_waveform_in_task=False + write_to_disk)"
+                    f"(for audio, persist it in the parent: keep_waveform_in_task=False + write_to_disk)"
                 ),
                 "run_stages": new_refs,
             }

@@ -427,6 +427,7 @@ def _publish(
         kind=plan.kind,
         dataset_key=dataset_key,
         fingerprint_tier=kw.pop("fingerprint_tier", "stat"),
+        impl_version=kw.pop("impl_version", plan.impl_version),
         code_version=kw.pop("code_version", artifacts.code_version()),
         deterministic=kw.pop("deterministic", plan.deterministic),
         duration_sec=duration_sec,
@@ -733,10 +734,17 @@ class TestArtifactValidity:
         os.remove(art.uri)
         assert any("no longer exists" in r for r in artifacts.invalid_reasons(art, dataset_key=_KEY))
 
-    def test_curator_version_change_is_rejected(self, store: Path) -> None:
+    def test_a_changed_stage_implementation_is_rejected(self, store: Path) -> None:
+        rec, _mid, _final = _pipeline(store)
+        art = _publish(rec, 3, impl_version="impl:0000000000000000")
+        assert any("implementation changed" in r for r in artifacts.invalid_reasons(art, dataset_key=_KEY))
+
+    def test_a_different_curator_build_alone_is_not_a_reason(self, store: Path) -> None:
+        # The package version ends in the repository's git SHA, so testing against it meant one
+        # commit anywhere -- a README, another modality -- emptied the store. It is provenance now.
         rec, _mid, _final = _pipeline(store)
         art = _publish(rec, 3, code_version="0.0.0-ancient")
-        assert any("0.0.0-ancient" in r for r in artifacts.invalid_reasons(art, dataset_key=_KEY))
+        assert artifacts.invalid_reasons(art, dataset_key=_KEY) == []
 
     def test_a_miss_explains_itself(self, store: Path) -> None:
         # "we found prior work but the data changed" must not be reported as "never ran".
@@ -1870,11 +1878,25 @@ class TestUnsavedPriorPrefixIsDisclosed:
         assert "recomputed" in rationale
         assert "nothing was persisted" in rationale
 
-    def test_it_offers_a_way_to_make_the_prefix_reusable(self, store: Path) -> None:
+    def test_a_cheap_prefix_is_not_sold_a_writer(self, store: Path) -> None:
+        """Reading a manifest and measuring durations is worth disclosing and not worth a file.
+        The offer used to name the last stage of the prefix whatever that stage was, which on a
+        pipeline this cheap is a chore proposed to save nothing."""
         self._record_prior_run(_frozen(list(self._PHASE1)))
         offer = reuse.scan(self._phase3(), dataset_key=_KEY)["offer"]
-        assert offer["action"] == "persist_prefix"
-        assert offer["after_stage"] == "GetAudioDurationStage"
+        assert offer["action"] == "no_checkpoint"
+        assert "expensive" in offer["why"]
+
+    def test_an_expensive_prefix_is_offered_a_position_that_holds(self, store: Path) -> None:
+        """And when there IS costly work, the position is one a manifest can be written at --
+        simulated rather than read off the end of the prefix. See ``test_checkpoint.py``."""
+        prior = _frozen([_READER, _ASR, _WRITER])
+        self._record_prior_run(prior)
+        later = _frozen([_READER, _ASR, self._FILTER, {"ref": "ManifestWriterStage", "params": {"output_path": "k.jsonl"}}])
+        offer = reuse.scan(later, dataset_key=_KEY)["offer"]
+        assert offer["action"] == "add_checkpoint"
+        assert offer["after_stage"] == "InferenceAsrNemoStage"
+        assert offer["skips_on_reuse"] == ["InferenceAsrNemoStage"]
 
     # A stage reports metrics under its own ``name`` field, which is neither its class name nor
     # any transformation of it: ManifestReader measures itself as "manifest_reader". Using invented
@@ -1951,7 +1973,7 @@ class TestUnsavedPriorPrefixIsDisclosed:
         self._record_prior_run(_frozen([reader, _DUR, _WRITER]), dataset_key=key)
         plan = verbs.plan_continuation(self._phase3(data), data=data)
         assert plan["prior_unsaved"]["stages"] == ["ManifestReader", "GetAudioDurationStage"]
-        assert plan["offer"]["after_stage"] == "GetAudioDurationStage"
+        assert plan["offer"]["why"]  # the offer travels with it, whatever it concludes
 
     def test_the_gate_stays_quiet_when_there_is_nothing_to_disclose(self, store: Path, tmp_path: Path) -> None:
         data, _key = self._corpus(tmp_path)
@@ -1979,11 +2001,14 @@ class TestUnsavedPriorPrefixIsDisclosed:
         assert "no valid artifact record remains" in unsaved["note"]
         assert scan["offer"] is None
 
-    def test_a_prefix_that_writes_nothing_still_gets_the_offer(self, store: Path) -> None:
+    def test_a_prefix_that_writes_nothing_still_gets_an_answer(self, store: Path) -> None:
+        # The mirror of the test above: that one persisted, so there is nothing to offer. This
+        # one did not, so the offer is present and accounts for itself either way -- with a
+        # position when there is expensive work to protect, and with a reason when there is not.
         self._record_prior_run(_frozen(list(self._PHASE1)))
         scan = reuse.scan(self._phase3(), dataset_key=_KEY)
         assert scan["prior_unsaved"]["resume_point_persists"] is False
-        assert scan["offer"]["after_stage"] == "GetAudioDurationStage"
+        assert scan["offer"]["action"] == "no_checkpoint"
 
 
 class TestBothReuseEnginesClearTheSameBar:
