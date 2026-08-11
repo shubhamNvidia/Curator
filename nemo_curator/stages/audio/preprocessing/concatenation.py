@@ -147,7 +147,7 @@ class SegmentConcatenationStage(AgentReady, ProcessingStage[AudioTask, AudioTask
             metadata_writes=["segment_mappings"],
             cardinality="N:1",
             iteration_key=self.segments_key,
-            gates=Gates(writes_to_disk=self.write_to_disk, output_path_params=["output_dir"]),
+            gates=Gates(writes_to_disk=self.write_to_disk),
         )
 
     def process(self, task: AudioTask) -> AudioTask | list[AudioTask]:

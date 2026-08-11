@@ -26,7 +26,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from nemo_curator.stages.audio._agent_ready import AgentReady, IOSpec, StageContract
+from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, StageContract
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.tasks import AudioTask
 
@@ -186,6 +186,8 @@ class ALMDataBuilderStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             # into faking a value to get past it. Derived from the configured parameter so the
             # declaration tracks whatever the caller actually set.
             removes_keys=sorted(self._drop_fields_top_level_set),
+            # Windows are built by sliding over this row's own segments.
+            gates=Gates(per_row_independent=True),
         )
 
     def process(self, task: AudioTask) -> AudioTask:

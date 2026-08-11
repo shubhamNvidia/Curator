@@ -146,7 +146,11 @@ class MonoConversionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 sample_rate_key=self.sample_rate_key,
             ),
             writes=IOSpec(data_keys=writes, produces=produces),
-            gates=Gates(writes_to_disk=self.write_to_disk, output_path_params=["output_dir"]),
+            gates=Gates(
+                writes_to_disk=self.write_to_disk,
+                output_path_params=["output_dir"],
+                per_row_independent=True,
+            ),
             # With ``strict_sample_rate`` -- the DEFAULT -- a row whose rate differs from
             # ``output_sample_rate`` returns ``[]``. That is row-dropping, and undeclared it
             # made this stage the one place the rule was invisible: the newer stages doing the

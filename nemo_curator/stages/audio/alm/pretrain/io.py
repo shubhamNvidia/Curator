@@ -160,6 +160,7 @@ class ReadLongFormManifestStage(AgentReady, ProcessingStage[EmptyTask, AudioTask
         return StageContract(
             writes=IOSpec(data_keys=[self.audio_filepath_key, "id", "segments"]),
             cardinality="1:N fan-out",
+            gates=Gates(per_row_independent=True),
         )
 
     def ray_stage_spec(self) -> dict[str, Any]:
@@ -256,6 +257,7 @@ class SnippetManifestWriterStage(AgentReady, ProcessingStage[AudioTask, AudioTas
             output_path_params=["output_path"],
             lifecycle_side_effects=True,
             requires_serializable_input=True,
+            per_row_independent=True,
         )
     )
 
@@ -275,6 +277,7 @@ class SnippetManifestWriterStage(AgentReady, ProcessingStage[AudioTask, AudioTas
                 output_path_params=["output_path"],
                 lifecycle_side_effects=True,
                 requires_serializable_input=True,
+                per_row_independent=True,
             )
         )
 
@@ -359,7 +362,14 @@ class PretrainMetricsAggregatorStage(AgentReady, ProcessingStage[AudioTask, Audi
     def describe(self) -> StageContract:
         return StageContract(
             metadata_reads=[_PRETRAIN_META_KEY],
-            gates=Gates(writes_to_disk=True, output_path_params=["output_path"], lifecycle_side_effects=True),
+            gates=Gates(
+                writes_to_disk=True,
+                output_path_params=["output_path"],
+                lifecycle_side_effects=True,
+                # The summary it writes is a total over every row of the corpus, so a run over
+                # part of the corpus produces a different (and smaller) truth.
+                per_row_independent=False,
+            ),
         )
 
     def setup_on_node(

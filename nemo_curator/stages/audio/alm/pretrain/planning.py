@@ -360,6 +360,9 @@ class OverlapFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             reads=IOSpec(data_keys=["segments"]),
             writes=IOSpec(data_keys=["segments"]),
             metadata_writes=[_PRETRAIN_META_KEY],
+            # Compares this row's segments with each other; the counters it parks in metadata
+            # are per-row facts an aggregator sums later.
+            gates=Gates(per_row_independent=True),
         )
 
     def process(self, task: AudioTask) -> AudioTask:
@@ -455,6 +458,7 @@ class SnippetCutPlannerStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             reads=IOSpec(data_keys=["segments"]),
             writes=IOSpec(data_keys=[_PLAN_DATA_KEY]),
             metadata_writes=[_PRETRAIN_META_KEY],
+            gates=Gates(per_row_independent=True),
         )
 
     def process(self, task: AudioTask) -> AudioTask:
@@ -555,7 +559,10 @@ class SnippetRepetitionFilterStage(AgentReady, ProcessingStage[AudioTask, AudioT
             reads=IOSpec(data_keys=[_PLAN_DATA_KEY]),
             writes=IOSpec(data_keys=[_PLAN_DATA_KEY]),
             metadata_writes=[_PRETRAIN_META_KEY],
-            gates=Gates(requires_internet_first_run=not os.path.isdir(self.tokenizer_path)),
+            gates=Gates(
+                requires_internet_first_run=not os.path.isdir(self.tokenizer_path),
+                per_row_independent=True,
+            ),
         )
 
     def setup_on_node(

@@ -281,7 +281,12 @@ class NeMoASRAlignerStage(BaseASRProcessorStage):
         return StageContract(
             reads=IOSpec(data_keys=["duration", self.segments_key, self.split_filepaths_key, self.split_metadata_key]),
             writes=IOSpec(data_keys=[self.text_key, self.alignment_key], segment_data_keys=[self.text_key, self.words_key]),
-            gates=Gates(requires_gpu=self.resources.gpus > 0, requires_internet_first_run=self.model_path is None),
+            gates=Gates(
+                requires_gpu=self.resources.gpus > 0,
+                requires_internet_first_run=self.model_path is None,
+                # Batched for GPU throughput, but each row is transcribed and aligned on its own.
+                per_row_independent=True,
+            ),
         )
 
     def get_alignments_text(self, hypotheses: Any) -> tuple[list, str]:  # noqa: ANN401

@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 import soundfile as sf
 from loguru import logger
 
-from nemo_curator.stages.audio._agent_ready import AgentReady, IOSpec, StageContract
+from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, StageContract
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.stages.resources import Resources
 from nemo_curator.tasks import AudioTask
@@ -120,6 +120,8 @@ class SampleRateFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             # the semantic review packet. Left at the 1:1 default the reviewer is never told the
             # corpus can shrink here, so nobody asks how much of it survives.
             cardinality="filter",
+            # Each row is judged against the configured rates, not against the corpus.
+            gates=Gates(per_row_independent=True),
         )
 
     def accepts(self, sample_rate: int) -> bool:

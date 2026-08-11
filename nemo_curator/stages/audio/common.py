@@ -15,9 +15,10 @@
 import json
 import os
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from operator import eq, ge, gt, le, lt, ne
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 import soundfile
 import torch
@@ -25,7 +26,7 @@ from fsspec.core import url_to_fs
 from loguru import logger
 
 from nemo_curator.backends.base import NodeInfo, WorkerMetadata
-from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, StageContract
+from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, Role, StageContract, StaticHints
 from nemo_curator.stages.base import CompositeStage, ProcessingStage
 from nemo_curator.stages.file_partitioning import FilePartitioningStage
 from nemo_curator.tasks import AudioTask, EmptyTask, FileGroupTask
@@ -87,6 +88,7 @@ class GetAudioDurationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 sample_rate_key=self.sample_rate_key,
             ),
             writes=IOSpec(data_keys=[self.duration_key]),
+            gates=Gates(per_row_independent=True),
         )
 
     def validate_input(self, task: AudioTask) -> bool:
@@ -163,6 +165,9 @@ class PreserveByValueStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             reads=IOSpec(data_keys=[self.input_value_key]),
             writes=IOSpec(data_keys=[self.input_value_key]),
             cardinality="filter",
+            # Compares one row against a fixed target value, so batching changes throughput
+            # rather than the verdict -- no row's fate depends on the rows beside it.
+            gates=Gates(per_row_independent=True),
         )
 
     def process(self, task: AudioTask) -> AudioTask | None:
@@ -189,30 +194,63 @@ class PreserveByValueStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         return results
 
 
+def _row_names_file(row: dict[str, Any], key: str, wanted: set[str]) -> bool:
+    """Whether a manifest row's audio path is one of ``wanted`` (absolute-path comparison)."""
+    value = row.get(key)
+    return isinstance(value, str) and os.path.abspath(os.path.expanduser(value)) in wanted
+
+
 @dataclass
 class ManifestReaderStage(AgentReady, ProcessingStage[FileGroupTask, AudioTask]):
     """Read JSONL manifest files from a FileGroupTask and emit one AudioTask per line.
 
     Uses line-by-line streaming via fsspec (no Pandas) to keep memory at ~1x file size.
     Supports local and cloud paths (S3, GCS).
+
+    Args:
+        include_files: Emit only rows whose audio path (under ``include_files_key``) is one of
+            these files, comparing absolute paths. ``None`` -- the default -- reads every row.
+            It restricts the same reader over the same manifest rather than pointing a delta
+            run at a filtered copy, so the rows a partial run emits are the rows a full run
+            would have emitted.
+        include_files_key: Which row column holds that path.
     """
 
     name: str = "manifest_reader_stage"
+    include_files: list[str] | None = None
+    include_files_key: str = "audio_filepath"
+    # Declared statically as well as in describe(): a narrowable source has to be readable as
+    # safe-to-narrow without constructing it, which is how the instance-free conformance sweep
+    # sees it.
+    AGENT_STATIC: ClassVar[StaticHints] = StaticHints(
+        gates=Gates(lifecycle_side_effects=True, per_row_independent=True)
+    )
+    # It points at the column holding a row's audio path, which is an existing role rather
+    # than a new one -- a filter comparing something else would not be filtering by file.
+    KEY_ROLE_OVERRIDES: ClassVar[Mapping[str, Role]] = {"include_files_key": "audio_filepath"}
 
     def process(self, task: FileGroupTask) -> list[AudioTask]:
         t0 = time.perf_counter()
         paths = task.data
         results: list[AudioTask] = []
         count = 0
+        wanted = (
+            None
+            if self.include_files is None
+            else {os.path.abspath(os.path.expanduser(p)) for p in self.include_files}
+        )
         for manifest in paths:
             fs, resolved = url_to_fs(manifest)
             with fs.open(resolved, "r", encoding="utf-8") as f:
                 for line in f:
                     if line.strip():
+                        row = json.loads(line.strip())
+                        if wanted is not None and not _row_names_file(row, self.include_files_key, wanted):
+                            continue
                         results.append(
                             AudioTask(
                                 dataset_name=task.dataset_name,
-                                data=json.loads(line.strip()),
+                                data=row,
                                 _metadata=task._metadata,
                                 _stage_perf=list(task._stage_perf),
                             )
@@ -238,7 +276,7 @@ class ManifestReaderStage(AgentReady, ProcessingStage[FileGroupTask, AudioTask])
         return StageContract(
             writes=IOSpec(data_keys=["audio_filepath"]),
             cardinality="1:N fan-out",
-            gates=Gates(lifecycle_side_effects=True),
+            gates=Gates(lifecycle_side_effects=True, per_row_independent=True),
         )
 
 
@@ -256,6 +294,8 @@ class ManifestReader(AgentReady, CompositeStage[EmptyTask, AudioTask]):
         blocksize: Target size per partition (e.g., "100MB"). Ignored if files_per_partition is set.
         file_extensions: File extensions to filter. Defaults to [".jsonl", ".json"].
         storage_options: Storage options for cloud paths (S3, GCS credentials, endpoints).
+        include_files: Read only the rows naming these audio files (see ``ManifestReaderStage``).
+        include_files_key: Which row column holds the audio path.
     """
 
     manifest_path: str | list[str]
@@ -264,6 +304,10 @@ class ManifestReader(AgentReady, CompositeStage[EmptyTask, AudioTask]):
     blocksize: int | str | None = None
     file_extensions: list[str] = field(default_factory=lambda: [".jsonl", ".json"])
     storage_options: dict[str, Any] | None = None
+    include_files: list[str] | None = None
+    include_files_key: str = "audio_filepath"
+    AGENT_STATIC: ClassVar[StaticHints] = StaticHints(gates=Gates(per_row_independent=True))
+    KEY_ROLE_OVERRIDES: ClassVar[Mapping[str, Role]] = {"include_files_key": "audio_filepath"}
 
     def __post_init__(self) -> None:
         super().__init__()
@@ -280,7 +324,10 @@ class ManifestReader(AgentReady, CompositeStage[EmptyTask, AudioTask]):
                 file_extensions=self.file_extensions,
                 storage_options=self.storage_options,
             ),
-            ManifestReaderStage(),
+            ManifestReaderStage(
+                include_files=self.include_files,
+                include_files_key=self.include_files_key,
+            ),
         ]
 
     def get_description(self) -> str:
@@ -292,7 +339,11 @@ class ManifestReader(AgentReady, CompositeStage[EmptyTask, AudioTask]):
         return ", ".join(parts)
 
     def describe(self) -> StageContract:
-        return StageContract(cardinality="1:N fan-out", wrappable=False)
+        return StageContract(
+            cardinality="1:N fan-out",
+            wrappable=False,
+            gates=Gates(per_row_independent=True),
+        )
 
 
 @dataclass
@@ -311,16 +362,23 @@ class CreateInitialManifestAudioFolderStage(AgentReady, ProcessingStage[EmptyTas
         extensions: Audio file extensions to include (case-insensitive).
         recursive: Recurse into subfolders (default True).
         max_samples: Maximum number of files to include (-1 for all).
+        include_files: Process only these files (absolute paths), skipping the rest of the
+            folder. ``None`` -- the default -- means the whole folder, exactly as before.
+            Restricting the file list rather than swapping in a different source stage is what
+            lets a delta run over new files produce rows identical to a full run's.
     """
 
     data_dir: str
     extensions: list[str] = field(default_factory=lambda: [".wav", ".flac", ".mp3", ".ogg", ".opus", ".m4a"])
     recursive: bool = True
     max_samples: int = -1
+    include_files: list[str] | None = None
     audio_filepath_key: str = "audio_filepath"
     audio_item_id_key: str = "audio_item_id"
     name: str = "CreateInitialManifestAudioFolder"
     batch_size: int = 1
+    # See ManifestReaderStage: the narrowing claim has to survive being read off the class.
+    AGENT_STATIC: ClassVar[StaticHints] = StaticHints(gates=Gates(per_row_independent=True))
 
     def __post_init__(self) -> None:
         super().__init__()
@@ -340,7 +398,9 @@ class CreateInitialManifestAudioFolderStage(AgentReady, ProcessingStage[EmptyTas
             # (unlike the dataset CreateInitialManifest*Stage sources, which download and write).
             writes=IOSpec(data_keys=[self.audio_filepath_key, self.audio_item_id_key]),
             cardinality="1:N fan-out",
-            gates=Gates(),  # scans existing files -- no download, no disk writes
+            # scans existing files -- no download, no disk writes; one task per file, and a
+            # file's row says nothing about the other files in the folder.
+            gates=Gates(per_row_independent=True),
         )
 
     def ray_stage_spec(self) -> dict[str, Any]:
@@ -364,6 +424,14 @@ class CreateInitialManifestAudioFolderStage(AgentReady, ProcessingStage[EmptyTas
                 for f in os.listdir(self.data_dir)
                 if f.lower().endswith(exts) and os.path.isfile(os.path.join(self.data_dir, f))
             ]
+        if self.include_files is not None:
+            wanted = {os.path.abspath(os.path.expanduser(p)) for p in self.include_files}
+            found = [p for p in found if os.path.abspath(p) in wanted]
+            missing = wanted - {os.path.abspath(p) for p in found}
+            if missing:
+                # Named rather than silently skipped: a caller that asked for specific files and
+                # got fewer would otherwise read the short result as "those files held nothing".
+                logger.warning(f"[{self.name}] include_files named {len(missing)} file(s) not found under {self.data_dir}")
         return sorted(found)
 
     def process(self, _: EmptyTask) -> list[AudioTask]:
@@ -462,6 +530,8 @@ class ManifestWriterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 # before this AudioTask sink, or convert to a DocumentBatch and
                 # use DocumentBatchJsonlWriterStage instead.
                 requires_serializable_input=True,
+                # Appends each row as it arrives; a row's line is its own contents.
+                per_row_independent=True,
             ),
         )
 

@@ -89,7 +89,8 @@ class AudioToDocumentStage(AgentReady, ProcessingStage[AudioTask, DocumentBatch]
             # Strips tensors/audio blobs while building the DataFrame, so its
             # output is serialization-safe — the sanctioned sink to place before
             # a JSON writer when a resident tensor may be present.
-            gates=Gates(sanitizes_output=True),
+            # Packs rows into one batch for downstream throughput; the values are untouched.
+            gates=Gates(sanitizes_output=True, per_row_independent=True),
             description="Aggregate AudioTasks into a DocumentBatch, stripping tensors/audio blobs (JSON/disk-safe).",
         )
 
@@ -177,6 +178,7 @@ class DocumentBatchJsonlWriterStage(AgentReady, ProcessingStage[DocumentBatch, D
             output_path_params=["output_path"],
             lifecycle_side_effects=True,
             requires_serializable_input=True,
+            per_row_independent=True,
         ),
         description="Write each DocumentBatch row to one JSONL manifest",
     )

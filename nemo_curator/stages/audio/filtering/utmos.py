@@ -200,7 +200,9 @@ class UTMOSFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             ),
             cardinality="filter" if self.action == "filter" else "1:1",
             cardinality_options=["filter", "annotate"],
-            gates=Gates(requires_gpu=self.resources.gpus > 0, requires_internet_first_run=True),
+            gates=Gates(
+                requires_gpu=self.resources.gpus > 0, requires_internet_first_run=True, per_row_independent=True
+            ),
         )
 
     def setup_on_node(

@@ -164,6 +164,19 @@ class Gates:
     #     downstream of it is serialization-safe.
     requires_serializable_input: bool = False
     sanitizes_output: bool = False
+    # Is each output row computed from its own input row ALONE?
+    #
+    # ``None`` means NOT DECLARED and is deliberately distinct from ``True``, exactly as with
+    # ``output_path_params`` above. Cardinality cannot answer this: a stage can be honestly
+    # ``1:1``, one row out per row in, and still compute each value against a statistic taken
+    # over the whole corpus (a threshold at the 10th percentile of every duration). Row counts
+    # agree, contracts agree, and nothing about the run reveals it.
+    #
+    # It matters when only the changed files are processed: an independent stage gives those
+    # files the same answer it would have given in a full run, while a corpus-statistic stage
+    # judges them against a statistic drawn from the delta alone. So undeclared means a delta
+    # run refuses and names the stage, rather than assuming the harmless case.
+    per_row_independent: bool | None = None
 
 
 @dataclass(frozen=True)

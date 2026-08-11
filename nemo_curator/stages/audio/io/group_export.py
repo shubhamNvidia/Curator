@@ -103,7 +103,12 @@ class ManifestGroupExportStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
     # output_dir is required, so discovery cannot instantiate this stage; declare the gates
     # instance-free too or a planner would see a disk writer with no disk gate.
     AGENT_STATIC: ClassVar[StaticHints] = StaticHints(
-        gates=Gates(writes_to_disk=True, output_path_params=["output_dir"], lifecycle_side_effects=True),
+        gates=Gates(
+            writes_to_disk=True,
+            output_path_params=["output_dir"],
+            lifecycle_side_effects=True,
+            per_row_independent=False,
+        ),
         error_policy="annotate",
         description="Group manifest rows by a column and write one txt/json/csv file per group",
     )
@@ -149,7 +154,14 @@ class ManifestGroupExportStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
         return StageContract(
             reads=IOSpec(data_keys=[self.group_by]),
             writes=IOSpec(produces=["disk"]),
-            gates=Gates(writes_to_disk=True, output_path_params=["output_dir"], lifecycle_side_effects=True),
+            gates=Gates(
+                writes_to_disk=True,
+                output_path_params=["output_dir"],
+                lifecycle_side_effects=True,
+                # Each output file is every row sharing a group value, so which rows are present
+                # decides the file's contents.
+                per_row_independent=False,
+            ),
             description="Group manifest rows by a column and write one txt/json/csv file per group",
         )
 

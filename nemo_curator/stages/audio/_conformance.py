@@ -51,6 +51,8 @@ _VALID_ROLES: frozenset[str] = frozenset(get_args(Role))
 _VALID_ACCEPTS: frozenset[str] = frozenset(get_args(AudioForm))
 _VALID_PRODUCES: frozenset[str] = frozenset(get_args(ProducedForm))
 _VALID_WRITE_VALUE_ORIGINS: frozenset[str] = frozenset(get_args(WriteValueOrigin))
+# The param a delta run sets to feed a source only the files that changed.
+_NARROWING_PARAM = "include_files"
 
 
 # --------------------------------------------------------------------------- #
@@ -169,6 +171,30 @@ def _check_roles(stage_or_cls: Any, c: StageContract, name: str) -> None:  # noq
             )
 
 
+def _check_per_row_independence(c: StageContract, name: str) -> None:
+    """The ``per_row_independent`` declaration must not contradict the rest of the contract.
+
+    Leaving it undeclared stays legal: a delta run refuses and names the stage, which is the
+    safe direction. What cannot be allowed is a declaration the same contract disproves.
+
+    A stage combining rows (``N:1``) is by definition not computing each output row from one
+    input row. And ``include_files`` is what a delta uses to feed a source only the files that
+    changed -- sound exactly when the rows it emits do not depend on which other files were
+    present, so a source that can be narrowed without saying that is claiming both things at
+    once.
+    """
+    assert not (c.gates.per_row_independent and c.cardinality == "N:1"), (
+        f"{name}: gates.per_row_independent=True contradicts cardinality 'N:1' -- a stage that "
+        f"combines several rows into one is by definition not computing from one row alone"
+    )
+    if any(p.name == _NARROWING_PARAM for p in c.params):
+        assert c.gates.per_row_independent, (
+            f"{name}: accepts {_NARROWING_PARAM!r} but does not declare gates.per_row_independent=True -- "
+            "a source a delta run can narrow to a subset of files must emit each file's rows "
+            "independently of which other files are present"
+        )
+
+
 def _check_serialization(c: StageContract, name: str) -> None:
     try:
         json.dumps(c.to_dict())
@@ -217,6 +243,7 @@ def assert_contract_wellformed(stage_or_cls: Any) -> StageContract:  # noqa: ANN
         name = type(stage_or_cls).__name__
     _check_shape(c, name)
     _check_roles(stage_or_cls, c, name)
+    _check_per_row_independence(c, name)
     _check_serialization(c, name)
     _check_residency_accepts(stage_or_cls, c, name)
     return c
@@ -289,6 +316,7 @@ def assert_agent_ready(  # noqa: C901, PLR0912, PLR0913 (complexity accepted: on
     name = type(stage).__name__
     _check_shape(c, name)
     _check_roles(stage, c, name)
+    _check_per_row_independence(c, name)
     _check_serialization(c, name)
     _check_residency_accepts(stage, c, name)
 

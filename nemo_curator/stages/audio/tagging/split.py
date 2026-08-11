@@ -93,7 +93,8 @@ class SplitLongAudioStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             ),
             cardinality="1:1 nested-list",
             iteration_key=self.split_metadata_key,
-            gates=Gates(writes_to_disk=True, output_path_params=["output_dir"]),
+            # A row is split by its own duration and segments; the corpus is not consulted.
+            gates=Gates(writes_to_disk=True, output_path_params=["output_dir"], per_row_independent=True),
         )
 
     def get_split_points(self, metadata: dict) -> list[float]:
@@ -306,6 +307,8 @@ class JoinSplitAudioMetadataStage(AgentReady, ProcessingStage[AudioTask, AudioTa
                 ]
             ),
             writes=IOSpec(data_keys=[self.text_key, self.alignment_key]),
+            # Rejoins the chunks THIS row was split into, all of which came from its own file.
+            gates=Gates(per_row_independent=True),
         )
 
     def process(self, task: AudioTask) -> AudioTask:

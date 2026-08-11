@@ -89,6 +89,18 @@ ADDITIVE_STAGE_NAMES = (
     "SampleRateFilterStage",
 )
 
+# Refreshed 2026-08-10 for delta reuse. Verified additive by dumping the whole payload from
+# this tree and from HEAD and diffing them: every line is an addition except two empty
+# collections that gained entries, plus one correction noted below.
+#   * gates.per_row_independent appears on all 46 (null where undeclared, which is what a
+#     delta refuses on), and is true/false on the stages that now declare it,
+#   * ManifestReader / ManifestReaderStage / CreateInitialManifestAudioFolderStage gained the
+#     optional include_files (and include_files_key), whose default of None reads the whole
+#     corpus exactly as before,
+#   * ManifestReaderStage's STATIC gates now say lifecycle_side_effects=True. Not a behaviour
+#     change: its describe() has always said so, and only the instance-free view disagreed.
+# No stage lost a param, a key, a default, or a read/write.
+#
 # Refreshed 2026-08-07: disk-writing stages now DECLARE their output path params via the
 # additive Gates.output_path_params, replacing a central table in verbs.py that every new
 # writer had to be added to. Verified additive by diffing the full payload before/after:
@@ -104,7 +116,7 @@ ADDITIVE_STAGE_NAMES = (
 # No stage lost a param, a read/write key, or changed an existing default. Regenerate this
 # value ONLY after confirming (git diff of describe()/defaults) that a change is additive.
 EXPECTED_LEGACY_COMPATIBILITY_SHA256 = (
-    "356df336fd1c62b2448cac36c69b4ae51f98e11697bc26c981967b25aa7dcff7"
+    "870ff04457f4d13de582886a1ad6c400f5da7f9dc7bdbd8fc7264977418ef6bc"
 )
 
 

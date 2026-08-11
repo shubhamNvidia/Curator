@@ -26,7 +26,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from nemo_curator.stages.audio._agent_ready import AgentReady, IOSpec, StageContract
+from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, StageContract
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.tasks import AudioTask
 
@@ -184,6 +184,8 @@ class ALMDataOverlapStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         return StageContract(
             reads=IOSpec(data_keys=[self.windows_key]),
             writes=IOSpec(data_keys=[self.filtered_windows_key]),
+            # Overlap is measured between windows of the same row.
+            gates=Gates(per_row_independent=True),
         )
 
     def process(self, task: AudioTask) -> AudioTask:
