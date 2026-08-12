@@ -188,6 +188,10 @@ class PyAnnoteDiarizationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
                 requires_gpu=self.resources.gpus > 0,
                 writes_to_disk=self.write_rttm,
                 runtime_secrets=["HF_TOKEN"],
+                # ``add_vad_segments`` draws from one unseeded ``random.Random()`` built in
+                # ``setup()``, so the durations a file gets depend on how many files that worker
+                # segmented before it.
+                per_row_independent=False,
             ),
         )
 

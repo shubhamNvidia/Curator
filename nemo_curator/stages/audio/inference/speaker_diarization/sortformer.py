@@ -270,8 +270,14 @@ class InferenceSortformerStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
             gates=Gates(
                 requires_gpu=True,
                 writes_to_disk=self.rttm_out_dir is not None,
-                requires_internet_first_run=self.model_path is None,
-            ),
+                # The ROW is per-file: ``process`` handles one task and calls ``diarize`` with a
+                # single-element list, so the model never sees another file whatever
+                # ``inference_batch_size`` says. The RTTM is not: its name falls back to the audio
+                # BASENAME, so with a shared ``rttm_out_dir`` two files called ``utt1.wav`` in
+                # different folders write the same ``utt1.rttm``. Drop the directory and the whole
+                # stage is safe to run over a subset.
+                per_row_independent=self.rttm_out_dir is None,
+                requires_internet_first_run=self.model_path is None, output_path_params=["rttm_out_dir"]),
         )
 
     def ray_stage_spec(self) -> dict[str, Any]:

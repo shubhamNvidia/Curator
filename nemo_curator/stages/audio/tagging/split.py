@@ -93,8 +93,17 @@ class SplitLongAudioStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             ),
             cardinality="1:1 nested-list",
             iteration_key=self.split_metadata_key,
-            # A row is split by its own duration and segments; the corpus is not consulted.
-            gates=Gates(writes_to_disk=True, output_path_params=["output_dir"], per_row_independent=True),
+            # A row is split by its own duration and segments; the corpus is not consulted. But
+            # split names are built from the source BASENAME alone (``{stem}.k_of_n.wav``), so
+            # with an ``output_dir`` every file shares one flat namespace and ``spk1/utt1.wav``
+            # and ``spk2/utt1.wav`` claim the same output path -- which row's audio survives there
+            # depends on which rows ran. Without one, splits land beside their source and the
+            # parent directory keeps them apart.
+            gates=Gates(
+                writes_to_disk=True,
+                output_path_params=["output_dir"],
+                per_row_independent=self.output_dir is None,
+            ),
         )
 
     def get_split_points(self, metadata: dict) -> list[float]:

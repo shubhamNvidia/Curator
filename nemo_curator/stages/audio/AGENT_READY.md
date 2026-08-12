@@ -123,6 +123,52 @@ are not an intent checker, a module-specific validator, or a centralized
 field-scope ontology. The host LLM still decides whether a conditional field's
 meaning and granularity fit the request.
 
+### `gates.per_row_independent` — usually nothing to do
+
+This one decides whether a *delta run* (reprocessing only the files that changed, instead of the
+whole corpus) may include your stage. **Most stages declare nothing and are handled
+automatically.**
+
+`delta.region()` refuses to assume anything about a stage that could see a row other than the one
+it was handed. It checks three things, and if **none** of them is true your stage is treated as
+independent with no declaration from you:
+
+- you override `process_batch` (you are handed several rows at once)
+- `gates.writes_to_disk=True`
+- `gates.lifecycle_side_effects=True`
+
+**If one of those IS true**, the delta refuses your stage by name until you answer this question:
+
+> If I ran this stage over file `X` alone, versus over `X` plus 999 others, would `X`'s output row
+> be identical?
+
+- **Yes** → `per_row_independent=True`, with a comment saying *why* it survives batching.
+- **No** → `per_row_independent=False`. Nothing is lost: the delta simply stops at your stage, and
+  every stage above it still reprocesses only the changed files.
+
+The reference pair — both batch, opposite answers:
+
+| Stage | | Why |
+|---|---|---|
+| `InferenceAsrNemoStage` | `True` | pads to the batch max **but passes `audio_lengths`**, which the encoder masks with |
+| `TorchSquimQualityMetricsStage` | `False` | pads to the batch max with **no lengths**, so padding reads as silence and scores move |
+
+Typical reasons for `False`: a corpus statistic or percentile threshold, a running counter that
+picks output names, appending to a file shared across rows, an unseeded RNG advanced per row,
+batch padding without lengths.
+
+Three more rules:
+
+- **Declare per instance when the unsafety is conditional.** `CreateInitialManifestAudioFolderStage`
+  is only unsound under `max_samples` (it truncates the *sorted* listing), so it declares
+  `per_row_independent=(self.max_samples is None or self.max_samples < 0)` rather than a flat
+  `False` that would cost every ordinary folder source its delta.
+- **A source accepting `include_files` MUST declare**, `True` or `False` — silence is a conformance
+  error. That parameter is how a delta narrows a source, so it has to be answerable.
+- **Getting it wrong is asymmetric.** `False` when you were safe costs a full rerun — annoying and
+  harmless. `True` when you were not silently produces rows a full run would never have produced,
+  and republishes them as the corpus's reusable result. **When unsure, declare `False`.**
+
 ## What is AUTO-DERIVED — do NOT hand-write these
 
 | Field | Derived from |
@@ -247,6 +293,9 @@ memorize the rules — if the test passes, the contract is honest.
 - [ ] capability card explains each externally consumed output's meaning, unit,
       provenance, scope/granularity, propagation and a counterexample
 - [ ] new `AudioTask`s preserve `_metadata` and `list(_stage_perf)` (manual — not covered by `assert_agent_ready`)
+- [ ] if you override `process_batch`, write to disk, or set `lifecycle_side_effects` — decided
+      `gates.per_row_independent` (`True`/`False`, per instance if conditional); otherwise left it
+      alone and let the delta derive it
 - [ ] `assert_agent_ready(...)` test added and green
 - [ ] defaults unchanged → existing pipelines behave exactly as before
 

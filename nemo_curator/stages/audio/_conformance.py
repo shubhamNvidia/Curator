@@ -172,26 +172,23 @@ def _check_roles(stage_or_cls: Any, c: StageContract, name: str) -> None:  # noq
 
 
 def _check_per_row_independence(c: StageContract, name: str) -> None:
-    """The ``per_row_independent`` declaration must not contradict the rest of the contract.
+    """A narrowable source has to answer whether narrowing it is sound -- either way.
 
-    Leaving it undeclared stays legal: a delta run refuses and names the stage, which is the
-    safe direction. What cannot be allowed is a declaration the same contract disproves.
+    ``False`` is a legitimate answer, not a violation: ``CreateInitialManifestAudioFolderStage``
+    under ``max_samples`` truncates the sorted listing, says so per instance, and ``delta.region``
+    stops there. Requiring ``True`` would force it to lie or drop the parameter. Silence is what
+    is forbidden.
 
-    A stage combining rows (``N:1``) is by definition not computing each output row from one
-    input row. And ``include_files`` is what a delta uses to feed a source only the files that
-    changed -- sound exactly when the rows it emits do not depend on which other files were
-    present, so a source that can be narrowed without saying that is claiming both things at
-    once.
+    A companion rule ("``True`` contradicts ``N:1``") was removed as wrong: cardinality counts
+    TASKS, this is about row VALUES, and ``AudioToDocumentStage`` repacks tasks while leaving
+    values untouched. ``delta._TRACEABLE`` refuses ``N:1`` before the gate is read anyway.
     """
-    assert not (c.gates.per_row_independent and c.cardinality == "N:1"), (
-        f"{name}: gates.per_row_independent=True contradicts cardinality 'N:1' -- a stage that "
-        f"combines several rows into one is by definition not computing from one row alone"
-    )
     if any(p.name == _NARROWING_PARAM for p in c.params):
-        assert c.gates.per_row_independent, (
-            f"{name}: accepts {_NARROWING_PARAM!r} but does not declare gates.per_row_independent=True -- "
-            "a source a delta run can narrow to a subset of files must emit each file's rows "
-            "independently of which other files are present"
+        assert c.gates.per_row_independent is not None, (
+            f"{name}: accepts {_NARROWING_PARAM!r} but leaves gates.per_row_independent undeclared -- "
+            "a source a delta run can narrow to a subset of files has to say whether the rows it "
+            "emits depend on which other files were present. False is a legitimate answer (the "
+            "delta then refuses to narrow it); silence is not"
         )
 
 
