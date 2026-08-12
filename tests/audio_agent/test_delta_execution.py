@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from nemo_curator.audio_agent import artifacts, delta, verbs
+from nemo_curator.audio_agent import artifacts, cli, delta, verbs
 from nemo_curator.audio_agent.recipe import Recipe
 
 if TYPE_CHECKING:
@@ -109,7 +109,7 @@ class TestDeltaExecution:
         for name in ("a.wav", "b.wav"):
             _wav(folder / name)
         rec = _recipe(folder, out)
-        _run(rec, folder)
+        assert _run(rec, folder)["status"] == "completed"
         _wav(folder / "c.wav")
         verbs.delta_run(rec, data=str(folder), confirm=True)
         incremental = _rows(out)
@@ -128,7 +128,7 @@ class TestDeltaExecution:
         for name in ("a.wav", "b.wav"):
             _wav(folder / name)
         rec = _recipe(folder, out)
-        _run(rec, folder)
+        assert _run(rec, folder)["status"] == "completed"
         _wav(folder / "c.wav")
         verbs.delta_run(rec, data=str(folder), confirm=True)
 
@@ -139,11 +139,9 @@ class TestDeltaExecution:
         """A corpus grows more than once, so a delta has to be able to follow a delta.
 
         The merged manifest is published under the full pipeline's own key, which means the next
-        delta reads its record like any other -- and refuses if that record describes an
-        execution that never happened. Pairing the merged row count with either run's input
-        makes a row-preserving writer look like it took 2 rows and produced 3, which
-        ``contradictions`` correctly treats as the stage disproving its contract. Without this,
-        the first delta is the last one a pipeline can ever run.
+        delta reads its record like any other. Its ``rows_in`` is deliberately left unrecorded:
+        pairing the merged row count with either run's input would describe an execution that
+        never happened.
         """
         folder, out = tmp_path / "audio", tmp_path / "out" / "m.jsonl"
         for name in ("a.wav", "b.wav"):
@@ -165,12 +163,155 @@ class TestDeltaExecution:
         assert done["merged"][0]["rows_added"] == 1
         assert {os.path.basename(r["audio_filepath"]) for r in _rows(out)} == {"a.wav", "b.wav", "c.wav", "d.wav"}
 
+    def test_a_delta_that_owns_only_a_prefix_does_not_call_itself_completed(self, tmp_path: Path) -> None:
+        """The realistic shape: per-file work, a checkpoint, then a stage that needs the corpus.
+
+        The merge brings the checkpoint up to date and can do nothing about what the stages after
+        it wrote, so those files still describe the corpus as it was. Reporting "completed" there
+        hands a host a finished-looking answer over a stale deliverable, which is why the status
+        names the tail and lists the outputs that are currently a lie.
+        """
+        folder = tmp_path / "audio"
+        checkpoint, groups = tmp_path / "out" / "ck.jsonl", tmp_path / "out" / "groups"
+        for name in ("a.wav", "b.wav"):
+            _wav(folder / name)
+        rec = Recipe.from_dict(
+            {
+                "stages": [
+                    {"ref": "CreateInitialManifestAudioFolderStage", "params": {"data_dir": str(folder)}},
+                    {"ref": "GetAudioDurationStage", "params": {}},
+                    {"ref": "ManifestWriterStage", "params": {"output_path": str(checkpoint)}},
+                    # per_row_independent=False, so the traceable region ends here.
+                    {
+                        "ref": "ManifestGroupExportStage",
+                        "params": {"output_dir": str(groups), "group_by": "audio_filepath", "format": "json"},
+                    },
+                ]
+            }
+        ).freeze()
+        assert _run(rec, folder)["status"] == "completed"
+        exported = sorted(p.name for p in groups.glob("*.jsonl"))
+        assert len(exported) == 2, exported
+
+        _wav(folder / "c.wav")
+        done = verbs.delta_run(rec, data=str(folder), confirm=True)
+
+        assert done["status"] == "tail_required", done
+        assert done["tail"]["stages"] == 1
+        assert str(groups) in " ".join(done["tail"]["stale_outputs"])
+        assert len(_rows(checkpoint)) == 3, "the prefix's own manifest is merged and current"
+        assert sorted(p.name for p in groups.glob("*.jsonl")) == exported, "the tail has not run yet"
+
+        tail = verbs.plan_continuation(rec, data=str(folder), execute=True, choice="extend", confirm=True)
+        assert tail.get("status") not in {"error", "failed", "refused"}, tail
+        assert len(sorted(groups.glob("*.jsonl"))) == 3, "the tail reran over every row"
+
+    def test_the_merged_deliverable_is_judged_against_the_confirmed_success_bar(self, tmp_path: Path) -> None:
+        """A delta rewrites the user's output, so the bar they approved has to be re-checked.
+
+        Without this the verb answers ``completed`` -- and the CLI exits 0 -- over a manifest the
+        merge has just pushed past a ``must`` criterion, so a script ships it. The verdict is
+        computed over what is on disk after the merge, not over the delta's own narrow run.
+        """
+        folder, out = tmp_path / "audio", tmp_path / "out" / "m.jsonl"
+        for name in ("a.wav", "b.wav"):
+            _wav(folder / name)
+        rec = Recipe.from_dict(
+            {
+                "stages": [
+                    {"ref": "CreateInitialManifestAudioFolderStage", "params": {"data_dir": str(folder)}},
+                    {"ref": "GetAudioDurationStage", "params": {}},
+                    {"ref": "ManifestWriterStage", "params": {"output_path": str(out)}},
+                ],
+                # Two files clear this; the third pushes the corpus past it.
+                "acceptance_criteria": [
+                    {"id": "cap", "type": "yield", "check": {"op": "<=", "value": 2}, "severity": "must"}
+                ],
+            }
+        ).freeze()
+        assert _run(rec, folder)["status"] == "completed"
+
+        _wav(folder / "c.wav")
+        done = verbs.delta_run(rec, data=str(folder), confirm=True)
+
+        assert done["status"] == "completed", done
+        assert "acceptance" in done, "a delta that rewrites the deliverable must judge it"
+        assert done["acceptance"].get("overall") == "not_met", done["acceptance"]
+        # And the shell must not read that as success.
+        assert cli._result_exit_code("delta-run", done) == 1
+
+    def test_a_prefix_delta_does_not_manufacture_an_acceptance_verdict(self, tmp_path: Path) -> None:
+        """The tail has not run, so there is no final output to judge -- and saying so is the point.
+
+        The prefix recipe is also stripped of the criteria before it executes: they describe the
+        whole pipeline, and letting a 1-file run over 2 stages record a verdict about them puts a
+        number nobody should trust on the run record the merged artifact points at.
+        """
+        folder = tmp_path / "audio"
+        checkpoint, groups = tmp_path / "out" / "ck.jsonl", tmp_path / "out" / "groups"
+        for name in ("a.wav", "b.wav"):
+            _wav(folder / name)
+        rec = Recipe.from_dict(
+            {
+                "stages": [
+                    {"ref": "CreateInitialManifestAudioFolderStage", "params": {"data_dir": str(folder)}},
+                    {"ref": "GetAudioDurationStage", "params": {}},
+                    {"ref": "ManifestWriterStage", "params": {"output_path": str(checkpoint)}},
+                    {
+                        "ref": "ManifestGroupExportStage",
+                        "params": {"output_dir": str(groups), "group_by": "audio_filepath", "format": "json"},
+                    },
+                ],
+                "acceptance_criteria": [
+                    {"id": "some", "type": "yield", "check": {"op": ">=", "value": 1}, "severity": "must"}
+                ],
+            }
+        ).freeze()
+        assert _run(rec, folder)["status"] == "completed"
+
+        _wav(folder / "c.wav")
+        done = verbs.delta_run(rec, data=str(folder), confirm=True)
+
+        assert done["status"] == "tail_required", done
+        assert "acceptance" not in done, "a verdict here would describe output the tail has not written"
+        assert done["tail"]["acceptance"]
+        # tail_required stays a shell success: the merge did what it promised.
+        assert cli._result_exit_code("delta-run", done) == 0
+
+    def test_running_the_same_delta_twice_does_not_duplicate_the_new_rows(self, tmp_path: Path) -> None:
+        """A retry has to be safe, because the failure paths tell the caller to retry.
+
+        The merge drops every file the delta RAN, not just the ones whose prior rows went stale,
+        so it replaces rather than appends. On a first delta an added file has no prior rows and
+        the wider set is a no-op; on a repeat it is what stops the same rows landing twice. This
+        matters because a delta that fails on its second sink leaves the first one merged, and
+        the coverage sidecar is only rewritten at the very end -- so the natural retry replans
+        the identical delta.
+        """
+        folder, out = tmp_path / "audio", tmp_path / "out" / "m.jsonl"
+        for name in ("a.wav", "b.wav"):
+            _wav(folder / name)
+        rec = _recipe(folder, out)
+        assert _run(rec, folder)["status"] == "completed"
+
+        _wav(folder / "c.wav")
+        assert verbs.delta_run(rec, data=str(folder), confirm=True)["status"] == "completed"
+        after_first = [r["audio_filepath"] for r in _rows(out)]
+        assert len(after_first) == 3, after_first
+
+        # Nothing changed in between, so this is the retry shape. Whatever it decides -- a
+        # refusal is a perfectly good answer -- it must not leave a duplicated row behind.
+        verbs.delta_run(rec, data=str(folder), confirm=True)
+        after_second = [r["audio_filepath"] for r in _rows(out)]
+        assert len(after_second) == len(set(after_second)), f"a retry duplicated rows: {after_second}"
+        assert sorted(after_second) == sorted(after_first)
+
     def test_a_removed_file_loses_its_rows_without_running_anything(self, tmp_path: Path) -> None:
         folder, out = tmp_path / "audio", tmp_path / "out" / "m.jsonl"
         for name in ("a.wav", "b.wav"):
             _wav(folder / name)
         rec = _recipe(folder, out)
-        _run(rec, folder)
+        assert _run(rec, folder)["status"] == "completed"
 
         (folder / "b.wav").unlink()
         done = verbs.delta_run(rec, data=str(folder), confirm=True)
@@ -183,7 +324,7 @@ class TestDeltaExecution:
         _wav(folder / "a.wav", seconds=0.25)
         _wav(folder / "b.wav", seconds=0.25)
         rec = _recipe(folder, out)
-        _run(rec, folder)
+        assert _run(rec, folder)["status"] == "completed"
         assert {round(r["duration"], 2) for r in _rows(out)} == {0.25}
 
         _wav(folder / "b.wav", seconds=0.5)  # same name, different audio
@@ -196,7 +337,7 @@ class TestDeltaExecution:
         folder, out = tmp_path / "audio", tmp_path / "out" / "m.jsonl"
         _wav(folder / "a.wav")
         rec = _recipe(folder, out)
-        _run(rec, folder)
+        assert _run(rec, folder)["status"] == "completed"
         _wav(folder / "b.wav")
 
         refused = verbs.delta_run(rec, data=str(folder), confirm="not-the-hash")
@@ -208,7 +349,7 @@ class TestDeltaExecution:
         folder, out = tmp_path / "audio", tmp_path / "out" / "m.jsonl"
         _wav(folder / "a.wav")
         rec = _recipe(folder, out)
-        _run(rec, folder)
+        assert _run(rec, folder)["status"] == "completed"
 
         card = verbs.delta_run(rec, data=str(folder))
         assert card["status"] == "no_delta"
@@ -250,7 +391,7 @@ class TestTheCardOffersIt:
         for name in ("a.wav", "b.wav"):
             _wav(folder / name)
         rec = _recipe(folder, out)
-        _run(rec, folder)
+        assert _run(rec, folder)["status"] == "completed"
         _wav(folder / "c.wav")
 
         scan = verbs.reuse_scan(rec, data=str(folder))
@@ -278,7 +419,7 @@ class TestTheCardOffersIt:
         folder, out = tmp_path / "audio", tmp_path / "out" / "m.jsonl"
         _wav(folder / "a.wav")
         rec = _recipe(folder, out)
-        _run(rec, folder)
+        assert _run(rec, folder)["status"] == "completed"
 
         # A fresh drop of data sharing no file with the last one: a different dataset, not a
         # changed one, and subtracting the two would delete every prior row.
@@ -309,7 +450,7 @@ class TestTheCardOffersIt:
                 ]
             }
         ).freeze()
-        _run(rec, folder)
+        assert _run(rec, folder)["status"] == "completed"
         _wav(folder / "b.wav")
 
         scan = verbs.reuse_scan(rec, data=str(folder))

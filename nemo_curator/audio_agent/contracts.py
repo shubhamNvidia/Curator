@@ -98,6 +98,11 @@ class DataProfile:
     inventory: dict[str, str] = field(default_factory=dict)
     # The directory the inventory's relative paths are relative to.
     inventory_root: str = ""
+    # For a manifest source, the row column those paths were read from; empty for a folder scan,
+    # where the paths are the files themselves. A delta narrows a source by handing it these
+    # paths, so it has to tell the source which column to match them against -- guessing would
+    # silently select no rows and report the resulting no-op as a successful delta.
+    inventory_key: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         d = _clean(asdict(self))

@@ -189,3 +189,12 @@ def test_no_delta_available_is_an_answer_rather_than_a_shell_failure() -> None:
     """A script that tries a delta and falls back to a full run must see success here."""
     assert cli._result_exit_code("delta-run", {"status": "no_delta", "delta": {"reason": "why"}}) == 0
     assert cli._result_exit_code("delta-run", {"status": "refused"}) == 1
+
+
+def test_a_delta_that_still_needs_its_tail_is_a_success_with_work_left() -> None:
+    """The merge happened, so the shell must not read it as a failure -- but the JSON says more.
+
+    A script keys off the exit code and a host keys off the status; the two have to agree that
+    this step worked while the curation is unfinished.
+    """
+    assert cli._result_exit_code("delta-run", {"status": "tail_required", "tail": {"stages": 1}}) == 0

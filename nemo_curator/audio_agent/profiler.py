@@ -253,7 +253,7 @@ def _stat_folder(paths: list[str], *, root: str, prof: DataProfile) -> None:
         _keep_inventory(prof, inventory, root=root)
 
 
-def _keep_inventory(prof: DataProfile, inventory: dict[str, str], *, root: str) -> None:
+def _keep_inventory(prof: DataProfile, inventory: dict[str, str], *, root: str, key: str = "") -> None:
     """Attach the per-file inventory, or decline to when it is too large to carry.
 
     The cap is far below the stat cap on purpose: statting 100k files costs one syscall each
@@ -270,8 +270,11 @@ def _keep_inventory(prof: DataProfile, inventory: dict[str, str], *, root: str) 
     prof.inventory = inventory
     # Recorded rather than re-derived later: the root a relpath is relative to depends on the
     # source kind and, for a manifest, on how it resolves audio paths. Re-deriving that in the
-    # delta would be a second copy of a rule that has to agree with this one exactly.
+    # delta would be a second copy of a rule that has to agree with this one exactly. Same for
+    # the COLUMN these paths were read from: a delta narrows a source by handing it these paths,
+    # which only selects the right rows if the source matches them against the same column.
     prof.inventory_root = root
+    prof.inventory_key = key
 
 
 def _profile_manifest(
@@ -414,7 +417,12 @@ def _profile_manifest(
         prof.identity_digest = digest
     else:
         prof.stat_digest = digest
-        _keep_inventory(prof, {rel: "|".join(parts) for rel, parts in row_identity.items()}, root=root)
+        _keep_inventory(
+            prof,
+            {rel: "|".join(parts) for rel, parts in row_identity.items()},
+            root=root,
+            key=audio_filepath_key,
+        )
     _probe_files(audio_paths, prof)
     # Rows were read but not one audio reference was found: the audio-path column is named
     # something other than ``audio_filepath_key``. Say so, because a silently EMPTY audio

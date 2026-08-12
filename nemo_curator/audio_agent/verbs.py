@@ -38,6 +38,7 @@ import shutil
 import sys
 import tempfile
 import time
+import types
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -3219,6 +3220,7 @@ def _execute_delta(  # noqa: PLR0913 - forwards run()'s knobs and the plan it ex
         files=decision.files,
         sandbox=sandbox,
         sinks_=list(decision.sinks),
+        inventory_key=getattr(dp, "inventory_key", "") or "",
     )
     if prefix_rec is None:
         return {**card, "status": "no_delta", "reason": err}
@@ -3244,7 +3246,10 @@ def _execute_delta(  # noqa: PLR0913 - forwards run()'s knobs and the plan it ex
             return {**card, "status": "failed", "reason": "the delta's run did not complete", "run": inner}
     elapsed = round(time.perf_counter() - started, 3)
 
-    stale = set(decision.change.stale)
+    # Every file the delta RAN, not just the ones whose prior rows went stale: an added file has
+    # no prior rows, so this is a no-op on a first delta and an upsert on a retry. Without it, a
+    # delta that failed on sink 2 of 3 appends sink 1's rows a second time when it is rerun.
+    stale = set(decision.change.touched) | set(decision.change.removed)
     merges: list[dict[str, Any]] = []
     for sink in decision.sinks:
         kept, added, why = _delta.merge(
@@ -3275,9 +3280,14 @@ def _execute_delta(  # noqa: PLR0913 - forwards run()'s knobs and the plan it ex
     with contextlib.suppress(OSError):
         shutil.rmtree(sandbox)
     remaining = len(rec.stages) - decision.prefix
-    return {
+    result = {
         **card,
-        "status": "completed",
+        # A prefix delta brings the checkpoint up to date, not the recipe's final output: the
+        # stages past it still have to see every row. Reporting that as "completed" would present
+        # a partial result as a whole one -- the one thing this verb promises never to do -- and a
+        # host that reads the status and stops would hand the user yesterday's deliverable. The
+        # status names the work that is left instead, and stays a success for the shell.
+        "status": "completed" if remaining <= 0 else "tail_required",
         "ran_files": list(decision.files),
         "merged": merges,
         "published": published,
@@ -3287,10 +3297,70 @@ def _execute_delta(  # noqa: PLR0913 - forwards run()'s knobs and the plan it ex
         "next": (
             "the merged output covers every file; nothing further is needed"
             if remaining <= 0
-            else f"run the remaining {remaining} stage(s) with plan_continuation(execute=True, choice='extend'), "
-            "which now finds the merged manifest by an ordinary reuse probe"
+            else f"the deliverable is NOT current yet: run the remaining {remaining} stage(s) with "
+            "plan_continuation(execute=True, choice='extend') (CLI: continue --execute "
+            "--choice extend --confirm), which now finds the merged manifest by an ordinary reuse probe"
         ),
     }
+    if remaining > 0:
+        result["tail"] = {
+            "stages": remaining,
+            "from_stage_index": decision.prefix,
+            "stale_outputs": _stale_tail_outputs(rec, dp.dataset_key(), prefix=decision.prefix),
+            "reason": decision.notes[0] if decision.notes else "the delta covers only a prefix of the recipe",
+            # No acceptance verdict here on purpose: the criteria describe the recipe's final
+            # output, which the tail has not produced yet. The continuation evaluates them.
+            "acceptance": "judged after the remaining stage(s) run",
+        }
+    else:
+        verdict = _delta_acceptance(rec, merged=merges, input_count=len(dp.inventory or {}))
+        if verdict:
+            result["acceptance"] = verdict
+    return result
+
+
+def _delta_acceptance(rec: Recipe, *, merged: list[dict[str, Any]], input_count: int) -> dict[str, Any]:
+    """Judge the merged deliverable against the recipe's own success contract.
+
+    A delta rewrites the user's output in place, so the bar they confirmed has to be re-checked
+    against what is on disk NOW. Without this, ``status: completed`` says the curation finished
+    while a ``must`` criterion it was gated on may be violated by the rows just merged in -- and
+    the CLI exits 0, so a script ships it.
+
+    Only called when the delta covered the whole recipe. For a prefix delta the final output does
+    not exist yet, and a verdict computed over the checkpoint would be about a different artifact.
+    """
+    if not rec.acceptance_criteria or not merged:
+        return {}
+    deepest = merged[-1]
+    rows = int(deepest.get("rows_kept") or 0) + int(deepest.get("rows_added") or 0)
+    roles: list[str] = []
+    keys: list[str] = []
+    with contextlib.suppress(Exception):
+        from nemo_curator.audio_agent.recipe import build_stages
+
+        built, _ = build_stages(rec)
+        roles, keys = _produced_roles_keys(built or [], None)
+    return _acceptance_result(
+        rec,
+        types.SimpleNamespace(accepted=rows, input_count=input_count),
+        roles,
+        keys,
+        [str(m.get("uri") or "") for m in merged if m.get("uri")],
+    )
+
+
+def _stale_tail_outputs(rec: Recipe, dataset_key: str, *, prefix: int) -> list[str]:
+    """Where the tail stages write, and therefore what still describes the corpus before the delta.
+
+    Named rather than left to the reader: "run the remaining stages" does not tell anyone which
+    files on disk are currently a lie, and those are the ones a user is about to ship.
+    """
+    from nemo_curator.audio_agent import artifacts as art_mod
+
+    with contextlib.suppress(Exception):
+        return [p.uri for p in art_mod.plan_steps(rec, dataset_key)[prefix:] if p.persists() and p.uri]
+    return []
 
 
 def plan_continuation(  # noqa: PLR0913 - one verb covering plan + the three-way choice

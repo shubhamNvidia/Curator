@@ -26,7 +26,7 @@ artifact coverage (``artifacts.save_coverage``). It only ever *decides*; ``verbs
 executes. Nothing here tells a stage it is running incrementally: a delta run is an ordinary
 run over a filtered input, followed by a merge.
 
-Four questions have to be answered yes before that is sound, and each one refuses by name
+Three questions have to be answered yes before that is sound, and each one refuses by name
 rather than assuming:
 
 1. **Which files changed?** ``classify`` compares two inventories and reports added, modified
@@ -34,13 +34,11 @@ rather than assuming:
 2. **How deep is per-file work independent?** ``region`` reads the ``Cardinality`` every
    contract declares: ``1:1``, ``1:N fan-out``, ``filter`` and nested-list all keep a row
    traceable to the one input file it came from, while ``N:1`` mixes files and ends the
-   region. For the case no contract or row count can reveal -- one row out per row in, each
-   value computed against a corpus statistic -- stages declare
-   ``Gates.per_row_independent``, and undeclared refuses.
-3. **Is the declaration true?** ``region`` cross-checks it against what the reused run
-   actually recorded (artifact row counts, filter accounting) and refuses on disagreement,
-   so a wrong declaration is caught by the evidence instead of trusted.
-4. **Which prior rows belong to the changed files?** ``provenance`` finds a row column whose
+   region. For what cardinality cannot reveal -- one row out per row in, each value computed
+   against the corpus -- a stage may declare ``Gates.per_row_independent``; an undeclared one
+   is not interrogated for a claim it may not know to make, but derived from the channels
+   through which it could reach another row at all (``_can_see_other_rows``).
+3. **Which prior rows belong to the changed files?** ``provenance`` finds a row column whose
    values land on the inventory's files and verifies that mapping against the artifact's real
    rows. Derived and checked, never assumed: a pipeline whose rows no longer name their origin
    simply gets no delta.
@@ -232,73 +230,37 @@ def region(recipe: Recipe, *, upto: int) -> tuple[int, str]:
             return index, f"{name} combines rows from several files ({contract.cardinality})"
         independent = contract.gates.per_row_independent
         if independent is False:
-            return index, f"{name} computes each row against a statistic over the whole corpus"
+            # Not "computes a corpus statistic": that is only one of the ways, and an unseeded
+            # RNG advanced per row is none of the maths that phrase sends a reader looking for.
+            return index, f"{name} declares that its output for one row depends on the other rows"
         if independent is None:
-            return index, (
-                f"{name} has not declared gates.per_row_independent, so whether its output for "
-                f"one file depends on the others is unknown"
-            )
+            reach = _can_see_other_rows(stage, contract)
+            if reach:
+                return index, (
+                    f"{name} has not declared gates.per_row_independent and {reach}, so whether "
+                    f"its output for one file depends on the others cannot be established"
+                )
     return max(0, upto), ""
 
 
-def contradictions(
-    recipe: Recipe,
-    *,
-    upto: int,
-    published: dict[int, Artifact],
-    per_stage: dict[str, Any],
-) -> list[str]:
-    """Declarations the reused run's own numbers disprove.
+def _can_see_other_rows(stage: Any, contract: Any) -> str:  # noqa: ANN401 - a built stage and its contract
+    """How an undeclared stage could reach a row other than the one it was handed, or ``""``.
 
-    A contract is a claim about a stage, and a claim that its last run contradicts is worth
-    less than nothing -- it is a claim a delta would rely on. Two records can disagree with
-    one: an artifact's ``rows_in``/``rows_out`` (published per persisted step) and the
-    accept/reject counts filters log into ``per_stage_metrics``. Row-preserving cardinalities
-    are the only ones with a number to check; a fan-out or a filter is free to change counts.
+    A stage handed one task per call that keeps nothing between calls and writes no file has no
+    channel for another file's data to reach its output, so it needs no declaration -- which is
+    also how a stage written next year participates without its author knowing this exists. Each
+    channel below is a refusal rather than a verdict: the stage may well be independent, but
+    nothing here can show it, so it has to say so itself.
     """
-    from nemo_curator.audio_agent.recipe import build_stages
-    from nemo_curator.stages.audio import agent as foundation
+    from nemo_curator.stages.base import ProcessingStage
 
-    preserving = {"1:1", "1:1 nested-list"}
-    built, _ = build_stages(recipe)
-    found: list[str] = []
-    for index, stage in enumerate(built[: max(0, upto)]):
-        name = type(stage).__name__
-        try:
-            cardinality = foundation.build_contract(stage).cardinality
-        except Exception:  # noqa: BLE001, S112 - region() already refuses on an unreadable contract
-            continue
-        if cardinality not in preserving:
-            continue
-        art = published.get(index)
-        if art is not None and art.rows_in and art.rows_out and art.rows_in != art.rows_out:
-            found.append(
-                f"{name} declares {cardinality} but its prior run took {art.rows_in} row(s) "
-                f"and produced {art.rows_out}"
-            )
-        counts = _counts_for(per_stage, name)
-        if counts and counts[0] != counts[1]:
-            found.append(
-                f"{name} declares {cardinality} but its prior run recorded {counts[0]} row(s) in and {counts[1]} out"
-            )
-    return found
-
-
-def _counts_for(per_stage: dict[str, Any], name: str) -> tuple[int, int] | None:
-    """``(rows in, rows out)`` a stage logged, or ``None`` when it logs no accounting.
-
-    Stage names in ``per_stage_metrics`` come from the runtime and may drop the ``Stage``
-    suffix, which is the same mismatch ``planner`` handles when reading measured resources.
-    """
-    metrics = per_stage.get(name) or per_stage.get(name.removesuffix("Stage")) or {}
-    got = {}
-    for key in ("custom.input_count", "custom.output_count"):
-        entry = metrics.get(key)
-        if isinstance(entry, dict) and entry.get("sum") is not None:
-            got[key] = int(entry["sum"])
-    if len(got) != 2:  # noqa: PLR2004 - both halves of the pair or nothing to compare
-        return None
-    return got["custom.input_count"], got["custom.output_count"]
+    if getattr(type(stage), "process_batch", None) is not ProcessingStage.process_batch:
+        return "is handed several rows at once, so a row's result can depend on the batch it landed in"
+    if contract.gates.lifecycle_side_effects:
+        return "carries state across rows between setup and teardown"
+    if contract.gates.writes_to_disk:
+        return "writes to disk, where one row's output can depend on what earlier rows wrote"
+    return ""
 
 
 def provenance(uri: str, *, inventory: dict[str, str], root: str) -> tuple[str, str]:
@@ -331,6 +293,11 @@ def provenance(uri: str, *, inventory: dict[str, str], root: str) -> tuple[str, 
         "no column in the prior output names a file from the input inventory "
         f"(columns: {sorted(rows[0])[:12]}), so rows cannot be traced back to the files they came from"
     )
+
+
+def _same_path(a: str, b: str) -> bool:
+    """Whether two output locations name the same file, comparing them as paths not as strings."""
+    return os.path.abspath(os.path.expanduser(a)) == os.path.abspath(os.path.expanduser(b))
 
 
 def _relpath(value: str, root: str) -> str:
@@ -375,36 +342,50 @@ def plan(
     if not dataset_key or inventory is None:
         return Delta(reason="no per-file inventory for this input, so a changed-file delta cannot be computed")
 
-    prior_key, artifacts_seen = _prior_run_of(recipe, dataset_key)
-    if not prior_key:
-        return Delta(reason="this pipeline has no prior run on any dataset to compare against")
+    candidates = _prior_runs_of(recipe, dataset_key)
+    if not candidates:
+        return Delta(reason=_nothing_to_compare(recipe))
 
-    change = classify(_coverage_of(artifacts_seen), inventory)
-    if change is None:
-        return Delta(
-            reason=(
-                "the prior run recorded no per-file inventory (it predates coverage, or its corpus "
-                "was too large to record), so which files changed cannot be established"
+    # Pick the prior run this corpus actually OVERLAPS, not the one that happens to be newest.
+    # Running one recipe over several corpora is ordinary, and by recency alone every corpus but
+    # the last one touched would be compared against a stranger, answer "unrelated", and lose its
+    # delta -- while blaming a run that has nothing to do with it.
+    best: tuple[Change, str, list[Artifact]] | None = None
+    refusal: Delta | None = None
+    for prior_key, seen in candidates:
+        change = classify(_coverage_of(seen), inventory)
+        if change is None:
+            refusal = refusal or Delta(
+                reason=(
+                    "the prior run recorded no per-file inventory (it predates coverage, or its corpus "
+                    "was too large to record), so which files changed cannot be established"
+                )
             )
-        )
-    if change.kind == "identical":
-        return Delta(
-            change=change,
-            reason=(
-                "the files are identical yet the dataset key differs; something outside the file "
-                "list changed (a manifest's own bytes, or the path the corpus is read from)"
-            ),
-        )
-    if change.kind == "unrelated":
-        return Delta(
-            change=change,
-            reason=(
-                f"the prior run shares no file with this input ({len(change.removed)} gone, "
-                f"{len(change.added)} new), so this is a different dataset rather than a changed one"
-            ),
-        )
+        elif change.kind == "identical":
+            refusal = refusal or Delta(
+                change=change,
+                reason=(
+                    "the files are identical yet the dataset key differs; something outside the file "
+                    "list changed (a manifest's own bytes, or the path the corpus is read from)"
+                ),
+            )
+        elif change.kind == "unrelated":
+            refusal = refusal or Delta(
+                change=change,
+                reason=(
+                    f"the prior run shares no file with this input ({len(change.removed)} gone, "
+                    f"{len(change.added)} new), so this is a different dataset rather than a changed one"
+                ),
+            )
+        elif best is None or len(change.unchanged) > len(best[0].unchanged):
+            # Most overlap wins: that is the run whose results the merge can actually keep.
+            best = (change, prior_key, seen)
 
-    return _plan_from(recipe, change, prior_key, artifacts_seen, inventory_root=inventory_root)
+    if best is None:
+        # Nothing actionable. Report the newest candidate's reason, which is what a single-corpus
+        # user would have been told anyway -- candidates arrive newest first.
+        return refusal or Delta(reason=_nothing_to_compare(recipe))
+    return _plan_from(recipe, best[0], best[1], best[2], inventory_root=inventory_root)
 
 
 def _plan_from(  # noqa: PLR0911 - see plan()
@@ -445,15 +426,6 @@ def _plan_from(  # noqa: PLR0911 - see plan()
     artifact = by_key[step.step_key]
     prefix = step.index + 1
 
-    disproved = contradictions(
-        recipe,
-        upto=prefix,
-        published={p.index: by_key[p.step_key] for p in resumable},
-        per_stage=_metrics_of(artifact),
-    )
-    if disproved:
-        return Delta(change=change, reason="a stage's own prior run contradicts its contract: " + "; ".join(disproved))
-
     lost = _resume_breaks_on_disk_boundary(recipe, prefix)
     if lost and prefix < len(plans):
         return Delta(
@@ -473,8 +445,23 @@ def _plan_from(  # noqa: PLR0911 - see plan()
         return Delta(change=change, reason=why)
 
     resume = next((s for s in owned if s.index == step.index), None)
-    if resume is None:  # the resume point is a manifest by construction; belt for a future kind
-        return Delta(change=change, reason=f"{step.stage_ref} does not own a manifest the merge can rewrite")
+    if resume is None:
+        # Reached whenever the deepest thing persisted inside the region is a DIRECTORY: a merge
+        # rewrites manifest rows, so a resampled or split output gives it nothing to merge into.
+        # Naming only the stage that owns that directory sends the reader after the wrong stage --
+        # what SHORTENED the region is the fact that explains the refusal, and a manifest at this
+        # position is what would lift it.
+        return Delta(
+            change=change,
+            reason=(
+                f"per-file work stays independent only through the first {depth} stage(s)"
+                + (f" ({ended})" if ended else "")
+                + f", and the deepest result persisted that early is {step.stage_ref}'s "
+                f"{artifact.kind or 'output'}, which a merge cannot rewrite -- it merges manifest "
+                f"rows. A checkpoint after {step.stage_ref} (add-checkpoint) would make a delta "
+                "possible, with the stages below it rerunning over every row"
+            ),
+        )
     return Delta(
         status="ready",
         change=change,
@@ -498,6 +485,9 @@ def _plan_from(  # noqa: PLR0911 - see plan()
 # The param every source stage that can be narrowed to a subset accepts. A source without it
 # cannot run a delta, and says so by name rather than being fed a filtered copy of the input.
 _INCLUDE_PARAM = "include_files"
+# Which row column a source matches ``include_files`` against. Only a manifest source has one; a
+# folder scan compares the files themselves.
+_INCLUDE_KEY_PARAM = "include_files_key"
 
 
 @dataclass(frozen=True)
@@ -539,7 +529,10 @@ def sinks(
     ones and nothing needs merging. Hence the kind decides, not the parameter name.
 
     A manifest with no prior artifact is a refusal: there is nothing trustworthy to merge the
-    new rows into, and writing the delta alone would silently shrink the corpus.
+    new rows into, and writing the delta alone would silently shrink the corpus. So is one whose
+    prior result was published somewhere else, which is possible because output locations are
+    deliberately outside the reuse identity (``recipe.OUTPUT_LOCATION_PARAMS``): the same step key
+    can describe a run that wrote to a different path.
     """
     found: list[Sink] = []
     for step in plans[:prefix]:
@@ -555,6 +548,14 @@ def sinks(
             return [], (
                 f"{step.stage_ref} rewrites {step.uri} from scratch on every run, and no prior "
                 f"result for it was published, so the rows it already holds cannot be preserved"
+            )
+        if art.uri and not _same_path(art.uri, step.uri):
+            # The rows the merge would KEEP come from the artifact; the file it would REWRITE is
+            # the recipe's current output. When those differ the merge is between two unrelated
+            # manifests -- and the failure downstream is an unhelpful "no rows could be read".
+            return [], (
+                f"{step.stage_ref} now writes to {step.uri}, but its prior result was published at "
+                f"{art.uri}; the rows a merge would keep are not the rows at the path it would rewrite"
             )
         param = _uri_param(recipe, step.index)
         if not param:
@@ -602,13 +603,14 @@ def _uri_param(recipe: Recipe, index: int) -> str:
     return next((k for k in _URI_PREFERENCE if isinstance(params.get(k), str) and params[k]), "")
 
 
-def prefix_recipe(
+def prefix_recipe(  # noqa: PLR0913 - the recipe plus the four facts that narrow and redirect it
     recipe: Recipe,
     *,
     prefix: int,
     files: tuple[str, ...],
     sandbox: str,
     sinks_: list[Sink],
+    inventory_key: str = "",
 ) -> tuple[Recipe | None, dict[str, str], str]:
     """The recipe that runs the changed files through the delta's stages.
 
@@ -616,6 +618,12 @@ def prefix_recipe(
     recipe, truncated at the resume point, with the source narrowed to the changed files and
     each manifest writer pointed into ``sandbox`` -- so no stage is told anything about running
     incrementally, and the user's manifests are never truncated by a partial run.
+
+    ``inventory_key`` is the row column the inventory's paths were read from, and it is handed
+    to a source that matches on a column so the two cannot disagree. They are the same by
+    default, which is why this was invisible: point a reader at a different column and it
+    matches those paths against values that are not paths, selects nothing, and the delta
+    "succeeds" having run no files and merged no rows.
     """
     from nemo_curator.audio_agent.recipe import Recipe, StageRef
 
@@ -638,6 +646,8 @@ def prefix_recipe(
         params = dict(stage.params)
         if index == 0:
             params[_INCLUDE_PARAM] = list(files)
+            if inventory_key and _has_field(source.ref, _INCLUDE_KEY_PARAM):
+                params[_INCLUDE_KEY_PARAM] = inventory_key
         sink = by_index.get(index)
         if sink is not None:
             params[sink.param] = redirect[sink.uri]
@@ -646,7 +656,10 @@ def prefix_recipe(
         stages=stages,
         inputs=dict(recipe.inputs),
         preset=recipe.preset,
-        acceptance_criteria=list(recipe.acceptance_criteria),
+        # Deliberately none. These criteria describe the WHOLE recipe's output; this recipe is a
+        # truncated prefix over the changed files only, so evaluating them here would record a
+        # verdict about a pipeline that never ran. The merged deliverable is judged by the caller.
+        acceptance_criteria=[],
         rationale=recipe.rationale,
         name=f"{recipe.name}_delta",
         knowledge_version=recipe.knowledge_version,
@@ -655,8 +668,8 @@ def prefix_recipe(
     return built.freeze(), redirect, ""
 
 
-def _accepts_include(ref: str) -> bool:
-    """Whether a source stage can be restricted to a named list of files."""
+def _has_field(ref: str, name: str) -> bool:
+    """Whether a stage accepts ``name`` as a constructor parameter."""
     import dataclasses
 
     from nemo_curator.audio_agent._resolve import resolve_stage_class
@@ -667,7 +680,12 @@ def _accepts_include(ref: str) -> bool:
         return False
     if not dataclasses.is_dataclass(cls):
         return False
-    return any(f.name == _INCLUDE_PARAM for f in dataclasses.fields(cls))
+    return any(f.name == name for f in dataclasses.fields(cls))
+
+
+def _accepts_include(ref: str) -> bool:
+    """Whether a source stage can be restricted to a named list of files."""
+    return _has_field(ref, _INCLUDE_PARAM)
 
 
 def merge(sink: Sink, *, produced: str, stale: set[str], key: str, root: str) -> tuple[int, int, str]:
@@ -749,11 +767,8 @@ def republish(  # noqa: PLR0913 - an artifact record's fields, none of them deri
             kind=art_mod.classify_output(sink.uri) or step.kind,
             # Not the prior run's input count. ``publish`` fills ``rows_out`` by counting the
             # merged file, and pairing that total with the input of one of the two runs behind it
-            # describes no execution that ever happened: a 1:1 writer ends up recorded as having
-            # taken 2 rows and produced 3, which ``contradictions`` reads as the stage disproving
-            # its own contract -- so the first delta would be the last one this pipeline could
-            # ever run. Zero is what the field already means by "not recorded", and a merged
-            # artifact genuinely has no single-run input count to record.
+            # describes no execution that ever happened. Zero is what the field already means by
+            # "not recorded", and a merged artifact genuinely has no single-run input count.
             rows_in=0,
             produced_roles=list(getattr(prior, "produced_roles", []) or []),
             produced_keys=list(getattr(prior, "produced_keys", []) or []),
@@ -811,23 +826,61 @@ def _deepest_within(resumable: list[StepPlan], depth: int) -> StepPlan | None:
     return inside[-1] if inside else None
 
 
-def _prior_run_of(recipe: Recipe, dataset_key: str) -> tuple[str, list[Artifact]]:
-    """The most recent other dataset this exact pipeline ran on, and its artifacts.
+def _nothing_to_compare(recipe: Recipe) -> str:
+    """Why no prior run could be MATCHED -- which is not the same as never having run one.
+
+    A delta resumes from a published artifact, and an artifact stops being reachable for reasons
+    that have nothing to do with whether the work happened: the step-key version moved (every
+    record written before it is keyed differently), the record was pruned, or its output changed
+    on disk since publication. Answering "this pipeline has no prior run" to someone whose
+    curated manifest is sitting in front of them sends them looking for a run they already have,
+    so say which of the two it is. The run record is the evidence, because it survives all three.
+    """
+    from nemo_curator.audio_agent import run_store
+    from nemo_curator.audio_agent.reuse import _MAX_PRIOR_RUNS
+
+    with contextlib.suppress(Exception):
+        for summary in run_store.list_runs()[:_MAX_PRIOR_RUNS]:
+            if summary.get("status") != "completed" or summary.get("semantic_hash") != recipe.semantic_hash:
+                continue
+            where = summary.get("data_source") or "another dataset"
+            when = f" on {summary['created_at']}" if summary.get("created_at") else ""
+            return (
+                f"this pipeline completed before ({where}{when}) but none of its results can be "
+                "matched now -- they predate the current artifact format, or have been pruned or "
+                "overwritten since. One full run republishes them, and deltas work from there on"
+            )
+    return "this pipeline has no prior run on any dataset to compare against"
+
+
+def _prior_runs_of(recipe: Recipe, dataset_key: str) -> list[tuple[str, list[Artifact]]]:
+    """Every other dataset this exact pipeline ran on, newest first, with its artifacts.
 
     Recomputing the step-key chain against a known dataset key is how ``reuse`` already turns
     a miss into "you ran this, but your data moved on"; a delta needs the artifacts themselves.
+    All of them, not just the newest: which prior corpus is USEFUL depends on which one this
+    input overlaps, and only the caller -- holding the current inventory -- can tell. Bounded by
+    ``_known_dataset_keys``.
     """
     from nemo_curator.audio_agent import artifacts as art_mod
     from nemo_curator.audio_agent.reuse import _known_dataset_keys
 
-    best: tuple[str, list[Artifact]] = ("", [])
+    found: list[tuple[str, list[Artifact]]] = []
     for other in _known_dataset_keys():
         if not other or other == dataset_key:
             continue
-        found = [a for a in (art_mod.load(p.step_key) for p in art_mod.plan_steps(recipe, other)) if a is not None]
-        if found and (not best[1] or _newest(found) > _newest(best[1])):
-            best = (other, found)
-    return best
+        # Only artifacts ordinary reuse would serve. A delta rewrites the file in place and
+        # republishes it as covering the enlarged corpus, so resuming from a record whose bytes
+        # no longer match its digest would launder an invalid artifact into a valid-looking one.
+        arts = [
+            a
+            for a in (art_mod.load(p.step_key) for p in art_mod.plan_steps(recipe, other))
+            if a is not None and not art_mod.invalid_reasons(a, dataset_key=other)
+        ]
+        if arts:
+            found.append((other, arts))
+    found.sort(key=lambda pair: _newest(pair[1]), reverse=True)
+    return found
 
 
 def _newest(artifacts: list[Artifact]) -> str:
@@ -845,12 +898,3 @@ def _coverage_of(artifacts: list[Artifact]) -> dict[str, str] | None:
     return None
 
 
-def _metrics_of(artifact: Artifact) -> dict[str, Any]:
-    """``per_stage_metrics`` of the run that produced an artifact (empty when unavailable)."""
-    from nemo_curator.audio_agent import run_store
-
-    with contextlib.suppress(Exception):
-        record = run_store.load(artifact.run_id) if artifact.run_id else None
-        if record is not None:
-            return dict(getattr(record, "per_stage_metrics", {}) or {})
-    return {}

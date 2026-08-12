@@ -21,6 +21,7 @@ have produced, or refuses and says which file or stage stopped it. See
 
 from __future__ import annotations
 
+import os
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -75,10 +76,20 @@ def _publish(
     coverage: dict[str, str] | None,
     **kw: Any,  # noqa: ANN401 - forwards arbitrary Artifact fields on purpose
 ) -> artifacts.Artifact:
-    """Publish one step of ``rec`` with real output rows and (optionally) its coverage."""
+    """Publish one step of ``rec`` with real output rows and (optionally) its coverage.
+
+    A step whose output is a DIRECTORY (resample, split) gets the directory instead of rows --
+    those artifacts are real and a delta has to reason about them, but there is no manifest to
+    write into.
+    """
     plan = artifacts.plan_steps(rec, dataset_key)[index]
-    with open(plan.uri, "w", encoding="utf-8") as handle:
-        handle.writelines(json.dumps(row) + "\n" for row in rows)
+    if os.path.isdir(plan.uri):
+        for row in rows:
+            name = os.path.basename(str(row.get("audio_filepath") or "row")) or "row"
+            open(os.path.join(plan.uri, name), "w", encoding="utf-8").close()
+    else:
+        with open(plan.uri, "w", encoding="utf-8") as handle:
+            handle.writelines(json.dumps(row) + "\n" for row in rows)
     art = artifacts.publish(
         artifacts.Artifact(
             step_key=plan.step_key,
@@ -136,14 +147,91 @@ class TestNarrowingIsNotInvisible:
         assert mine[0] != theirs[0], "include_files must be part of the source stage's semantic identity"
         assert not set(mine) & set(theirs), "every key below the narrowed source must differ too"
 
-    def test_a_narrowable_source_declares_that_narrowing_it_is_safe(self) -> None:
-        """The conformance rule, on the two sources that carry the param today."""
+    def test_the_source_is_told_which_column_the_inventory_paths_came_from(self, tmp_path: Path) -> None:
+        """Narrowing hands a source paths; it only selects the right rows if both agree on a column.
+
+        They agree by default, which is what made this invisible. Point a manifest's audio column
+        somewhere else and the reader matches the inventory's paths against values that are not
+        paths, selects nothing, and the delta reports a successful run over zero rows.
+        """
+        audio = tmp_path / "audio"
+        _corpus(audio, ("a.wav", "b.wav"))
+        manifest = tmp_path / "m.jsonl"
+        manifest.write_text("".join(json.dumps({"wav_path": str(audio / n)}) + "\n" for n in ("a.wav", "b.wav")))
+
+        prof = profiler.profile_data(str(manifest), audio_filepath_key="wav_path")
+        assert prof.inventory_key == "wav_path", "the profiler must record the column it indexed"
+
+        rec = Recipe.from_dict(
+            {
+                "stages": [
+                    {"ref": "ManifestReader", "params": {"manifest_path": str(manifest)}},
+                    {"ref": "GetAudioDurationStage", "params": {}},
+                ]
+            }
+        ).freeze()
+        built, _, err = delta.prefix_recipe(
+            rec,
+            prefix=2,
+            files=(str(audio / "a.wav"),),
+            sandbox=str(tmp_path / "sandbox"),
+            sinks_=[],
+            inventory_key=prof.inventory_key,
+        )
+        assert built is not None, err
+        assert built.stages[0].params["include_files_key"] == "wav_path"
+
+    def test_a_folder_source_is_not_given_a_column_it_does_not_have(self, tmp_path: Path) -> None:
+        """A folder scan compares the files themselves, so there is no column to agree on."""
+        rec = Recipe.from_dict(
+            {
+                "stages": [
+                    {"ref": "CreateInitialManifestAudioFolderStage", "params": {"data_dir": str(tmp_path)}},
+                    {"ref": "GetAudioDurationStage", "params": {}},
+                ]
+            }
+        ).freeze()
+        built, _, err = delta.prefix_recipe(
+            rec, prefix=2, files=(str(tmp_path / "a.wav"),), sandbox=str(tmp_path / "s"), sinks_=[], inventory_key=""
+        )
+        assert built is not None, err
+        assert "include_files_key" not in built.stages[0].params
+
+    def test_a_narrowable_source_answers_whether_narrowing_it_is_safe(self) -> None:
+        """The conformance rule is "must not be silent", not "must be True"."""
         from nemo_curator.stages.audio._conformance import assert_contract_wellformed
         from nemo_curator.stages.audio.common import CreateInitialManifestAudioFolderStage, ManifestReaderStage
 
         for cls in (CreateInitialManifestAudioFolderStage, ManifestReaderStage):
             contract = assert_contract_wellformed(cls)
-            assert contract.gates.per_row_independent is True, cls.__name__
+            assert contract.gates.per_row_independent is not None, cls.__name__
+
+    def test_a_source_that_cannot_be_narrowed_safely_may_say_so_and_stay_conformant(self) -> None:
+        """``max_samples`` truncates the sorted listing, so narrowing this source is unsound.
+
+        The stage says so per instance instead of lying or dropping ``include_files``, and the
+        region stops at it -- which for a SOURCE means there is nothing above to resume from, so
+        the honest answer is a full run. Requiring ``True`` here (the rule as first written)
+        would have forced the contradiction rather than surfaced it.
+        """
+        from nemo_curator.stages.audio._conformance import assert_contract_wellformed
+        from nemo_curator.stages.audio.common import CreateInitialManifestAudioFolderStage as Folder
+
+        bounded = assert_contract_wellformed(Folder(data_dir="/tmp/x", max_samples=10))
+        assert bounded.gates.per_row_independent is False
+        assert assert_contract_wellformed(Folder(data_dir="/tmp/x")).gates.per_row_independent is True
+
+        rec = Recipe.from_dict(
+            {
+                "stages": [
+                    {"ref": "CreateInitialManifestAudioFolderStage", "params": {"data_dir": "/tmp/x", "max_samples": 10}},
+                    {"ref": "GetAudioDurationStage", "params": {}},
+                ]
+            }
+        ).freeze()
+        depth, reason = delta.region(rec, upto=2)
+        assert depth == 0
+        assert "CreateInitialManifestAudioFolderStage" in reason
 
 
 class TestInventory:
@@ -268,9 +356,80 @@ class TestRegion:
         depth, reason = delta.region(rec, upto=2)
         assert depth == 1
         assert "PretrainMetricsAggregator" in reason
-        assert "whole corpus" in reason
+        assert "depends on the other rows" in reason
 
-    def test_an_undeclared_stage_ends_the_region_rather_than_being_assumed_safe(self, tmp_path: Path) -> None:
+    def test_an_undeclared_batch_stage_ends_the_region_and_says_which_channel_is_open(
+        self, tmp_path: Path
+    ) -> None:
+        """A stage nobody annotated still gets a definite answer, and one that names its reason.
+
+        ``SegmentExtractionStage`` declares nothing, but it is handed several rows per call, so
+        whether a row's result depends on the batch it landed in cannot be established from the
+        outside -- and the refusal says exactly that rather than "undeclared".
+        """
+        rec = Recipe.from_dict(
+            {
+                "stages": [
+                    {"ref": "ManifestReader", "params": {"manifest_path": str(tmp_path / "m.jsonl")}},
+                    {"ref": "SegmentExtractionStage", "params": {"output_dir": str(tmp_path / "segs")}},
+                ]
+            }
+        ).freeze()
+        depth, reason = delta.region(rec, upto=2)
+        assert depth == 1
+        assert "SegmentExtraction" in reason
+        assert "several rows at once" in reason
+
+    def test_squim_refuses_by_its_own_declaration_not_by_the_derivation(self, tmp_path: Path) -> None:
+        """The counterpart to the ASR test: same shape, opposite answer, and stated outright.
+
+        SQUIM zero-pads each batch to its longest member and calls the model with no lengths, so
+        a clip's score moves with the clips beside it. The derivation would refuse it anyway for
+        taking a batch, but that is incidental -- a refactor of the batching would flip it -- so
+        the stage says so itself.
+        """
+        rec = Recipe.from_dict(
+            {
+                "stages": [
+                    {"ref": "ManifestReader", "params": {"manifest_path": str(tmp_path / "m.jsonl")}},
+                    {"ref": "TorchSquimQualityMetricsStage", "params": {}},
+                ]
+            }
+        ).freeze()
+        depth, reason = delta.region(rec, upto=2)
+        assert depth == 1
+        assert "depends on the other rows" in reason
+
+    def test_the_asr_pipeline_the_feature_exists_for_is_traceable_end_to_end(self, tmp_path: Path) -> None:
+        """The headline shape. If this regresses, the delta is decorative.
+
+        ASR is the expensive stage a delta exists to skip, and it batches -- so it is refused by
+        the derivation and has to declare instead. What makes the declaration true is that
+        ``_speech_collate_fn`` passes ``audio_lengths`` alongside the padded batch, so a clip's
+        transcript does not move with the clips beside it. ``TorchSquimQualityMetricsStage`` is
+        the same shape without the lengths, and declares False; that pair is the whole rule.
+        """
+        rec = Recipe.from_dict(
+            {
+                "stages": [
+                    {"ref": "ManifestReader", "params": {"manifest_path": str(tmp_path / "m.jsonl")}},
+                    {"ref": "InferenceAsrNemoStage", "params": {"model_name": "stt_en_conformer_ctc_small"}},
+                    {"ref": "GetPairwiseWerStage", "params": {}},
+                    {"ref": "PreserveByValueStage", "params": {"input_value_key": "wer", "target_value": 20.0, "operator": "le"}},
+                    {"ref": "ManifestWriterStage", "params": {"output_path": str(tmp_path / "out.jsonl")}},
+                ]
+            }
+        ).freeze()
+        assert delta.region(rec, upto=5) == (5, "")
+
+    def test_an_undeclared_per_row_stage_is_derived_safe_rather_than_refused(self, tmp_path: Path) -> None:
+        """The point of deriving: a stage nobody annotated still gets a correct answer.
+
+        ``ComputeWERStage`` is handed one task per call, keeps nothing between calls and writes
+        no file, so no other file's data can reach its output. Requiring its author to say so
+        would be a hand-written claim that can only be wrong -- and would leave the delta inert
+        on every pipeline containing a stage written before this feature existed.
+        """
         rec = Recipe.from_dict(
             {
                 "stages": [
@@ -279,40 +438,46 @@ class TestRegion:
                 ]
             }
         ).freeze()
+        assert delta.region(rec, upto=2) == (2, "")
+
+    def test_a_split_stage_is_independent_only_while_its_outputs_cannot_collide(self, tmp_path: Path) -> None:
+        """Conditional in the config, like the folder source under ``max_samples``.
+
+        Split names come from the source basename alone, so an ``output_dir`` puts every file in
+        one flat namespace and ``spk1/utt1.wav`` and ``spk2/utt1.wav`` fight over the same output
+        path. Without one they land beside their source and cannot collide. A flat ``False`` would
+        cost the delta on the default configuration, which is the one that is actually safe.
+        """
+
+        def _region(params: dict[str, object]) -> tuple[int, str]:
+            rec = Recipe.from_dict(
+                {
+                    "stages": [
+                        {"ref": "ManifestReader", "params": {"manifest_path": str(tmp_path / "m.jsonl")}},
+                        {"ref": "SplitLongAudioStage", "params": params},
+                    ]
+                }
+            ).freeze()
+            return delta.region(rec, upto=2)
+
+        assert _region({}) == (2, "")
+        depth, reason = _region({"output_dir": str(tmp_path / "splits")})
+        assert depth == 1
+        assert "SplitLongAudio" in reason
+
+    def test_a_declared_false_still_wins_over_the_derivation(self, tmp_path: Path) -> None:
+        """Deriving is the default, not an override: an explicit claim is still authoritative."""
+        rec = Recipe.from_dict(
+            {
+                "stages": [
+                    {"ref": "ManifestReader", "params": {"manifest_path": str(tmp_path / "m.jsonl")}},
+                    {"ref": "PretrainMetricsAggregatorStage", "params": {"output_path": str(tmp_path / "s.json")}},
+                ]
+            }
+        ).freeze()
         depth, reason = delta.region(rec, upto=2)
         assert depth == 1
-        assert "ComputeWER" in reason
-        assert "per_row_independent" in reason
-
-
-class TestContradictions:
-    """A declaration the stage's own prior run disproves is worse than no declaration."""
-
-    def test_a_row_preserving_stage_that_changed_the_row_count_is_caught(self, tmp_path: Path) -> None:
-        rec, _ = _pipeline(tmp_path, tmp_path / "m.jsonl")
-        art = _publish(rec, 2, dataset_key=_PRIOR, rows=[], coverage={}, rows_in=10, rows_out=3)
-        found = delta.contradictions(rec, upto=3, published={2: art}, per_stage={})
-        assert found
-        assert "ManifestWriterStage" in found[0]
-        assert "10" in found[0]
-        assert "3" in found[0]
-
-    def test_recorded_filter_counts_can_disprove_it_too(self, tmp_path: Path) -> None:
-        rec, _ = _pipeline(tmp_path, tmp_path / "m.jsonl")
-        metrics = {
-            "GetAudioDuration": {
-                "custom.input_count": {"sum": 12.0},
-                "custom.output_count": {"sum": 4.0},
-            }
-        }
-        found = delta.contradictions(rec, upto=3, published={}, per_stage=metrics)
-        assert found
-        assert "GetAudioDurationStage" in found[0]
-
-    def test_agreeing_numbers_are_no_contradiction(self, tmp_path: Path) -> None:
-        rec, _ = _pipeline(tmp_path, tmp_path / "m.jsonl")
-        art = _publish(rec, 2, dataset_key=_PRIOR, rows=[], coverage={}, rows_in=7, rows_out=7)
-        assert delta.contradictions(rec, upto=3, published={2: art}, per_stage={}) == []
+        assert "depends on the other rows" in reason
 
 
 class TestProvenance:
@@ -373,6 +538,170 @@ class TestPlan:
         assert decision.drops == 0
         assert decision.provenance_key == "audio_filepath"
         assert decision.estimated_saving_sec > 0
+
+    def test_the_overlapping_corpus_wins_over_the_merely_newest_one(self, tmp_path: Path) -> None:
+        """One recipe, several corpora -- the ordinary way to use this agent.
+
+        Picking the prior run by recency meant that the moment a user curated a second corpus,
+        the first one's delta died: its inventory was compared against a stranger, answered
+        "shares no file with this input", and the refusal blamed a run that had nothing to do
+        with it. Overlap is what decides whether prior rows can be kept, so overlap decides.
+        """
+        audio = tmp_path / "audio"
+        inventory = _corpus(audio, ("a.wav", "b.wav"))
+        manifest = tmp_path / "m.jsonl"
+        manifest.write_text("".join(json.dumps({"audio_filepath": str(audio / n)}) + "\n" for n in ("a.wav", "b.wav")))
+        rec, _ = _pipeline(tmp_path, manifest)
+
+        # Each corpus writes to its own output, which is what a user curating two corpora does --
+        # a shared path would mean the second run destroyed the first one's manifest. Output
+        # locations are outside the reuse identity, so both still share this recipe's step keys.
+        def _variant(out: Path) -> Recipe:
+            stages = [s.to_dict() for s in rec.stages]
+            stages[2]["params"]["output_path"] = str(out)
+            return Recipe.from_dict({"stages": stages}).freeze()
+
+        # The corpus we care about, published FIRST so it is the older of the two.
+        english = _variant(tmp_path / "en.jsonl")
+        _publish(
+            english,
+            2,
+            dataset_key=_PRIOR,
+            rows=[{"audio_filepath": str(audio / n), "duration": 1.0} for n in ("a.wav", "b.wav")],
+            coverage=inventory,
+            created_at="2026-01-01T00:00:00Z",
+        )
+        # A different corpus curated afterwards, sharing no file with it.
+        other = tmp_path / "other"
+        other_inventory = _corpus(other, ("x.wav", "y.wav"))
+        _publish(
+            _variant(tmp_path / "de.jsonl"),
+            2,
+            dataset_key="dataset-key-unrelated",
+            rows=[{"audio_filepath": str(other / n), "duration": 1.0} for n in ("x.wav", "y.wav")],
+            coverage=other_inventory,
+            created_at="2026-06-01T00:00:00Z",
+        )
+
+        # Planned with the recipe that curated the English corpus, which is what its owner reruns.
+        decision = delta.plan(
+            english, dataset_key=_KEY, inventory={**inventory, "c.wav": "16|99"}, inventory_root=str(audio)
+        )
+
+        assert decision.status == "ready", decision.reason
+        assert decision.prior_dataset_key == _PRIOR
+        assert decision.files == (str(audio / "c.wav"),)
+
+    def test_a_pipeline_that_never_ran_says_exactly_that(self, tmp_path: Path) -> None:
+        rec, _ = _pipeline(tmp_path, tmp_path / "m.jsonl")
+
+        decision = delta.plan(rec, dataset_key=_KEY, inventory={"a.wav": "16|1"}, inventory_root=str(tmp_path))
+
+        assert decision.status != "ready"
+        assert "no prior run" in decision.reason
+
+    def test_a_pipeline_whose_artifacts_are_unreachable_is_not_told_it_never_ran(self, tmp_path: Path) -> None:
+        """The message every existing user meets first, and it used to be false.
+
+        A delta resumes from a published artifact, and artifacts go unreachable for reasons that
+        say nothing about whether the work happened -- the step-key version moved, the record was
+        pruned, the output changed. Telling someone whose curated manifest is sitting in front of
+        them "no prior run" sends them hunting for a run they already have. The run record
+        survives all three, so it is the evidence.
+        """
+        from nemo_curator.audio_agent import run_store
+
+        rec, _ = _pipeline(tmp_path, tmp_path / "m.jsonl")
+        run_store.save(
+            run_store.RunRecord(
+                run_id="run-earlier",
+                config_hash=rec.config_hash or "",
+                semantic_hash=rec.semantic_hash or "",
+                dataset_key="some-older-corpus",
+                status="completed",
+                data_source=str(tmp_path / "corpus"),
+                created_at="2026-01-01T00:00:00Z",
+            )
+        )
+
+        decision = delta.plan(rec, dataset_key=_KEY, inventory={"a.wav": "16|1"}, inventory_root=str(tmp_path))
+
+        assert decision.status != "ready"
+        assert "completed before" in decision.reason
+        assert "no prior run" not in decision.reason
+        assert "One full run republishes them" in decision.reason
+
+    def test_a_directory_resume_point_names_what_shortened_the_region(self, tmp_path: Path) -> None:
+        """The realistic GPU shape: resample writes a directory, then a corpus-dependent stage.
+
+        Measured against a real SQUIM pipeline, this refusal said only "ResampleAudioStage does
+        not own a manifest the merge can rewrite" -- blaming the stage that happens to hold the
+        deepest output, never mentioning the stage that actually shortened the region, and
+        offering nothing to do about it. Both halves belong in the sentence.
+        """
+        audio = tmp_path / "audio"
+        inventory = _corpus(audio, ("a.wav", "b.wav"))
+        rec = Recipe.from_dict(
+            {
+                "stages": [
+                    {"ref": "CreateInitialManifestAudioFolderStage", "params": {"data_dir": str(audio)}},
+                    {"ref": "GetAudioDurationStage", "params": {}},
+                    {
+                        "ref": "ResampleAudioStage",
+                        "params": {"target_sample_rate": 16000, "resampled_audio_dir": str(tmp_path / "rs")},
+                    },
+                    {"ref": "TorchSquimQualityMetricsStage", "params": {}},
+                    {"ref": "ManifestWriterStage", "params": {"output_path": str(tmp_path / "out.jsonl")}},
+                ]
+            }
+        ).freeze()
+        (tmp_path / "rs").mkdir(parents=True, exist_ok=True)
+        _publish(rec, 2, dataset_key=_PRIOR, rows=[], coverage=inventory)
+
+        decision = delta.plan(
+            rec, dataset_key=_KEY, inventory={**inventory, "c.wav": "16|9"}, inventory_root=str(audio)
+        )
+
+        assert decision.status != "ready"
+        assert "TorchSquimQualityMetrics" in decision.reason, decision.reason
+        assert "ResampleAudioStage" in decision.reason
+        assert "add-checkpoint" in decision.reason
+
+    def test_a_prior_result_published_elsewhere_is_refused_by_name(self, tmp_path: Path) -> None:
+        """Output paths are outside the reuse identity, so one step key can span two files.
+
+        Change where the recipe writes and its step keys do not move -- that is deliberate, so a
+        rerun into a new directory can still reuse. But a merge keeps rows from the ARTIFACT and
+        rewrites the file the RECIPE names, and when those are different files it is merging two
+        unrelated manifests. Refuse saying so, rather than failing later with the far less useful
+        "no rows could be read".
+        """
+        audio = tmp_path / "audio"
+        inventory = _corpus(audio, ("a.wav", "b.wav"))
+        manifest = tmp_path / "m.jsonl"
+        manifest.write_text("".join(json.dumps({"audio_filepath": str(audio / n)}) + "\n" for n in ("a.wav", "b.wav")))
+        rec, _ = _pipeline(tmp_path, manifest)
+
+        # Published at one path...
+        stages = [s.to_dict() for s in rec.stages]
+        stages[2]["params"]["output_path"] = str(tmp_path / "somewhere_else.jsonl")
+        elsewhere = Recipe.from_dict({"stages": stages}).freeze()
+        _publish(
+            elsewhere,
+            2,
+            dataset_key=_PRIOR,
+            rows=[{"audio_filepath": str(audio / n), "duration": 1.0} for n in ("a.wav", "b.wav")],
+            coverage=inventory,
+        )
+
+        # ...and planned with the recipe that writes somewhere different.
+        decision = delta.plan(
+            rec, dataset_key=_KEY, inventory={**inventory, "c.wav": "16|99"}, inventory_root=str(audio)
+        )
+
+        assert decision.status != "ready"
+        assert "somewhere_else.jsonl" in decision.reason
+        assert "not the rows at the path it would rewrite" in decision.reason
 
     def test_an_edited_file_drops_its_prior_row_and_reruns_it(self, tmp_path: Path) -> None:
         rec, inventory = self._prior_run(tmp_path, ("a.wav", "b.wav"))
