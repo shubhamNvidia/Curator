@@ -16,17 +16,36 @@
 
 The repo-root ``tests/conftest.py`` declares a *session-scoped, autouse*
 ``shared_ray_cluster`` fixture, so every test transitively starts (and waits on)
-a real Ray cluster. The audio_agent unit tests are **pure logic** — redaction and
-token math (``test_safety``), recipe validation (``test_validate``), verb gates
-(``test_verbs``), resource planning (``test_planner``), acceptance math
-(``test_acceptance``), and continuation planning (``test_continuation``). None of
-them execute a pipeline, so requiring Ray only makes them slow and unrunnable in
-environments where Ray can't come up.
+a real Ray cluster. Most of the tests here are pure logic — redaction and token math
+(``test_safety``), recipe validation (``test_validate``), resource planning
+(``test_planner``), acceptance math (``test_acceptance``) — and requiring Ray for those
+only makes them slow and unrunnable where Ray cannot come up. Overriding the fixture
+here (nearest-conftest wins) keeps them Ray-free.
 
-Overriding the fixture here (nearest-conftest wins) makes these tests start no Ray
-cluster when run on their own (``pytest tests/audio_agent``), so they run fast and
-anywhere. A test that genuinely needs Ray should request ``shared_ray_client``
-explicitly and live outside this directory (or start its own cluster).
+**The override's original premise no longer holds, and that cost real money.** It said
+"none of them execute a pipeline"; seven modules in this directory now do
+(``test_delta_execution``, ``test_smoke_bounding``, ``test_resource_hardening``,
+``test_reuse``, ``test_verbs``, ``test_output_honesty``, ``test_input_identity``). With
+the fixture stubbed out and no ``bootstrap_ray``, each of those runs let Ray auto-init a
+cluster nobody owns: ``verbs._shutdown_owned_ray`` returns immediately because
+``owned_ray_address`` is ``None``, so nothing was ever torn down. One session produced 33
+cluster directories under ``/tmp/ray`` and left ~160 ``ray::StageWorker`` processes
+reparented to init at ~700MB each — 75GB of a 125GB box, which then OOM'd the next run and
+made every subsequent failure look like a flake.
+
+**A teardown fixture here cannot fix it, and that was measured rather than argued.** Both
+the obvious shapes were tried and both are no-ops: after ``verbs.run`` returns,
+``ray.is_initialized()`` is ``False`` in the pytest process, because the Ray session belongs
+to the Xenna executor, not to the driver. So ``if ray.is_initialized(): ray.shutdown()``
+never fires -- session-scoped left 79 workers behind and per-test left 72, which is noise
+rather than a fix. (``ray.shutdown()`` itself works fine when the driver does own the
+session: 0 -> 5 -> 0 in a direct test.)
+
+The leak is roughly one orphaned worker per pipeline run, so it belongs where the run's Ray
+session is owned -- the Xenna executor teardown -- and fixing it there would fix the same
+leak for a user who calls ``run`` without ``--bootstrap-ray``. Until then, clear them with
+``pkill -f '^ray::'`` between sessions; a poisoned box makes unrelated tests fail as though
+the code were broken.
 """
 
 from __future__ import annotations
@@ -38,5 +57,5 @@ import pytest
 
 @pytest.fixture(scope="session", autouse=True)
 def shared_ray_cluster() -> Iterator[str]:
-    """No-op override of the repo-root Ray fixture: these are Ray-free unit tests."""
+    """No-op override of the repo-root Ray fixture: no cluster is started for this directory."""
     yield "audio_agent-unit-tests://no-ray"

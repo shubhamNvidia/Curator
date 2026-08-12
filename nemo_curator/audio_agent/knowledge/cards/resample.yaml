@@ -22,7 +22,7 @@ params_of_note:
   target_sample_rate: "target rate in Hz (default 16000)"
   target_format: "output container/codec (e.g. wav)"
   target_nchannels: "output channel count (1 = mono)"
-  resampled_audio_dir: "(REQUIRED, no default) directory for the converted files -- the stage has no default and creates it at setup"
+  resampled_audio_dir: "(REQUIRED, no default) directory for the converted files -- the stage has no default and creates it at setup. Give each SETTING its own directory (e.g. resampled_16k/, resampled_22k/): a file already present here is reused as-is, and the name is built from the source path only, so a directory shared between two target rates silently serves the first rate's audio to the second recipe."
 semantic_facts:
   resampled_audio_filepath:
     meaning: "Path to a NEW file written at target_sample_rate/target_format -- a transformed copy, not the original."
@@ -41,7 +41,7 @@ semantic_facts:
     counterexamples:
       - "It reflects the configured target, so a sample_rate == 16000 check verifies the resample target, not the source rate."
 param_dependencies:
-  resampled_audio_dir: "required: the stage writes converted files here (needs write_to_disk, the default). Not optional."
+  resampled_audio_dir: "required: the stage writes converted files here (needs write_to_disk, the default). Not optional. Must not be shared across different target_sample_rate/target_nchannels/target_format values, and must be a fresh directory when the SOURCE files may have been edited in place: an existing output is reused without checking either, so the row's duration and audio come from the earlier conversion."
 comparison:
   SampleRateFilterStage: "SELECTS rows by the rate they already are; this stage CONVERTS the rate. Filtering discards a corpus you could have converted, so reach for it only when a rate is genuinely unacceptable rather than merely wrong."
   MonoConversionStage: "verifies a single rate and drops mismatches, and downmixes to mono. Whenever the answer to a mismatch is 'convert it', put this stage upstream of it instead."

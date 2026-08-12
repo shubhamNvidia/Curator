@@ -101,6 +101,9 @@ clobbered).
    retained/rejected plus examples (at most 2 rounds). When the scan reports
    `delta.status: ready`, a few files changed since a prior run: offer `delta-run`
    instead of recurating the whole corpus, and relay its `reason` when it refuses.
+   `delta-run` answering `tail_required` is NOT a finished curation -- the merge brought
+   the checkpoint up to date and the files in `tail.stale_outputs` still describe the old
+   corpus. Run the `continue` in its `next` before reporting anything as done.
 7. Present the plan, the semantic pass, the smoke evidence, the scale estimate and the
    acceptance contract; get explicit user approval; then `run --confirm <hash>`.
 8. Summarize the `report`, verify acceptance, and propose a next action.

@@ -78,9 +78,13 @@ python -m nemo_curator.audio_agent delta-run --recipe recipe.yaml --data /path/t
 This runs the user's own stages over the changed files, merges the rows into the existing
 manifest, and republishes it under the key the full pipeline has for the enlarged corpus — so
 the next `reuse-scan` answers `already_done` by an ordinary probe. It rewrites the manifest in
-place after merging, which is why it is confirm-gated like `run`. Relay its `next`: when the
-delta covers only a prefix of the recipe, the remaining stages still run over every row, via
-`continue --choice extend`.
+place after merging, which is why it is confirm-gated like `run`.
+
+`status: tail_required` means the merge is done but the curation is not: the delta owned only a
+prefix of the recipe, so the stages after the checkpoint still have to see every row. The files
+listed in `tail.stale_outputs` are on disk describing the corpus as it was *before* the change,
+so do not report the work as finished — run the `continue --execute --choice extend` from its
+`next` first, then report. Only `status: completed` means the deliverable is current.
 
 `status: no_delta` is an answer, not an error, and its `reason` is worth relaying because it
 says what would have to change. Common ones: nothing is persisted early enough to merge into
