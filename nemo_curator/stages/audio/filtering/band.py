@@ -163,7 +163,12 @@ class BandFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             ),
             cardinality="filter" if self.action == "filter" else "1:1",
             cardinality_options=["filter", "annotate"],
-            gates=Gates(requires_gpu=self.resources.gpus > 0, requires_internet_first_run=self.model_path is None),
+            gates=Gates(
+                requires_gpu=self.resources.gpus > 0,
+                requires_internet_first_run=self.model_path is None,
+                # Each clip's features are extracted from that clip alone.
+                per_row_independent=True,
+            ),
         )
 
     def setup_on_node(
@@ -203,10 +208,7 @@ class BandFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         if self._predictor is None:
             try:
                 model_path = self._resolve_model_path()
-                self._predictor = BandPredictor(
-                    model_path=model_path,
-                    feature_cache_size=100,
-                )
+                self._predictor = BandPredictor(model_path=model_path)
                 logger.info("Band predictor loaded successfully")
             except Exception as e:
                 logger.error(f"Failed to initialize Band predictor: {e}")
