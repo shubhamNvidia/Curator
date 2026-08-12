@@ -169,6 +169,9 @@ class VADSegmentationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             cardinality="1:1 nested-list" if self.nested else "1:N fan-out",
             cardinality_options=["fan_out", "nested"],
             iteration_key=self.segments_key,
+            # nested mode pops the top-level waveform after building segments, so a
+            # downstream stage reading the top-level waveform would find it gone.
+            removes_keys=[self.waveform_key] if self.nested else [],
             gates=Gates(requires_gpu=self.resources.gpus > 0),
         )
 

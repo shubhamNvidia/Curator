@@ -180,8 +180,7 @@ class SpeakerSeparationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             gates=Gates(
                 requires_gpu=self.resources.gpus > 0,
                 requires_internet_first_run=True,
-                writes_to_disk=self.write_to_disk,
-            ),
+                writes_to_disk=self.write_to_disk, output_path_params=["separated_audio_dir"]),
         )
 
     def ray_stage_spec(self) -> dict[str, Any]:

@@ -34,7 +34,7 @@ from whisperx.vads.pyannote import Pyannote, load_vad_model
 from nemo_curator.backends.base import NodeInfo, WorkerMetadata
 from nemo_curator.backends.utils import RayStageSpecKeys
 from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, StageContract
-from nemo_curator.stages.audio._residency import InputResidency, accepts_for_residency, cleanup_temp_files, resolve_audio_path
+from nemo_curator.stages.audio._residency import InputResidency, cleanup_temp_files, residency_read_specs, resolve_audio_path
 from nemo_curator.stages.audio.common import get_audio_duration
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.stages.resources import Resources
@@ -171,7 +171,12 @@ class WhisperXVADStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             writes = [self.segments_key]
             cardinality = "1:1"
         return StageContract(
-            reads=IOSpec(data_keys=[self.audio_filepath_key], accepts=accepts_for_residency(self.input_residency)),
+            reads_one_of=residency_read_specs(
+                self.input_residency,
+                audio_filepath_key=self.audio_filepath_key,
+                waveform_key=self.waveform_key,
+                sample_rate_key=self.sample_rate_key,
+            ),
             writes=IOSpec(data_keys=writes),
             cardinality=cardinality,
             cardinality_options=["passthrough", "fan_out"],
