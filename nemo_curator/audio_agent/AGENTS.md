@@ -54,6 +54,14 @@ TTS/ASR training set, exporting a manifest — drive the `nemo_curator.audio_age
 inspect or process the audio, even for a "quick" one-off like reading durations — use
 `GetAudioDurationStage` through the agent.
 
+On a fresh clone there is no `.venv/` yet, and every verb dies on `ModuleNotFoundError: No
+module named 'cosmos_xenna'` before it can diagnose anything — `doctor` cannot tell you this
+itself. Create the environment first, once:
+
+```bash
+uv sync --extra audio_cuda12   # --extra audio_cpu if there is no GPU
+```
+
 All verbs print JSON. Run them with the repo virtualenv interpreter from the repo root
 (base `python` lacks Curator's deps), or as `nemo-curator-audio <verb>` from an install:
 
