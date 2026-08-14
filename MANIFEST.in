@@ -1,2 +1,6 @@
 include LICENSE
 recursive-include nemo_curator *.csv *.json *.yaml *.yml *.txt *.md py.typed
+# Human-facing narrative docs (architecture write-up, slide source, design notes). They live
+# beside the code so they stay findable, but they are not knowledge the package needs at
+# runtime -- unlike knowledge/*.yaml and the skills, which the agent actually reads.
+recursive-exclude nemo_curator/audio_agent/docs *
