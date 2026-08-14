@@ -55,3 +55,4 @@ comparison:
   ChannelConversionStage: "brings audio to a requested channel count without touching the rate. Pairs with this stage when both policies matter."
   MonoConversionStage: "an alternative that gates on a single exact rate and converts channels together, decoding each file to do so. Use this stage instead for a set or range of rates, or to avoid decoding."
 verified: {params: mechanical, semantic_facts: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess}
+provenance: {model_card_url: null, card_version: 1, last_validated: "2026-08-14"}

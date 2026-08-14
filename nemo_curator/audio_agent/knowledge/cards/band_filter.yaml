@@ -26,9 +26,9 @@ params_of_note:
 metrics:
   band_prediction:                              # categorical (no numeric scale)
     threshold_param: band_value
-    anchors:                                    # outcome label -> the band_value to keep
-      full_band: wideband                       # keep hi-fi / wideband recordings
-      narrow_band: telephony                    # keep telephony-style recordings
+    anchors:                                    # band_value -> the outcome label that selects it
+      full_band: wideband                       # label 'wideband'  -> band_value: full_band  (hi-fi)
+      narrow_band: telephony                    # label 'telephony' -> band_value: narrow_band
 presets:
   wideband: {band_value: full_band}
   telephony: {band_value: narrow_band}

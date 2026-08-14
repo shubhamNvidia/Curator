@@ -42,3 +42,4 @@ comparison:
   SampleRateFilterStage: "selects which sample rates pass and records each. Put it upstream so rows that will be rejected are never decoded."
   MonoConversionStage: "an alternative that applies a mono downmix and a single-rate gate together. Use this stage instead when channel policy and rate policy should be set independently."
 verified: {params: mechanical, semantic_facts: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess}
+provenance: {model_card_url: null, card_version: 1, last_validated: "2026-08-14"}
