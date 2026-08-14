@@ -208,7 +208,12 @@ def _filter_tag_violations(stage_id: str, card: dict[str, Any]) -> list[str]:
     ]
 
 
-_REQUIRED_FIELDS = ("category", "summary", "verified")
+# `provenance` is required because a card is read as current: without card_version and
+# last_validated there is nothing to say WHEN its best_guess facts were last checked against the
+# code, and a stale guess is indistinguishable from a fresh one. 47 of 49 cards carried it by
+# convention; the two that did not were simply the newest, which is how an unenforced convention
+# always fails.
+_REQUIRED_FIELDS = ("category", "summary", "verified", "provenance")
 
 # Every top-level key a card may carry. A closed vocabulary because the failure it prevents is
 # silent: a card key nobody reads is not an error anywhere, it is simply absent from the packet
@@ -392,6 +397,19 @@ def check_card(stage_id: str, card: Any) -> list[str]:  # noqa: ANN401
             if vr is not None and not (isinstance(vr, list) and len(vr) == 2):  # noqa: PLR2004 - [lo, hi]
                 v.append(f"{stage_id}: metrics[{mkey!r}].valid_range must be [lo, hi]")
 
+    # A stage advertising a score must say what the score MEANS numerically. The checks above
+    # validate a metrics block only IF one is present, so a scorer with no block at all passed
+    # silently -- which is how BandwidthEstimationStage shipped `produces_score` with no scale,
+    # no range and no direction. Nothing downstream could then derive a comparison operator, and
+    # the generic filter the resolver emits for an annotate-only scorer is exactly where an
+    # inverted filter comes from. Deliberately requires a BLOCK, not a direction: a categorical
+    # metric (BandFilterStage's band_prediction) legitimately has no numeric scale.
+    if "produces_score" in (card.get("tags") or []) and not metrics:
+        v.append(
+            f"{stage_id}: card tag 'produces_score' but no metrics block -- declare the score's "
+            f"scale/direction (or valid values, if categorical) so a downstream filter cannot be inverted"
+        )
+
     # Semantic facts are retrieval material for the host critic.  Validate
     # shape only; do not encode field meaning or scope into deterministic rules.
     v.extend(_semantic_fact_violations(stage_id, card.get("semantic_facts")))
@@ -449,10 +467,18 @@ def audit(index: Any = None) -> dict[str, Any]:  # noqa: ANN401
     violations = {sid: vs for sid, vs in ((sid, check_card(sid, c)) for sid, c in cards.items()) if vs}
     carded = set(cards)
     all_stages = set(idx.stage_names())
+    # Which stages the tag/gate check could not judge at all. It compares a card's tags against a
+    # DEFAULT-CONSTRUCTED contract, so a stage with required constructor args yields None from
+    # _effective_default_gates and is skipped -- correctly, since guessing is worse, but silently.
+    # That blind spot is not academic: SnippetExtractionStage carried a `1:N fan-out` contract
+    # with no `fanout` tag across card versions and nothing could see it, because the stage needs
+    # constructor args. Report the set so a partial check does not read as full coverage.
+    gate_unverified = sorted(s for s in (carded & all_stages) if _effective_default_gates(s) is None)
     return {
         "violations": violations,
         "orphan_cards": sorted(carded - all_stages),  # cards for a stage that no longer exists
         "uncarded_stages": sorted(all_stages - carded),  # stages still missing a card (coverage gap)
+        "gate_unverified": gate_unverified,  # tags present but unjudgeable: not default-constructible
         "carded_count": len(carded),
         "stage_count": len(all_stages),
     }
@@ -516,7 +542,11 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
 
     ap = argparse.ArgumentParser(description="Audio-agent capability-card conformance gate")
-    ap.add_argument("--allow-uncarded", action="store_true", help="do not fail on coverage gaps (default: report only)")
+    ap.add_argument(
+        "--allow-uncarded",
+        action="store_true",
+        help="do not fail on coverage gaps (default: an uncarded stage fails the gate)",
+    )
     args = ap.parse_args(argv)
 
     result = audit()
@@ -526,8 +556,14 @@ def main(argv: list[str] | None = None) -> int:
     result["blueprint_violations"] = blueprints["violations"]
     result["blueprint_count"] = blueprints["blueprint_count"]
     print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
-    # Drift (violations) or orphan cards are hard failures; coverage gaps are reported only.
+    # Drift, orphan cards, and coverage gaps are all hard failures. An uncarded stage used to be
+    # reported only, which meant a stage could ship plannable with no card semantics behind it --
+    # `discover` lists it, the planner may pick it, and the host critic gets no meaning, scope or
+    # counterexample to reason from. --allow-uncarded is the deliberate escape hatch for a
+    # work-in-progress stage; the flag existed for this and was simply never wired up.
     ok = not result["violations"] and not result["orphan_cards"] and not blueprints["violations"]
+    if result["uncarded_stages"] and not args.allow_uncarded:
+        ok = False
     return 0 if ok else 1
 
 
