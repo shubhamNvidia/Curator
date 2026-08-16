@@ -41,7 +41,6 @@ if TYPE_CHECKING:
 # Constructor keys that configure the framework, not stage semantics; peeled out
 # and re-applied via .with_() rather than passed to the dataclass constructor.
 EXECUTION_KNOB_PARAMS = frozenset({"resources", "batch_size", "runtime_env", "num_workers"})
-_WITH_KEYS = EXECUTION_KNOB_PARAMS  # historical alias used by build_stages
 
 # Params that name WHERE a stage writes, not WHAT it computes. Changing one moves the
 # bytes; it does not change them. Excluded from ``semantic_hash`` (so a re-run into a new
@@ -137,7 +136,24 @@ class StageRef:
         if not isinstance(d, dict) or "ref" not in d:
             msg = f"stage entry must be a dict with a 'ref' key, got {d!r}"
             raise ValueError(msg)
-        return cls(ref=str(d["ref"]), params=dict(d.get("params") or {}))
+        raw_params = d.get("params") or {}
+        try:
+            params = dict(raw_params)
+        except (TypeError, ValueError) as exc:
+            # The line above says what a malformed stage entry should look like; params got no
+            # such treatment and fell through to whatever ``dict()`` raises -- for a string,
+            # "dictionary update sequence element #0 has length 1; 2 is required", and for a
+            # list, a TypeError, which is not even the type the rest of this parser raises.
+            # ``params`` written as a string is an ordinary host-LLM slip, and ``validate``
+            # exists to hand back something the host can act on rather than a traceback about
+            # update sequences. Conversion itself is unchanged: anything that parsed before,
+            # including a list of key/value pairs, still parses.
+            msg = (
+                f"stage {str(d['ref'])!r}: 'params' must be a mapping of parameter name to "
+                f"value, got {raw_params!r}"
+            )
+            raise ValueError(msg) from exc
+        return cls(ref=str(d["ref"]), params=params)
 
 
 @dataclass
@@ -190,9 +206,18 @@ class Recipe:
             )
             raise ValueError(msg)
         stages = [StageRef.from_dict(s) for s in (d.get("stages") or [])]
+        raw_inputs = d.get("inputs") or {}
+        try:
+            inputs = dict(raw_inputs)
+        except (TypeError, ValueError) as exc:
+            # Same shape of slip as a stage's ``params``, and it landed the same way: a raw
+            # ``dict()`` error about update sequences, from the verb whose job is to say what
+            # is wrong with the recipe. Conversion is unchanged.
+            msg = f"'inputs' must be a mapping of input name to value, got {raw_inputs!r}"
+            raise ValueError(msg) from exc
         return cls(
             stages=stages,
-            inputs=dict(d.get("inputs") or {}),
+            inputs=inputs,
             preset=d.get("preset"),
             acceptance_criteria=_criteria(d.get("acceptance_criteria")),
             rationale=str(d.get("rationale") or ""),
@@ -385,7 +410,7 @@ def build_stages(recipe: Recipe) -> tuple[list[ProcessingStage] | None, list[dic
             continue
 
         params = dict(s.params)
-        with_kwargs = {k: params.pop(k) for k in list(params) if k in _WITH_KEYS}
+        with_kwargs = {k: params.pop(k) for k in list(params) if k in EXECUTION_KNOB_PARAMS}
         try:
             inst = cls(**params)
             if with_kwargs:
