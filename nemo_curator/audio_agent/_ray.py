@@ -45,6 +45,11 @@ if TYPE_CHECKING:
 # Info about a head THIS process started (for reuse and ownership-safe cleanup).
 _STARTED: dict[str, Any] = {}
 
+# Raises cosmos_xenna's cap on rows returned by Ray's state API (see the module docstring).
+# Xenna queries actor/task state every autoscale tick, and the default limit truncates that
+# answer on a pipeline with many actors -- it then plans against a partial view. The number is
+# a ceiling, not a tuning knob: it only has to exceed the largest state response a run
+# produces, so it is set well above any observed count rather than fitted to one.
 _API_LIMIT = "40000"
 
 
@@ -226,9 +231,23 @@ def _interpreter_ray_on_path() -> Iterator[None]:
 
 def ensure_cluster(
     *,
+    # ``None`` lets Ray take the host's cores, matching ``RayClient`` and every tutorial. This
+    # used to cap at ``min(os.cpu_count(), 8)`` with no recorded reason, which cost more than
+    # throughput: ``_apply_ray_cluster_capacity`` feeds the CLUSTER's CPU count back into the
+    # resource planner, so a capped bootstrap also shrank ``allocatable_cpus`` and could push a
+    # recipe into batch mode that streams fine on the same machine from its own tutorial.
     num_cpus: int | None = None,
     num_gpus: int | None = None,
-    object_store_memory: int = 2_000_000_000,
+    # ``None`` means "let Ray size it", which is what ``RayClient`` defaults to and what every
+    # audio tutorial runs on via a bare ``RayClient()``. This used to pin a flat 2 GB for no
+    # recorded reason, so an agent-bootstrapped cluster got a far smaller object store than the
+    # same pipeline got from its own tutorial -- on a 135 GB host, 2 GB against the ~40 GB Ray
+    # computes (30% of system memory, capped at 200 GB and clamped to /dev/shm). Invisible while
+    # tasks carry manifest rows; the first thing to spill once a stage keeps decoded audio in the
+    # task, at roughly 1.9 MB per 30-second clip. Ray already handles the small-host case the
+    # fixed number looked like it was guarding: it clamps to /dev/shm and enforces its own
+    # minimum. A caller who needs a specific size still passes one.
+    object_store_memory: int | None = None,
     reuse: bool = True,
 ) -> str:
     """Ensure a usable Ray cluster and return its ``host:port`` address.
@@ -346,7 +365,7 @@ def ensure_cluster(
 
         client = RayClient(
             ray_temp_dir=temp_dir,
-            num_cpus=num_cpus if num_cpus is not None else min(os.cpu_count() or 4, 8),
+            num_cpus=num_cpus,
             num_gpus=_detect_gpus() if num_gpus is None else num_gpus,
             object_store_memory=object_store_memory,
             # The agent is a library caller, not an operator session: registering Ray with a
