@@ -46,7 +46,12 @@ def _fingerprint(payload: dict[str, Any]) -> str:
 
 
 def _clean(value: Any) -> Any:  # noqa: ANN401
-    """Coerce dataclasses / sets / tuples to JSON-serializable primitives."""
+    """Coerce dataclasses / sets / tuples to JSON-serializable primitives.
+
+    Underscored but NOT private: imported by ``report`` for its own ``to_dict``. Every
+    contract here serializes through it, so the set of containers it flattens is a shared
+    assumption rather than a local one -- ``_safety.redact`` walks the same shapes.
+    """
     if hasattr(value, "to_dict") and callable(value.to_dict):
         return value.to_dict()
     if isinstance(value, (set, frozenset)):

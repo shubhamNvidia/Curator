@@ -97,6 +97,9 @@ def _dedup_stage_perf(tasks: list[Any]) -> dict[str, Any]:
     The backend appends the same StagePerfStats to every child of a fan-out
     batch, so summing over all output tasks over-counts. We de-duplicate by the
     identity of each StagePerfStats object before aggregating.
+
+    Underscored but NOT private: imported by ``verbs``, which reports the same per-stage
+    numbers straight off a run rather than from a stored report.
     """
     import numpy as np
 
@@ -144,6 +147,10 @@ def _row_count(tasks: list[Any] | None) -> int:
     An ``AudioTask`` holds one item (``num_items`` == 1), but a ``DocumentBatch`` holds a
     whole table -- so ``len(tasks)`` under-counts any pipeline that ends in a batch type
     (e.g. after ``AudioToDocumentStage``). Summing ``num_items`` gives the true row count.
+
+    Underscored but NOT private: imported by ``verbs``, so this is the one definition of
+    "how many rows came out" behind both the report and the run's own evidence. Two of them
+    would let a report and the run that produced it disagree on the same number.
     """
     return sum(int(getattr(t, "num_items", 1) or 0) for t in (tasks or []))
 
