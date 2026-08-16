@@ -17,11 +17,13 @@
 from __future__ import annotations
 
 import copy
+import itertools
 from typing import ClassVar
 
 import pytest
 
 from nemo_curator import audio_agent as aa
+from nemo_curator.audio_agent import acceptance
 from nemo_curator.audio_agent.contracts import AcceptanceCriterion
 from nemo_curator.audio_agent.recipe import Recipe
 
@@ -924,3 +926,74 @@ class TestExhaustivePerItemEvidence:
 
         assert result["overall"] == "not_met"
         assert "expected_output_rows=100" in result["criteria"][0]["evidence"]
+
+
+class TestTheTerminalScanShortcutMatchesCheckingEveryRow:
+    """``_per_item_scan_result`` answers "does every row satisfy this?" from the field's min and
+    max alone, rather than from the rows. That shortcut is only sound if it agrees with
+    ``_cmp`` applied to each value, for every operator -- and where min/max genuinely cannot
+    decide (``!=`` over a range that straddles the target), it has to decline rather than guess.
+
+    The operators are a hand-written ladder of comparisons against ``low`` or ``high``, and
+    picking the wrong bound for one of them is a one-character mistake that yields a confident,
+    wrong success verdict. Nothing else in the suite compares the two implementations.
+    """
+
+    _VALUES: ClassVar[tuple[float, ...]] = (0.0, 1.0, 2.0, 3.0)
+    _TARGETS: ClassVar[tuple[float, ...]] = (0.0, 1.0, 1.5, 2.0, 3.0)
+    _OPS: ClassVar[tuple[str, ...]] = (">=", ">", "<=", "<", "==", "!=", "~=")
+
+    @staticmethod
+    def _shortcut(values: list[float], op: str, target: float, tol: float) -> tuple[str, str, str]:
+        scan = {
+            "status": "ok",
+            "valid_rows": len(values),
+            "field_scope": "top_level",
+            "fields": {
+                "duration": {
+                    "present": len(values),
+                    "numeric": len(values),
+                    "min": min(values),
+                    "max": max(values),
+                }
+            },
+        }
+        result = acceptance._per_item_scan_result("duration", op, target, tol, scan, len(values))
+        assert result is not None
+        return result
+
+    def test_the_fixture_actually_reaches_the_comparison(self) -> None:
+        """Guard for the tests below rather than for the code. Get the scan shape wrong -- the
+        row count lives under ``valid_rows`` -- and every call returns "unverifiable" from an
+        early guard. A differential that skips those then compares nothing at all and passes.
+        """
+        verdict, detail, _ = self._shortcut([2.0, 3.0], ">=", 1.0, 0)
+
+        assert verdict == "met"
+        assert "span" in detail, "the reason must come from the range comparison, not a guard"
+
+    @pytest.mark.parametrize("op", _OPS)
+    def test_it_agrees_with_per_row_truth_or_declines(self, op: str) -> None:
+        tol = 0.5 if op == "~=" else 0
+        checked = 0
+        for size in (1, 2, 3):
+            for values in itertools.combinations_with_replacement(self._VALUES, size):
+                for target in self._TARGETS:
+                    verdict = self._shortcut(list(values), op, target, tol)[0]
+                    if verdict == "unverifiable":
+                        continue  # declining to decide from a range is always safe
+                    truth = all(acceptance._cmp(v, op, target, tol) for v in values)
+                    assert (verdict == "met") is truth, (
+                        f"{list(values)} {op} {target}: scan says {verdict!r}, row-by-row says "
+                        f"{'met' if truth else 'not_met'}"
+                    )
+                    checked += 1
+        assert checked, f"no decidable case exercised for {op!r}"
+
+    def test_a_straddling_range_declines_rather_than_guessing(self) -> None:
+        """``!=`` is the one operator min/max cannot always settle: with values spanning the
+        target, whether some row equals it is simply not in the range. Guessing either way
+        would be a fabricated verdict."""
+        assert self._shortcut([0.0, 3.0], "!=", 1.5, 0)[0] == "unverifiable"
+        assert self._shortcut([2.0, 2.0], "!=", 1.5, 0)[0] == "met"
+        assert self._shortcut([1.5, 1.5], "!=", 1.5, 0)[0] == "not_met"
