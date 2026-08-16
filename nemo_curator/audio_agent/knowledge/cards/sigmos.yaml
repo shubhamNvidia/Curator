@@ -3,7 +3,10 @@ category: quality
 summary: "SIGMOS (ITU-T P.804) neural MOS across 7 quality dimensions; filter/annotate."
 tags: [produces_score, is_filter, needs_internet_first_run]
 model_id: "microsoft SIGMOS (ONNX, P.804)"
-model_version: "P.804-ONNX"   # TODO(fill): pin the exact SIGMOS ONNX release/revision
+# The spec the checkpoint implements, not a release: microsoft/SIG-Challenge publishes the ONNX
+# without a versioned tag. Kept because it is the most specific true thing available, and tiered
+# ``best_guess`` in ``verified`` so a reader knows not to treat it as a pin.
+model_version: "P.804-ONNX"
 domain: {language: any, style: speech}
 constraints: {}   # no supported_sample_rates constraint: any input rate is accepted and resampled internally to 48 kHz for inference, so no upstream ResampleAudioStage is required
 resource:

@@ -22,7 +22,7 @@ is a :class:`ResourcePlan` attached to the recipe as a recomputable annotation
 (layered save, 1.2).
 
 Scope of 1C.1: mode selection + feasibility + escalation. Per-stage resource
-*assignment* (1C.2) and measured calibration (the ``data_driven`` module) refine
+*assignment* (1C.2) and measured calibration (the ``calibration`` module) refine
 these numbers later; this module never reimplements Xenna's bin-packer.
 
 Feasibility gates ONLY on exact facts that are knowable ahead of time and that Xenna
@@ -171,7 +171,12 @@ def _stage_need(
     baseline_source = "card" if res else "default"
 
     def pick(key: str, card_default: Any) -> tuple[float, str]:  # noqa: ANN401
-        baseline = float(res.get(key, card_default) or 0.0)
+        # An explicit ``null`` says "nobody has established this yet", which is what a MISSING
+        # key says too -- so both must reach the conservative default. Read as a value instead,
+        # writing the placeholder was worse than omitting the line: ``gpu_mem_gb: null`` on a
+        # GPU-required stage priced at 0.0 GB rather than the floor meant for unknowns.
+        stated = res.get(key)
+        baseline = float((card_default if stated is None else stated) or 0.0)
         measured = calib.get(key)
         if measured is not None and float(measured) > baseline:
             return float(measured), "measured"
@@ -565,7 +570,7 @@ def plan(
                 "streaming auto-falls-back to batch and you can lower batch_size if it OOMs"
             )
 
-    # Disk headroom (best-effort; per-file sizing is a data_driven refinement).
+    # Disk headroom (best-effort; per-file sizing is a data-driven refinement).
     if env.free_disk_gb is not None and env.free_disk_gb < 1.0:
         rp.notes.append(f"low free disk ({env.free_disk_gb} GB) - outputs may not fit")
 

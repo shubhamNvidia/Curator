@@ -9,7 +9,14 @@ resource:
   cpus: 1.0
   gpu_mem_gb: null   # TODO(fill): depends on which sub-stages the config enables
   gpu_optional: true
-  bound: null   # TODO(fill): config-dependent (may include GPU quality/diarization stages)
+  # gpu, paired with gpu_optional -- the same combination PyAnnoteDiarizationStage,
+  # SIGMOSFilterStage, TorchSquimQualityMetricsStage, UTMOSFilterStage and WhisperXVADStage
+  # already use for "runs on GPU when there is one, falls back to CPU when there is not".
+  # It was `null`, which reads to every consumer as "not GPU" rather than "nobody has said":
+  # `stage_is_costly` then rated this composite CHEAP, so a reuse scan could serve a prefix
+  # containing it without asking, under a threshold written for milliseconds -- while the
+  # config it runs may dispatch exactly the GPU quality/diarization sub-stages listed above.
+  bound: gpu
   throughput_hint: "config-dependent; decomposes into many sub-stages"
 use_cases:
   good_for: ["running a preconfigured end-to-end curation pipeline from a config file"]

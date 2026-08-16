@@ -23,7 +23,9 @@ drift (the exact ``resample`` / ``audio_to_document`` failure class):
   ``supported_sample_rates`` / ``max_speakers`` -- NOT constructor params -- so they
   are intentionally not checked against the signature.)
 * ``resource`` uses only known keys with numeric values where numeric is expected.
-* a model stage (``model_id`` set) must pin a ``model_version`` (measured-tier).
+* ``model_version`` is NOT required, even on a model stage: nothing compares it between runs,
+  so demanding it only produced pin-shaped strings that were not pins. Say how far to trust it
+  in ``verified`` instead.
 * a ``metrics`` block, if present, must use a valid ``scale.direction``, a real
   ``threshold_param``, and a ``[lo, hi]`` ``valid_range``.
 * ``semantic_facts``, if present, is shape-checked as advisory prose.  The gate
@@ -43,7 +45,6 @@ Run: ``python -m nemo_curator.audio_agent.card_conformance``.
 from __future__ import annotations
 
 import json
-import sys
 from typing import Any
 
 _KNOWN_RESOURCE_KEYS = frozenset(
@@ -69,10 +70,6 @@ def _stage_param_names(stage_id: str) -> set[str] | None:
         return {p.name for p in stage_params(cls)}
     except Exception:  # noqa: BLE001
         return set()
-
-
-def _model_version(card: dict[str, Any]) -> Any:  # noqa: ANN401
-    return card.get("model_version") or (card.get("provenance") or {}).get("model_version")
 
 
 def _semantic_fact_violations(stage_id: str, raw: Any) -> list[str]:  # noqa: ANN401
@@ -370,9 +367,18 @@ def check_card(stage_id: str, card: Any) -> list[str]:  # noqa: ANN401
     v.extend(_composition_violations(stage_id, card))
     v.extend(_composite_legibility(stage_id))
 
-    # a model stage must pin a model_version (so an upgrade can't silently change facts).
-    if card.get("model_id") and not _model_version(card):
-        v.append(f"{stage_id}: model_id is set but no model_version pin (add model_version)")
+    # A model stage used to be REQUIRED to pin a ``model_version``, justified as "so an upgrade
+    # can't silently change facts". Removed, because that protection was never built: nothing
+    # stores this field, compares it between runs, or notices when it moves. Reuse identity comes
+    # from ``model_version(stage.params)`` -- the recipe's own value -- plus the source digest;
+    # the card's copy is read only for costliness, on presence alone.
+    #
+    # So the rule asked for a value nobody checks, and its cost was real: where upstream ships no
+    # revision, the only way to satisfy it was to write something shaped like a pin that is not
+    # one. Two shipped cards ended up doing that -- SIGMOS with the spec name "P.804-ONNX", and
+    # InferenceAsrNemoStage with a sentence explaining there is no default. A gate that makes
+    # honest cards harder to write is worse than no gate. ``verified.model_version: best_guess``
+    # already carries the caveat, and it is a tier a reader can act on.
 
     # metrics block (1A.2): the deterministic source of absolute targets. Validate its
     # shape so the config-strategy resolver can trust it (drift-proof anchors/presets).
