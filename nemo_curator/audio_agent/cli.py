@@ -38,12 +38,6 @@ _RECIPE_DATA_HELP = (
     "optional assertion that must canonically match the recipe's first source "
     "stage; never overrides stage parameters"
 )
-# One policy, so one sentence: ``output_dir`` is accepted and ignored on every executing verb.
-# Stated once here rather than re-typed per subcommand, where the copies could drift apart and
-# leave two of the three describing a rule the verbs no longer share.
-_OUTPUT_DIR_HELP = (
-    "legacy no-op retained for compatibility; configure output paths on recipe stages"
-)
 
 
 def _load_recipe(path: str) -> dict[str, Any]:
@@ -259,7 +253,7 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block
     r.add_argument("--checkpoint-path")
     r.add_argument("--bootstrap-ray", action="store_true", help="auto-start a local Ray head if none is reachable")
     r.add_argument("--smoke-token", help="smoke-evidence token from a prior smoke (required if AUDIO_AGENT_REQUIRE_SMOKE is set)")
-    r.add_argument("--calibration", help="path to a calibration JSON from a prior smoke (1C.2)")
+    r.add_argument("--calibration", help="path to a calibration JSON from a prior smoke; omit to apply the measurements the last smoke of this recipe stored")
     r.add_argument("--goal", help="what this run is FOR (JSON or free text); recorded so prior work stays legible")
 
     rp = sub.add_parser("report", help="post-hoc report from an output manifest/dir")
@@ -284,7 +278,7 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block
     rs.add_argument("--label", help="outcome label, e.g. studio / transcription_grade")
     rs.add_argument("--use-case", help="named card preset, e.g. tts_reference")
     rs.add_argument("--explicit", help="JSON object of {param: value}")
-    rs.add_argument("--data", help="also bind the values the DATASET fixes (Path B), e.g. the rate the audio actually is")
+    rs.add_argument("--data", help="profile this dataset and bind observed values (Path B)")
 
     dg = sub.add_parser("diagnose", help="analyze a captured failure and return grounded user choices")
     dg.add_argument("--error", required=True, help="captured error text, or - to read it from stdin")
@@ -310,6 +304,27 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block
     sc.add_argument("--data", help=_RECIPE_DATA_HELP)
     sc.add_argument("--limit", type=int, default=5)
 
+    dr = sub.add_parser(
+        "delta-run",
+        help="run only the files that changed since a prior run and merge them into its result",
+    )
+    dr.add_argument("--recipe", required=True, help="the same recipe as the prior run (or - for stdin)")
+    dr.add_argument("--data", help=_RECIPE_DATA_HELP)
+    dr.add_argument("--confirm", nargs="?", const=True, default=False,
+                    help="pass the recipe config_hash (integrity) or bare --confirm; omit to see the card")
+    dr.add_argument("--bootstrap-ray", action="store_true", help="auto-start a local Ray head if none is reachable")
+    dr.add_argument("--smoke-token", help="smoke-evidence token from a prior smoke (required if AUDIO_AGENT_REQUIRE_SMOKE is set)")
+    dr.add_argument("--calibration", help="path to a calibration JSON from a prior smoke")
+    dr.add_argument("--goal", help="what this run is FOR (JSON or free text); recorded so prior work stays legible")
+
+    ck = sub.add_parser(
+        "add-checkpoint",
+        help="where a mid-pipeline manifest would make the expensive stages reusable (read-only)",
+    )
+    ck.add_argument("--recipe", required=True, help="the recipe to place a checkpoint in (or - for stdin)")
+    ck.add_argument("--output-path", help="write the checkpointed recipe's manifest here (omit for advice only)")
+    ck.add_argument("--after", help="place it after this stage instead of where the agent would put it")
+
     sub.add_parser("reindex", help="rebuild the run/artifact index from the JSON records")
 
     cont = sub.add_parser("continue", help="plan (and optionally execute) a follow-up run that reuses prior work")
@@ -329,8 +344,8 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block
     )
     cont.add_argument("--checkpoint-path")
     cont.add_argument("--bootstrap-ray", action="store_true", help="auto-start a local Ray head if none is reachable")
-    cont.add_argument("--smoke-token", help="smoke token for THIS recipe (the one you smoked); the continued branch is derived from it")
-    cont.add_argument("--calibration", help="path to a calibration JSON from a prior smoke")
+    cont.add_argument("--smoke-token", help="smoke token for the exact recipe branch that will execute")
+    cont.add_argument("--calibration", help="path to a calibration JSON from a prior smoke; omit to apply the measurements the last smoke of this recipe stored")
     cont.add_argument("--goal", help="what this run is FOR (JSON or free text)")
 
     cal = sub.add_parser("calibrate", help="extract measured per-stage resources from a smoke report (1C.2)")
@@ -487,6 +502,28 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0912 - a flat 
                     _load_recipe(args.recipe),
                     data=args.data,
                     limit=args.limit,
+                ),
+            )
+        elif cmd == "delta-run":
+            return _finish(
+                cmd,
+                aa.delta_run(
+                    _load_recipe(args.recipe),
+                    data=args.data,
+                    confirm=args.confirm,
+                    bootstrap_ray=args.bootstrap_ray,
+                    smoke_token=args.smoke_token,
+                    calibration=_calibration_arg(args.calibration),
+                    goal=_parse_goal(args.goal),
+                ),
+            )
+        elif cmd == "add-checkpoint":
+            return _finish(
+                cmd,
+                aa.add_checkpoint(
+                    _load_recipe(args.recipe),
+                    output_path=args.output_path,
+                    after=args.after,
                 ),
             )
         elif cmd == "reindex":

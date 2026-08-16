@@ -137,7 +137,9 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
         ``smoke_token`` satisfies ``AUDIO_AGENT_REQUIRE_SMOKE`` (pass the token from a
         prior ``smoke``); ``bootstrap_ray`` auto-starts Ray; ``checkpoint_path`` enables
         partial-run resume; ``goal`` records what the run was for in provenance.
-        ``calibration`` accepts the complete wrapper returned by ``calibrate``.
+        ``calibration`` accepts the complete wrapper returned by ``calibrate``; omit it
+        and the measurements a prior ``smoke`` of this exact recipe stored are applied
+        automatically (the resource plan says so in its notes).
         ``output_dir`` is retained as the verb's legacy no-op; configure output
         paths on recipe stages."""
         return aa.run(
@@ -186,8 +188,7 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
 
         Maps a user-facing outcome to params (or a PreserveByValueStage filter) via
         the card's metrics anchors/presets, with an auditable strategy trail. Never
-        exposes or invents internal thresholds. Passing ``data`` additionally binds
-        what the DATASET fixes rather than the user (e.g. its real sample rate)."""
+        exposes or invents internal thresholds."""
         return aa.resolve(stage, label=label, use_case=use_case, explicit=explicit, data=data)
 
     @server.tool()
@@ -210,6 +211,42 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
     ) -> dict[str, Any]:
         """Find prior artifacts this recipe could reuse without changing state."""
         return aa.reuse_scan(recipe, data=data, limit=limit)
+
+    @server.tool()
+    def delta_run(
+        recipe: dict[str, Any],
+        data: str | None = None,
+        confirm: bool | str = False,
+        bootstrap_ray: bool = False,
+        smoke_token: str | None = None,
+        calibration: dict[str, Any] | None = None,
+        goal: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Run only the files that changed since a prior run of this recipe, and merge them in.
+
+        Without ``confirm`` this returns the card (which files moved, which manifests would be
+        rewritten, how many rows survive, what it saves). Everything a delta relies on is
+        checked first and refused by name, so a ``no_delta`` answer means run normally rather
+        than that a partial result was accepted."""
+        return aa.delta_run(
+            recipe,
+            data=data,
+            confirm=confirm,
+            bootstrap_ray=bootstrap_ray,
+            smoke_token=smoke_token,
+            calibration=calibration,
+            goal=goal,
+        )
+
+    @server.tool()
+    def add_checkpoint(
+        recipe: dict[str, Any],
+        output_path: str | None = None,
+        after: str | None = None,
+    ) -> dict[str, Any]:
+        """Say where a mid-pipeline manifest would make the expensive stages reusable, and with
+        an output_path return the recipe carrying it (nothing is written or run)."""
+        return aa.add_checkpoint(recipe, output_path=output_path, after=after)
 
     @server.tool()
     def reindex() -> dict[str, Any]:
