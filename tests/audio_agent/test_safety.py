@@ -15,6 +15,8 @@
 """Unit tests for the deterministic safety guardrails (nemo_curator.audio_agent._safety)."""
 
 import hashlib
+import hmac
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -158,6 +160,59 @@ class TestWorkspaceLock:
         assert _safety.path_violations([inside]) == []
         assert any("passwd" in v for v in _safety.path_violations(["local:///etc/passwd"]))
 
+    def test_a_file_uri_naming_another_host_is_not_a_workspace_path(self, monkeypatch, tmp_path) -> None:
+        """``file://host/path`` names a path on *host*, not here. The lock rebuilds the ``//host``
+        prefix before resolving precisely so that the remainder cannot be read as local.
+
+        Drop those two lines -- they look like leftover URI fiddling -- and
+        ``file://remotehost/<the workspace>/a.wav`` is accepted as a workspace path, because
+        what is left is a string that starts with the root. ``localhost`` and an empty host do
+        mean here, and must keep working.
+        """
+        monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))
+        inside = f"{tmp_path}/a.wav"
+
+        assert _safety.path_violations([f"file://remotehost{inside}"]), (
+            "another host's namespace was accepted as the local workspace"
+        )
+        assert _safety.path_violations([f"local://remotehost{inside}"])
+        assert _safety.path_violations([f"file://localhost{inside}"]) == []
+        assert _safety.path_violations([f"file://{inside}"]) == []
+
+    @pytest.mark.parametrize("link_kind", ["directory", "file"])
+    def test_a_symlink_out_of_the_workspace_does_not_escape_the_lock(
+        self, monkeypatch, tmp_path, link_kind: str
+    ) -> None:
+        """The lock is a string comparison against a resolved path, and the whole of the
+        resolution is one ``os.path.realpath`` call. Swap it for ``abspath`` -- the reflex when
+        a path looks like it just needs normalising -- and every path here reads as inside the
+        workspace, because the escape lives in the filesystem rather than in the string.
+
+        Nothing else in the suite distinguishes the two calls, so the lock could be opened by a
+        refactor that stays green. A locked-down deployment is exactly where a planted link is
+        worth planting.
+        """
+        workspace = tmp_path / "ws"
+        outside = tmp_path / "outside"
+        workspace.mkdir()
+        outside.mkdir()
+        (outside / "secret.txt").write_text("credentials")
+        monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(workspace))
+
+        if link_kind == "directory":
+            (workspace / "escape").symlink_to(outside)
+            candidate = str(workspace / "escape" / "secret.txt")
+        else:
+            (workspace / "secret.txt").symlink_to(outside / "secret.txt")
+            candidate = str(workspace / "secret.txt")
+
+        assert _safety.path_violations([candidate]), (
+            f"a {link_kind} symlink pointing out of the workspace was accepted: {candidate}"
+        )
+        assert _safety.path_violations([str(workspace / "real.wav")]) == [], (
+            "an ordinary path inside the workspace must still be allowed"
+        )
+
     def test_recipe_path_params_flattens_list_valued_sources(self) -> None:
         stage = type("Stage", (), {"params": {"manifest_path": ["a.jsonl", "b.jsonl"]}})()
         recipe = type("Recipe", (), {"stages": [stage]})()
@@ -206,6 +261,76 @@ class TestRedactionDoesNotDefeatTheAgentsOwnWorkflow:
         assert all(str(item).startswith("<redacted-transcript:") for item in out["text"])
 
 
+class TestRedactionWalksEveryContainerNotJustTheTwoNoticedFirst:
+    """The walker handled ``dict``/``list``/``str`` and fell through on everything else,
+    returning the original object untouched. A tuple or a set anywhere on the path meant the
+    payload below it was never inspected -- so both rules (secret keys and transcripts) were
+    silently skipped for whatever it held.
+
+    This is reachable, not theoretical: ``verbs._examples_from_rows`` copies row values
+    verbatim and ``verbs._jsonable`` admits tuples by name, so a manifest row carrying one
+    lands in the ``examples`` payload that ``smoke``/``run`` hand to the host LLM.
+    ``contracts._clean`` has always flattened tuples and sets, which is why this read as an
+    oversight rather than a decision.
+    """
+
+    def test_a_secret_inside_a_tuple_is_redacted(self) -> None:
+        out = _safety.redact({"data": ({"api_key": "9f3c1e-real-credential"},)})
+
+        assert "9f3c1e-real-credential" not in json.dumps(out, default=str)
+        assert out["data"][0]["api_key"] == "<redacted-secret>"
+
+    def test_a_transcript_inside_a_tuple_is_redacted(self) -> None:
+        """The list case was fixed once; the tuple carrying the same per-segment text walked
+        straight past that fix."""
+        out = _safety.redact({"text": ("first segment", "second segment")})
+
+        assert "segment" not in json.dumps(out, default=str), out["text"]
+        assert all(str(item).startswith("<redacted-transcript:") for item in out["text"])
+
+    def test_a_transcript_inside_a_set_is_redacted(self) -> None:
+        out = _safety.redact({"text": {"first segment", "second segment"}})
+
+        assert "segment" not in json.dumps(out, default=str), out["text"]
+        assert all(str(item).startswith("<redacted-transcript:") for item in out["text"])
+
+    def test_a_secret_inside_a_set_is_redacted(self) -> None:
+        """A set cannot hold a dict, so there is no key here for the key-based rule to match.
+        What it can hold is text, and the inline rule only runs on members the walk reaches."""
+        out = _safety.redact({"data": {"api_key=9f3c1e-real-credential"}})
+
+        assert "9f3c1e-real-credential" not in json.dumps(out, default=str)
+        assert out["data"] == ["api_key=<redacted-secret>"]
+
+    def test_containers_are_flattened_to_json_serializable_lists(self) -> None:
+        """Redacted output is about to be serialized, where neither type survives. Matching
+        ``contracts._clean`` keeps the emitter from having to care which one it got."""
+        out = _safety.redact({"a": (1, 2), "b": {3}})
+
+        assert out["a"] == [1, 2]
+        assert out["b"] == [3]
+        json.dumps(out)  # must not raise: a bare set is not JSON-serializable
+
+    def test_a_set_of_mixed_types_does_not_crash_the_walk(self) -> None:
+        """Ordering a set needs a key; the natural ``sorted()`` raises on mixed types, and a
+        redactor that throws is a redactor that gets bypassed."""
+        out = _safety.redact({"mixed": {1, "two", None}})
+
+        assert sorted(str(item) for item in out["mixed"]) == ["1", "None", "two"]
+
+    def test_a_tuple_row_value_reaches_the_host_redacted(self) -> None:
+        """End-to-end over the path that makes this reachable: a manifest row whose value is a
+        tuple, through the same rows -> ``redact`` sequence smoke and run use."""
+        from nemo_curator.audio_agent import verbs
+
+        rows = [{"path": "/data/a.wav", "text": ("hello", "world"), "api_key": "9f3c1e-cred"}]
+        out = _safety.redact(verbs._examples_from_rows(rows, limit=1))
+
+        payload = json.dumps(out, default=str)
+        assert "hello" not in payload, payload
+        assert "9f3c1e-cred" not in payload, payload
+
+
 class TestSmokeToken:
     def test_not_derivable_from_public_config_hash(self) -> None:
         """H2: the token must not be a plain hash of the (public) config_hash."""
@@ -221,6 +346,46 @@ class TestSmokeToken:
         assert _safety.verify_smoke_token(tok, "other-hash") is False
         assert _safety.verify_smoke_token(None, ch) is False
         assert _safety.verify_smoke_token(tok, None) is False
+
+    @pytest.mark.parametrize(
+        ("label", "token"),
+        [
+            ("an en-dash from a chat UI", "9f3c1e–abcdef"),
+            ("an accented character", "tokén-from-a-host"),
+            ("a lone surrogate", "\ud800abc"),
+            ("an int", 12345),
+            ("a list", ["a"]),
+            ("bytes", b"abc"),
+        ],
+    )
+    def test_a_malformed_token_is_refused_rather_than_raised(self, label: str, token: object) -> None:
+        """The token round-trips through the host LLM, so it arrives as whatever that produced.
+
+        ``hmac.compare_digest`` refuses str arguments outside ASCII, so a token carrying one
+        smart character -- what a chat UI does to a hex string in passing -- raised ``TypeError``
+        straight out of ``run`` instead of refusing. Every verb's contract is to answer in JSON;
+        a traceback tells the host nothing it can act on, and the actionable answer here is the
+        ordinary one: the evidence does not match, go and smoke first.
+        """
+        assert _safety.verify_smoke_token(token, "abc123") is False, label
+
+    def test_a_malformed_token_refuses_the_run_verb_in_json(self) -> None:
+        """End-to-end, because the raise happened at the call site rather than in the helper."""
+        from nemo_curator.audio_agent import verbs
+
+        os.environ["AUDIO_AGENT_REQUIRE_SMOKE"] = "1"
+        try:
+            out = verbs.run(
+                recipe={"stages": [{"ref": "MonoConversionStage", "params": {}}]},
+                confirm=True,
+                smoke_token="9f3c1e–abcdef",
+            )
+        finally:
+            os.environ.pop("AUDIO_AGENT_REQUIRE_SMOKE", None)
+
+        assert out["status"] == "refused", out
+        assert "smoke" in out["reason"], f"refused, but not over the token: {out['reason']}"
+        json.dumps(out, default=str)  # the host has to be able to read the answer
 
     def test_secret_env_changes_token(self, monkeypatch) -> None:
         monkeypatch.setenv("AUDIO_AGENT_SMOKE_SECRET", "secret-a")

@@ -364,8 +364,15 @@ def redact(obj: Any, *, redact_transcripts: bool = True) -> Any:  # noqa: ANN401
         """
         if isinstance(value, str):
             return f"<redacted-transcript:{len(value)}chars>"
-        if isinstance(value, list):
+        # Tuples and sets alongside lists: the list case was fixed once, and a tuple carrying
+        # the same per-segment text walked straight past the fix. ``verbs._jsonable`` admits
+        # tuples by name, so a row value shaped that way is a real path, not a hypothetical
+        # one. Normalised to a list on the way out, exactly as ``contracts._clean`` does -- the
+        # payload is about to be serialized as JSON, where neither type survives.
+        if isinstance(value, (list, tuple)):
             return [_redacted_transcript(item) for item in value]
+        if isinstance(value, (set, frozenset)):
+            return sorted((_redacted_transcript(item) for item in value), key=repr)
         if isinstance(value, dict):
             return {k: _redacted_transcript(v) for k, v in value.items()}
         return value
@@ -381,8 +388,14 @@ def redact(obj: Any, *, redact_transcripts: bool = True) -> Any:  # noqa: ANN401
                 else:
                     out[k] = _r(v)
             return out
-        if isinstance(o, list):
+        # Every container the payload can actually hold, not just the two that were noticed
+        # first. A secret nested inside a TUPLE used to be returned verbatim: the walk fell
+        # through to ``return o`` and handed back the original object untouched.
+        # ``contracts._clean`` has always flattened tuples and sets, so this was the outlier.
+        if isinstance(o, (list, tuple)):
             return [_r(v) for v in o]
+        if isinstance(o, (set, frozenset)):
+            return sorted((_r(v) for v in o), key=repr)
         if isinstance(o, str):
             return redact_secret_text(o)
         return o
@@ -433,6 +446,38 @@ def _secret_dir_candidates() -> list[str]:
     return out
 
 
+def _is_private_file(file: Path) -> bool:
+    """Whether a secret file is ours alone -- owned by this user, closed to everyone else.
+
+    The load-bearing check on the fallback chain. Its last candidate lives under the temp dir,
+    whose parent is world-writable, so any local user can pre-create ``<tmp>/nemo_curator`` and
+    leave a secret of their choosing in it. Creation here is deliberately if-absent, so the
+    agent would ADOPT that file and sign every smoke token with a key its author already knows
+    -- ``AUDIO_AGENT_REQUIRE_SMOKE`` still reporting as enforced while anyone could mint a
+    token for any config hash.
+
+    Ownership is what settles it, and it settles it cheaply: a planted file belongs to whoever
+    planted it, and nobody can create a file owned by us. A group member with write access to
+    the directory can still delete ours and leave their own, but that costs them the shared
+    secret (we refuse it and fall through to a per-process key) rather than winning them a
+    forgeable one -- denial, not forgery.
+
+    Deliberately NOT paired with a mode check on the DIRECTORY. The directories this agent
+    already created in the field are group-writable under an ordinary 002 umask (both
+    ``~/.cache/nemo_curator`` and ``/tmp/nemo_curator`` are 0775 on the machine this was
+    written on), so refusing those would send every one of them to a per-process secret --
+    reinstating the exact cross-process failure the fallback chain was added to fix.
+    """
+    geteuid = getattr(os, "geteuid", None)  # POSIX-only; elsewhere the mode check stands alone
+    try:
+        info = file.stat()
+    except OSError:
+        return False
+    if geteuid is not None and info.st_uid != geteuid():
+        return False
+    return not info.st_mode & 0o077
+
+
 def _stored_secret(file: Path) -> bytes | None:
     """The secret held in an existing file, or None when it is absent or unusable."""
     try:
@@ -456,11 +501,20 @@ def _read_or_create_secret(path: str) -> bytes | None:
 
     file = Path(path)
     try:
-        file.parent.mkdir(parents=True, exist_ok=True)
+        # Owner-only for a directory we create here. An existing one is left as the deployment
+        # set it -- ``run_store._ensure_private_dir`` reasons the same way -- because the file
+        # check below is what decides whether a secret may be trusted, and tightening a
+        # directory somebody configured on purpose is not this function's call to make.
+        file.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
         for _attempt in (0, 1):
             secret = _stored_secret(file)
             if secret:
-                return secret
+                # Only a file that is OURS may hand us a key to sign with. One holding a secret
+                # we cannot vouch for is refused rather than healed -- deleting somebody else's
+                # file is not this function's business, and adopting it is the whole attack.
+                # Falling through to the next candidate (ultimately a per-process key) costs
+                # cross-process reuse, which is the safe direction to fail in.
+                return secret if _is_private_file(file) else None
             # Present but empty or unparseable is NOT a usable secret, and leaving it in
             # place is what made this unrecoverable before: ``os.link`` kept failing against
             # the dead file, so every process silently fell back to its own per-process key
@@ -504,8 +558,22 @@ def smoke_token(config_hash: str | None) -> str:
 
 
 def verify_smoke_token(token: str | None, config_hash: str | None) -> bool:
-    """True iff ``token`` is the smoke token for ``config_hash`` (constant-time)."""
-    return bool(token) and bool(config_hash) and hmac.compare_digest(token, smoke_token(config_hash))
+    """True iff ``token`` is the smoke token for ``config_hash`` (constant-time).
+
+    A wrong token has to come back as ``False``, never as an exception. ``compare_digest``
+    rejects str arguments outside ASCII, so a token relayed with a smart quote or an en-dash --
+    what a chat UI does to a hex string on its way through -- raised ``TypeError`` out of
+    ``run``, where the design calls for a refusal the host can read and act on. Comparing the
+    encoded bytes treats every string uniformly and stays constant-time; anything that is not a
+    string at all cannot be the token.
+    """
+    if not isinstance(token, str) or not isinstance(config_hash, str) or not token or not config_hash:
+        return False
+    try:
+        candidate = token.encode("utf-8", "surrogatepass")
+    except UnicodeEncodeError:  # pragma: no cover - defensive, surrogatepass covers lone surrogates
+        return False
+    return hmac.compare_digest(candidate, smoke_token(config_hash).encode("utf-8"))
 
 
 def require_smoke() -> bool:
