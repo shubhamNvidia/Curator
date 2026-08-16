@@ -85,11 +85,6 @@ class DatasetBinding:
         """Compatibility shorthand when exactly one path is configured."""
         return self.configured_paths[0] if len(self.configured_paths) == 1 else None
 
-    @property
-    def primary_canonical_path(self) -> str | None:
-        """Explicit alias for callers that want to emphasize canonicalization."""
-        return self.primary_path
-
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable representation without sharing mutable state."""
         return {

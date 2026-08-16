@@ -346,3 +346,93 @@ class TestTheDeclaredParamsAreConsistentWithWhatConstructionNeeds:
                 broken.append(entry["stage"])
 
         assert broken == []
+
+
+class TestConstructingAStageTouchesNothing:
+    """``resolved_contract_for`` instantiates a stage to ask what it reads and writes, and
+    ``describe`` is an MCP tool -- so an LLM's params reach a real constructor. The docstring
+    justifies that with "no audio stage does I/O in ``__init__`` (a regression test pins that)".
+
+    This is that test. It was missing: the property was asserted in prose and enforced by
+    nothing, on the one boundary where tool-supplied data meets ``cls(**params)``.
+    """
+
+    def _no_io(self, monkeypatch, seen: list[str]):  # noqa: ANN001, ANN202
+        """Make every filesystem/network entry point record itself instead of running."""
+        import builtins
+        import io as _io
+        import os
+        import pathlib
+        import socket
+
+        def trap(label: str):  # noqa: ANN202
+            def _boom(*_a: object, **_k: object) -> None:
+                seen.append(label)
+                msg = f"{label} during __init__"
+                raise AssertionError(msg)
+            return _boom
+
+        monkeypatch.setattr(builtins, "open", trap("builtins.open"))
+        monkeypatch.setattr(_io, "open", trap("io.open"), raising=False)
+        monkeypatch.setattr(os, "makedirs", trap("os.makedirs"))
+        monkeypatch.setattr(os, "remove", trap("os.remove"))
+        monkeypatch.setattr(pathlib.Path, "mkdir", trap("Path.mkdir"))
+        monkeypatch.setattr(pathlib.Path, "write_text", trap("Path.write_text"))
+        monkeypatch.setattr(pathlib.Path, "read_text", trap("Path.read_text"))
+        monkeypatch.setattr(socket, "socket", trap("socket.socket"))
+
+    # Stages KNOWN to touch disk while being constructed. Listed by name, never by shape, so a
+    # new one fails this test instead of joining them quietly.
+    #
+    # AudioDataFilterStage.__init__ calls load_config(config_path) -- with config_path=None it
+    # reads the packaged default_config.yaml, and with a caller-supplied path it reads that.
+    # Reachable from the ``describe`` MCP tool, and not covered by the workspace lock (describe
+    # performs no path check, and ``config_path`` is a deliberately unlocked shared-dependency
+    # param), so an LLM-supplied path becomes an existence/parseability oracle. No file content
+    # reaches the response. The stage is shared code and out of the audio agent's scope to change.
+    _KNOWN_IO_IN_INIT = frozenset({"AudioDataFilterStage"})
+
+    # Stages KNOWN to touch disk while being constructed. Listed by name, never by shape, so a
+    # new one fails this test instead of joining them quietly.
+    #
+    # AudioDataFilterStage.__init__ calls load_config(config_path) -- with config_path=None it
+    # reads the packaged default_config.yaml, and with a caller-supplied path it reads that.
+    # Reachable from the ``describe`` MCP tool, and not covered by the workspace lock (describe
+    # performs no path check, and ``config_path`` is a deliberately unlocked shared-dependency
+    # param), so an LLM-supplied path becomes an existence/parseability oracle. No file content
+    # reaches the response. The stage is shared code and out of the audio agent's scope to change.
+    _KNOWN_IO_IN_INIT = frozenset({"AudioDataFilterStage"})
+
+    def test_no_agent_ready_stage_touches_disk_or_network_when_constructed(self, monkeypatch) -> None:
+        offenders: list[str] = []
+        skipped: list[str] = []
+        built = 0
+        for name in aa.discover().get("stages", []):
+            stage = str(name.get("stage") or "")
+            try:
+                cls = resolve_stage_class(stage)
+            except Exception:  # noqa: BLE001 - an unimportable optional dep is not this test's subject
+                skipped.append(stage)
+                continue
+            seen: list[str] = []
+            with monkeypatch.context() as patched:
+                self._no_io(patched, seen)
+                try:
+                    cls()
+                    built += 1
+                except AssertionError:  # our own trap -- the stage really did I/O
+                    offenders.append(f"{stage}: {seen[-1] if seen else 'io'}")
+                except Exception:  # noqa: BLE001 - missing required args / validation: not I/O
+                    if seen:
+                        offenders.append(f"{stage}: {seen[-1]} (before failing)")
+        assert built, f"nothing was constructible, so this proves nothing (skipped: {skipped})"
+        unexpected = [o for o in offenders if o.split(":")[0] not in self._KNOWN_IO_IN_INIT]
+        assert not unexpected, (
+            "stage(s) newly performing I/O in __init__, reachable from the describe MCP tool: "
+            + "; ".join(unexpected)
+        )
+        still_offending = {o.split(":")[0] for o in offenders}
+        assert still_offending == set(self._KNOWN_IO_IN_INIT), (
+            "the known-exception list is stale -- these no longer do I/O and should be removed "
+            f"from _KNOWN_IO_IN_INIT: {sorted(set(self._KNOWN_IO_IN_INIT) - still_offending)}"
+        )

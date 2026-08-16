@@ -94,13 +94,6 @@ class ResolvedContract:
         return detail
 
 
-def _execution_knobs() -> frozenset[str]:
-    """Params that configure how a stage runs rather than what it reads or writes."""
-    from nemo_curator.audio_agent.recipe import EXECUTION_KNOB_PARAMS
-
-    return frozenset(EXECUTION_KNOB_PARAMS)
-
-
 def _fallback_reason(exc: Exception, missing: tuple[str, ...]) -> str:
     """Why instantiation failed, led by the actionable cause when there is one."""
     if missing:
@@ -116,22 +109,33 @@ def resolved_contract_for(ref: str, params: dict[str, Any] | None = None) -> Res
     honest answer comes from an instance, which is what ``build_contract`` has always needed
     and ``describe`` never gave it.
 
-    Instantiating to ask is safe: no audio stage does I/O in ``__init__`` (a regression test
-    pins that), and models load in ``setup()``, which this never calls. Execution knobs are
-    dropped first so a caller can pass a recipe's params verbatim without the ``resources``
-    entry turning into a spurious "could not be configured".
+    Instantiating to ask is nearly free of side effects: models load in ``setup()``, which this
+    never calls, and execution knobs are dropped first so a caller can pass a recipe's params
+    verbatim without the ``resources`` entry turning into a spurious "could not be configured".
+
+    It is NOT true that no stage touches disk in ``__init__``, though this docstring said so and
+    cited a regression test that did not exist. ``AudioDataFilterStage.__init__`` calls
+    ``load_config(config_path)``, so a ``config_path`` supplied through the ``describe`` MCP tool
+    is opened here -- an existence-and-parseability oracle for arbitrary paths, and one the
+    workspace lock does not cover (``describe`` performs no path check, and ``config_path`` is a
+    deliberately unlocked shared-dependency param). No file content reaches the response. The
+    test in ``test_contract_resolution.py`` now pins the real boundary: that stage is listed as a
+    known exception, so a NEW stage doing I/O here fails rather than joining it silently.
 
     Falls back to the instance-free contract rather than raising, because a stage with required
     arguments has to stay describable to a caller who does not yet know what to pass -- that
     caller is asking in order to find out. The fallback is labelled; see
     :meth:`ResolvedContract.unresolved_detail`.
     """
+    from nemo_curator.audio_agent.recipe import EXECUTION_KNOB_PARAMS
     from nemo_curator.stages.audio._agent_registry import build_contract, stage_params, static_contract
 
     cls = resolve_stage_class(ref)
     specs = stage_params(cls)
     accepted = tuple(spec.name for spec in specs)
-    given = {k: v for k, v in (params or {}).items() if k not in _execution_knobs()}
+    # Read once, not once per param: the condition of a comprehension is evaluated per item, so
+    # this used to re-import the module and rebuild a frozenset from a frozenset for every key.
+    given = {k: v for k, v in (params or {}).items() if k not in EXECUTION_KNOB_PARAMS}
     missing = tuple(spec.name for spec in specs if spec.required and spec.name not in given)
 
     try:
