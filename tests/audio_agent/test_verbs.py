@@ -649,7 +649,7 @@ class TestRunAcceptanceResult:
             lambda *_args, **_kwargs: ([object()], "batch"),
         )
         monkeypatch.setattr(verbs, "build_run_report", lambda **_kwargs: report)
-        monkeypatch.setattr(verbs, "_produced_roles_keys", lambda *_args: ([], []))
+        monkeypatch.setattr(verbs, "_produced_roles_keys", lambda *_args, **_kw: ([], []))
         monkeypatch.setattr(verbs, "_acceptance_result", fake_acceptance)
         monkeypatch.setattr(verbs, "_publish_artifacts", lambda *_args, **_kwargs: [])
         monkeypatch.setattr(verbs, "_record_run", fake_record)
