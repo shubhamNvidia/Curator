@@ -246,9 +246,17 @@ def stage_is_costly(stage_ref: str) -> bool:
     card = _card(stage_ref)
     if not card:
         return True
-    if str((card.get("resource") or {}).get("bound") or "").lower() == "gpu":
+    bound = str((card.get("resource") or {}).get("bound") or "").lower()
+    if bound == "gpu":
         return True
     if card.get("model_id") or card.get("model_version"):
+        return True
+    if not bound:
+        # The card exists but does not SAY ``cpu``/``io``, so there is nothing to take at its
+        # word. That is the same state as having no card, which is refused as cheap two lines
+        # up; reading an unstated bound as "not gpu" instead let a config-dependent composite
+        # under the auto-take threshold. No shipped card relies on this -- it keeps the next
+        # ``bound: null`` placeholder from quietly buying a pass.
         return True
     return _fetches_remotely(card)
 

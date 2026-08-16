@@ -56,7 +56,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from nemo_curator.audio_agent.artifacts import Artifact, StepPlan
-    from nemo_curator.audio_agent.contracts import Recipe
+    from nemo_curator.audio_agent.recipe import Recipe
 
 # Cardinalities that keep every output row descended from exactly one input file. A fan-out
 # splits one row into many, which is still one origin per child; ``N:1`` is the only shape
@@ -835,13 +835,24 @@ def _nothing_to_compare(recipe: Recipe) -> str:
     on disk since publication. Answering "this pipeline has no prior run" to someone whose
     curated manifest is sitting in front of them sends them looking for a run they already have,
     so say which of the two it is. The run record is the evidence, because it survives all three.
+
+    Asked of ``run_index`` rather than scanned by hand, which also widens the window: the scan
+    took the newest ``_MAX_PRIOR_RUNS`` records OVERALL and looked for a matching pipeline inside
+    them, so on a busy store the run being described could sit one place past the cut and be
+    reported as never having happened. The query filters on the pipeline first and caps after,
+    and falls back to the same JSON records when the index is unavailable.
     """
-    from nemo_curator.audio_agent import run_store
+    from nemo_curator.audio_agent import run_index
     from nemo_curator.audio_agent.reuse import _MAX_PRIOR_RUNS
 
+    # An unfrozen recipe has no pipeline identity, and ``find_runs`` treats an absent
+    # ``semantic_hash`` as "do not filter" -- so asking with one would hand back every run on the
+    # box and let the first completed stranger be described as this pipeline's own prior run.
+    if not recipe.semantic_hash:
+        return "no prior run can be matched: this recipe carries no pipeline identity (it was never frozen)"
     with contextlib.suppress(Exception):
-        for summary in run_store.list_runs()[:_MAX_PRIOR_RUNS]:
-            if summary.get("status") != "completed" or summary.get("semantic_hash") != recipe.semantic_hash:
+        for summary in run_index.find_runs(semantic_hash=recipe.semantic_hash, limit=_MAX_PRIOR_RUNS):
+            if summary.get("status") != "completed":
                 continue
             where = summary.get("data_source") or "another dataset"
             when = f" on {summary['created_at']}" if summary.get("created_at") else ""

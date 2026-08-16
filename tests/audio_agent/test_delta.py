@@ -754,6 +754,33 @@ class TestPlan:
         assert decision.status == "none"
         assert "no prior run" in decision.reason
 
+    def test_an_unfrozen_recipe_is_not_told_a_strangers_run_was_its_own(self, tmp_path: Path) -> None:
+        """A recipe with no ``semantic_hash`` has no pipeline identity, and the run query reads a
+        missing one as "do not filter" -- so asking with it would return every run on the box and
+        let the first completed stranger be described back as this pipeline's own prior run.
+        """
+        from nemo_curator.audio_agent import run_store
+        from nemo_curator.audio_agent.contracts import RunRecord
+
+        run_store.save(
+            RunRecord(
+                run_id="someone-elses-run",
+                semantic_hash="a-completely-different-pipeline",
+                status="completed",
+                data_source="/data/not-mine.jsonl",
+                created_at="2026-08-01T00:00:00Z",
+            )
+        )
+        unfrozen, _ = _pipeline(tmp_path, tmp_path / "m.jsonl")
+        unfrozen.semantic_hash = None
+
+        decision = delta.plan(
+            unfrozen, dataset_key=_KEY, inventory={"a.wav": "1"}, inventory_root=str(tmp_path)
+        )
+        assert decision.status == "none"
+        assert "no prior run" in decision.reason
+        assert "not-mine.jsonl" not in decision.reason
+
     def test_a_different_dataset_is_refused_rather_than_subtracted(self, tmp_path: Path) -> None:
         rec, _ = self._prior_run(tmp_path, ("a.wav", "b.wav"))
         decision = delta.plan(

@@ -55,7 +55,8 @@ _MAX_PRIOR_RUNS = 50
 def scan(recipe: Recipe, *, dataset_key: str, limit: int = 5) -> dict[str, Any]:
     """Find the longest safely reusable prefix of ``recipe`` and build the approval card.
 
-    Returns ``decision`` (``already_done`` / ``incremental`` / ``fresh``), the reuse point,
+    Returns ``decision`` (``already_done`` / ``incremental`` / ``fresh``, which
+    ``verbs._attach_delta`` upgrades to ``delta`` on a miss a changed-file delta covers),
     ranked ``candidates``, an estimated saving, and whether to prompt.
     """
     from nemo_curator.audio_agent import artifacts as art_mod
@@ -205,8 +206,14 @@ def _unsaved_prior_prefix(plans: list[StepPlan], dataset_key: str) -> dict[str, 
 
     Compares against the earlier run's *recorded* Merkle chain (``RunRecord.steps``) rather than
     re-deriving keys from its recipe, so this cannot drift from what that run actually executed.
+
+    Asked of ``run_index`` rather than scanned by hand, which is both cheaper and wider: the scan
+    parsed every record on disk, took the newest ``_MAX_PRIOR_RUNS`` of them, and only then looked
+    for this dataset -- so on a busy store the run being described could sit one place past the
+    cut and be reported as never having happened. The query filters on the dataset first and caps
+    after, and falls back to the same JSON records when the index is unavailable.
     """
-    from nemo_curator.audio_agent import run_store
+    from nemo_curator.audio_agent import run_index, run_store
 
     mine = [p.step_key for p in plans]
     # An empty dataset key means the caller gave us no data to identify. Two unknowns are not
@@ -214,9 +221,9 @@ def _unsaved_prior_prefix(plans: list[StepPlan], dataset_key: str) -> dict[str, 
     if not mine or not dataset_key:
         return None
     best: dict[str, Any] | None = None
-    for summary in run_store.list_runs()[:_MAX_PRIOR_RUNS]:
+    for summary in run_index.find_runs(dataset_key=dataset_key, limit=_MAX_PRIOR_RUNS):
         # Only a completed run proves the work was really done; a failed one proves nothing.
-        if summary.get("dataset_key") != dataset_key or summary.get("status") != "completed":
+        if summary.get("status") != "completed":
             continue
         rec = run_store.load(str(summary.get("run_id") or ""))
         shared = _shared_prefix_len(mine, list(getattr(rec, "steps", None) or []))
@@ -441,7 +448,11 @@ def _ran_unsaved_elsewhere(recipe: Recipe, dataset_key: str) -> dict[str, Any] |
 
 
 def _known_dataset_keys() -> list[str]:
-    """Distinct source datasets seen before (index first, JSON records as the fallback)."""
+    """Distinct source datasets seen before (index first, JSON records as the fallback).
+
+    Underscored but NOT private: imported by ``delta``, which needs the same list to explain a
+    miss ("prior work exists, but for another dataset") rather than just reporting nothing.
+    """
     from nemo_curator.audio_agent import run_index
 
     keys = run_index.dataset_keys(limit=_MAX_OTHER_DATASETS)

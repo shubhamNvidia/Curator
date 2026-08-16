@@ -1135,6 +1135,57 @@ class TestContinueVerb:
             "ManifestWriterStage",
         ]
 
+    def test_the_documented_confirm_hash_form_reaches_the_run(
+        self, store: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``continue --execute --choice extend --confirm <hash>`` is what AGENTS.md documents.
+        The hash a user holds is their own recipe's; the recipe that executes is derived from it
+        and hashes differently, so checking theirs against the derived one refused the only
+        invocation the docs give -- pushing hosts onto the weaker bare ``--confirm``.
+        """
+        from nemo_curator import audio_agent as aa
+
+        src, key = _real_source(store)
+        rec, _mid, _final = _pipeline(store, source=src)
+        _publish(rec, 1, dataset_key=key)
+
+        seen: dict[str, object] = {}
+
+        def _capture(recipe, **kwargs):  # noqa: ANN001, ANN003, ANN202
+            seen["recipe"] = recipe
+            seen["confirm"] = kwargs.get("confirm")
+            return {"status": "completed", "run_id": "captured"}
+
+        monkeypatch.setattr(verbs, "run", _capture)
+        result = aa.plan_continuation(
+            rec.to_dict(), data=src, execute=True, choice="extend", confirm=rec.config_hash
+        )
+
+        assert result.get("status") == "completed", result
+        # Re-anchored: the derived recipe carries its own hash into run()'s integrity check.
+        assert seen["confirm"] == seen["recipe"].config_hash
+        assert seen["confirm"] != rec.config_hash
+
+    def test_a_wrong_confirm_hash_is_still_refused_on_the_extend_path(
+        self, store: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The gate must not have been widened into a rubber stamp."""
+        from nemo_curator import audio_agent as aa
+
+        src, key = _real_source(store)
+        rec, _mid, _final = _pipeline(store, source=src)
+        _publish(rec, 1, dataset_key=key)
+
+        def _must_not_run(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            raise AssertionError("a mismatched confirmation reached run()")
+
+        monkeypatch.setattr(verbs, "run", _must_not_run)
+        result = aa.plan_continuation(
+            rec.to_dict(), data=src, execute=True, choice="extend", confirm="0000000000000000"
+        )
+        assert result["status"] == "refused"
+        assert "integrity check failed" in result["reason"]
+
     def test_confirmed_extend_executes_the_artifact_under_the_original_dataset_identity(
         self,
         store: Path,
@@ -1336,9 +1387,12 @@ class TestContinueVerb:
             started_at="",
             ended_at="",
             elapsed_sec=42.0,
-            step_identity=verbs._logical_identity(
-                rec, {"reuse_point": {"stage_index": 1}, "dataset_key": key}, dataset_key=key
-            ),
+            # Exactly what ``run`` derives for a continuation: the logical recipe's step tuples
+            # from the reused stage onward (``_verify_continuation_context`` -> step_identity).
+            step_identity=[
+                (p.step_key, p.input_key, p.index)
+                for p in artifacts.plan_steps(rec, key)[1:]
+            ],
         )
         assert [p["uri"] for p in published] == [final]
         result = reuse.scan(rec, dataset_key=key)
@@ -1535,9 +1589,14 @@ class TestContractJudgesTheData:
         assert verdict["overall"] == "not_met"
         assert verdict["criteria"][0]["status"] == "unverifiable"
 
-    def test_row_evidence_is_bounded(self, tmp_path: Path) -> None:
-        out = self._manifest(tmp_path, [{"duration": 1.0}] * (verbs._EVIDENCE_ROWS + 50))
-        assert len(verbs._row_evidence([out])) == verbs._EVIDENCE_ROWS
+    def test_the_row_preview_is_bounded_while_the_scan_still_counts_every_row(self, tmp_path: Path) -> None:
+        """The preview is what a caller holds in memory, so it is capped; the summary beside it
+        is not, or a bad row past the cap would be invisible to the success contract."""
+        rows = verbs._EVIDENCE_ROWS + 50
+        out = self._manifest(tmp_path, [{"duration": 1.0}] * rows)
+        preview, summary = verbs._scan_terminal_output([out], limit=verbs._EVIDENCE_ROWS)
+        assert len(preview) == verbs._EVIDENCE_ROWS
+        assert summary["valid_rows"] == rows
 
     def test_late_per_item_metric_failure_is_checked_beyond_the_preview(self, tmp_path: Path) -> None:
         out = self._manifest(
@@ -2131,14 +2190,6 @@ class TestAContinuedRunRecordsWhatWasAskedFor:
         assert materialized is not None, err
         return asked, materialized
 
-    def test_the_logical_chain_covers_the_whole_request(self, store: Path, tmp_path: Path) -> None:
-        asked, _materialized = self._recipes(tmp_path)
-        assert verbs._logical_chain(asked, dataset_key=_KEY) == artifacts.step_keys(asked, _KEY)
-
-    def test_an_unidentified_source_yields_no_chain_rather_than_a_wrong_one(self, tmp_path: Path) -> None:
-        asked, _materialized = self._recipes(tmp_path)
-        assert verbs._logical_chain(asked, dataset_key="") is None
-
     def test_the_rewritten_recipe_shares_no_prefix_with_the_request(self, store: Path, tmp_path: Path) -> None:
         # The premise of the bug, asserted so the fix cannot be mistaken for a no-op.
         asked, materialized = self._recipes(tmp_path)
@@ -2157,7 +2208,9 @@ class TestAContinuedRunRecordsWhatWasAskedFor:
         run_id = verbs._record_run(
             materialized, run_id="continued", data=None, data_fp=None, dataset_key=_KEY,
             fingerprint_tier="stat", report=report, failed=False,
-            logical_steps=verbs._logical_chain(asked, dataset_key=_KEY),
+            # What ``run`` hands over for a continuation: the logical recipe's own chain
+            # (``_verify_continuation_context`` -> logical_steps), not the rewrite's.
+            logical_steps=artifacts.step_keys(asked, _KEY),
         )
         recorded = list(run_store.load(run_id).steps or [])
         assert recorded == artifacts.step_keys(asked, _KEY)
@@ -2414,6 +2467,26 @@ class TestUnmeasuredWorkIsNotAssumedCheap:
 
     def test_a_stage_nobody_wrote_a_card_for_is_not_called_cheap(self) -> None:
         assert artifacts.stage_is_costly("NoCardWasEverWrittenForThisStage")
+
+    def test_a_card_that_does_not_state_its_bound_is_not_called_cheap(self, monkeypatch) -> None:
+        """``bound: null`` is the placeholder a config-dependent stage carries while nobody has
+        priced it. It leaves us exactly as uninformed as having no card -- already refused as
+        cheap -- yet it used to read as "not gpu" and buy a pass under the auto-take threshold.
+
+        Synthetic cards on purpose: this pins the RULE, so it keeps holding after whichever
+        shipped card carried the placeholder gets filled in.
+        """
+        for resource in ({"bound": None, "cpus": 1.0}, {"cpus": 1.0}, {}):
+            monkeypatch.setattr(artifacts, "_card", lambda _ref, r=resource: {"resource": r})
+            assert artifacts.stage_is_costly("AnyStage"), f"unstated bound in {resource} rated cheap"
+
+    def test_a_card_that_does_state_a_cheap_bound_is_still_taken_at_its_word(self, monkeypatch) -> None:
+        """The rule must not collapse into "everything is expensive", which would turn the
+        reuse gate into a permanent nag -- the failure the costliness check was narrowed to avoid.
+        """
+        for bound in ("cpu", "io"):
+            monkeypatch.setattr(artifacts, "_card", lambda _ref, b=bound: {"resource": {"bound": b}})
+            assert not artifacts.stage_is_costly("AnyStage"), f"bound={bound} should stay cheap"
 
     def test_an_untimed_model_prefix_asks_although_it_scores_as_free(self, store: Path) -> None:
         # The writer took 2 s and the transcription before it was never timed, so the saving

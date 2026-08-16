@@ -29,10 +29,22 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import time
 from typing import Any
 
 from nemo_curator.audio_agent.contracts import RunRecord
+
+# A run id becomes a filename, and ``load`` is reached with a caller-supplied one (the ``runs``
+# verb and ``continue --parent-run-id``, both exposed over the CLI and MCP). Unvalidated, a
+# ``../`` in it reads any ``.json`` on the box back through the record fields.
+#
+# Deliberately NOT the sibling pattern in ``calibration_store`` (``[A-Za-z0-9_-]``): a config
+# hash is hex, but a run id carries the microsecond timestamp ``new_run_id`` builds
+# (``run-20260816T073201.869815Z-04188532-e01c``), so that pattern would reject every real id
+# and make the store unreadable. A dot is admitted; a separator is what must not be. ``.`` and
+# ``..`` alone therefore pass and are harmless -- they name a file inside the runs directory.
+_SAFE_RUN_ID = re.compile(r"\A[A-Za-z0-9_.-]{1,128}\Z")
 
 
 def runs_dir() -> str:
@@ -54,6 +66,10 @@ def _ensure_private_dir(path: str) -> None:
     build agent, HPC project space or team NFS share exposes one user's curation history
     to every other. Only a directory this call actually CREATES is tightened -- one that
     already exists was configured deliberately and is left as the deployment set it.
+
+    Underscored but NOT private: imported by ``artifacts`` and ``calibration_store``, which
+    write their own state alongside the run records and need the same permissions. It lives
+    here rather than in a utility module because the reasoning above is about run records.
     """
     try:
         os.makedirs(path)
@@ -66,7 +82,11 @@ def _ensure_private_dir(path: str) -> None:
 
 
 def _write_private_json(path: str, payload: dict) -> None:
-    """Write JSON to a file created owner-only (0600); pre-existing files keep their mode."""
+    """Write JSON to a file created owner-only (0600); pre-existing files keep their mode.
+
+    Underscored but NOT private: imported by ``artifacts`` and ``calibration_store``, always
+    paired with :func:`_ensure_private_dir`.
+    """
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False, default=str)
@@ -106,15 +126,34 @@ def new_run_id(config_hash: str | None = None) -> str:
     return f"run-{ts}-{suffix}-{rand}" if suffix else f"run-{ts}-{rand}"
 
 
+def record_path(run_id: str) -> str | None:
+    """The file a run record occupies, or ``None`` when the id cannot safely name one.
+
+    One place builds this path, so ``load`` and ``save`` cannot disagree about which ids are
+    allowed to steer it.
+    """
+    return os.path.join(runs_dir(), f"{run_id}.json") if run_id and _SAFE_RUN_ID.match(str(run_id)) else None
+
+
 def save(record: RunRecord) -> str:
     """Persist a run record as JSON and index it; returns the path.
 
     The JSON is the source of truth; the SQLite index is a rebuildable cache, so a failure
     to index is swallowed rather than losing the record.
+
+    Raises rather than silently relocating a record whose id could steer the path. Nothing
+    reaches here with a caller-chosen id today -- ``verbs._record_run`` passes what
+    ``new_run_id`` produced -- so this guards the invariant rather than a live route.
     """
     directory = runs_dir()
+    path = record_path(record.run_id)
+    if path is None:
+        msg = (
+            f"run_id {record.run_id!r} cannot name a record file; expected the shape "
+            f"new_run_id() produces (letters, digits, '.', '_', '-')"
+        )
+        raise ValueError(msg)
     _ensure_private_dir(directory)
-    path = os.path.join(directory, f"{record.run_id}.json")
     _write_private_json(path, record.to_dict())
     with contextlib.suppress(Exception):  # the index is a cache; never fail a save over it
         from nemo_curator.audio_agent import run_index
@@ -124,9 +163,13 @@ def save(record: RunRecord) -> str:
 
 
 def load(run_id: str) -> RunRecord | None:
-    """Load a run record by id, or None if it doesn't exist / can't parse."""
-    path = os.path.join(runs_dir(), f"{run_id}.json")
-    if not os.path.isfile(path):
+    """Load a run record by id, or None if the id is unusable / it doesn't exist / can't parse.
+
+    An id that could steer the path out of the runs directory reads as "no such record", which
+    is what it is: the store holds records under ids it issued, and nothing else is one.
+    """
+    path = record_path(run_id)
+    if path is None or not os.path.isfile(path):
         return None
     try:
         with open(path, encoding="utf-8") as f:

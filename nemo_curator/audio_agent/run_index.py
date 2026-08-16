@@ -167,7 +167,13 @@ def index_run(record: RunRecord) -> bool:
 
 
 def probe_step(step_key: str) -> dict[str, Any] | None:
-    """O(1) "has this step been done?" -- the hot path of every reuse scan."""
+    """O(1) "has this step been done?", for a caller that wants the answer without the record.
+
+    Not what the reuse scan uses: ``reuse.scan`` goes through ``artifacts.lookup``, which must
+    read the JSON record anyway to decide validity (marker, digest, dataset, code version), so
+    it would pay for the row and then discard it. This stays because the index is the cheaper
+    answer whenever existence alone is the question.
+    """
     with _db() as conn:
         if conn is None:
             return None
@@ -337,7 +343,14 @@ def _find_runs_in_json(
             continue
         if semantic_hash and record.semantic_hash != semantic_hash:
             continue
-        if since and record.created_at < since:
+        # ``str(... or "")`` for the same reason the sort below already does it: the record on
+        # disk can carry an explicit null, and ``RunRecord.from_dict`` keeps whatever the file
+        # holds rather than the declared ``str`` default. Comparing that to ``since`` raised
+        # TypeError out of the JSON scan -- the leg that runs precisely when the SQLite cache is
+        # unavailable or disagrees, so the degraded path was the fragile one. An absent
+        # timestamp now sorts and filters as "", which is what SQLite already does with NULL:
+        # excluded from a ``since`` window, and both legs keep answering alike.
+        if since and str(record.created_at or "") < since:
             continue
         rows.append(
             {
@@ -383,7 +396,8 @@ def _find_artifacts_in_json(
         for artifact in art_mod.list_artifacts()
         if (not dataset_key or artifact.dataset_key == dataset_key)
         and (not stage_ref or artifact.stage_ref == stage_ref)
-        and (not since or artifact.created_at >= since)
+        # Same null-timestamp coercion as the run scan above, and as this function's own sort.
+        and (not since or str(artifact.created_at or "") >= since)
     ]
     rows.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
     return _bounded(rows, limit)
