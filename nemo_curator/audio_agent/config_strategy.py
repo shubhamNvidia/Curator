@@ -171,9 +171,11 @@ def resolve_from_data(
 ) -> dict[str, Any]:
     """Path B: bind the parameters the DATA determines, for one stage.
 
-    Path A maps a user's *outcome* to a value via the card. This is its counterpart: values
-    that are not a matter of preference at all because the dataset already fixes them --
-    which column holds the audio path, and what rate that audio actually is.
+    Path A maps a user's *outcome* to a value via the card. This is its counterpart: a value
+    that is not a matter of preference at all because the dataset already fixes it -- the rate
+    the audio actually is. Deliberately NOT which column holds the audio path: that is the
+    caller's contract to state, and guessing it would mean curating the wrong field on some
+    dataset (see :func:`verbs.resolve`).
 
     Deliberately configures the STAGE rather than changing any stage default: the defaults
     are what the tutorials and hand-written pipelines rely on, and an agent that rewrites

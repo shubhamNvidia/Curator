@@ -241,7 +241,7 @@ Before the detail — **know what kind of code you are looking at**:
 | **Knowledge / documentation** | `knowledge/**`, `recipes/**`, `SKILL.md`, `AGENTS.md` ×2, `ENVIRONMENT.md`, `REUSE_ARCHITECTURE.md`, `AGENT_READY.md`, `CARD_SCHEMA.md`, `.cursor/rules/*.mdc` |
 | **Test-only** | `tests/audio_agent/**`, `tests/stages/audio/test_agent_*.py` |
 | **Evaluation harness** (not shipped, not tests) | `eval/audio/**` |
-| **Experimental / opt-in** | `simulate_user.py` (persona simulation, needs an API key + GPU), the `data_driven` flag in `config_strategy.py` (Path B, deliberately not implemented) |
+| **Experimental / opt-in** | `simulate_user.py` (persona simulation, needs an API key + GPU) |
 | **Possibly redundant — see §3.9** | `continuation.plan_continuation` (older reuse engine, kept alongside the newer `reuse.scan`), `PlanResult` in `contracts.py` |
 | **Local runtime output (gitignored)** | `.audio_agent_runs/` |
 | **Untracked scratch** | root-level `curate_demo_recipe.yaml`, `single_speaker_16k_asr*.yaml` — real recipes from manual sessions, not part of the shipped package |
@@ -1779,7 +1779,7 @@ Stated plainly, because you asked me not to assume every file is necessary.
 | **`manifest_reader.yaml` + `manifest_reader_stage.yaml`** | **Not duplication.** `ManifestReader` is the composite; `ManifestReaderStage` is its inner reader. Both are separately selectable, so both need cards. |
 | **`verbs.py` at 4,099 lines** | Justified as one gate implementation, but `run` and `smoke` are each several hundred lines with many early returns. The honest refactor is extracting the shared preamble (safety → binding → profile → build → preflight). |
 | **`_load_dir` swallows YAML errors** | A malformed card **silently vanishes** rather than failing discovery. The right trade-off for robustness, but it means a typo produces "this stage has no card facts" with no error. Run `card_conformance` — that is what it is for. |
-| **`config_strategy` Path B (`data_driven`)** | **Deliberately unimplemented.** A relative goal returns an `ask` rather than a guess. Not dead code — an explicit, documented boundary. |
+| **`config_strategy` Path B** | Implemented as `resolve_from_data`, reached by passing `data` to `resolve`. Bounded on purpose: it binds only what the dataset genuinely fixes (the observed sample rate). Anything ambiguous — mixed rates, which column holds the audio — returns an `ask` rather than a guess. It used to need a separate `data_driven=True` as well, from when data context was optional; that flag is gone. |
 | **`eval/audio/simulate_user.py` (576 lines)** | Persona-driven end-to-end simulation, opt-in behind `--sim`, needs an API key and a GPU. Legitimate but rarely exercised; treat as experimental. |
 | **Root-level `curate_demo_recipe.yaml`, `single_speaker_16k_asr*.yaml`** | Untracked working files from manual sessions. Useful as real examples; not part of the package. Move to `tutorials/` or delete. |
 | **Composite depth/leaf caps (8 / 512) in `semantic_review`** | Magic numbers with no named constant explanation. Fine in practice; worth a comment saying why those values. |

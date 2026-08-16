@@ -22,7 +22,7 @@ from types import SimpleNamespace
 import yaml
 
 from nemo_curator import audio_agent as aa
-from nemo_curator.audio_agent import cli, run_store, verbs
+from nemo_curator.audio_agent import _safety, cli, run_store, verbs
 from nemo_curator.audio_agent.recipe import Recipe
 from nemo_curator.audio_agent.report import _row_count
 
@@ -743,7 +743,7 @@ class TestDataInformedConfig:
         """MonoConversion VERIFIES the rate and drops non-matching rows; its 48 kHz default
         would silently discard a 16 kHz corpus."""
         manifest = self._manifest(tmp_path, "nemo.jsonl", {"audio_filepath": "@wav", "text": "hi"})
-        result = aa.resolve("MonoConversionStage", data_driven=True, data=manifest)
+        result = aa.resolve("MonoConversionStage", data=manifest)
         assert result["params"]["output_sample_rate"] == 16000
         assert result["asks"] == []
 
@@ -752,14 +752,14 @@ class TestDataInformedConfig:
         import numpy as np
         import soundfile as sf
         sf.write(str(tmp_path / "a.wav"), np.zeros(16000, dtype="float32"), 16000)
-        result = aa.resolve("MonoConversionStage", data_driven=True, data=str(tmp_path))
+        result = aa.resolve("MonoConversionStage", data=str(tmp_path))
         assert result["params"]["output_sample_rate"] == 16000
         assert result["asks"] == []
 
     def test_an_explicit_value_outranks_the_inferred_one(self, tmp_path) -> None:
         manifest = self._manifest(tmp_path, "nemo.jsonl", {"audio_filepath": "@wav", "text": "hi"})
         result = aa.resolve(
-            "MonoConversionStage", explicit={"output_sample_rate": 48000}, data_driven=True, data=manifest
+            "MonoConversionStage", explicit={"output_sample_rate": 48000}, data=manifest
         )
         assert result["params"]["output_sample_rate"] == 48000
 
@@ -771,7 +771,7 @@ class TestDataInformedConfig:
         """
         manifest = self._manifest(tmp_path, "nemo.jsonl", {"audio_filepath": "@wav", "text": "hi"})
         result = aa.resolve(
-            "MonoConversionStage", explicit={"output_sample_rate": 48000}, data_driven=True, data=manifest
+            "MonoConversionStage", explicit={"output_sample_rate": 48000}, data=manifest
         )
         rate_entries = [e for e in result["strategy"] if e["param"] == "output_sample_rate"]
         assert [e["value"] for e in rate_entries] == [48000]
@@ -780,7 +780,7 @@ class TestDataInformedConfig:
         """A data-derived value must be stamped so a different dataset recomputes it."""
         manifest = self._manifest(tmp_path, "nemo.jsonl", {"audio_filepath": "@wav", "text": "hi"})
         entry = next(
-            e for e in aa.resolve("MonoConversionStage", data_driven=True, data=manifest)["strategy"]
+            e for e in aa.resolve("MonoConversionStage", data=manifest)["strategy"]
             if e["param"] == "output_sample_rate"
         )
         assert entry["mode"] == "data_informed"
@@ -788,6 +788,21 @@ class TestDataInformedConfig:
 
     def test_path_a_alone_is_unchanged(self) -> None:
         assert aa.resolve("UTMOSFilterStage", label="studio")["params"] == {"mos_threshold": 4.0}
+
+    def test_a_dataset_outside_the_workspace_is_refused_like_every_other_verb(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """``resolve`` profiles ``data`` off the filesystem, so it owes the same lock the
+        other data-taking verbs enforce. It was the one verb without the check -- harmless
+        only while no adapter could pass ``data``, and a hole the moment one could."""
+        outside = self._manifest(tmp_path, "nemo.jsonl", {"audio_filepath": "@wav", "text": "hi"})
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(workspace))
+        result = aa.resolve("MonoConversionStage", data=outside)
+        assert result["status"] == "refused"
+        assert "outside the allowed workspace" in result["reason"]
+        assert "params" not in result
 
     def test_a_profile_that_read_no_audio_says_so(self, tmp_path) -> None:
         """An empty audio profile must not be mistaken for a healthy one."""

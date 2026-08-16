@@ -68,9 +68,11 @@ from nemo_curator.audio_agent.report import (
 _EVIDENCE_ROWS = 2000
 
 # Smoke runs exercise real write behavior, but only inside an ephemeral tree.
-# ``raw_data_dir`` is deliberately excluded: for dataset sources it is execution
-# input as well as an acquisition destination, so generated sources are refused
-# and pre-staged roots remain read-only.
+# The ``raw_data_dir`` subtraction is defensive rather than active: that param is not in
+# ``OUTPUT_LOCATION_PARAMS`` today, so it removes nothing. It stays because if the set ever
+# grows to cover it, redirecting it would be wrong -- for a dataset source it is execution
+# INPUT as well as an acquisition destination, and smoke refuses generated sources outright
+# instead (``_bound_recipe``), keeping pre-staged roots read-only.
 _SMOKE_FILE_OUTPUT_PARAMS = frozenset(
     {"output_path", "output_manifest", "output_audio_tar_path"}
 )
@@ -831,7 +833,6 @@ def resolve(
     label: str | None = None,
     use_case: str | None = None,
     explicit: dict[str, Any] | None = None,
-    data_driven: bool = False,
     data: str | None = None,
 ) -> dict[str, Any]:
     """Resolve an outcome to concrete stage config via the card (1A.2).
@@ -842,11 +843,16 @@ def resolve(
     auditable ``strategy`` trail. Keeps internal thresholds out of user questions
     and never invents a number.
 
-    Path B (``data_driven`` with ``data``) adds the values the DATASET fixes rather than
-    the user — currently the rate the audio actually is. It configures the stage for this
-    recipe and never changes a stage default, so hand-written pipelines and tutorials are
-    unaffected. Ambiguity comes back as an ``ask``: mixed sample rates are a question for
-    the user rather than something to guess at.
+    Path B (passing ``data``) adds the values the DATASET fixes rather than the user —
+    currently the rate the audio actually is. It configures the stage for this recipe and
+    never changes a stage default, so hand-written pipelines and tutorials are unaffected.
+    Ambiguity comes back as an ``ask``: mixed sample rates are a question for the user
+    rather than something to guess at.
+
+    Supplying ``data`` IS the request for Path B. It used to need a separate
+    ``data_driven=True`` alongside it, from when data context was optional; every other
+    data-taking verb now resolves and profiles its source on its own, and the second flag
+    only ever meant that a caller who passed one without the other silently got nothing.
 
     It does NOT infer which column holds the audio. ``audio_filepath`` is the NeMo manifest
     key, and supplying a manifest in that format is the caller's responsibility; a source
@@ -859,8 +865,18 @@ def resolve(
     result = config_strategy.resolve(
         stage, label=label, use_case=use_case, explicit=explicit
     )
-    if not (data_driven and data):
+    if not data:
         return result
+    # Held to the same workspace lock as every other verb that is handed a dataset path.
+    # This one profiles ``data`` off the filesystem too, and was the only such verb without
+    # the check -- unreachable while no adapter passed ``data``, and a hole the moment one did.
+    pviol = _safety.path_violations([data])
+    if pviol:
+        return {
+            "status": "refused",
+            "reason": "path(s) resolve outside the allowed workspace",
+            "violations": pviol,
+        }
     profile: dict[str, Any] | None = None
     with contextlib.suppress(Exception):  # a source we cannot profile simply adds nothing
         profile = profile_data(data).to_dict()
@@ -2105,7 +2121,15 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
     from nemo_curator.audio_agent import run_store
 
     run_id = run_store.new_run_id(rec.config_hash)
-    roles, keys = _produced_roles_keys(stages, data_profile)
+    # Declared before the derivation below so that one can report its own failure through the
+    # same channel the publication step already uses, rather than returning empty in silence.
+    provenance: dict[str, Any] = {
+        "run_record_persisted": False,
+        "artifacts_published": 0,
+        "warnings": [],
+    }
+    persistence_warnings: list[str] = provenance["warnings"]
+    roles, keys = _produced_roles_keys(stages, data_profile, warnings=persistence_warnings)
     acceptance_result = _acceptance_result(
         rec,
         report_obj,
@@ -2114,12 +2138,6 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
         list(getattr(report_obj, "output_paths", []) or []),
         output_scan=output_scan,
     )
-    provenance: dict[str, Any] = {
-        "run_record_persisted": False,
-        "artifacts_published": 0,
-        "warnings": [],
-    }
-    persistence_warnings: list[str] = provenance["warnings"]
     published: list[dict[str, Any]] = []
     if not failures:
         # Only a run that completed may publish: a crashed run's partial output must never
@@ -2218,11 +2236,28 @@ def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def _produced_roles_keys(stages: list[Any], data_profile: dict[str, Any] | None) -> tuple[list[str], list[str]]:
+def _produced_roles_keys(
+    stages: list[Any],
+    data_profile: dict[str, Any] | None,
+    *,
+    warnings: list[str] | None = None,
+) -> tuple[list[str], list[str]]:
     """Cumulative semantic roles + literal keys the built pipeline produces.
 
     Same derivation the resume-safety guard uses, so an artifact advertises exactly the roles
     a later suffix will be re-validated against.
+
+    A failure still returns ``([], [])`` -- provenance detail is never worth failing a completed
+    run over -- but it now SAYS so through ``warnings``. Empty and unknown are indistinguishable
+    downstream: ``acceptance._completeness`` reads an empty declared set as "no producer
+    evidence" and reports the vaguer of two true-ish answers, so a catalogue-wide contract
+    failure would quietly cost every acceptance message its precision with nothing anywhere
+    recording that the derivation broke.
+
+    Note this is NOT the artifact's ``produced_roles``: ``_publish_artifacts`` derives those
+    itself, seeded from ``_derive_initial`` and suppressing failures per stage, so one
+    unreadable contract cannot empty them. What this feeds is the run record and the acceptance
+    evidence.
     """
     try:
         from nemo_curator.stages.audio import agent as foundation
@@ -2235,7 +2270,12 @@ def _produced_roles_keys(stages: list[Any], data_profile: dict[str, Any] | None)
             keys |= set(c.writes.data_keys) | set(c.writes.segment_data_keys)
         roles.discard("unknown")
         return sorted(roles), sorted(keys)
-    except Exception:  # noqa: BLE001 - provenance detail, never worth failing a completed run
+    except Exception as exc:  # noqa: BLE001 - provenance detail, never worth failing a completed run
+        if warnings is not None:
+            warnings.append(
+                "produced roles/keys could not be derived, so the run record and the acceptance "
+                f"evidence report none rather than unknown: {type(exc).__name__}: {exc}"
+            )
         return [], []
 
 
@@ -2927,7 +2967,10 @@ def runs(
                 ),
             }
         )
-    return {"runs": run_store.list_runs()}
+    # ``limit`` applies here too. The filtered branch above has always honoured it while this one
+    # returned every record ever written, so the argument silently meant different things
+    # depending on whether a filter happened to be supplied.
+    return {"runs": run_store.list_runs()[: int(limit)] if int(limit) >= 0 else run_store.list_runs()}
 
 
 def _dataset_key_arg(data: str) -> str:
@@ -2940,12 +2983,21 @@ def _dataset_key_arg(data: str) -> str:
 
 
 def reindex() -> dict[str, Any]:
-    """Rebuild the run/artifact index from the JSON records.
+    """Rebuild the run/artifact index from the JSON records, and drop the knowledge cache.
 
     The index is a cache; the JSON records are the source of truth. Run this after moving,
     pruning, or hand-editing ``.audio_agent_runs/``.
+
+    The knowledge index is a second cache, held for the life of the process because the YAML is
+    static (``index.get_index`` is ``lru_cache``d). That is right for a run, and a trap for the
+    person editing a card: their change was invisible until a restart, from the one verb whose
+    name promises otherwise. Clearing it here costs a re-read of the card directory on the next
+    call and makes ``reindex`` mean what it says.
     """
     from nemo_curator.audio_agent import run_index
+    from nemo_curator.audio_agent.index import get_index
+
+    get_index.cache_clear()
 
     return run_index.reindex()
 
@@ -3030,6 +3082,13 @@ def _attach_delta(result: dict[str, Any], rec: Recipe, dp: Any) -> None:  # noqa
         return
     change = decision.change
     result.update(
+        # The key really did miss. But "fresh" is the one word a host reads as "recompute
+        # everything", and one did exactly that on a single-file addition -- recurating three
+        # files and reporting a checkpoint was missing -- while `recommended: delta` sat two
+        # fields away unread. `decision` names the cheapest correct action; the miss it rests
+        # on stays visible in `key_matched` and in the rationale below, so nothing is hidden.
+        decision="delta",
+        key_matched=False,
         recommended="delta",
         prompt_user=True,
         estimated_saving_sec=decision.estimated_saving_sec,
@@ -3168,7 +3227,11 @@ def delta_run(  # noqa: PLR0913 - the same execution knobs as run(), which it de
     if decision.status != "ready":
         card["next"] = "run the pipeline normally; a delta is not available for this input"
         return _safety.redact(card)
-    if confirm is not True and confirm != rec.config_hash:
+    # Same two-step shape ``run`` uses, for the same reason: gating on the hash comparison alone
+    # is correct today (None/0/[]/{} all differ from it), but it is one edit away from not being.
+    # ``run`` was hardened after a JSON-RPC ``confirm: null`` slipped through a single expression;
+    # a security-relevant idiom should not have two spellings in one file.
+    if confirm is not True and not (isinstance(confirm, str) and confirm == rec.config_hash):
         card.update(
             status="refused",
             reason=(
@@ -3194,6 +3257,47 @@ def delta_run(  # noqa: PLR0913 - the same execution knobs as run(), which it de
     )
 
 
+def _carry_approval(
+    approved: Recipe,
+    derived: Recipe,
+    *,
+    confirm: bool | str,
+    smoke_token: str | None,
+) -> tuple[bool | str, str | None, str]:
+    """Carry an approval given for ``approved`` onto the ``derived`` recipe that actually runs.
+
+    Returns ``(confirm, smoke_token, refusal)``; a non-empty refusal means stop.
+
+    Continuation and delta both execute a recipe THIS module derives -- a reader on the reused
+    artifact plus the tail, or the prefix narrowed to the changed files. Its ``config_hash`` is
+    one no human has ever seen, and holding the caller's evidence against it made both gates
+    unsatisfiable rather than strict: ``continue --confirm <hash>`` (the form ``AGENTS.md``
+    documents) was always refused, and under ``AUDIO_AGENT_REQUIRE_SMOKE`` no ``delta_run``
+    could succeed at all, because the surface exposes no way to smoke a prefix recipe.
+
+    The gate exists to bind INTENT. What the user read and approved is ``approved``; ``derived``
+    is a deterministic function of it plus an artifact already verified against the registry, so
+    the honest check is the human's evidence against the human's recipe -- after which the
+    derived recipe may carry its own. This does not widen the gate: an unconfirmed call is left
+    for ``run`` to refuse exactly as before, and a wrong hash or a missing/forged token still
+    stops here.
+    """
+    # Not confirmed at all: let ``run`` answer, so its refusal keeps the scale estimate.
+    if confirm is not True and not isinstance(confirm, str):
+        return confirm, smoke_token, ""
+    if isinstance(confirm, str) and confirm != approved.config_hash:
+        return confirm, smoke_token, (
+            "plan-execution integrity check failed: confirmed hash does not match the recipe"
+        )
+    if _safety.require_smoke() and not _safety.verify_smoke_token(smoke_token, approved.config_hash):
+        return confirm, smoke_token, (
+            "run requires smoke evidence (AUDIO_AGENT_REQUIRE_SMOKE is set): run smoke on this "
+            "recipe and pass its 'smoke_token'"
+        )
+    carried = derived.config_hash if isinstance(confirm, str) else confirm
+    return carried, _safety.smoke_token(derived.config_hash), ""
+
+
 def _execute_delta(  # noqa: PLR0913 - forwards run()'s knobs and the plan it executes
     rec: Recipe,
     decision: Any,  # noqa: ANN401 - delta.Delta without an eager import
@@ -3208,9 +3312,6 @@ def _execute_delta(  # noqa: PLR0913 - forwards run()'s knobs and the plan it ex
     goal: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Run the changed files, merge, republish. Any failure leaves the prior result untouched."""
-    import shutil
-    import time
-
     from nemo_curator.audio_agent import delta as _delta
 
     sandbox = os.path.join(os.path.dirname(os.path.expanduser(decision.uri)), ".audio_agent_delta")
@@ -3224,6 +3325,14 @@ def _execute_delta(  # noqa: PLR0913 - forwards run()'s knobs and the plan it ex
     )
     if prefix_rec is None:
         return {**card, "status": "no_delta", "reason": err}
+    # ``delta_run`` already held the caller's ``confirm`` to this recipe, so the approval is
+    # established; what remains is to re-anchor it onto the prefix recipe that executes. Done
+    # BEFORE the sandbox exists, so a refusal leaves nothing behind to clean up.
+    inner_confirm, inner_token, refusal = _carry_approval(
+        rec, prefix_rec, confirm=rec.config_hash, smoke_token=smoke_token
+    )
+    if refusal:
+        return {**card, "status": "refused", "reason": refusal}
     try:
         os.makedirs(sandbox, exist_ok=True)
     except OSError as exc:
@@ -3234,11 +3343,11 @@ def _execute_delta(  # noqa: PLR0913 - forwards run()'s knobs and the plan it ex
     if decision.files:
         inner = run(
             prefix_rec,
-            confirm=prefix_rec.config_hash,
+            confirm=inner_confirm,
             data=data,
             executor=executor,
             bootstrap_ray=bootstrap_ray,
-            smoke_token=smoke_token,
+            smoke_token=inner_token,
             calibration=calibration,
             goal=goal,
         )
@@ -3623,56 +3732,42 @@ def _execute_plan(  # noqa: PLR0913 - executing a plan needs the plan's whole co
             },
             redact_transcripts=False,
         )
+    inner_confirm, inner_token, refusal = _carry_approval(
+        rec, materialized, confirm=confirm, smoke_token=smoke_token
+    )
+    if refusal:
+        return _safety.redact(
+            {
+                "status": "refused",
+                "reason": refusal,
+                "confirm_with": f"pass confirm={rec.config_hash!r} (or confirm=True) to proceed",
+                "recipe": materialized.to_dict(),
+                "plan": plan,
+            },
+            redact_transcripts=False,
+        )
     result = run(
         materialized,
-        confirm=confirm,
+        confirm=inner_confirm,
         data=None,
         output_dir=output_dir,
         checkpoint_path=checkpoint_path,
         bootstrap_ray=bootstrap_ray,
-        smoke_token=smoke_token,
+        smoke_token=inner_token,
         calibration=calibration,
         goal=goal, reuse={**lineage, "reused": plan.get("reuse_stages", []), "reused_from": point.get("uri")},
         _continuation_context=_continuation_context_from_plan(rec, plan),
     )
+    # An unconfirmed call is still refused by ``run`` (unchanged), but its advice names the
+    # DERIVED hash -- which the user never saw and cannot meaningfully approve. Name theirs.
+    if result.get("status") == "refused" and result.get("confirm_with"):
+        result["confirm_with"] = f"pass confirm={rec.config_hash!r} (or confirm=True) to proceed"
     result["recipe"] = _safety.redact(
         materialized.to_dict(),
         redact_transcripts=False,
     )
     result["plan"] = _safety.redact(plan, redact_transcripts=False)
     return _safety.redact(result)
-
-
-def _logical_chain(rec: Recipe, *, dataset_key: str) -> list[str] | None:
-    """Every step key of the recipe the user asked for, reused prefix included.
-
-    What a continued run DELIVERED is the whole requested pipeline, even though it only executed
-    the tail, so that is what the record should describe. Recording the rewritten recipe's keys
-    instead left the run matching nothing a later request could ask about.
-    """
-    if not dataset_key:
-        return None
-    return _step_keys(rec, dataset_key) or None
-
-
-def _logical_identity(rec: Recipe, plan: dict[str, Any], *, dataset_key: str) -> list[tuple[str, str, int]] | None:
-    """Step keys of the recipe the USER asked for, aligned to the materialized stages.
-
-    The materialized recipe is ``[reader on the artifact] + rec.stages[prefix:]``, so its own
-    keys describe a pipeline nobody asked for. Publishing the tail under the logical keys is
-    what makes the *same* follow-up request come back ``already_done`` instead of recomputing
-    the tail forever.
-    """
-    from nemo_curator.audio_agent import artifacts as art_mod
-
-    prefix = int((plan.get("reuse_point") or {}).get("stage_index", -1)) + 1
-    if not dataset_key or prefix <= 0:
-        return None
-    try:
-        plans = art_mod.plan_steps(rec, dataset_key)
-    except Exception:  # noqa: BLE001 - identity is an optimization; never fail the run over it
-        return None
-    return [(p.step_key, p.input_key, p.index) for p in plans[prefix - 1 :]]
 
 
 def _declared_output(rec: Recipe) -> str:
@@ -4006,7 +4101,8 @@ def _names_its_own_target(path: str, source_entry: str) -> bool:
     try:
         if os.path.getsize(path) > 4096:  # noqa: PLR2004 - a path, not a document
             return False
-        text = open(path, encoding="utf-8", errors="strict").read().strip()  # noqa: SIM115
+        with open(path, encoding="utf-8", errors="strict") as handle:
+            text = handle.read().strip()
     except (OSError, UnicodeDecodeError):
         return False
     return bool(text) and "\n" not in text and os.path.basename(text) == os.path.basename(source_entry)
@@ -4292,6 +4388,12 @@ def _adapt_resource_plan_for_target(
             "custom executor owns scheduling; capacity is verified by its bounded execution"
         )
         return
+    # Dormant by design, not by oversight: the planner currently reports unknown VRAM as a
+    # NOTE and never escalates on it ("VRAM is intentionally NOT escalated here" --
+    # ``planner.py``), so no live plan reaches this with such an escalation. It stays because
+    # the rule it encodes outlives that choice: a bounded smoke is how VRAM gets MEASURED on a
+    # remote cluster, so refusing the smoke for want of the measurement would close the only
+    # door to it. A run is a different matter and still escalates.
     unknown_vram = [
         item
         for item in escalations
@@ -4441,8 +4543,6 @@ def _bound_recipe(
     refused before stage construction. The original recipe and every stage default
     remain untouched.
     """
-    import copy
-
     bounded = copy.deepcopy(recipe)
     if not bounded.stages:
         return _SmokeBound(None, error="recipe has no source stage")
@@ -5012,12 +5112,6 @@ def _locate_manifest_files(
         return None, [], "unreadable"
 
 
-def _manifest_files(output: str) -> list[str]:
-    """Filesystem-relative JSON/JSONL paths found at ``output``."""
-    _fs, files, _status = _locate_manifest_files(output)
-    return files
-
-
 def _scan_output_inventory(output: str) -> dict[str, Any]:
     """Inventory a non-manifest file/directory without claiming row evidence."""
     summary: dict[str, Any] = {
@@ -5078,17 +5172,6 @@ def _count_output_rows(output: str) -> int:
         except Exception:  # noqa: BLE001 - output inventory is best-effort
             continue
     return total
-
-
-def _row_evidence(outputs: list[str], *, limit: int = _EVIDENCE_ROWS) -> list[dict[str, Any]]:
-    """Bounded preview rows from the terminal output only.
-
-    Full acceptance coverage comes from the summary returned by
-    :func:`_scan_terminal_output`; this compatibility helper intentionally keeps
-    only the first ``limit`` valid rows in memory.
-    """
-    rows, _summary = _scan_terminal_output(outputs, limit=limit)
-    return rows
 
 
 def _scan_terminal_output(  # noqa: C901, PLR0912, PLR0915 - streaming evidence states

@@ -286,6 +286,8 @@ def _check_reuse(query: dict) -> tuple[bool, str]:
         "run_stages": scan.get("run_stages", []),
         "prompt_user": scan["prompt_user"],
         "recommended": scan["recommended"],
+        # Absent on every decision but ``delta``, where it records the miss the decision rests on.
+        "key_matched": scan.get("key_matched"),
         "artifact_count": n_artifacts,
         "delta_status": delta.get("status", "absent"),
         "delta_files": delta.get("file_count", 0),
@@ -480,8 +482,8 @@ def _check(query: dict) -> tuple[bool | None, str, str]:  # noqa: C901 - one lin
 
 
 def _card_conformance_preflight() -> tuple[bool, str]:
-    """Card <-> stage conformance: fail on drift (bad params / preset / model_version)
-    or orphan cards; coverage gaps (uncarded stages) are reported, not failed."""
+    """Card <-> stage conformance: fail on drift (bad params / preset) or orphan cards;
+    coverage gaps (uncarded stages) are reported, not failed."""
     from nemo_curator.audio_agent.card_conformance import audit
 
     a = audit()
