@@ -2601,7 +2601,7 @@
   },
   "execution": null,
   "grade": {
-    "overall": "pass",
+    "overall": "fail",
     "dimensions": {
       "success": {
         "pass": true,
@@ -2612,14 +2612,34 @@
         "note": "module set matches"
       },
       "validity": {
-        "pass": true,
-        "note": "status=pass runnable=True"
+        "pass": false,
+        "note": "status=fail runnable=False"
       },
       "ordering": {
         "pass": true,
         "note": "GetAudioDurationStage->PreserveByValueStage: ok"
       }
     },
-    "findings": []
+    "findings": [
+      {
+        "id": "Px_filter_after_metric::validate",
+        "source": "Px_filter_after_metric",
+        "stage": "validate",
+        "category": "Pipeline validation failure",
+        "severity": "P1",
+        "what_happened": "agent recipe does not validate: ['composite', 'data_source_missing']",
+        "evidence": {
+          "recipe": [
+            "ManifestReader",
+            "GetAudioDurationStage",
+            "PreserveByValueStage",
+            "ManifestWriterStage"
+          ],
+          "outcome": "recipe"
+        },
+        "suggested_fix": "fix ordering/keys/params so validate passes",
+        "status": "open"
+      }
+    ]
   }
 }

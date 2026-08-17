@@ -4340,7 +4340,7 @@
     "verify_overall": "met"
   },
   "grade": {
-    "overall": "pass",
+    "overall": "fail",
     "dimensions": {
       "success": {
         "pass": true,
@@ -4351,8 +4351,8 @@
         "note": "module set matches"
       },
       "validity": {
-        "pass": true,
-        "note": "status=uncertain runnable=True"
+        "pass": false,
+        "note": "status=fail runnable=False"
       },
       "ordering": {
         "pass": true,
@@ -4363,6 +4363,27 @@
         "note": "status=completed accepted=8/12"
       }
     },
-    "findings": []
+    "findings": [
+      {
+        "id": "L02_transcribe_wer::validate",
+        "source": "L02_transcribe_wer",
+        "stage": "validate",
+        "category": "Pipeline validation failure",
+        "severity": "P1",
+        "what_happened": "agent recipe does not validate: ['composite', 'data_source_missing', 'internet_first_run', 'unsatisfied_reads_after_composite']",
+        "evidence": {
+          "recipe": [
+            "ManifestReader",
+            "InferenceAsrNemoStage",
+            "GetPairwiseWerStage",
+            "PreserveByValueStage",
+            "ManifestWriterStage"
+          ],
+          "outcome": "recipe"
+        },
+        "suggested_fix": "fix ordering/keys/params so validate passes",
+        "status": "open"
+      }
+    ]
   }
 }

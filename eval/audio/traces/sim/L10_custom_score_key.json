@@ -2904,16 +2904,12 @@
         "note": "outcome=recipe (wanted a recipe)"
       },
       "modules": {
-        "pass": false,
-        "note": "no member of 'filter' (['PreserveByValueStage'])"
+        "pass": true,
+        "note": "module set matches"
       },
       "validity": {
-        "pass": true,
-        "note": "status=pass runnable=True"
-      },
-      "ordering": {
-        "pass": true,
-        "note": "quality->filter: n/a (a stage absent)"
+        "pass": false,
+        "note": "status=fail runnable=False"
       },
       "execution": {
         "pass": true,
@@ -2922,12 +2918,12 @@
     },
     "findings": [
       {
-        "id": "L10_custom_score_key::select",
+        "id": "L10_custom_score_key::validate",
         "source": "L10_custom_score_key",
-        "stage": "select",
-        "category": "Incorrect module selection",
+        "stage": "validate",
+        "category": "Pipeline validation failure",
         "severity": "P1",
-        "what_happened": "no member of 'filter' (['PreserveByValueStage'])",
+        "what_happened": "agent recipe does not validate: ['composite', 'data_source_missing', 'internet_first_run']",
         "evidence": {
           "recipe": [
             "ManifestReader",
@@ -2936,7 +2932,7 @@
           ],
           "outcome": "recipe"
         },
-        "suggested_fix": "select the capability that produces the requested output",
+        "suggested_fix": "fix ordering/keys/params so validate passes",
         "status": "open"
       }
     ]

@@ -3431,7 +3431,7 @@
     "verify_overall": "met"
   },
   "grade": {
-    "overall": "pass",
+    "overall": "fail",
     "dimensions": {
       "success": {
         "pass": true,
@@ -3442,14 +3442,33 @@
         "note": "module set matches"
       },
       "validity": {
-        "pass": true,
-        "note": "status=pass runnable=True"
+        "pass": false,
+        "note": "status=fail runnable=False"
       },
       "execution": {
         "pass": true,
         "note": "status=completed accepted=1/12"
       }
     },
-    "findings": []
+    "findings": [
+      {
+        "id": "L07_quality_choice::validate",
+        "source": "L07_quality_choice",
+        "stage": "validate",
+        "category": "Pipeline validation failure",
+        "severity": "P1",
+        "what_happened": "agent recipe does not validate: ['composite', 'data_source_missing', 'internet_first_run']",
+        "evidence": {
+          "recipe": [
+            "ManifestReader",
+            "UTMOSFilterStage",
+            "ManifestWriterStage"
+          ],
+          "outcome": "recipe"
+        },
+        "suggested_fix": "fix ordering/keys/params so validate passes",
+        "status": "open"
+      }
+    ]
   }
 }

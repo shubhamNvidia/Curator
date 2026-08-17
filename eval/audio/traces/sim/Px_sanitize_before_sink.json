@@ -5062,26 +5062,26 @@
         "note": "outcome=recipe (wanted a recipe)"
       },
       "modules": {
-        "pass": false,
-        "note": "missing AudioToDocumentStage"
+        "pass": true,
+        "note": "module set matches"
       },
       "validity": {
-        "pass": true,
-        "note": "status=pass runnable=True"
+        "pass": false,
+        "note": "status=fail runnable=False"
       },
       "ordering": {
         "pass": true,
-        "note": "AudioToDocumentStage->ManifestWriterStage: n/a (a stage absent)"
+        "note": "AudioToDocumentStage->DocumentBatchJsonlWriterStage: n/a (a stage absent)"
       }
     },
     "findings": [
       {
-        "id": "Px_sanitize_before_sink::select",
+        "id": "Px_sanitize_before_sink::validate",
         "source": "Px_sanitize_before_sink",
-        "stage": "select",
-        "category": "Incorrect module selection",
+        "stage": "validate",
+        "category": "Pipeline validation failure",
         "severity": "P1",
-        "what_happened": "missing AudioToDocumentStage",
+        "what_happened": "agent recipe does not validate: ['composite', 'data_source_missing']",
         "evidence": {
           "recipe": [
             "ManifestReader",
@@ -5089,7 +5089,7 @@
           ],
           "outcome": "recipe"
         },
-        "suggested_fix": "select the capability that produces the requested output",
+        "suggested_fix": "fix ordering/keys/params so validate passes",
         "status": "open"
       }
     ]
