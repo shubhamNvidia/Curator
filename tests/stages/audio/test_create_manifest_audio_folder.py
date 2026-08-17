@@ -38,6 +38,26 @@ class TestCreateInitialManifestAudioFolderStage:
         assert all(t.data["audio_item_id"] for t in tasks)
         assert all(os.path.isabs(t.data["audio_filepath"]) for t in tasks)
 
+    def test_same_filename_in_two_folders_gets_two_ids(self, tmp_path) -> None:
+        root = str(tmp_path)
+        for rel in ["spk1/utt1.wav", "spk2/utt1.wav"]:
+            _touch(root, rel)
+
+        tasks = CreateInitialManifestAudioFolderStage(data_dir=root).process(None)
+        ids = sorted(t.data["audio_item_id"] for t in tasks)
+
+        assert ids == ["spk1__utt1", "spk2__utt1"], ids
+
+    def test_a_flat_folder_keeps_the_plain_ids_it_always_had(self, tmp_path) -> None:
+        """relpath IS the basename for a flat corpus, so those ids must not move."""
+        root = str(tmp_path)
+        for rel in ["a.wav", "b.wav"]:
+            _touch(root, rel)
+
+        tasks = CreateInitialManifestAudioFolderStage(data_dir=root).process(None)
+
+        assert sorted(t.data["audio_item_id"] for t in tasks) == ["a", "b"]
+
     def test_non_recursive_and_max_samples(self, tmp_path) -> None:
         root = str(tmp_path)
         for rel in ["a.wav", "b.wav", "sub/c.wav"]:

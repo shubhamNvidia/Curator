@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -165,15 +166,42 @@ class TestSplitLongAudioStageProcessDatasetEntry:
 
         result = stage.process(task)
 
+        # Under output_dir the stem carries a path hash; see the collision test below.
+        stem = f"recording_{hashlib.sha256(str(source_path).encode()).hexdigest()[:8]}"
         expected_paths = [
-            str(output_dir / "recording.1_of_2.wav"),
-            str(output_dir / "recording.2_of_2.wav"),
+            str(output_dir / f"{stem}.1_of_2.wav"),
+            str(output_dir / f"{stem}.2_of_2.wav"),
         ]
         assert output_dir.is_dir()
         assert saved_paths == expected_paths
         assert result.data["split_filepaths"] == expected_paths
         assert [entry["resampled_audio_filepath"] for entry in result.data["split_metadata"]] == expected_paths
         assert not list(source_dir.glob("recording.*_of_2.wav"))
+
+    def test_two_recordings_sharing_a_basename_do_not_overwrite_each_other(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        audio_task: Callable[..., AudioTask],
+    ) -> None:
+        saved_paths: list[str] = []
+        _patch_audio_io(monkeypatch, saved_paths)
+        output_dir = tmp_path / "chunks"
+
+        for speaker in ("spk1", "spk2"):
+            source_dir = tmp_path / speaker
+            source_dir.mkdir()
+            stage = SplitLongAudioStage(suggested_max_len=5.0, min_len=0.5, output_dir=str(output_dir))
+            stage.process(
+                audio_task(
+                    duration=8.0,
+                    audio_item_id="utt1",
+                    resampled_audio_filepath=str(source_dir / "utt1.wav"),
+                    segments=[{"start": 0.0, "end": 4.0}, {"start": 4.0, "end": 8.0}],
+                )
+            )
+
+        assert len(saved_paths) == len(set(saved_paths)), f"one speaker overwrote the other: {saved_paths}"
 
 
 def test_split_asr_align_join_forwards_output_dir(tmp_path: Path) -> None:

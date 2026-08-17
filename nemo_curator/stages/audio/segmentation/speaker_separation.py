@@ -31,12 +31,10 @@ Example:
 """
 
 import os
-import tempfile
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-import soundfile as sf
 import torch
 from loguru import logger
 from pydub import AudioSegment
@@ -49,7 +47,12 @@ except ImportError:
 from nemo_curator.backends.base import WorkerMetadata
 from nemo_curator.backends.utils import RayStageSpecKeys
 from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, StageContract
-from nemo_curator.stages.audio._residency import InputResidency, accepts_for_residency, resolve_audio
+from nemo_curator.stages.audio._residency import (
+    InputResidency,
+    accepts_for_residency,
+    resolve_audio,
+    write_audio_stable,
+)
 from nemo_curator.stages.audio.segmentation.speaker_separation_module.speaker_sep import SpeakerSeparator
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.stages.resources import Resources
@@ -247,14 +250,14 @@ class SpeakerSeparationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
 
     def _write_speaker_wav(self, waveform: torch.Tensor, sr: int, original_file: str, speaker_id: str) -> str:
         """Write one per-speaker waveform to ``separated_audio_dir`` and return the path."""
-        os.makedirs(self.separated_audio_dir, exist_ok=True)
         stem = os.path.splitext(os.path.basename(str(original_file)))[0] or "audio"
-        audio = waveform.detach().cpu()
-        arr = audio[0].numpy() if audio.shape[0] == 1 else audio.T.numpy()
-        fd, path = tempfile.mkstemp(prefix=f"{stem}_{speaker_id}_", suffix=".wav", dir=self.separated_audio_dir)
-        os.close(fd)
-        sf.write(path, arr, int(sr))
-        return path
+        return write_audio_stable(
+            waveform,
+            sr,
+            output_dir=self.separated_audio_dir,
+            stem=stem,
+            tag=str(speaker_id),
+        )
 
     def _build_speaker_tasks(
         self,

@@ -33,15 +33,14 @@ Example:
 """
 
 import os
-import tempfile
 from dataclasses import dataclass, field
 from typing import Any
 
-import soundfile as sf
 import torch
 from loguru import logger
 
 from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, StageContract
+from nemo_curator.stages.audio._residency import write_audio_stable
 from nemo_curator.stages.audio.common import ensure_waveform_2d
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.stages.resources import Resources
@@ -200,14 +199,14 @@ class SegmentConcatenationStage(AgentReady, ProcessingStage[AudioTask, AudioTask
 
     def _write_wav(self, waveform: torch.Tensor, sr: int, original_file: str) -> str:
         """Write the combined waveform to ``output_dir`` and return the path."""
-        os.makedirs(self.output_dir, exist_ok=True)
         stem = os.path.splitext(os.path.basename(str(original_file)))[0] or "audio"
-        audio = waveform.detach().cpu()
-        arr = audio[0].numpy() if audio.shape[0] == 1 else audio.T.numpy()
-        fd, path = tempfile.mkstemp(prefix=f"{stem}_concat_", suffix=".wav", dir=self.output_dir)
-        os.close(fd)
-        sf.write(path, arr, int(sr))
-        return path
+        return write_audio_stable(
+            waveform,
+            sr,
+            output_dir=self.output_dir,
+            stem=stem,
+            tag="concat",
+        )
 
     def _concatenate(
         self,

@@ -447,7 +447,12 @@ class CreateInitialManifestAudioFolderStage(AgentReady, ProcessingStage[EmptyTas
         tasks: list[AudioTask] = []
         for path in paths:
             abspath = os.path.abspath(path)
-            item_id = os.path.splitext(os.path.basename(path))[0]
+            # Relpath, not basename: ``recursive`` defaults True and speaker-per-folder is the
+            # standard layout, so a basename id gives spk1/utt1.wav and spk2/utt1.wav the same
+            # id -- and downstream that id becomes an output filename. A flat corpus is
+            # unaffected. Not injective: a flat ``spk1__utt1.wav`` still aliases spk1/utt1.wav.
+            rel = os.path.relpath(abspath, os.path.abspath(self.data_dir))
+            item_id = os.path.splitext(rel)[0].replace(os.sep, "__")
             tasks.append(
                 AudioTask(
                     dataset_name="local-audio-folder",

@@ -29,6 +29,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 
+import soundfile
 from fsspec.core import url_to_fs
 
 from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, StageContract
@@ -134,6 +135,48 @@ class ResampleAudioStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             ),
         )
 
+    def _audio_digest(self, local_audio_path: str) -> str:
+        """A short digest of this audio and the settings about to be applied to it."""
+        digest = hashlib.sha256()
+        with open(local_audio_path, "rb") as handle:  # noqa: PTH123 - a local temp file, not a URI
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+        digest.update(f"|{self.target_sample_rate}|{self.target_nchannels}|{self.target_format}".encode())
+        return digest.hexdigest()[:16]
+
+    def _item_id(self, local_audio_path: str, *, from_scratch_file: bool, source: str | None) -> str:
+        """The output filename for a row that does not already carry an id.
+
+        A real input path is stable across runs, so it can name the output. A scratch path
+        materialised from a waveform is not: naming a persistent output after it made every run
+        write a fresh set of files (measured: 129 on disk against 65 manifest rows). So hash the
+        audio instead, which is the identity the path was standing in for -- and folding in the
+        settings makes the "already converted, skip it" check below correct, not merely fast.
+
+        The path branch is unchanged, so pipelines reading real files keep their output names.
+        """
+        if not from_scratch_file:
+            stem = os.path.splitext(os.path.basename(local_audio_path))[0]
+            return f"{stem}_{hashlib.sha256(local_audio_path.encode()).hexdigest()[:8]}"
+        # Keep the source name on the front so a clip stays traceable by eye.
+        stem = os.path.splitext(os.path.basename(str(source)))[0] if source else "clip"
+        return f"{stem}_{self._audio_digest(local_audio_path)}"
+
+    def _matches_target(self, path: str) -> bool:
+        """Whether the file at the output path really holds the conversion asked for.
+
+        The file-route name carries the source path, never the settings, so a name hit is not
+        evidence the work is done: a second run at a different ``target_sample_rate`` used to skip
+        and serve the old rate, with the duration measured off the stale file. Reading the header
+        is free beside spawning ffmpeg. A header-valid but truncated file still passes this, which
+        is why the conversion below writes to a temp name and renames.
+        """
+        try:
+            info = soundfile.info(path)
+        except Exception:  # noqa: BLE001 - unreadable or not-audio -> convert it again
+            return False
+        return info.samplerate == self.target_sample_rate and info.channels == self.target_nchannels
+
     def process(self, task: AudioTask) -> AudioTask:
         """
         Process a single task by resampling the audio file.
@@ -162,15 +205,25 @@ class ResampleAudioStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
 
         original_audio_filepath = data_entry.get(self.audio_filepath_key)
         _, local_audio_path = url_to_fs(input_audio_path)
-        if self.audio_item_id_key not in data_entry:
-            stem = os.path.splitext(os.path.basename(local_audio_path))[0]
-            path_hash = hashlib.sha256(local_audio_path.encode()).hexdigest()[:8]
-            data_entry[self.audio_item_id_key] = f"{stem}_{path_hash}"
+        inherited_id = self.audio_item_id_key in data_entry
+        if not inherited_id:
+            data_entry[self.audio_item_id_key] = self._item_id(
+                local_audio_path,
+                from_scratch_file=bool(temp_paths),
+                source=original_audio_filepath,
+            )
+        output_stem = data_entry[self.audio_item_id_key]
+        if inherited_id and temp_paths:
+            # A fan-out gives every child the parent's id, so an inherited id is not a filename:
+            # 26 VAD segments of utt1.wav once collapsed onto one, with all 26 rows pointing at
+            # the survivor. The FILE takes a digest; the row keeps the id its producer gave it,
+            # which downstream stages read as the shared ``item_id`` role.
+            output_stem = f"{output_stem}_{self._audio_digest(local_audio_path)}"
 
         if self.write_to_disk:
             output_audio_path = os.path.join(
                 self.resampled_audio_dir,
-                data_entry[self.audio_item_id_key] + "." + self.target_format,
+                output_stem + "." + self.target_format,
             )
         else:
             fd, output_audio_path = tempfile.mkstemp(suffix=f".{self.target_format}")
@@ -178,8 +231,19 @@ class ResampleAudioStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
 
         # Convert audio file if not already done
         fs, output_path = url_to_fs(output_audio_path)
-        skipped_conversion = self.write_to_disk and fs.exists(output_path)
+        skipped_conversion = self.write_to_disk and fs.exists(output_path) and self._matches_target(output_path)
         if not skipped_conversion:
+            # ffmpeg used to write straight to the deliverable. That was survivable while every
+            # run picked a new output name, but the name is stable now, so a run killed mid-write
+            # leaves a stump the NEXT run finds -- and a truncated WAV keeps a valid header, so
+            # the skip above waves it through and a fragment's duration lands in the manifest.
+            # Convert to a sibling temp name and rename, which is atomic on POSIX.
+            staging_dir = os.path.dirname(output_audio_path)
+            if staging_dir:
+                # setup_on_node makes this, but process() must not depend on having been through it.
+                os.makedirs(staging_dir, exist_ok=True)
+            staged_fd, staged = tempfile.mkstemp(prefix=".", suffix=f".{self.target_format}", dir=staging_dir or None)
+            os.close(staged_fd)
             cmd = [
                 "ffmpeg",
                 "-y",
@@ -193,13 +257,14 @@ class ResampleAudioStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 str(self.target_nchannels),
                 "-acodec",
                 "pcm_s16le",
-                output_audio_path,
+                staged,
             ]
 
             try:
                 subprocess.run(cmd, check=True, capture_output=True, text=True)  # noqa: S603
+                os.replace(staged, output_audio_path)
             except subprocess.CalledProcessError as e:
-                cleanup_temp_files(temp_paths)
+                cleanup_temp_files([staged, *temp_paths])
                 msg = f"Error converting {input_audio_path}: {e}"
                 raise RuntimeError(msg) from e
 

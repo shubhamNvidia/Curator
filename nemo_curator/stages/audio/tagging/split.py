@@ -17,6 +17,7 @@ Audio Splitting and Joining Stages.
 
 """
 
+import hashlib
 import math
 import posixpath
 import time
@@ -93,12 +94,13 @@ class SplitLongAudioStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             ),
             cardinality="1:1 nested-list",
             iteration_key=self.split_metadata_key,
-            # A row is split by its own duration and segments; the corpus is not consulted. But
-            # split names are built from the source BASENAME alone (``{stem}.k_of_n.wav``), so
-            # with an ``output_dir`` every file shares one flat namespace and ``spk1/utt1.wav``
-            # and ``spk2/utt1.wav`` claim the same output path -- which row's audio survives there
-            # depends on which rows ran. Without one, splits land beside their source and the
-            # parent directory keeps them apart.
+            # A row is split by its own duration and segments; the corpus is not consulted. With
+            # an ``output_dir`` every file shares one flat namespace: the stem now carries a hash
+            # of the source PATH (see ``_do_split``), which separates ``spk1/utt1.wav`` from
+            # ``spk2/utt1.wav`` but NOT two rows naming the same path with different ``segments``
+            # -- there, which row's audio survives still depends on which rows ran. Without an
+            # ``output_dir`` splits land beside their source and the parent directory keeps them
+            # apart.
             gates=Gates(
                 writes_to_disk=True,
                 output_path_params=["output_dir"],
@@ -180,6 +182,11 @@ class SplitLongAudioStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         parent_url, filename = audio_path.rsplit("/", 1) if "/" in audio_path else ("", audio_path)
         resolved_parent = resolved_path.rsplit("/", 1)[0] if "/" in resolved_path else ""
         stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+        if self.output_dir is not None:
+            # output_dir flattens the corpus into one namespace, and the parent folder was the
+            # only thing keeping two ``utt1.wav`` apart. Unset, splits land beside their source,
+            # so that route keeps byte-identical names.
+            stem = f"{stem}_{hashlib.sha256(audio_path.encode()).hexdigest()[:8]}"
 
         resolved_output_dir = self._prepare_output_dir()
 

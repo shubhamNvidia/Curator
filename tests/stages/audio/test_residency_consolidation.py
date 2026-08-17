@@ -202,3 +202,75 @@ def test_resolve_audio_path_missing_file_prefers_waveform_fallback(tmp_path: Pat
 def test_resolve_audio_path_no_input_returns_none():
     assert resolve_audio_path({}, residency="file") is None
     assert resolve_audio_path({}, residency="auto") is None
+
+
+# --------------------------------------------------------------------------- write_audio_stable
+# The four stages that write in-memory audio, all going through the shared helper.
+
+
+def _writers(directory: str) -> dict[str, object]:
+    """One thunk per stage that writes in-memory audio, all sharing ``write_audio_stable``."""
+    from nemo_curator.stages.audio.preprocessing.channel_conversion import ChannelConversionStage
+    from nemo_curator.stages.audio.preprocessing.concatenation import SegmentConcatenationStage
+    from nemo_curator.stages.audio.preprocessing.mono_conversion import MonoConversionStage
+    from nemo_curator.stages.audio.segmentation.speaker_separation import SpeakerSeparationStage
+    from nemo_curator.tasks import AudioTask
+
+    wav = torch.sin(torch.arange(0, 16000) * 0.01).unsqueeze(0)
+    task = AudioTask(task_id="t", dataset_name="d", data={"audio_filepath": "/data/spk1/utt1.wav"})
+    return {
+        "mono": lambda: MonoConversionStage(output_dir=directory)._write_audio(wav, 16000, task),
+        "channel": lambda: ChannelConversionStage(output_dir=directory)._write_audio(wav, 16000, task),
+        "concat": lambda: SegmentConcatenationStage(write_to_disk=True, output_dir=directory)._write_wav(
+            wav, 16000, "/data/spk1/utt1.wav"
+        ),
+        "speaker": lambda: SpeakerSeparationStage(separated_audio_dir=directory)._write_speaker_wav(
+            wav, 16000, "/data/spk1/utt1.wav", "spk0"
+        ),
+    }
+
+
+def test_in_memory_writers_do_not_accumulate_a_file_per_run(tmp_path: Path):
+    """The same audio written three times is one file, not three."""
+    for name in _writers(str(tmp_path)):
+        directory = tmp_path / f"out_{name}"
+        directory.mkdir()
+        write_once = _writers(str(directory))[name]
+        for _ in range(3):
+            written = write_once()
+        assert len(os.listdir(directory)) == 1, f"{name} wrote a file per run: {os.listdir(directory)}"
+        assert os.path.basename(written).startswith("utt1_"), "the source stem must stay readable in the name"
+
+
+def test_write_audio_stable_separates_audio_that_differs(tmp_path: Path):
+    """Different audio, rate or tag must never resolve to the same name."""
+    from nemo_curator.stages.audio._residency import write_audio_stable
+
+    out = str(tmp_path)
+    a = torch.sin(torch.arange(0, 16000) * 0.01).unsqueeze(0)
+    b = torch.sin(torch.arange(0, 16000) * 0.02).unsqueeze(0)
+    names = {
+        os.path.basename(write_audio_stable(a, 16000, output_dir=out, stem="x")),
+        os.path.basename(write_audio_stable(b, 16000, output_dir=out, stem="x")),  # other audio
+        os.path.basename(write_audio_stable(a, 8000, output_dir=out, stem="x")),  # other rate
+        os.path.basename(write_audio_stable(a, 16000, output_dir=out, stem="x", tag="mono")),
+    }
+    assert len(names) == 4, f"distinct inputs collapsed onto one name: {names}"
+
+
+def test_write_audio_stable_without_an_output_dir_keeps_mkstemp_privacy(tmp_path: Path):
+    """The no-output_dir default is the shared system temp dir, where a predictable name leaks.
+
+    mkstemp was giving three things away for free there: an unguessable name, owner-only mode on
+    raw speech audio, and an exclusive create. Content-addressing that directory would have made
+    two processes agree on one world-readable path in a 1777 directory.
+    """
+    import stat
+
+    from nemo_curator.stages.audio._residency import write_audio_stable
+
+    written = write_audio_stable(torch.zeros(1, 16000), 16000, output_dir=None, stem="x")
+    try:
+        assert stat.S_IMODE(os.stat(written).st_mode) == 0o600
+    finally:
+        os.unlink(written)

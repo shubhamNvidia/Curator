@@ -27,10 +27,8 @@ Example:
 """
 
 import os
-import tempfile
 from dataclasses import dataclass, field
 
-import soundfile as sf
 import torch
 from loguru import logger
 
@@ -40,6 +38,7 @@ from nemo_curator.stages.audio._residency import (
     produce_audio_filepath,
     residency_read_specs,
     resolve_audio,
+    write_audio_stable,
 )
 from nemo_curator.stages.audio.common import ensure_waveform_2d, load_audio_file
 from nemo_curator.stages.base import ProcessingStage
@@ -160,15 +159,14 @@ class MonoConversionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         )
 
     def _write_audio(self, waveform: torch.Tensor, sample_rate: int, task: AudioTask) -> str:
-        output_dir = self.output_dir or tempfile.gettempdir()
-        os.makedirs(output_dir, exist_ok=True)
         stem = os.path.splitext(os.path.basename(str(task.data.get(self.audio_filepath_key, "audio"))))[0]
-        fd, path = tempfile.mkstemp(prefix=f"{stem}_mono_", suffix=".wav", dir=output_dir)
-        os.close(fd)
-        audio = waveform.detach().cpu()
-        arr = audio[0].numpy() if audio.shape[0] == 1 else audio.T.numpy()
-        sf.write(path, arr, sample_rate)
-        return path
+        return write_audio_stable(
+            waveform,
+            sample_rate,
+            output_dir=self.output_dir,
+            stem=stem,
+            tag="mono",
+        )
 
     def process(self, task: AudioTask) -> AudioTask | list[AudioTask]:  # noqa: C901 (complexity accepted: residency/sample-rate branch matrix; no refactor pre-PR)
         """
