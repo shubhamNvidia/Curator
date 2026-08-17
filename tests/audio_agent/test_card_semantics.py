@@ -203,6 +203,65 @@ def test_a_card_must_date_itself_so_a_stale_guess_is_distinguishable_from_a_fres
     assert any("missing required field 'provenance'" in item for item in violations)
 
 
+def test_a_stage_advertising_a_score_must_say_what_the_score_means() -> None:
+    """The metrics checks validate a block only IF one is present, so a scorer with no block at
+    all passed silently. ``BandwidthEstimationStage`` shipped ``produces_score`` with no scale,
+    range or direction; nothing downstream could then derive a comparison operator, and the
+    generic filter the resolver emits for an annotate-only scorer is where an inverted filter
+    comes from.
+    """
+    violations = check_card(
+        "BandwidthEstimationStage",
+        {
+            "category": "quality",
+            "summary": "Estimates effective bandwidth.",
+            "verified": {"params": "mechanical"},
+            "provenance": {"card_version": 1},
+            "tags": ["produces_score"],
+        },
+    )
+
+    assert any("produces_score" in item and "no metrics block" in item for item in violations)
+
+
+def test_a_categorical_score_is_not_required_to_invent_a_numeric_direction() -> None:
+    """The guard requires a metrics BLOCK, not a direction. ``BandFilterStage`` predicts
+    full_band/narrow_band -- there is no 'higher is better' to declare -- so demanding a scale
+    would force a card to state something untrue to pass a gate.
+    """
+    violations = check_card(
+        "BandFilterStage",
+        {
+            "category": "quality",
+            "summary": "Classifies bandwidth and filters.",
+            "verified": {"params": "mechanical"},
+            "provenance": {"card_version": 1},
+            "tags": ["produces_score", "is_filter"],
+            "metrics": {"band_prediction": {"threshold_param": "band_value"}},
+        },
+    )
+
+    assert not any("produces_score" in item for item in violations)
+
+
+def test_a_card_must_date_itself_so_a_stale_guess_is_distinguishable_from_a_fresh_one() -> None:
+    """A card is read as current. Without ``provenance`` there is nothing to say when its
+    ``best_guess`` facts were last checked against the code. 47 of 49 cards carried it by
+    convention and the two that did not were simply the newest -- how an unenforced convention
+    always fails.
+    """
+    violations = check_card(
+        "GetAudioDurationStage",
+        {
+            "category": "export",
+            "summary": "Duration evidence.",
+            "verified": {"params": "mechanical"},
+        },
+    )
+
+    assert any("missing required field 'provenance'" in item for item in violations)
+
+
 def test_a_stage_shipping_without_a_card_fails_the_gate_unless_waived(monkeypatch) -> None:  # noqa: ANN001
     """An uncarded stage was reported and never failed, so a stage could ship plannable with no
     card semantics behind it: ``discover`` lists it, the planner may pick it, and the host critic
