@@ -76,7 +76,13 @@ def _prior_recipe(folder: str, *, source: str, mono: bool, mos: float) -> Recipe
     return Recipe.from_dict({"stages": stages}).freeze()
 
 
-def _save_prior_run(folder: str, recipe: Recipe, *, prior_profile) -> str:  # noqa: ANN001
+def _save_prior_run(
+    folder: str,
+    recipe: Recipe,
+    *,
+    prior_profile,  # noqa: ANN001
+    created_at: str = "2026-08-17T07:19:19Z",
+) -> str:
     """Persist a completed run of ``recipe`` on the folder as ``prior_profile`` saw it."""
     dataset_key = prior_profile.dataset_key()
     steps = [p.step_key for p in artifacts.plan_steps(recipe, dataset_key)]
@@ -97,7 +103,7 @@ def _save_prior_run(folder: str, recipe: Recipe, *, prior_profile) -> str:  # no
             input_count=len(prior_profile.inventory),
             output_paths=[_PRIOR_OUT],
             steps=steps,
-            created_at="2026-08-17T07:19:19Z",
+            created_at=created_at,
         )
     )
     return run_id
@@ -266,6 +272,135 @@ class TestTheRecipeDiffIsStructural:
         diff = reuse._recipe_diff(r, r)
 
         assert diff["identical"] is True
+
+
+class TestSeveralPriorRunsAreRankedNotCollapsed:
+    """A folder curated more than once has to be reported as a choice, closest pipeline first."""
+
+    def _two_priors(self, store: Path) -> tuple[str, str, str]:
+        """A far run (different source stage, no mono, different bar) and a near one (same but
+        for one threshold), both on the same folder, the far one written most recently."""
+        folder = _folder(store, ["a.wav", "b.wav", "c.wav"])
+        profile = _profile(folder)
+        near = _save_prior_run(
+            folder,
+            _prior_recipe(folder, source="CreateInitialManifestAudioFolderStage", mono=False, mos=3.0),
+            prior_profile=profile,
+            created_at="2026-08-17T07:00:00Z",
+        )
+        far = _save_prior_run(
+            folder,
+            _prior_recipe(folder, source="CreateInitialManifestReadSpeechStage", mono=True, mos=3.4),
+            prior_profile=profile,
+            created_at="2026-08-17T09:00:00Z",
+        )
+        return folder, near, far
+
+    def test_the_closest_pipeline_leads_even_when_it_is_not_the_newest(self, store: Path) -> None:
+        folder, near, far = self._two_priors(store)
+        (Path(folder) / "d.wav").write_bytes(b"RIFF" + b"\x09" * 5000)
+        current = _current_recipe(folder, source="CreateInitialManifestAudioFolderStage", mono=False, mos=2.5)
+
+        prior = verbs.reuse_scan(current, data=folder)["prior_on_same_path"]
+
+        assert prior["count"] == 2
+        assert [m["run_id"] for m in prior["matches"]] == [near, far]
+        # The closest match is promoted, so a host reading one level deep still sees a real run.
+        assert prior["run_id"] == near
+        assert prior["note"] == prior["matches"][0]["note"] + " (1 other run(s) also read this folder; see 'matches'.)"
+
+    def test_the_notice_names_the_commands_that_answer_it(self, store: Path) -> None:
+        folder, near, _far = self._two_priors(store)
+        (Path(folder) / "d.wav").write_bytes(b"RIFF" + b"\x09" * 5000)
+        current = _current_recipe(folder, source="CreateInitialManifestAudioFolderStage", mono=False, mos=2.5)
+
+        nxt = verbs.reuse_scan(current, data=folder)["prior_on_same_path"]["next"]
+
+        assert near in nxt["inspect"]
+        assert near in nxt["adopt"]
+        assert folder in nxt["adopt"]
+
+
+class TestTheSameFolderAndSameFilesUnderADifferentPipeline:
+    """The corpus never moved, only the plan did -- a case the dataset key cannot distinguish."""
+
+    def test_it_is_still_disclosed_and_does_not_claim_the_data_changed(self, store: Path) -> None:
+        folder = _folder(store, ["a.wav", "b.wav", "c.wav"])
+        _save_prior_run(
+            folder,
+            _prior_recipe(folder, source="CreateInitialManifestReadSpeechStage", mono=True, mos=3.4),
+            prior_profile=_profile(folder),
+        )
+        current = _current_recipe(folder, source="CreateInitialManifestAudioFolderStage", mono=False, mos=2.5)
+
+        prior = verbs.reuse_scan(current, data=folder)["prior_on_same_path"]
+
+        assert prior["recommendation"] == "align"
+        assert prior["data_delta"]["added"] == 0
+        assert prior["data_delta"]["unchanged"] == 3
+
+    def test_the_same_pipeline_on_unchanged_files_is_not_offered_as_a_delta(self, store: Path) -> None:
+        """Nothing changed, so there is no changed-file work to do -- saying otherwise sends the
+        user to a verb that will refuse."""
+        folder = _folder(store, ["a.wav", "b.wav"])
+        prior = _prior_recipe(folder, source="CreateInitialManifestAudioFolderStage", mono=False, mos=3.0)
+        _save_prior_run(folder, prior, prior_profile=_profile(folder))
+
+        notice = verbs.reuse_scan(prior.to_dict(), data=folder)["prior_on_same_path"]
+
+        assert notice["same_recipe"] is True
+        assert notice["recommendation"] == "fresh"
+        assert "Nothing reusable remains" in notice["note"]
+
+
+class TestListingRunsByFolderPath:
+    def test_a_run_on_the_same_folder_under_another_corpus_state_is_listed(self, store: Path) -> None:
+        folder = _folder(store, ["a.wav", "b.wav"])
+        run_id = _save_prior_run(
+            folder,
+            _prior_recipe(folder, source="CreateInitialManifestAudioFolderStage", mono=False, mos=3.0),
+            prior_profile=_profile(folder),
+        )
+        (Path(folder) / "c.wav").write_bytes(b"RIFF" + b"\x02" * 4096)
+
+        listing = verbs.runs(data=folder)
+
+        assert [r["run_id"] for r in listing["runs"]] == [run_id]
+        assert listing["same_folder_only"] == [run_id]
+        assert "same_folder_only" in listing["note"]
+
+    def test_a_folder_with_no_history_lists_nothing_extra(self, store: Path) -> None:
+        folder = _folder(store, ["a.wav"])
+
+        listing = verbs.runs(data=folder)
+
+        assert listing["runs"] == []
+        assert "same_folder_only" not in listing
+
+
+class TestOneRunIsExplainedWithoutReadingEveryParam:
+    def test_the_overview_names_the_pipeline_its_settings_and_its_verdict(self, store: Path) -> None:
+        folder = _folder(store, ["a.wav", "b.wav"])
+        run_id = _save_prior_run(
+            folder,
+            _prior_recipe(folder, source="CreateInitialManifestAudioFolderStage", mono=False, mos=3.0),
+            prior_profile=_profile(folder),
+        )
+
+        overview = verbs.runs(run_id=run_id)["overview"]
+
+        assert "UTMOSFilterStage" in overview["pipeline"]
+        assert overview["objective"] == "quality_filter"
+        assert overview["data"]["source"] == folder
+        assert overview["data"]["input_count"] == 2
+        assert overview["outputs"] == [_PRIOR_OUT]
+        # A run that declared no success contract is not reported as one that passed.
+        assert overview["acceptance"]["overall"] == "not_recorded"
+        thresholds = [e for e in overview["key_params"] if e["stage"] == "UTMOSFilterStage"]
+        assert thresholds[0]["params"]["mos_threshold"] == 3.0
+
+    def test_an_unknown_run_id_is_still_an_error_not_an_empty_overview(self, store: Path) -> None:
+        assert "error" in verbs.runs(run_id="run-nope")
 
 
 class TestFindRunsCanFilterByPath:

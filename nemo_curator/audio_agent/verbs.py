@@ -2532,6 +2532,12 @@ def _record_run(  # noqa: PLR0913 - a provenance record intentionally gathers ma
                 f"{type(exc).__name__}: {exc}"
             )
         return record.run_id
+    # Keep what actually ran, when the record above could not. Only a recipe whose params were
+    # masked gets a copy, and only so "do that again on the new files" can adopt this exact
+    # pipeline later -- a masked param changes reuse identity, so the record's copy would match
+    # none of this run's own artifacts.
+    with contextlib.suppress(Exception):  # provenance is best-effort; a failure here costs adoption
+        run_store.save_exact_recipe(record.run_id, rec.to_dict())
     if persistence_status is not None:
         persistence_status["run_record_persisted"] = True
         persistence_status["run_record_path"] = path
@@ -2944,18 +2950,25 @@ def runs(
     ``stage`` / ``since`` query the index for what has already been done to a corpus.
     ``data`` takes either the dataset's path or a ``dataset_key`` copied from earlier
     reuse output — profiling a key as if it were a path would silently match nothing.
+
+    A single record is returned with an ``overview``: the pipeline, its identifying params, what
+    it read, what it produced and how it scored, so "what did that run do?" is answerable without
+    reading every param of every stage. Given a folder PATH, the listing also includes runs that
+    read that folder when its contents were different — the same-corpus key filter alone reports
+    a folder curated last week as never curated at all.
     """
     from nemo_curator.audio_agent import run_index, run_store
 
     if run_id:
         rec = run_store.load(run_id)
-        return _safety.redact(rec.to_dict()) if rec else {"error": f"no run record {run_id!r}"}
+        if rec is None:
+            return {"error": f"no run record {run_id!r}"}
+        from nemo_curator.audio_agent import reuse as _reuse
+
+        return _safety.redact({**rec.to_dict(), "overview": _reuse.run_overview(rec)})
     if data or stage or since:
-        pviol = _safety.path_violations(
-            [data]
-            if data and not data.startswith(tuple(f"{tier}:" for tier in DATASET_KEY_TIERS))
-            else []
-        )
+        names_a_path = bool(data) and not str(data).startswith(tuple(f"{tier}:" for tier in DATASET_KEY_TIERS))
+        pviol = _safety.path_violations([data] if names_a_path else [])
         if pviol:
             return {
                 "status": "refused",
@@ -2963,22 +2976,60 @@ def runs(
                 "violations": pviol,
             }
         dataset_key = _dataset_key_arg(data) if data else None
-        return _safety.redact(
-            {
-                "dataset_key": dataset_key,
-                "runs": run_index.find_runs(dataset_key=dataset_key, since=since, limit=limit),
-                "artifacts": run_index.find_artifacts(
-                    dataset_key=dataset_key,
-                    stage_ref=stage,
-                    since=since,
-                    limit=limit,
-                ),
-            }
-        )
+        payload = {
+            "dataset_key": dataset_key,
+            "runs": run_index.find_runs(dataset_key=dataset_key, since=since, limit=limit),
+            "artifacts": run_index.find_artifacts(
+                dataset_key=dataset_key,
+                stage_ref=stage,
+                since=since,
+                limit=limit,
+            ),
+        }
+        if names_a_path:
+            _attach_same_folder_runs(payload, str(data), since=since, limit=limit)
+        return _safety.redact(payload)
     # ``limit`` applies here too. The filtered branch above has always honoured it while this one
     # returned every record ever written, so the argument silently meant different things
     # depending on whether a filter happened to be supplied.
     return {"runs": run_store.list_runs()[: int(limit)] if int(limit) >= 0 else run_store.list_runs()}
+
+
+def _attach_same_folder_runs(
+    payload: dict[str, Any],
+    data: str,
+    *,
+    since: str | None,
+    limit: int,
+) -> None:
+    """Add runs that read this same FOLDER but under a different corpus state or pipeline.
+
+    ``dataset_key`` identifies a corpus, not a location, so filtering by it alone answers "what
+    has been done to these exact bytes" -- and one added file makes the answer "nothing", about a
+    folder that was curated an hour ago. The union is what the caller asked for when they passed a
+    path. Which rows came from which axis stays visible in ``same_folder_only`` so an exact-corpus
+    reader is not misled, and each row carries its own ``dataset_key`` either way.
+    """
+    from nemo_curator.audio_agent import reuse as _reuse
+
+    rows = _reuse.runs_on_path(data, since=since, limit=limit)
+    if not rows:
+        return
+    known = {str(r.get("run_id") or "") for r in payload["runs"]}
+    added = [r for r in rows if str(r.get("run_id") or "") not in known]
+    if not added:
+        return
+    merged = sorted(
+        [*payload["runs"], *added],
+        key=lambda row: str(row.get("created_at") or ""),
+        reverse=True,
+    )
+    payload["runs"] = merged[: int(limit)] if int(limit) >= 0 else merged
+    payload["same_folder_only"] = [str(r.get("run_id") or "") for r in added]
+    payload["note"] = (
+        f"{len(added)} of these read the same folder when its contents or pipeline differed, so "
+        "they carry a different dataset_key; they are named in 'same_folder_only'"
+    )
 
 
 def _dataset_key_arg(data: str) -> str:
@@ -3052,8 +3103,12 @@ def reuse_scan(recipe: Recipe | dict[str, Any], *, data: str | None = None, limi
         result["rationale"] = f"prior work was not considered: {binding.reason}"
     if result.get("decision") == "fresh" and dataset_key and dp is not None:
         _attach_delta(result, rec, dp)
-    if result.get("decision") == "fresh":
-        _attach_prior_on_path(result, rec, binding, dp, dataset_key)
+    # Both misses, and both blind to a folder curated under another pipeline: ``fresh`` found no
+    # matching key, and ``delta`` matched THIS pipeline's own earlier corpus and so still says
+    # nothing about the others. Neither names the prior run's id, which is what the user needs to
+    # ask about it.
+    if result.get("decision") in ("fresh", "delta"):
+        _attach_prior_on_path(result, rec, binding, dp)
     return _safety.redact(result)
 
 
@@ -3062,9 +3117,8 @@ def _attach_prior_on_path(
     rec: Recipe,
     binding: Any,  # noqa: ANN401 - DatasetBinding
     dp: Any,  # noqa: ANN401 - DataProfile | None
-    dataset_key: str,
 ) -> None:
-    """Disclose a prior run that read THIS folder, even when its keys and recipe do not match.
+    """Disclose prior runs that read THIS folder, even when their keys and recipe do not match.
 
     The step-key matchers answer "can I reuse bytes"; this answers the question a person asks
     first -- "have I done this here before". It is advisory: it never changes ``decision`` or
@@ -3079,7 +3133,6 @@ def _attach_prior_on_path(
     prior = _reuse.prior_on_path(
         rec,
         source_path=source_path,
-        dataset_key=dataset_key,
         current_inventory=(dp.inventory or None) if dp is not None else None,
     )
     if prior is None:
@@ -3095,6 +3148,7 @@ def _attach_prior_on_path(
     result["prompt_user"] = True
     # "fresh" reads as "never done here". When the folder HAS been curated, say so in the line a
     # host is most likely to read, without overriding the decision the key probe correctly made.
+    # A ``delta`` rationale already discloses prior work on this pipeline, so it is left alone.
     if result.get("decision") == "fresh":
         result["rationale"] = f"{result.get('rationale', '')}; {prior['note']}".lstrip("; ")
 
@@ -3216,8 +3270,9 @@ def add_checkpoint(
 
 
 def delta_run(  # noqa: PLR0913 - the same execution knobs as run(), which it delegates to
-    recipe: Recipe | dict[str, Any],
+    recipe: Recipe | dict[str, Any] | None = None,
     *,
+    from_run: str | None = None,
     data: str | None = None,
     confirm: bool | str = False,
     executor: Any = None,  # noqa: ANN401
@@ -3235,6 +3290,13 @@ def delta_run(  # noqa: PLR0913 - the same execution knobs as run(), which it de
     merges each manifest and republishes it under the step key the full pipeline has for the
     enlarged corpus, so the next ordinary reuse probe finds it.
 
+    ``from_run`` adopts a prior run's own recipe instead of taking one, which is what "do the
+    same thing again on the new files" needs: a delta resumes from artifacts keyed on the
+    pipeline that produced them, and a recipe rebuilt from the same request twice is not
+    bit-identical -- a threshold written out where it was defaulted before is enough to miss
+    every key. Adopting removes the retyping from the loop. The card shows what was adopted and
+    the confirm gate is computed from it, so nothing runs that was not first shown.
+
     Every question that has to be true first is answered by ``delta.plan`` and refused by name:
     which files moved, how deep per-file work stays independent of the other files, whether the
     stages' declarations survive their own recorded row counts, and which prior row came from
@@ -3242,7 +3304,9 @@ def delta_run(  # noqa: PLR0913 - the same execution knobs as run(), which it de
     """
     from nemo_curator.audio_agent import delta as _delta
 
-    rec = _as_recipe(recipe).freeze()
+    rec, adopted, refusal = _delta_recipe(recipe, from_run)
+    if refusal is not None:
+        return _safety.redact(refusal)
     pviol = _safety.path_violations([data, *_safety.recipe_path_params(rec)])
     if pviol:
         return {
@@ -3276,8 +3340,13 @@ def delta_run(  # noqa: PLR0913 - the same execution knobs as run(), which it de
         "delta": decision.to_dict(),
         "data_binding": binding.to_dict(),
     }
+    if adopted is not None:
+        card["adopted_from"] = adopted
+        # The adopted pipeline, in the card, because the user is confirming a recipe they never
+        # wrote. Naming it is the difference between an informed yes and a blind one.
+        card["recipe"] = _safety.redact(rec.to_dict(), redact_transcripts=False)
     if decision.status != "ready":
-        card["next"] = "run the pipeline normally; a delta is not available for this input"
+        card["next"] = _no_delta_next(adopted, dataset_key=dp.dataset_key())
         return _safety.redact(card)
     # Same two-step shape ``run`` uses, for the same reason: gating on the hash comparison alone
     # is correct today (None/0/[]/{} all differ from it), but it is one edit away from not being.
@@ -3307,6 +3376,119 @@ def delta_run(  # noqa: PLR0913 - the same execution knobs as run(), which it de
             goal=goal,
         )
     )
+
+
+def _no_delta_next(adopted: dict[str, Any] | None, *, dataset_key: str) -> str:
+    """What to do instead, when a delta is unavailable.
+
+    "Run the pipeline normally" is the right answer for a corpus that moved in a way a delta
+    cannot follow, and the wrong one for a corpus that did not move at all: adopting a prior run
+    over an unchanged folder has no changed files by definition, and its result already covers
+    this input. Telling that user to run again is telling them to pay twice for the answer they
+    came back to reuse.
+    """
+    if adopted and adopted.get("dataset_key") and adopted["dataset_key"] == dataset_key:
+        return (
+            "nothing in this folder has changed since that run, so there are no files for a delta "
+            "to process; its result already covers this input -- reuse-scan the adopted recipe and "
+            "serve it with continue --choice as_is rather than running anything"
+        )
+    return "run the pipeline normally; a delta is not available for this input"
+
+
+def _delta_recipe(
+    recipe: Recipe | dict[str, Any] | None,
+    from_run: str | None,
+) -> tuple[Recipe, dict[str, Any] | None, dict[str, Any] | None]:
+    """The recipe a delta will run: the caller's, or a prior run's adopted verbatim.
+
+    Returns ``(recipe, adopted_provenance, refusal)``; a non-None refusal means stop. Passing
+    both is refused rather than resolved by precedence: silently ignoring a recipe the caller
+    handed over is how a run comes to execute stages nobody chose.
+    """
+    if recipe is not None and from_run:
+        return Recipe(), None, {
+            "status": "refused",
+            "reason": (
+                "from_run adopts that run's own recipe, so a second one cannot also apply; "
+                "pass a recipe or from_run, not both"
+            ),
+        }
+    if from_run:
+        return _adopt_recipe(from_run)
+    if recipe is None:
+        return Recipe(), None, {
+            "status": "refused",
+            "reason": "a delta needs a recipe: pass one, or from_run to adopt a prior run's",
+        }
+    return _as_recipe(recipe).freeze(), None, None
+
+
+def _adopt_recipe(run_id: str) -> tuple[Recipe, dict[str, Any] | None, dict[str, Any] | None]:
+    """A completed run's recipe, exactly as it ran, or a refusal naming what stopped it.
+
+    The reuse identity is verified rather than assumed: re-freezing the stored recipe must
+    reproduce the ``semantic_hash`` that run recorded, because that identity is what its
+    artifacts are keyed on. A mismatch caused by a masked credential is refused -- the pipeline
+    genuinely cannot be reproduced from history, and running a near-copy would match nothing
+    while looking like it should. A mismatch with no secret in play is reported and allowed: the
+    hash format can move between builds, and the delta engine probes the artifacts themselves.
+    """
+    from nemo_curator.audio_agent import run_store
+    from nemo_curator.audio_agent._safety import is_secret_key
+
+    record = run_store.load(run_id)
+    if record is None:
+        return Recipe(), None, {"status": "refused", "reason": f"no run record {run_id!r}"}
+    if record.status != "completed":
+        return Recipe(), None, {
+            "status": "refused",
+            "reason": (
+                f"run {run_id!r} has status {record.status!r}; only a completed run has a result "
+                "for a delta to extend"
+            ),
+        }
+    raw = run_store.load_exact_recipe(run_id) or record.recipe
+    if not isinstance(raw, dict) or not raw.get("stages"):
+        return Recipe(), None, {
+            "status": "refused",
+            "reason": f"run {run_id!r} recorded no recipe to adopt",
+        }
+    try:
+        rec = Recipe.from_dict(raw).freeze()
+    except ValueError as exc:
+        return Recipe(), None, {
+            "status": "refused",
+            "reason": f"run {run_id!r}'s recorded recipe cannot be loaded by this build: {exc}",
+        }
+    reproduced = not record.semantic_hash or rec.semantic_hash == record.semantic_hash
+    masked = [
+        f"{s.ref}.{param}" for s in rec.stages for param in s.params if is_secret_key(param)
+    ]
+    if not reproduced and masked:
+        return Recipe(), None, {
+            "status": "refused",
+            "reason": (
+                f"run {run_id!r} cannot be adopted: its {', '.join(masked)} was masked in history, "
+                "and a pipeline missing that value matches none of that run's own results"
+            ),
+            "next": "pass the recipe with the credential supplied, and the delta works as usual",
+        }
+    adopted: dict[str, Any] = {
+        "run_id": record.run_id,
+        "created_at": record.created_at,
+        "goal": record.goal or None,
+        "pipeline": [s.ref for s in rec.stages],
+        "data_source": record.data_source,
+        "dataset_key": record.dataset_key,
+        "identity_reproduced": reproduced,
+    }
+    if not reproduced:
+        adopted["note"] = (
+            "this build computes a different pipeline identity than the one recorded, so the "
+            "delta depends on that run's artifacts still being probeable"
+        )
+    return rec, adopted, None
 
 
 def _carry_approval(

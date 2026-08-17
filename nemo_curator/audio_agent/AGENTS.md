@@ -85,6 +85,7 @@ All verbs print JSON. Run them with the repo virtualenv interpreter from the rep
 .venv/bin/python -m nemo_curator.audio_agent continue --recipe R.yaml --data DATA --execute --choice extend --confirm <hash>
 .venv/bin/python -m nemo_curator.audio_agent add-checkpoint --recipe R.yaml --output-path CK.jsonl  # make GPU work resumable
 .venv/bin/python -m nemo_curator.audio_agent delta-run --recipe R.yaml --data DATA --confirm <hash>  # only the files that changed
+.venv/bin/python -m nemo_curator.audio_agent delta-run --from-run RUN_ID --data DATA  # same, adopting a prior run's own recipe
 ```
 
 `smoke` and `run` need a Ray cluster. `--bootstrap-ray` starts a correctly-configured
@@ -139,6 +140,11 @@ clobbered).
   scan says why in `delta.reason`; relay that reason rather than inventing a cause. A host
   once read `fresh`, recurated a whole corpus over one added file, and reported a missing
   checkpoint that the recipe did not need.
+- **`prior_on_same_path` means this folder was curated before.** It appears when the keys
+  missed but the source folder matches a completed run, which is what recipe drift looks like.
+  Say so before running anything, show what differs (`recipe_diff.phrase`, `data_delta.phrase`),
+  offer `runs --run-id <id>` for the detail, and on a yes adopt that run's own recipe with
+  `delta-run --from-run <id>` rather than retyping the pipeline.
 - **Environment questions have one home:** `doctor`. Do not diagnose the environment from
   stage cards, and never silently install, upgrade, switch CPU/GPU, or retry a failure.
 - **Write scratch recipes to `scratch_dir()`**, not the working directory — that is a git

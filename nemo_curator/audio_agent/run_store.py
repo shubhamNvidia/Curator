@@ -111,6 +111,53 @@ def scratch_dir() -> str:
     return path
 
 
+def exact_recipe_path(run_id: str) -> str | None:
+    """Where a run's verbatim recipe copy lives, or ``None`` for an id that cannot name a file."""
+    if not run_id or not _SAFE_RUN_ID.match(str(run_id)):
+        return None
+    return os.path.join(runs_dir(), "exact_recipes", f"{run_id}.json")
+
+
+def save_exact_recipe(run_id: str, recipe: dict[str, Any]) -> str | None:
+    """Keep a verbatim copy of a recipe the run record cannot reproduce. Best-effort.
+
+    The record's own copy has secret-valued params masked, which is right for a payload that
+    reaches a host LLM and wrong for the one thing history is asked to do besides tracing:
+    re-run this pipeline over what changed. A masked param is part of reuse identity, so a recipe
+    rebuilt from the record hashes differently and matches none of that run's own prior work --
+    the request "do the same thing again on the new files" fails on a pipeline that needs a
+    credential.
+
+    Written only when redaction actually changed something, so the ordinary run adds no second
+    file, and only inside the owner-only state directory (0700/0600) the run records already use.
+    Returns the path written, or ``None`` when there was nothing to keep.
+    """
+    from nemo_curator.audio_agent._safety import redact
+
+    if redact(recipe, redact_transcripts=False) == recipe:
+        return None  # the record reproduces it exactly; a second copy would be one more place to leak
+    path = exact_recipe_path(run_id)
+    if path is None:
+        return None
+    _ensure_private_dir(runs_dir())
+    _ensure_private_dir(os.path.dirname(path))
+    _write_private_json(path, dict(recipe))
+    return path
+
+
+def load_exact_recipe(run_id: str) -> dict[str, Any] | None:
+    """The verbatim recipe for a run, or ``None`` when the record's own copy is already exact."""
+    path = exact_recipe_path(run_id)
+    if path is None or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            loaded = json.load(f)
+    except Exception:  # noqa: BLE001 - a corrupt copy falls back to the record, it does not raise
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
 def new_run_id(config_hash: str | None = None) -> str:
     """A sortable, collision-resistant run id: ``run-<UTC ts.microseconds>Z-<hash8>-<rand4>``.
 

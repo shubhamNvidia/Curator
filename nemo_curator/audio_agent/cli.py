@@ -308,7 +308,14 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block
         "delta-run",
         help="run only the files that changed since a prior run and merge them into its result",
     )
-    dr.add_argument("--recipe", required=True, help="the same recipe as the prior run (or - for stdin)")
+    dr.add_argument("--recipe", help="the same recipe as the prior run (or - for stdin); omit with --from-run")
+    dr.add_argument(
+        "--from-run",
+        help=(
+            "adopt this prior run's own recipe instead of passing one (a run_id from runs / "
+            "reuse-scan's prior_on_same_path), so the delta matches the pipeline that produced it"
+        ),
+    )
     dr.add_argument("--data", help=_RECIPE_DATA_HELP)
     dr.add_argument("--confirm", nargs="?", const=True, default=False,
                     help="pass the recipe config_hash (integrity) or bare --confirm; omit to see the card")
@@ -508,7 +515,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0912 - a flat 
             return _finish(
                 cmd,
                 aa.delta_run(
-                    _load_recipe(args.recipe),
+                    _load_recipe(args.recipe) if args.recipe else None,
+                    from_run=args.from_run,
                     data=args.data,
                     confirm=args.confirm,
                     bootstrap_ray=args.bootstrap_ray,

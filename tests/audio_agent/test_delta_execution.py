@@ -511,3 +511,191 @@ class TestMergeSafety:
         assert (kept, added, why) == (1, 1, "")
         assert os.stat(prior).st_ino != before  # replaced wholesale, not appended in place
         assert [r["audio_filepath"] for r in _rows(prior)] == ["/x/a.wav", "/x/b.wav"]
+
+
+def _drifted(folder: Path, out: Path) -> Recipe:
+    """The same pipeline as :func:`_recipe`, planned a second time.
+
+    One default written out explicitly, which changes nothing about what runs and moves every
+    step key -- the whole reason a folder curated an hour ago can look untouched.
+    """
+    return Recipe.from_dict(
+        {
+            "stages": [
+                {"ref": "CreateInitialManifestAudioFolderStage", "params": {"data_dir": str(folder)}},
+                {"ref": "GetAudioDurationStage", "params": {"duration_key": "duration"}},
+                {"ref": "ManifestWriterStage", "params": {"output_path": str(out)}},
+            ]
+        }
+    ).freeze()
+
+
+@pytest.mark.usefixtures("store")
+class TestAdoptingAPriorRunsRecipe:
+    """From "you curated this folder before" to "only the new file ran", without retyping."""
+
+    def test_a_drifted_plan_misses_everything_and_adopting_the_prior_run_deltas(self, tmp_path: Path) -> None:
+        folder, out = tmp_path / "audio", tmp_path / "out" / "m.jsonl"
+        for name in ("a.wav", "b.wav"):
+            _wav(folder / name)
+        first = _run(_recipe(folder, out), folder)
+        assert first["status"] == "completed"
+
+        _wav(folder / "c.wav")
+        # Session two: same request, planned again into its own output, and every matcher misses.
+        second_out = tmp_path / "out" / "second.jsonl"
+        scan = verbs.reuse_scan(_drifted(folder, second_out), data=str(folder))
+        assert scan["decision"] == "fresh"
+        # A delta cannot help here: it resumes from THIS pipeline's artifacts, and the drift moved
+        # every key. The notice is the only thing that can still connect the two sessions.
+        assert scan.get("delta", {}).get("status") != "ready"
+        notice = scan["prior_on_same_path"]
+        assert notice["run_id"] == first["run_id"]
+        assert notice["recommendation"] == "align"
+        assert notice["data_delta"]["added_files"] == ["c.wav"]
+
+        card = verbs.delta_run(from_run=first["run_id"], data=str(folder))
+        assert card["adopted_from"]["run_id"] == first["run_id"]
+        assert card["delta"]["change"]["added_files"] == ["c.wav"]
+        assert card["delta"]["status"] == "ready", card["delta"].get("reason")
+
+        done = verbs.delta_run(from_run=first["run_id"], data=str(folder), confirm=True)
+        assert done["status"] == "completed", done
+        assert done["ran_files"] == [str(folder / "c.wav")]
+        # The deliverable is the prior run's manifest, now covering the whole folder.
+        assert {os.path.basename(r["audio_filepath"]) for r in _rows(out)} == {"a.wav", "b.wav", "c.wav"}
+        assert not second_out.exists(), "adopting runs the prior pipeline, not the drifted one"
+
+    def test_the_card_names_the_pipeline_being_adopted_before_it_is_confirmed(self, tmp_path: Path) -> None:
+        """The user is approving stages they did not write, so the card has to show them."""
+        folder, out = tmp_path / "audio", tmp_path / "out" / "m.jsonl"
+        _wav(folder / "a.wav")
+        first = _run(_recipe(folder, out), folder)
+        _wav(folder / "b.wav")
+
+        card = verbs.delta_run(from_run=first["run_id"], data=str(folder))
+
+        assert card["adopted_from"]["pipeline"] == [s["ref"] for s in card["recipe"]["stages"]]
+        assert card["adopted_from"]["identity_reproduced"] is True
+        assert card["status"] == "refused", "an adopted delta is confirm-gated like any other"
+        assert card["config_hash"] in card["confirm_with"]
+
+    def test_adopting_over_an_unchanged_folder_is_sent_to_reuse_not_to_a_rerun(self, tmp_path: Path) -> None:
+        """No file moved, so there is nothing for a delta to process -- and running again would
+        pay a second time for the result the user came back to reuse."""
+        folder, out = tmp_path / "audio", tmp_path / "out" / "m.jsonl"
+        _wav(folder / "a.wav")
+        first = _run(_recipe(folder, out), folder)
+
+        card = verbs.delta_run(from_run=first["run_id"], data=str(folder))
+
+        assert card["status"] == "no_delta"
+        assert "already covers this input" in card["next"]
+        assert "as_is" in card["next"]
+
+    def test_a_recipe_and_a_run_together_are_refused_rather_than_one_being_ignored(self, tmp_path: Path) -> None:
+        folder, out = tmp_path / "audio", tmp_path / "out" / "m.jsonl"
+        _wav(folder / "a.wav")
+        first = _run(_recipe(folder, out), folder)
+
+        refused = verbs.delta_run(_recipe(folder, out), from_run=first["run_id"], data=str(folder))
+
+        assert refused["status"] == "refused"
+        assert "not both" in refused["reason"]
+
+    def test_neither_a_recipe_nor_a_run_is_refused(self) -> None:
+        refused = verbs.delta_run()
+
+        assert refused["status"] == "refused"
+        assert "from_run" in refused["reason"]
+
+    def test_an_unknown_run_is_refused_by_id(self) -> None:
+        refused = verbs.delta_run(from_run="run-nope")
+
+        assert refused["status"] == "refused"
+        assert "run-nope" in refused["reason"]
+
+    def test_a_run_that_did_not_complete_has_nothing_to_extend(self, tmp_path: Path) -> None:
+        from nemo_curator.audio_agent import run_store
+        from nemo_curator.audio_agent.contracts import RunRecord
+
+        folder, out = tmp_path / "audio", tmp_path / "out" / "m.jsonl"
+        _wav(folder / "a.wav")
+        rec = _recipe(folder, out)
+        run_id = run_store.new_run_id(rec.config_hash)
+        run_store.save(
+            RunRecord(run_id=run_id, recipe=rec.to_dict(), semantic_hash=rec.semantic_hash, status="failed")
+        )
+
+        refused = verbs.delta_run(from_run=run_id, data=str(folder))
+
+        assert refused["status"] == "refused"
+        assert "completed" in refused["reason"]
+
+
+@pytest.mark.usefixtures("store")
+class TestAPipelineHistoryCannotReproduce:
+    """A masked credential is part of reuse identity, so adopting has to notice it is gone."""
+
+    def _credentialed(self, folder: Path, out: Path) -> Recipe:
+        return Recipe.from_dict(
+            {
+                "stages": [
+                    {"ref": "CreateInitialManifestAudioFolderStage", "params": {"data_dir": str(folder)}},
+                    {"ref": "PyAnnoteDiarizationStage", "params": {"hf_token": "SECRET-TOKEN"}},
+                    {"ref": "ManifestWriterStage", "params": {"output_path": str(out)}},
+                ]
+            }
+        ).freeze()
+
+    def _record_with_masked_recipe(self, rec: Recipe) -> str:
+        from nemo_curator.audio_agent import _safety, run_store
+        from nemo_curator.audio_agent.contracts import RunRecord
+
+        run_id = run_store.new_run_id(rec.config_hash)
+        run_store.save(
+            RunRecord(
+                run_id=run_id,
+                recipe=_safety.redact(rec.to_dict(), redact_transcripts=False),
+                config_hash=rec.config_hash,
+                semantic_hash=rec.semantic_hash,
+                status="completed",
+            )
+        )
+        return run_id
+
+    def test_adopting_it_refuses_and_names_the_param(self, tmp_path: Path) -> None:
+        rec = self._credentialed(tmp_path / "audio", tmp_path / "m.jsonl")
+        run_id = self._record_with_masked_recipe(rec)
+
+        refused = verbs.delta_run(from_run=run_id)
+
+        assert refused["status"] == "refused"
+        assert "PyAnnoteDiarizationStage.hf_token" in refused["reason"]
+        assert "recipe with the credential supplied" in refused["next"]
+
+    def test_the_verbatim_copy_a_real_run_keeps_makes_it_adoptable(self, tmp_path: Path) -> None:
+        from nemo_curator.audio_agent import run_store
+
+        rec = self._credentialed(tmp_path / "audio", tmp_path / "m.jsonl")
+        run_id = self._record_with_masked_recipe(rec)
+        path = run_store.save_exact_recipe(run_id, rec.to_dict())
+
+        assert path, "a recipe the record cannot reproduce must be kept verbatim"
+        assert oct(os.stat(path).st_mode)[-3:] == "600", "a stored credential is owner-only"
+        assert run_store.load_exact_recipe(run_id) == rec.to_dict()
+
+        adopted, provenance, refusal = verbs._adopt_recipe(run_id)
+        assert refusal is None, refusal
+        assert adopted.semantic_hash == rec.semantic_hash, "the adopted pipeline is the one that ran"
+        assert provenance["identity_reproduced"] is True
+
+    def test_an_ordinary_recipe_is_not_copied_a_second_time(self, tmp_path: Path) -> None:
+        """Nothing was masked, so the record already reproduces it and a copy would only be one
+        more place the same information lives."""
+        from nemo_curator.audio_agent import run_store
+
+        rec = _recipe(tmp_path / "audio", tmp_path / "m.jsonl")
+
+        assert run_store.save_exact_recipe("run-x", rec.to_dict()) is None
+        assert run_store.load_exact_recipe("run-x") is None

@@ -214,7 +214,8 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
 
     @server.tool()
     def delta_run(
-        recipe: dict[str, Any],
+        recipe: dict[str, Any] | None = None,
+        from_run: str | None = None,
         data: str | None = None,
         confirm: bool | str = False,
         bootstrap_ray: bool = False,
@@ -227,9 +228,14 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
         Without ``confirm`` this returns the card (which files moved, which manifests would be
         rewritten, how many rows survive, what it saves). Everything a delta relies on is
         checked first and refused by name, so a ``no_delta`` answer means run normally rather
-        than that a partial result was accepted."""
+        than that a partial result was accepted.
+
+        ``from_run`` adopts that run's own recipe (a run_id from ``runs`` or from a scan's
+        ``prior_on_same_path``) instead of passing one, so the delta matches the pipeline whose
+        artifacts it resumes from rather than a retyped near-copy of it."""
         return aa.delta_run(
             recipe,
+            from_run=from_run,
             data=data,
             confirm=confirm,
             bootstrap_ray=bootstrap_ray,

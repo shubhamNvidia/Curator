@@ -112,28 +112,74 @@ means a full run; it never means a partial result presented as a whole one.
 
 `already_done`, `incremental` and `delta` all match on the step-key chain, which a changed
 source stage or changed corpus moves wholesale — so a folder you curated an hour ago becomes
-invisible to them the moment the recipe drifts, even slightly. The scan closes that blind spot
-with `prior_on_same_path`, present on a `fresh` (or `delta`) result whenever a prior **completed
-run read the same source folder**, matched by path rather than by recipe. It is advisory: it
-never changes `decision` and reuses nothing. It carries:
+invisible to them the moment the recipe drifts, even slightly. And it drifts easily: the same
+request planned twice is not bit-identical, and one threshold written out where it was defaulted
+before is enough to miss every key. The scan closes that blind spot with `prior_on_same_path`,
+present on a `fresh` or `delta` result whenever a prior **completed run read the same source
+folder**, matched by path rather than by recipe. It is advisory: it never changes `decision` and
+reuses nothing. It carries the closest match at the top level, plus `count` and the ranked
+`matches` (closest pipeline first, then most recent) when the folder was curated more than once:
 
 - `created_at` and `run_id` — when, and which run.
 - `recipe_diff` — `added_stages`, `removed_stages`, `changed_params` (`{stage, param, from, to}`),
   and a human `phrase`. This is how you see that last time used a different source stage, or a
-  `mos_threshold` of 3.4 where you now have 2.5.
+  threshold set to one value where you now have another.
 - `data_delta` — added / modified / removed / unchanged file counts and names since that run
   (`basis: inventory`), or a labelled count comparison when no per-file record was kept.
 - `recommendation` — `delta` (same pipeline, only the corpus moved → the changed-file path is the
-  cheap answer), `align` (a different pipeline → matching the prior stages is what would make its
-  work reusable), or `fresh`.
+  cheap answer), `align` (a different pipeline → adopting that run's recipe is what makes its work
+  reusable), or `fresh`.
+- `next` — the two commands, with the real ids filled in: `inspect` and `adopt`.
 
-**Surface it; do not silently run fresh over it.** When `prior_on_same_path` is present, tell the
-user before smoking or running: this folder was curated on <date>, here is how the current plan
-differs (`recipe_diff.phrase`), and here is what changed in the folder since (`data_delta.phrase`).
-Then let them choose — align the differing stages so the prior work reuses (or a `delta` becomes
-possible), or proceed fresh as an informed decision. The whole point is that "I've done this here
-before" is a fact the user should hear, not one a step-key miss is allowed to hide. It is a notice,
-never an action: you still reuse only through `continue`/`delta-run`, never by editing bytes.
+### The conversation this is for
+
+A user who curated a folder last week and comes back with the same intent worded differently
+should hear about the earlier work **before** anything runs. Four steps, in order:
+
+1. **Say what exists, briefly.** "This folder was curated on <date> (<`goal`>). <`data_delta.phrase`>."
+   With `count` above 1, name the closest two or three from `matches` — date, objective, and how
+   each differs — rather than listing everything.
+2. **Ask whether to build on it**, and offer to show more. Do not decide for them, and do not
+   start a fresh run while the question is open.
+3. **If they want detail, get it from the record** — never by reading the prior output:
+
+```bash
+python -m nemo_curator.audio_agent runs --run-id <run_id>
+```
+
+   The `overview` block is written for this moment: `pipeline` (the stage chain), `key_params`
+   (what each stage was set to), `data` (source, dataset key, file count), `stats` (elapsed,
+   accepted rows, slowest stages), `acceptance` (its verdict, per criterion) and `outputs`.
+
+4. **If they say yes, adopt that run's own recipe and run only the delta.** Do not retype the
+   pipeline — that is what made the prior work invisible in the first place:
+
+```bash
+python -m nemo_curator.audio_agent delta-run --from-run <run_id> --data /path/to/folder
+```
+
+   Without `--confirm` this returns the card: `adopted_from` (the run, its objective, the
+   pipeline being adopted), the `delta` block (which files are new/changed/gone, which manifests
+   get rewritten, `rows_kept` / `rows_dropped`, `estimated_saving_sec`) and the `config_hash` to
+   confirm with. Relay it, then confirm. The result merges the new rows into the prior manifest,
+   so the deliverable covers the whole folder — the prior work plus the delta — not just the new
+   files. Report it that way, and say which part was reused.
+
+`--from-run` refuses rather than guessing: passing a recipe *and* `--from-run` together is an
+error (adopting means running that run's stages, not yours), a run that did not complete has no
+result to extend, and a recipe whose credential was masked in history cannot be reproduced — that
+last one names the param and asks for the recipe with the value supplied. If the delta itself is
+unavailable, `status: no_delta` carries the reason (see [When only a few files changed](#when-only-a-few-files-changed));
+adopting the recipe is still what makes the *next* run reusable, so keep it and run it normally.
+
+**Never silently run fresh over prior work.** Proceeding fresh is a legitimate choice — it is
+just not yours to make quietly. "I've done this here before" is a fact the user should hear, and a
+step-key miss is not allowed to hide it. It stays a notice, never an action: reuse happens only
+through `continue` / `delta-run`, never by editing bytes.
+
+`runs --data /path/to/folder` answers the same question outside a scan: it lists runs on that
+exact corpus *and* runs that read the folder when its contents differed, with the latter named in
+`same_folder_only`.
 
 ## When the scan says the work was done but nothing was saved
 

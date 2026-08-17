@@ -115,6 +115,7 @@ def test_mcp_parameter_contract_matches_public_verb_surface(monkeypatch) -> None
         ],
         "delta_run": [
             "recipe",
+            "from_run",
             "data",
             "confirm",
             "bootstrap_ray",
