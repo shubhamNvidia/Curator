@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import os
 import tempfile
 from typing import TYPE_CHECKING, Any, Literal
@@ -215,6 +216,50 @@ def _as_soundfile_array(waveform: Any) -> Any:  # noqa: ANN401
         if channels < samples:
             return waveform.T
     return waveform
+
+
+def write_audio_stable(
+    waveform: Any,  # noqa: ANN401 - a torch tensor or numpy array, same as _as_soundfile_array takes
+    sample_rate: int,
+    *,
+    output_dir: str | None,
+    stem: str = "audio",
+    tag: str = "",
+) -> str:
+    """Write a waveform under a name derived from the audio, and return the path.
+
+    Stages writing in-memory audio used to reach for ``tempfile.mkstemp``, whose contract is a
+    name that has never existed -- right for scratch, wrong for a deliverable: each re-run wrote
+    a second full set of files beside the first instead of replacing it, leaving every prior run
+    orphaned in the directory. Naming a file after its own bytes fixes that by construction.
+
+    ``output_dir`` of None keeps the mkstemp behaviour, because that is the system temp dir: a
+    predictable name there would be world-readable in a shared directory, and unguessable-and-
+    private is worth more than de-duplication for audio nothing is going to look for by name.
+    """
+    arr = _as_soundfile_array(waveform)
+    if output_dir is None:
+        fd, path = tempfile.mkstemp(prefix=f"{stem}{f'_{tag}' if tag else ''}_", suffix=".wav")
+        os.close(fd)
+        sf.write(path, arr, int(sample_rate))
+        return path
+
+    os.makedirs(output_dir, exist_ok=True)
+    digest = hashlib.sha256(arr.tobytes())
+    digest.update(f"|{int(sample_rate)}".encode())
+    path = os.path.join(output_dir, f"{stem}{f'_{tag}' if tag else ''}_{digest.hexdigest()[:16]}.wav")
+    # Write beside the target and rename, so a killed or concurrent writer cannot leave a
+    # half-written file at a name the next run treats as finished.
+    staged_fd, staged = tempfile.mkstemp(prefix=".", suffix=".wav", dir=output_dir)
+    os.close(staged_fd)
+    try:
+        sf.write(staged, arr, int(sample_rate))
+        os.replace(staged, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(staged)
+        raise
+    return path
 
 
 def resolve_audio_path(  # noqa: PLR0913 (complexity accepted: keyword-only residency/key knobs mirror the stage fields)
