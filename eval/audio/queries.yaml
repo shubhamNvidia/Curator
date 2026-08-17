@@ -589,7 +589,8 @@ queries:
           - {ref: GetAudioDurationStage, params: {}}
           - {ref: ManifestWriterStage, params: {output_path: "{root}/out/durations.jsonl"}}
     expect:
-      reuse_decision: fresh  # the key genuinely misses; the delta is an addition to that answer
+      reuse_decision: delta  # the key missed, but a changed-file delta covers it
+      key_matched: false
       delta_status: ready
       delta_files: 1
       recommended: delta

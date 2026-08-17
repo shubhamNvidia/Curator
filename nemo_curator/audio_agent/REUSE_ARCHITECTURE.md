@@ -449,7 +449,8 @@ the key the full pipeline probes and a later scan would serve a one-row manifest
 `tests/audio_agent/test_delta.py` asserts it, and conformance requires any stage accepting the
 param to declare `per_row_independent`.
 
-Surfaced as `delta.status: ready` on the `reuse-scan` card (with `recommended: delta`) and as the
+Surfaced on the `reuse-scan` card as `decision: delta` (with `delta.status: ready`,
+`recommended: delta`, and `key_matched: false` recording the miss the decision rests on) and as the
 `delta-run` verb / CLI command / MCP tool, confirm-gated like `run` because it rewrites the prior
 manifests after merging. The property under test is `N == (N-1) + delta`: a full run over every
 file and a run over all but one followed by a delta over that one produce the same rows.

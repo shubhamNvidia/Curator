@@ -344,9 +344,7 @@ to report and verify acceptance including the reviewer charter.
 
 Read `references/reuse.md` before smoking or running. It covers `reuse-scan`, the
 three conversation rules (never read prior artifact content, never reuse silently,
-never nag), acting on the choice with `continue`, running only the files that
-changed since a prior run (`delta-run`), and what to do when the scan says prior
-work was done but nothing was saved (`add-checkpoint`).
+never nag), and acting on the choice with `continue`.
 
 ## Control conditions
 

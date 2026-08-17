@@ -14,6 +14,8 @@ python -m nemo_curator.audio_agent reuse-scan --recipe recipe.yaml --data /path/
 The `decision` is `already_done` (this pipeline matches a prior computation and
 dataset key at the reported trust tier), `incremental` (the first *N* stages are
 already done — e.g. resample + VAD + quality-filter exist and only ASR is new),
+`delta` (the corpus key missed, but only a few files changed and the rest of the
+prior result still stands — see [When only a few files changed](#when-only-a-few-files-changed)),
 or `fresh`. Reuse survives things that do NOT change output bytes: a different
 batch size, different `resources`, a different output path, or a **stricter
 success bar** (the data is reused and the contract re-verified), and a Curator
@@ -64,8 +66,14 @@ done to a corpus; `reindex` rebuilds the lookup index from the JSON records if i
 
 A dataset key names the whole corpus, so adding one file to a curated folder misses every step
 key and the plain reading of that miss is "recompute all thousand files". When the scan can do
-better it says so on the same card: `delta.status: ready`, `recommended: delta`, and a `choices`
-list whose first entry is running the changed files only. The `delta` block names them
+better the `decision` itself is **`delta`**, not `fresh`, with `recommended: delta` and a
+`choices` list whose first entry is running the changed files only. `key_matched: false` records
+the miss the decision rests on — the key did miss; a full rerun is still the wrong response to
+it. **A `decision: delta` card must never be answered with a full `run`** without putting the
+delta to the user first, with its `estimated_saving_sec`. Recurating files that are already
+done is the failure this exists to prevent, and it has happened: a host read `fresh`, recurated
+the whole corpus, and told the user a checkpoint was missing when none was needed. The `delta`
+block names the changed files
 (`change.added_files`, `modified_files`, `removed_files`), says which stages would run
 (`run_stages`), how many prior rows survive (`rows_kept`) and how many are dropped and
 recomputed (`rows_dropped`).

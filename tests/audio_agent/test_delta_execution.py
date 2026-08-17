@@ -396,8 +396,9 @@ class TestTheCardOffersIt:
 
         scan = verbs.reuse_scan(rec, data=str(folder))
 
-        # The key really did miss -- the delta is an addition to that answer, not a change to it.
-        assert scan["decision"] == "fresh"
+        # `decision` names the cheapest correct action, because that is the field a host branches on.
+        assert scan["decision"] == "delta"
+        assert scan["key_matched"] is False
         assert scan["delta"]["status"] == "ready"
         assert scan["recommended"] == "delta"
         assert scan["prompt_user"] is True, "an available delta is always worth asking about"

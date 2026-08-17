@@ -106,9 +106,9 @@ clobbered).
    stopping at the first set.
 5. Mandatory semantic critique -> `pass` / `revise` / `ask`. Only `pass` may continue.
 6. `reuse-scan` before spending compute, then `smoke --sample N` and show
-   retained/rejected plus examples (at most 2 rounds). When the scan reports
-   `delta.status: ready`, a few files changed since a prior run: offer `delta-run`
-   instead of recurating the whole corpus, and relay its `reason` when it refuses.
+   retained/rejected plus examples (at most 2 rounds). When the scan answers
+   `decision: delta` (`delta.status: ready`), a few files changed since a prior run: offer
+   `delta-run` instead of recurating the whole corpus, and relay its `reason` when it refuses.
    `delta-run` answering `tail_required` is NOT a finished curation -- the merge brought
    the checkpoint up to date and the files in `tail.stale_outputs` still describe the old
    corpus. Run the `continue` in its `next` before reporting anything as done.
@@ -133,6 +133,12 @@ clobbered).
   between `validate` and `smoke` is mandatory.
 - **Evidence only.** No quality or throughput claim without before/after numbers from a
   `report`.
+- **Never recurate files that are already done.** `decision: delta` means prior work covers
+  every file but a few. Offer `delta-run` with its `estimated_saving_sec` before any full
+  `run` — do not branch on `decision` alone and stop there. When a delta is unavailable the
+  scan says why in `delta.reason`; relay that reason rather than inventing a cause. A host
+  once read `fresh`, recurated a whole corpus over one added file, and reported a missing
+  checkpoint that the recipe did not need.
 - **Environment questions have one home:** `doctor`. Do not diagnose the environment from
   stage cards, and never silently install, upgrade, switch CPU/GPU, or retry a failure.
 - **Write scratch recipes to `scratch_dir()`**, not the working directory — that is a git
