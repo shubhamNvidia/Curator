@@ -262,7 +262,13 @@ class SIGMOSFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             ),
             cardinality="filter" if self.action == "filter" else "1:1",
             cardinality_options=["filter", "annotate"],
-            gates=Gates(requires_gpu=self.resources.gpus > 0, requires_internet_first_run=self.model_path is None),
+            gates=Gates(
+                requires_gpu=self.resources.gpus > 0,
+                requires_internet_first_run=self.model_path is None,
+                # ``_process_single`` runs the ONNX model on one clip's samples and compares the
+                # scores against the configured thresholds, never against the corpus.
+                per_row_independent=True,
+            ),
         )
 
     @staticmethod

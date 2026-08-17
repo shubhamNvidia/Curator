@@ -146,7 +146,16 @@ class SegmentConcatenationStage(AgentReady, ProcessingStage[AudioTask, AudioTask
             metadata_writes=["segment_mappings"],
             cardinality="N:1",
             iteration_key=self.segments_key,
-            gates=Gates(writes_to_disk=self.write_to_disk, output_path_params=["output_dir"]),
+            gates=Gates(
+                writes_to_disk=self.write_to_disk,
+                output_path_params=["output_dir"],
+                # The ``N`` this stage collapses is the segments of ONE row's own file, so no
+                # other file's audio reaches the combined waveform -- the ``N:1`` cardinality
+                # counts tasks, not the origins of the values. ``write_to_disk`` does not change
+                # that: ``write_audio_stable`` names the WAV after a digest of its own bytes, so
+                # two rows can only land on one path by carrying identical audio.
+                per_row_independent=True,
+            ),
         )
 
     def process(self, task: AudioTask) -> AudioTask | list[AudioTask]:

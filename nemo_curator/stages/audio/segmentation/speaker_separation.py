@@ -183,7 +183,12 @@ class SpeakerSeparationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             gates=Gates(
                 requires_gpu=self.resources.gpus > 0,
                 requires_internet_first_run=True,
-                writes_to_disk=self.write_to_disk, output_path_params=["separated_audio_dir"]),
+                writes_to_disk=self.write_to_disk, output_path_params=["separated_audio_dir"],
+                # Diarization runs on one file's audio, and ``num_speakers`` counts the speakers
+                # found in THAT file. Unlike SplitLongAudioStage, a shared output directory is
+                # still safe here: ``write_audio_stable`` names each per-speaker WAV after a
+                # digest of its own samples rather than after the source basename.
+                per_row_independent=True),
         )
 
     def ray_stage_spec(self) -> dict[str, Any]:

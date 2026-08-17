@@ -21,7 +21,7 @@ import librosa
 import numpy as np
 from loguru import logger
 
-from nemo_curator.stages.audio._agent_ready import AgentReady, ConditionalWrite, IOSpec, StageContract
+from nemo_curator.stages.audio._agent_ready import AgentReady, ConditionalWrite, Gates, IOSpec, StageContract
 from nemo_curator.stages.audio._residency import InputResidency, residency_read_specs
 from nemo_curator.stages.audio.common import ensure_mono, ensure_waveform_2d
 from nemo_curator.stages.base import ProcessingStage
@@ -115,6 +115,9 @@ class BandwidthEstimationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
                     value_origin="augments_upstream_same_key",
                 ),
             ],
+            # The threshold is measured against the peak of this clip's own power spectrum, not
+            # against a level taken over the corpus.
+            gates=Gates(per_row_independent=True),
         )
 
     def validate_input(self, task: AudioTask) -> bool:

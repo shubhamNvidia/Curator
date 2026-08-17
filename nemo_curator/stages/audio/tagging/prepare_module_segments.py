@@ -24,7 +24,7 @@ from typing import Any
 
 from loguru import logger
 
-from nemo_curator.stages.audio._agent_ready import AgentReady, IOSpec, StageContract
+from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, StageContract
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.tasks import AudioTask
 
@@ -82,6 +82,11 @@ class PrepareModuleSegmentsStage(AgentReady, ProcessingStage[AudioTask, AudioTas
         return StageContract(
             reads=IOSpec(data_keys=[self.segments_key, self.duration_key]),
             writes=IOSpec(data_keys=[self.segments_key]),
+            # The ``asr`` module draws its per-segment length limit from ``self._rng``, which
+            # ``process`` reseeds from a hash of the row's own id before touching it. So the draws
+            # a row gets depend on that row alone, unlike PyAnnoteDiarizationStage's unseeded
+            # generator, whose sequence position is decided by how many rows preceded it.
+            gates=Gates(per_row_independent=True),
         )
 
     def __post_init__(self):

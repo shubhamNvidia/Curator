@@ -23,7 +23,7 @@ from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo_text_processing.text_normalization import Normalizer
 
 from nemo_curator.backends.base import WorkerMetadata
-from nemo_curator.stages.audio._agent_ready import AgentReady, ConditionalWrite, IOSpec, StageContract
+from nemo_curator.stages.audio._agent_ready import AgentReady, ConditionalWrite, Gates, IOSpec, StageContract
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.tasks import AudioTask
 
@@ -122,6 +122,8 @@ class ComputeWERStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                     value_origin="augments_upstream_same_key",
                 ),
             ],
+            # Each metric compares one hypothesis against its own reference, a segment at a time.
+            gates=Gates(per_row_independent=True),
         )
 
     def validate_input(self, task: AudioTask) -> bool:
@@ -394,6 +396,7 @@ class GetPairwiseWerStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                     ),
                 )
             ],
+            gates=Gates(per_row_independent=True),
         )
 
     def process(self, task: AudioTask) -> AudioTask:

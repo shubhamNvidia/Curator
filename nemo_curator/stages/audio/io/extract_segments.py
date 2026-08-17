@@ -336,7 +336,18 @@ class SegmentExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 IOSpec(data_keys=["original_file", "diar_segments", "speaker_id"], accepts=["file"]),
             ],
             writes=IOSpec(data_keys=[self.output_key], produces=["disk"]),
-            gates=Gates(writes_to_disk=True, output_path_params=["output_dir"]),
+            gates=Gates(
+                writes_to_disk=True,
+                output_path_params=["output_dir"],
+                # ``_make_filename`` reads ``self._segment_counter[original_name]``, a running
+                # index that survives across ``process_batch`` calls, so the ``_segment_NNN``
+                # suffix in a row's ``extracted_path`` is decided by how many earlier rows for
+                # that source were already extracted. A delta seeing only the new rows would
+                # restart at 000 and overwrite the full run's segments. ``detect_combo`` reading
+                # the batch's first entry and the whole-CSV rewrite from ``_all_metadata_rows``
+                # are corpus-wide in the same way.
+                per_row_independent=False,
+            ),
         )
 
     def num_workers(self) -> int | None:

@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 
 from loguru import logger
 
-from nemo_curator.stages.audio._agent_ready import AgentReady, StageContract
+from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, StageContract
 from nemo_curator.stages.audio.filtering import BandFilterStage, SIGMOSFilterStage, UTMOSFilterStage
 from nemo_curator.stages.audio.postprocessing import TimestampMapperStage
 from nemo_curator.stages.audio.preprocessing import MonoConversionStage, SegmentConcatenationStage
@@ -93,7 +93,14 @@ class AudioDataFilterStage(AgentReady, CompositeStage[AudioTask, AudioTask]):
             self._cfg = _deep_merge(self._cfg, config)
 
     def describe(self) -> StageContract:
-        return StageContract(wrappable=False)
+        return StageContract(
+            wrappable=False,
+            # True for every topology because it is true of each delegate: mono conversion, VAD,
+            # the three quality filters, concatenation, speaker separation and the timestamp
+            # mapper all work from the row they are handed. The factories below leave
+            # ``write_to_disk`` unset throughout, so none of them even opens a shared directory.
+            gates=Gates(per_row_independent=True),
+        )
 
     def decompose(self) -> list[ProcessingStage]:
         """Build a self-consistent pipeline topology based on enabled features."""

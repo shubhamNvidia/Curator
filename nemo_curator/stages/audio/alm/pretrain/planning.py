@@ -561,6 +561,11 @@ class SnippetRepetitionFilterStage(AgentReady, ProcessingStage[AudioTask, AudioT
             metadata_writes=[_PRETRAIN_META_KEY],
             gates=Gates(
                 requires_internet_first_run=not os.path.isdir(self.tokenizer_path),
+                # Not cross-corpus dedup, which the name invites: ``_snippet_is_repetitive``
+                # counts n-grams within the join of ONE snippet's own segment texts, catching an
+                # ASR run that degenerated into repeating a phrase. Nothing is compared between
+                # snippets, rows or files, and the only shared thing is the tokenizer -- a model
+                # calibrated elsewhere, which does not make a verdict corpus-dependent.
                 per_row_independent=True,
             ),
         )

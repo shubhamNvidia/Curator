@@ -465,7 +465,13 @@ class SplitASRAlignJoinStage(AgentReady, CompositeStage[AudioTask, AudioTask]):
         super().__init__()
 
     def describe(self) -> StageContract:
-        return StageContract(wrappable=False)
+        return StageContract(
+            wrappable=False,
+            # Mirrors the delegate that decides it: the aligner and the join are per-row, so the
+            # composite is independent exactly when its ``SplitLongAudioStage`` is -- which is
+            # when no ``output_dir`` flattens every source's splits into one namespace.
+            gates=Gates(per_row_independent=self.output_dir is None),
+        )
 
     def decompose(self) -> list[ProcessingStage]:
         return [

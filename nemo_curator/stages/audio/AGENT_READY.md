@@ -159,15 +159,23 @@ batch padding without lengths.
 
 Three more rules:
 
-- **Declare per instance when the unsafety is conditional.** `CreateInitialManifestAudioFolderStage`
-  is only unsound under `max_samples` (it truncates the *sorted* listing), so it declares
-  `per_row_independent=(self.max_samples is None or self.max_samples < 0)` rather than a flat
-  `False` that would cost every ordinary folder source its delta.
+- **Declare per instance when the unsafety is conditional.** `SplitLongAudioStage` is independent
+  only while no shared `output_dir` flattens every source's splits into one namespace, so it
+  declares `per_row_independent=(self.output_dir is None)` rather than a flat `False` that would
+  cost the default configuration — the safe one — its delta. `SplitASRAlignJoinStage` and
+  `InferenceSortformerStage` do the same with their own output directories.
 - **A source accepting `include_files` MUST declare**, `True` or `False` — silence is a conformance
   error. That parameter is how a delta narrows a source, so it has to be answerable.
 - **Getting it wrong is asymmetric.** `False` when you were safe costs a full rerun — annoying and
   harmless. `True` when you were not silently produces rows a full run would never have produced,
   and republishes them as the corpus's reusable result. **When unsure, declare `False`.**
+
+The two `CreateInitialManifest*` sources with `max_samples` are a **deliberate exception** to that
+last rule, not an example of it. `max_samples` truncates the *sorted* listing, so a delta over a
+bounded source can select files a full run would not have — yet both declare a flat `True`, because
+the conditional `False` denied reuse to the configuration nearly everyone runs (ReadSpeech defaults
+to 5000). The limitation is recorded at each declaration. Do not copy this into a new stage; if you
+find yourself wanting to, declare `False` and raise it instead.
 
 ## What is AUTO-DERIVED — do NOT hand-write these
 

@@ -231,5 +231,10 @@ class DocumentBatchJsonlWriterStage(AgentReady, ProcessingStage[DocumentBatch, D
                 output_path_params=["output_path"],
                 lifecycle_side_effects=True,
                 requires_serializable_input=True,
+                # Appends each batch's rows as they arrive; a row's line is its own contents.
+                # Which lines the manifest ends up holding is a fact about the run, and a delta
+                # merge rewrites exactly that. Also stated in AGENT_STATIC above -- describe()
+                # was the view a delta reads, and it was the one left silent.
+                per_row_independent=True,
             ),
         )

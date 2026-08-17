@@ -288,7 +288,12 @@ class TimestampMapperStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             # ``sanitizes_output`` means. Leaving it unset made the validator report
             # ``tensor_into_sink`` against a JSON sink placed after this stage, i.e. it refused a
             # pipeline that was already safe.
-            gates=Gates(sanitizes_output=True),
+            gates=Gates(
+                sanitizes_output=True,
+                # The concat->original mappings are read from THIS task's ``_metadata``, so every
+                # position it resolves comes from the row it was handed.
+                per_row_independent=True,
+            ),
             metadata_reads=[self.mappings_key],
             preserves_upstream_keys=False,
             conditional_writes=conditional_writes,

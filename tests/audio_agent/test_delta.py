@@ -29,6 +29,9 @@ import pytest
 
 from nemo_curator.audio_agent import artifacts, delta, profiler
 from nemo_curator.audio_agent.recipe import Recipe
+from nemo_curator.stages.audio._agent_ready import AgentReady, StageContract
+from nemo_curator.stages.base import ProcessingStage
+from nemo_curator.tasks import AudioTask
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -206,19 +209,22 @@ class TestNarrowingIsNotInvisible:
             contract = assert_contract_wellformed(cls)
             assert contract.gates.per_row_independent is not None, cls.__name__
 
-    def test_a_source_that_cannot_be_narrowed_safely_may_say_so_and_stay_conformant(self) -> None:
-        """``max_samples`` truncates the sorted listing, so narrowing this source is unsound.
+    def test_a_bounded_source_is_still_declared_narrowable_by_an_accepted_decision(self) -> None:
+        """A bounded ``max_samples`` does not stop the region, by decision rather than by proof.
 
-        The stage says so per instance instead of lying or dropping ``include_files``, and the
-        region stops at it -- which for a SOURCE means there is nothing above to resume from, so
-        the honest answer is a full run. Requiring ``True`` here (the rule as first written)
-        would have forced the contradiction rather than surfaced it.
+        ``max_samples`` truncates the SORTED listing, so which files are selected is a fact about
+        the whole folder: a delta enumerating only the changed files takes the first N of its own
+        listing and can admit files a full run would never have selected, silently. This stage
+        declared ``False`` while bounded for exactly that reason, and the region stopped at it --
+        which for a SOURCE means a full run every time anyone sets the parameter. That cost was
+        weighed against the unsoundness and reuse was chosen, so the declaration is now a flat
+        ``True``. The assertion is inverted deliberately; it is not that the hazard went away.
         """
         from nemo_curator.stages.audio._conformance import assert_contract_wellformed
         from nemo_curator.stages.audio.common import CreateInitialManifestAudioFolderStage as Folder
 
         bounded = assert_contract_wellformed(Folder(data_dir="/tmp/x", max_samples=10))
-        assert bounded.gates.per_row_independent is False
+        assert bounded.gates.per_row_independent is True
         assert assert_contract_wellformed(Folder(data_dir="/tmp/x")).gates.per_row_independent is True
 
         rec = Recipe.from_dict(
@@ -229,9 +235,7 @@ class TestNarrowingIsNotInvisible:
                 ]
             }
         ).freeze()
-        depth, reason = delta.region(rec, upto=2)
-        assert depth == 0
-        assert "CreateInitialManifestAudioFolderStage" in reason
+        assert delta.region(rec, upto=2) == (2, "")
 
 
 class TestInventory:
@@ -336,6 +340,40 @@ class TestClassify:
         assert delta.classify({"a": "1"}, None) is None
 
 
+class ForeignBatchStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
+    """A stage from outside this repo that never declared the gate, and is handed whole batches.
+
+    Every stage Curator ships now declares ``per_row_independent`` -- pinned by
+    ``tests/stages/audio/test_agent_foundation.py`` so a delta can no longer be refused over an
+    omission. The derivation for an UNDECLARED stage still has to be exercised, and the case it
+    exists for is precisely a stage the audit does not reach: a user's own, or one written before
+    the gate was.
+    """
+
+    name: str = "ForeignBatchStage"
+
+    def describe(self) -> StageContract:
+        return StageContract(cardinality="1:1")
+
+    def process(self, task: AudioTask) -> AudioTask:
+        raise NotImplementedError
+
+    def process_batch(self, tasks: list[AudioTask]) -> list[AudioTask]:
+        return tasks
+
+
+class ForeignPerRowStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
+    """The same, one task per call: no batch, nothing kept between calls, no file written."""
+
+    name: str = "ForeignPerRowStage"
+
+    def describe(self) -> StageContract:
+        return StageContract(cardinality="1:1")
+
+    def process(self, task: AudioTask) -> AudioTask:
+        return task
+
+
 class TestRegion:
     """How deep per-file work stays independent, read from what stages declare."""
 
@@ -363,7 +401,7 @@ class TestRegion:
     ) -> None:
         """A stage nobody annotated still gets a definite answer, and one that names its reason.
 
-        ``SegmentExtractionStage`` declares nothing, but it is handed several rows per call, so
+        ``ForeignBatchStage`` declares nothing, but it is handed several rows per call, so
         whether a row's result depends on the batch it landed in cannot be established from the
         outside -- and the refusal says exactly that rather than "undeclared".
         """
@@ -371,13 +409,13 @@ class TestRegion:
             {
                 "stages": [
                     {"ref": "ManifestReader", "params": {"manifest_path": str(tmp_path / "m.jsonl")}},
-                    {"ref": "SegmentExtractionStage", "params": {"output_dir": str(tmp_path / "segs")}},
+                    {"ref": "ForeignBatchStage", "params": {}},
                 ]
             }
         ).freeze()
         depth, reason = delta.region(rec, upto=2)
         assert depth == 1
-        assert "SegmentExtraction" in reason
+        assert "ForeignBatchStage" in reason
         assert "several rows at once" in reason
 
     def test_squim_refuses_by_its_own_declaration_not_by_the_derivation(self, tmp_path: Path) -> None:
@@ -425,23 +463,23 @@ class TestRegion:
     def test_an_undeclared_per_row_stage_is_derived_safe_rather_than_refused(self, tmp_path: Path) -> None:
         """The point of deriving: a stage nobody annotated still gets a correct answer.
 
-        ``ComputeWERStage`` is handed one task per call, keeps nothing between calls and writes
-        no file, so no other file's data can reach its output. Requiring its author to say so
-        would be a hand-written claim that can only be wrong -- and would leave the delta inert
-        on every pipeline containing a stage written before this feature existed.
+        ``ForeignPerRowStage`` is handed one task per call, keeps nothing between calls and
+        writes no file, so no other file's data can reach its output. Requiring its author to say
+        so would be a hand-written claim that can only be wrong -- and would leave the delta
+        inert on every pipeline containing a stage written before this feature existed.
         """
         rec = Recipe.from_dict(
             {
                 "stages": [
                     {"ref": "ManifestReader", "params": {"manifest_path": str(tmp_path / "m.jsonl")}},
-                    {"ref": "ComputeWERStage", "params": {}},
+                    {"ref": "ForeignPerRowStage", "params": {}},
                 ]
             }
         ).freeze()
         assert delta.region(rec, upto=2) == (2, "")
 
     def test_a_split_stage_is_independent_only_while_its_outputs_cannot_collide(self, tmp_path: Path) -> None:
-        """Conditional in the config, like the folder source under ``max_samples``.
+        """The surviving example of a gate answered per instance rather than per class.
 
         Split names come from the source basename alone, so an ``output_dir`` puts every file in
         one flat namespace and ``spk1/utt1.wav`` and ``spk2/utt1.wav`` fight over the same output

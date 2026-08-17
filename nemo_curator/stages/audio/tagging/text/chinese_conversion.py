@@ -21,7 +21,7 @@ from loguru import logger
 from opencc import OpenCC
 
 from nemo_curator.backends.base import WorkerMetadata
-from nemo_curator.stages.audio._agent_ready import AgentReady, IOSpec, StageContract
+from nemo_curator.stages.audio._agent_ready import AgentReady, Gates, IOSpec, StageContract
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.tasks import AudioTask
 
@@ -60,6 +60,8 @@ class ChineseConversionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         return StageContract(
             reads=IOSpec(data_keys=[self.segments_key]),
             writes=IOSpec(segment_data_keys=[f"{self.text_key}{self.output_suffix}"]),
+            # The OpenCC mapping is fixed by ``convert_type``; each segment's text converts alone.
+            gates=Gates(per_row_independent=True),
         )
 
     def setup(self, _worker_metadata: WorkerMetadata | None = None) -> None:

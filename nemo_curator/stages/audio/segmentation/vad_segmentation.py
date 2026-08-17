@@ -172,7 +172,9 @@ class VADSegmentationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             # nested mode pops the top-level waveform after building segments, so a
             # downstream stage reading the top-level waveform would find it gone.
             removes_keys=[self.waveform_key] if self.nested else [],
-            gates=Gates(requires_gpu=self.resources.gpus > 0),
+            # Silero decides speech from this file's own samples against the configured
+            # threshold, and every segment it emits is a slice of that same file.
+            gates=Gates(requires_gpu=self.resources.gpus > 0, per_row_independent=True),
         )
 
     def ray_stage_spec(self) -> dict[str, Any]:

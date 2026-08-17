@@ -174,10 +174,14 @@ def _check_roles(stage_or_cls: Any, c: StageContract, name: str) -> None:  # noq
 def _check_per_row_independence(c: StageContract, name: str) -> None:
     """A narrowable source has to answer whether narrowing it is sound -- either way.
 
-    ``False`` is a legitimate answer, not a violation: ``CreateInitialManifestAudioFolderStage``
-    under ``max_samples`` truncates the sorted listing, says so per instance, and ``delta.region``
-    stops there. Requiring ``True`` would force it to lie or drop the parameter. Silence is what
-    is forbidden.
+    ``False`` is a legitimate answer, not a violation: a source that cannot be narrowed soundly
+    says so per instance and ``delta.region`` stops there. Requiring ``True`` would force such a
+    source to lie or to drop the parameter. Silence is what is forbidden.
+
+    The case that first motivated this -- ``CreateInitialManifestAudioFolderStage`` under a
+    bounded ``max_samples``, which truncates the sorted listing -- now declares ``True`` anyway
+    by an explicit product decision recorded at that declaration. The rule is unchanged: it was
+    never "must be False when narrowing is lossy", only "must not be silent".
 
     A companion rule ("``True`` contradicts ``N:1``") was removed as wrong: cardinality counts
     TASKS, this is about row VALUES, and ``AudioToDocumentStage`` repacks tasks while leaving

@@ -363,3 +363,124 @@ class TestStagesDeclareTheirOwnAgentFacts:
         from nemo_curator.stages.audio.preprocessing import ChannelCountStage
 
         assert not field_has_declared_role("invented_thing_key", ChannelCountStage)
+
+
+class TestEveryStageSaysWhetherItsRowsStandAlone:
+    """A delta run must never be refused merely because a stage author forgot ``Gates``.
+
+    ``audio_agent.delta.region`` ends the reusable region at the first stage whose
+    ``gates.per_row_independent`` is undeclared and which could reach another row at all. It
+    cannot tell a forgotten field from a deliberate "this stage reads the whole corpus", so it
+    conservatively stops at both -- and a single silent omission in an ingest stage therefore
+    costs every stage behind it its incremental run. These tests keep ``None`` meaning only
+    that nobody has looked yet.
+    """
+
+    # The stages whose honest answer is "no", each naming the corpus-wide quantity in its
+    # describe(). Pinned so that a flip to True has to be argued for, and so a newly
+    # corpus-dependent stage cannot join the set unremarked.
+    EXPECTED_CORPUS_DEPENDENT: ClassVar[set[str]] = {
+        "ManifestGroupExportStage",
+        "PretrainMetricsAggregatorStage",
+        "PyAnnoteDiarizationStage",
+        "SegmentExtractionStage",
+        "TorchSquimQualityMetricsStage",
+    }
+
+    @staticmethod
+    def _shipped_stage_names() -> list[str]:
+        """The stages Curator itself ships.
+
+        The registry is open by design -- any imported agent-ready subclass registers itself,
+        which is what lets a user extend the catalog. The toy stages above would otherwise be
+        asserted about as though Curator shipped them.
+        """
+        from nemo_curator.stages.audio._catalog import get_agent_ready_stage_class, list_agent_ready_stages
+
+        return sorted(
+            name
+            for name in list_agent_ready_stages()
+            if getattr(get_agent_ready_stage_class(name), "__module__", "").startswith("nemo_curator.")
+        )
+
+    @staticmethod
+    def _at_its_defaults(stage_cls: type) -> object:
+        """The stage as shipped, supplying only what its constructor refuses to go without.
+
+        The defaults are the point: several stages answer this gate per instance rather than per
+        class -- ``SplitLongAudioStage`` is independent only while no shared ``output_dir``
+        flattens every source's splits into one namespace -- so filling in optional params would
+        measure a configuration nobody runs.
+        """
+        import inspect
+        from dataclasses import MISSING, fields, is_dataclass
+
+        try:
+            return stage_cls()
+        except (TypeError, ValueError):
+            pass
+
+        def placeholder(name: str) -> str:
+            return "/tmp/x" if ("dir" in name or "path" in name) else "x"  # noqa: S108
+
+        if is_dataclass(stage_cls):
+            # An empty-string default is how these stages spell "required": the field exists so
+            # the dataclass stays keyword-constructible, and __post_init__ rejects the blank.
+            demanded = {
+                item.name: placeholder(item.name)
+                for item in fields(stage_cls)
+                if item.init
+                and not item.name.startswith("_")
+                and ((item.default is MISSING and item.default_factory is MISSING) or item.default == "")
+            }
+        else:
+            demanded = {
+                name: placeholder(name)
+                for name, parameter in inspect.signature(stage_cls).parameters.items()
+                if parameter.default is inspect.Parameter.empty
+            }
+        return stage_cls(**demanded)
+
+    def _declared_gate(self, name: str) -> bool | None:
+        from nemo_curator.stages.audio._catalog import get_agent_ready_stage_class
+
+        contract = build_contract(self._at_its_defaults(get_agent_ready_stage_class(name)))
+        return contract.gates.per_row_independent
+
+    def test_no_shipped_audio_stage_leaves_per_row_independence_undeclared(self) -> None:
+        """An omission must not be what ends a delta region.
+
+        A real session lost a one-file delta across a whole pipeline because its ingest stage
+        wrote to disk and had never declared this gate, so ``region`` stopped at stage 0.
+        """
+        undeclared = [name for name in self._shipped_stage_names() if self._declared_gate(name) is None]
+
+        assert not undeclared, (
+            "each of these would end a delta region by omission rather than by fact; declare "
+            f"gates.per_row_independent in describe(): {undeclared}"
+        )
+
+    def test_a_corpus_dependent_stage_declares_false_instead_of_staying_silent(self) -> None:
+        """Leaving a genuinely corpus-dependent stage undeclared refuses for the wrong reason.
+
+        Undeclared is only refused once ``_can_see_other_rows`` finds a channel, so silence is
+        both weaker than the truth and indistinguishable from an unaudited stage -- the next
+        reader would have to re-derive from ``process()`` which of the two it was.
+        """
+        corpus_dependent = {name for name in self._shipped_stage_names() if self._declared_gate(name) is False}
+
+        assert corpus_dependent == self.EXPECTED_CORPUS_DEPENDENT
+
+    def test_the_gate_is_resolved_through_describe_and_not_the_instance_free_contract(self) -> None:
+        """The sweep above must not be rebuilt on ``static_contract``.
+
+        ``static_contract`` takes its gates straight from ``AGENT_STATIC`` and never calls
+        ``describe()``, so it reports ``None`` even for stages that do declare the gate. An
+        invariant asserted on that view would either fail for the whole catalog or, inverted,
+        pass forever while a real omission went on refusing deltas. ``delta.region`` resolves
+        through ``build_contract`` on live stages, so this test does too.
+        """
+        from nemo_curator.stages.audio.filtering.sigmos import SIGMOSFilterStage
+
+        assert static_contract(SIGMOSFilterStage).gates.per_row_independent is None
+        assert build_contract(SIGMOSFilterStage()).gates.per_row_independent is True

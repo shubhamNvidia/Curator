@@ -73,7 +73,22 @@ class CreateInitialManifestReadSpeechStage(AgentReady, ProcessingStage[EmptyTask
         return StageContract(
             writes=IOSpec(data_keys=[self.filepath_key, self.text_key], produces=["disk"]),
             cardinality="1:N fan-out",
-            gates=Gates(writes_to_disk=True, requires_internet_first_run=self.auto_download, output_path_params=[]),
+            gates=Gates(
+                writes_to_disk=True,
+                requires_internet_first_run=self.auto_download,
+                output_path_params=[],
+                # Each row's path and metadata are parsed from its own filename.
+                #
+                # Declared True unconditionally BY DECISION, and here the caveat is the DEFAULT:
+                # ``select_samples`` truncates the SORTED recursive listing at ``max_samples``,
+                # which defaults to 5000 of the ~14k files, so the selection is a fact about the
+                # whole extracted corpus. A delta enumerating only the changed files takes the
+                # first N of its own listing and can therefore select files a full run would not
+                # have, silently. Weighed against a conditional ``False`` -- which would deny
+                # reuse to the configuration nearly everyone runs -- and reuse was chosen.
+                # Examined and accepted; see CreateInitialManifestAudioFolderStage, same call.
+                per_row_independent=True,
+            ),
         )
 
     def ray_stage_spec(self) -> dict[str, Any]:

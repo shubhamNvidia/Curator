@@ -99,7 +99,13 @@ class CreateInitialManifestFleursStage(AgentReady, ProcessingStage[EmptyTask, Au
         return StageContract(
             writes=IOSpec(data_keys=[self.filepath_key, self.text_key], produces=["disk"]),
             cardinality="1:N fan-out",
-            gates=Gates(writes_to_disk=True, requires_internet_first_run=self.auto_download),
+            # The download stages the split once; after that every emitted row's path and text
+            # come from its own transcript line, and no line is dropped or reordered.
+            gates=Gates(
+                writes_to_disk=True,
+                requires_internet_first_run=self.auto_download,
+                per_row_independent=True,
+            ),
         )
 
     def language_data_dir(self) -> str:

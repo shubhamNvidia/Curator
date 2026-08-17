@@ -398,11 +398,17 @@ class CreateInitialManifestAudioFolderStage(AgentReady, ProcessingStage[EmptyTas
             # (unlike the dataset CreateInitialManifest*Stage sources, which download and write).
             writes=IOSpec(data_keys=[self.audio_filepath_key, self.audio_item_id_key]),
             cardinality="1:N fan-out",
-            # scans existing files -- no download, no disk writes; one task per file, and a
-            # file's row says nothing about the other files in the folder. Except under
-            # ``max_samples``, which truncates the SORTED list, so which files survive is a fact
-            # about the whole folder rather than about any one of them.
-            gates=Gates(per_row_independent=self.max_samples is None or self.max_samples < 0),
+            # Scans existing files -- no download, no disk writes; one task per file, and a
+            # file's row says nothing about the other files in the folder.
+            #
+            # Declared True unconditionally BY DECISION, including under a bounded
+            # ``max_samples``, where it is not the whole truth: ``max_samples`` truncates the
+            # SORTED listing, so which files survive is a fact about the whole folder. A delta
+            # enumerating only the changed files takes the first N of its OWN listing and can
+            # admit files a full run would never have selected, with no warning. That was weighed
+            # against a conditional ``False``, which costs every bounded run its reuse, and reuse
+            # was chosen. Examined and accepted -- not an oversight to "fix" back.
+            gates=Gates(per_row_independent=True),
         )
 
     def ray_stage_spec(self) -> dict[str, Any]:

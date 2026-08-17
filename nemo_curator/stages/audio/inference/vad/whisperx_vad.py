@@ -181,7 +181,9 @@ class WhisperXVADStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             cardinality=cardinality,
             cardinality_options=["passthrough", "fan_out"],
             iteration_key=self.segments_key if self.fanout else None,
-            gates=Gates(requires_gpu=self.resources.gpus > 0),
+            # Speech boundaries come from this file's own samples against the configured
+            # onset/offset, and a fan-out child is a slice of the row it came from.
+            gates=Gates(requires_gpu=self.resources.gpus > 0, per_row_independent=True),
         )
 
     def ray_stage_spec(self) -> dict[str, Any]:
