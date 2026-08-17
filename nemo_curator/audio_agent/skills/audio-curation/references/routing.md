@@ -57,6 +57,12 @@ Prefer adapting a `matched_blueprint` (it encodes idiomatic ordering with
 `enforced`/`advisory` tags and `topology_selection`) over composing from scratch.
 Adapt, do not blindly copy.
 
+**A blueprint's source stage is corpus-specific.** An `enforced` ingest stage marks the source
+*slot* as required, not that class — a blueprint derived from one dataset names that dataset's
+source, so re-pick the source from the `ingest` cards for the corpus in hand and keep the rest of
+the topology. A dataset-specific source pointed at a corpus that merely resembles it does not
+refuse; it emits a partial manifest under that dataset's assumptions.
+
 **Prune to the request.** A stage earns its place only if it serves a stated goal. Every
 filter DROPS data, so each filter must trace to a criterion the user actually asked for
 (e.g. "clean" -> a noise gate; "high-quality" -> a MOS gate) — do NOT add a filter for a
