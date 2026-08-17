@@ -211,10 +211,18 @@ def find_runs(
     *,
     dataset_key: str | None = None,
     semantic_hash: str | None = None,
+    data_source: str | None = None,
     since: str | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
-    """Runs matching a dataset / semantic identity / date, newest first."""
+    """Runs matching a dataset / semantic identity / source path / date, newest first.
+
+    ``data_source`` matches the resolved source path regardless of recipe or dataset key. It is
+    the axis the step-key matchers structurally cannot use: a changed source stage or a changed
+    corpus moves every key, but the folder a run READ is the same folder, and that is what a
+    "you curated this before" notice is anchored on. The column is unindexed -- the same folder
+    is asked about once per scan, not per row -- so the ``ORDER BY`` + ``LIMIT`` bound the cost.
+    """
     where: list[str] = []
     params: list[Any] = []
     if dataset_key:
@@ -223,6 +231,9 @@ def find_runs(
     if semantic_hash:
         where.append("semantic_hash = ?")
         params.append(semantic_hash)
+    if data_source:
+        where.append("data_source = ?")
+        params.append(data_source)
     if since:
         where.append("created_at >= ?")
         params.append(since)
@@ -236,6 +247,7 @@ def find_runs(
             return _find_runs_in_json(
                 dataset_key=dataset_key,
                 semantic_hash=semantic_hash,
+                data_source=data_source,
                 since=since,
                 limit=limit,
             )
@@ -246,6 +258,7 @@ def find_runs(
             return _find_runs_in_json(
                 dataset_key=dataset_key,
                 semantic_hash=semantic_hash,
+                data_source=data_source,
                 since=since,
                 limit=limit,
             )
@@ -256,6 +269,7 @@ def find_runs(
         return _find_runs_in_json(
             dataset_key=dataset_key,
             semantic_hash=semantic_hash,
+            data_source=data_source,
             since=since,
             limit=limit,
         )
@@ -328,6 +342,7 @@ def _find_runs_in_json(
     *,
     dataset_key: str | None,
     semantic_hash: str | None,
+    data_source: str | None = None,
     since: str | None,
     limit: int,
 ) -> list[dict[str, Any]]:
@@ -342,6 +357,8 @@ def _find_runs_in_json(
         if dataset_key and record.dataset_key != dataset_key:
             continue
         if semantic_hash and record.semantic_hash != semantic_hash:
+            continue
+        if data_source and record.data_source != data_source:
             continue
         # ``str(... or "")`` for the same reason the sort below already does it: the record on
         # disk can carry an explicit null, and ``RunRecord.from_dict`` keeps whatever the file

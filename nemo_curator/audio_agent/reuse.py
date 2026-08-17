@@ -447,6 +447,274 @@ def _ran_unsaved_elsewhere(recipe: Recipe, dataset_key: str) -> dict[str, Any] |
     return None
 
 
+def prior_on_path(
+    recipe: Recipe,
+    *,
+    source_path: str,
+    dataset_key: str,
+    current_inventory: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
+    """A prior run that read the SAME source folder, matched by path -- not by recipe or data.
+
+    The step-key matchers (:func:`scan`, :func:`_prior_on_other_data`, ``delta``) all key on the
+    Merkle chain, which a changed source stage or a changed corpus moves wholesale, so a folder
+    curated twenty minutes ago with a slightly different pipeline is invisible to every one of
+    them. This one is anchored on the folder a run READ, which does not move, and reports it for
+    a human to judge: when it ran, what it did (as a diff against the current plan), and what has
+    changed in the folder since. It never reuses anything; the recommendation is advice.
+
+    Reached only on the miss path, and skipped when the source is not one local folder -- a
+    generated or multi-manifest source has no single path to anchor on. Bounded by
+    :data:`_MAX_PRIOR_RUNS`; the same folder is asked about once per scan, not once per file.
+    """
+    from nemo_curator.audio_agent import run_index, run_store
+    from nemo_curator.audio_agent.input_identity import canonical_source
+
+    if not source_path:
+        return None
+    try:
+        canonical = canonical_source(source_path)
+    except (TypeError, ValueError):
+        return None
+
+    for row in run_index.find_runs(limit=_MAX_PRIOR_RUNS):
+        if str(row.get("status") or "") != "completed":
+            continue
+        # The exact-hit and same-data cases are already handled on the reuse/delta paths; this
+        # notice exists for what they cannot see, so a run on the identical corpus is not it.
+        if dataset_key and str(row.get("dataset_key") or "") == dataset_key:
+            continue
+        # Match canonical paths, not the strings as stored: ``data_source`` is recorded as the
+        # caller passed it (a relative path, a trailing slash, a symlink), so an exact compare
+        # would miss the same folder named two ways. The equality is resolved here rather than in
+        # SQL for that reason.
+        if not _same_folder(row.get("data_source"), canonical):
+            continue
+        record = run_store.load(str(row.get("run_id") or ""))
+        if record is None:
+            continue
+        return _prior_on_path_card(record, recipe=recipe, current_inventory=current_inventory)
+    return None
+
+
+def _same_folder(stored: Any, canonical: str) -> bool:  # noqa: ANN401 - a stored path or None
+    """Whether a recorded ``data_source`` names the same folder as ``canonical``."""
+    from nemo_curator.audio_agent.input_identity import canonical_source
+
+    if not isinstance(stored, str) or not stored:
+        return False
+    try:
+        return canonical_source(stored) == canonical
+    except (TypeError, ValueError):
+        return False
+
+
+def _prior_on_path_card(
+    record: Any,  # noqa: ANN401 - RunRecord without an eager import
+    *,
+    recipe: Recipe,
+    current_inventory: dict[str, str] | None,
+) -> dict[str, Any]:
+    """Assemble the human-facing account of one prior run on this folder."""
+    from nemo_curator.audio_agent.recipe import Recipe as _Recipe
+
+    prior_recipe = _Recipe.from_dict(record.recipe) if isinstance(record.recipe, dict) else None
+    same_recipe = bool(record.semantic_hash) and record.semantic_hash == recipe.compute_semantic_hash()
+    diff = _recipe_diff(prior_recipe, recipe) if prior_recipe is not None else {}
+    data_delta = _data_delta_since(record, current_inventory)
+    return {
+        "run_id": record.run_id,
+        "created_at": record.created_at,
+        "goal": record.goal or None,
+        "same_recipe": same_recipe,
+        "prior_stages": [s.ref for s in (prior_recipe.stages if prior_recipe else [])],
+        "prior_output_paths": list(getattr(record, "output_paths", []) or [])[:8],
+        "recipe_diff": diff,
+        "data_delta": data_delta,
+        "recommendation": _prior_recommendation(same_recipe, diff, data_delta),
+        "note": _prior_note(record, same_recipe, diff, data_delta),
+    }
+
+
+def _recipe_diff(prior: Recipe, current: Recipe) -> dict[str, Any]:
+    """A structural diff of two recipes, in the vocabulary a user reasons about.
+
+    Aligns the two stage sequences by ref (``difflib`` over the ref lists), then, for stages that
+    line up, compares SEMANTIC params -- the ones that move reuse identity -- so an output
+    directory that differs by design does not read as a behavioural change. Output-location
+    differences are reported apart, as information rather than as drift, because they are exactly
+    what a second run of the same intent is expected to change.
+    """
+    import difflib
+
+    from nemo_curator.audio_agent.recipe import OUTPUT_LOCATION_PARAMS
+
+    prior_refs = [s.ref for s in prior.stages]
+    current_refs = [s.ref for s in current.stages]
+    added: list[str] = []
+    removed: list[str] = []
+    changed: list[dict[str, Any]] = []
+    outputs_differ = False
+
+    matcher = difflib.SequenceMatcher(a=prior_refs, b=current_refs, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag in ("replace", "delete"):
+            removed.extend(prior_refs[i1:i2])
+        if tag in ("replace", "insert"):
+            added.extend(current_refs[j1:j2])
+        if tag == "equal":
+            for offset in range(i2 - i1):
+                p, c = prior.stages[i1 + offset], current.stages[j1 + offset]
+                for param, before, after in _param_changes(p.semantic_params(), c.semantic_params()):
+                    changed.append({"stage": c.ref, "param": param, "from": before, "to": after})
+                if _output_params(p, OUTPUT_LOCATION_PARAMS) != _output_params(c, OUTPUT_LOCATION_PARAMS):
+                    outputs_differ = True
+
+    return {
+        "added_stages": added,
+        "removed_stages": removed,
+        "changed_params": changed,
+        "outputs_differ": outputs_differ,
+        "identical": not (added or removed or changed),
+        "phrase": _recipe_diff_phrase(added, removed, changed),
+    }
+
+
+def _param_changes(before: dict[str, Any], after: dict[str, Any]) -> list[tuple[str, Any, Any]]:
+    """Semantic params whose value differs, present-on-one-side included.
+
+    A secret-named param has its VALUES masked here, not later: the diff files them under
+    ``from``/``to``, keys a value-blind ``redact`` pass would walk straight over, so an
+    ``hf_token`` that changed between runs would otherwise be shown in full. Only the fact that
+    it changed survives, which is all the diff needs to convey.
+    """
+    from nemo_curator.audio_agent._safety import is_secret_key
+
+    out: list[tuple[str, Any, Any]] = []
+    for key in sorted(set(before) | set(after)):
+        b, a = before.get(key), after.get(key)
+        if b == a:
+            continue
+        if is_secret_key(key):
+            out.append((key, "<redacted-secret>" if b is not None else None, "<redacted-secret>" if a is not None else None))
+        else:
+            out.append((key, b, a))
+    return out
+
+
+def _output_params(stage: Any, output_keys: frozenset[str]) -> dict[str, Any]:  # noqa: ANN401 - StageRef
+    return {k: v for k, v in stage.params.items() if k in output_keys}
+
+
+def _recipe_diff_phrase(added: list[str], removed: list[str], changed: list[dict[str, Any]]) -> str:
+    """One line a person can read: what this plan does that the prior one did not.
+
+    Leads with the structural moves (a dropped or added stage) and genuine value changes -- both
+    sides set, like ``mos_threshold 3.4->2.5`` -- because those are decisions. A param that went
+    from unset to a value is usually a default written out, not a behaviour change, so it is
+    summarised as a trailing count rather than spelled out and left to crowd the real differences.
+    """
+    parts: list[str] = []
+    if removed:
+        parts.append("dropped " + ", ".join(removed))
+    if added:
+        parts.append("added " + ", ".join(added))
+    value_changes = [c for c in changed if c["from"] is not None and c["to"] is not None]
+    presence_changes = [c for c in changed if c["from"] is None or c["to"] is None]
+    for c in value_changes[:_CARD_PARAMS]:
+        parts.append(f"{c['stage']}.{c['param']} {c['from']!r}->{c['to']!r}")
+    if presence_changes:
+        parts.append(f"{len(presence_changes)} param default(s) made explicit")
+    return "; ".join(parts) if parts else "the same pipeline"
+
+
+def _data_delta_since(
+    record: Any,  # noqa: ANN401 - RunRecord
+    current_inventory: dict[str, str] | None,
+) -> dict[str, Any] | None:
+    """What changed in the folder between the prior run and now.
+
+    Prefers a real file-level comparison: the prior run's deepest saved coverage inventory is the
+    set of source files it processed, and :func:`delta.classify` reports added / modified /
+    removed against the current inventory. Both are relative to the same folder -- the match is
+    path-anchored -- so their relative paths line up. When no inventory was recorded on either
+    side, it falls back to a labelled count comparison, which is coarse but honest.
+    """
+    from nemo_curator.audio_agent import delta as _delta
+
+    prior_inventory = _deepest_coverage(record)
+    if prior_inventory is not None and current_inventory is not None:
+        change = _delta.classify(prior_inventory, current_inventory)
+        if change is not None:
+            payload = change.summary()
+            payload["basis"] = "inventory"
+            payload["phrase"] = change.phrase()
+            return payload
+
+    prior_count = int(getattr(record, "input_count", 0) or 0)
+    now_count = len(current_inventory) if current_inventory is not None else None
+    if now_count is None or not prior_count:
+        return None
+    delta_n = now_count - prior_count
+    return {
+        "basis": "counts_only",
+        "prior_files": prior_count,
+        "current_files": now_count,
+        "phrase": (
+            f"the folder held {prior_count} file(s) then and {now_count} now "
+            f"({delta_n:+d}); which files changed was not recorded"
+        ),
+    }
+
+
+def _deepest_coverage(record: Any) -> dict[str, str] | None:  # noqa: ANN401 - RunRecord
+    """The source inventory the prior run's deepest artifact covered, if any was saved."""
+    from nemo_curator.audio_agent import artifacts as art_mod
+
+    for step_key in reversed(list(getattr(record, "steps", None) or [])):
+        inventory = art_mod.load_coverage(str(step_key))
+        if inventory:
+            return inventory
+    return None
+
+
+def _prior_recommendation(same_recipe: bool, diff: dict[str, Any], data_delta: dict[str, Any] | None) -> str:
+    """The advice this notice carries -- never an action it takes.
+
+    ``delta`` when the pipeline is the same and only the corpus moved (the changed-file path is
+    the cheap correct answer, and ``_attach_delta`` will already have offered it). ``align`` when
+    the pipeline differs, because matching the prior stages is what would make that work reusable.
+    ``fresh`` otherwise -- there is prior work here, but nothing this run can borrow from it.
+    """
+    changed_data = bool(data_delta) and data_delta.get("basis") == "inventory" and (
+        data_delta.get("added") or data_delta.get("modified") or data_delta.get("removed")
+    )
+    if same_recipe or (diff and diff.get("identical")):
+        return "delta" if changed_data else "fresh"
+    return "align"
+
+
+def _prior_note(
+    record: Any,  # noqa: ANN401 - RunRecord
+    same_recipe: bool,
+    diff: dict[str, Any],
+    data_delta: dict[str, Any] | None,
+) -> str:
+    """A single sentence stating the fact, so a host that reads nothing else still discloses it."""
+    when = f" on {record.created_at}" if getattr(record, "created_at", "") else ""
+    data_phrase = f" {data_delta['phrase']}." if data_delta and data_delta.get("phrase") else ""
+    if same_recipe or (diff and diff.get("identical")):
+        return (
+            f"This folder was curated{when} by the same pipeline.{data_phrase} "
+            "Only the data differs -- a changed-file delta can reuse the rest."
+        ).strip()
+    pipeline_phrase = diff.get("phrase") if diff else ""
+    return (
+        f"This folder was curated{when} by a different pipeline ({pipeline_phrase})."
+        f"{data_phrase} Aligning those stages would let that run be reused; otherwise this runs fresh."
+    ).strip()
+
+
 def _known_dataset_keys() -> list[str]:
     """Distinct source datasets seen before (index first, JSON records as the fallback).
 

@@ -101,6 +101,33 @@ from that row alone, the prior rows cannot be traced back to the files that prod
 the two corpora share no file at all — a different dataset rather than a changed one. A refusal
 means a full run; it never means a partial result presented as a whole one.
 
+## When you've curated this folder before with a different pipeline
+
+`already_done`, `incremental` and `delta` all match on the step-key chain, which a changed
+source stage or changed corpus moves wholesale — so a folder you curated an hour ago becomes
+invisible to them the moment the recipe drifts, even slightly. The scan closes that blind spot
+with `prior_on_same_path`, present on a `fresh` (or `delta`) result whenever a prior **completed
+run read the same source folder**, matched by path rather than by recipe. It is advisory: it
+never changes `decision` and reuses nothing. It carries:
+
+- `created_at` and `run_id` — when, and which run.
+- `recipe_diff` — `added_stages`, `removed_stages`, `changed_params` (`{stage, param, from, to}`),
+  and a human `phrase`. This is how you see that last time used a different source stage, or a
+  `mos_threshold` of 3.4 where you now have 2.5.
+- `data_delta` — added / modified / removed / unchanged file counts and names since that run
+  (`basis: inventory`), or a labelled count comparison when no per-file record was kept.
+- `recommendation` — `delta` (same pipeline, only the corpus moved → the changed-file path is the
+  cheap answer), `align` (a different pipeline → matching the prior stages is what would make its
+  work reusable), or `fresh`.
+
+**Surface it; do not silently run fresh over it.** When `prior_on_same_path` is present, tell the
+user before smoking or running: this folder was curated on <date>, here is how the current plan
+differs (`recipe_diff.phrase`), and here is what changed in the folder since (`data_delta.phrase`).
+Then let them choose — align the differing stages so the prior work reuses (or a `delta` becomes
+possible), or proceed fresh as an informed decision. The whole point is that "I've done this here
+before" is a fact the user should hear, not one a step-key miss is allowed to hide. It is a notice,
+never an action: you still reuse only through `continue`/`delta-run`, never by editing bytes.
+
 ## When the scan says the work was done but nothing was saved
 
 A stage only leaves something to resume from if it was configured to write somewhere. A

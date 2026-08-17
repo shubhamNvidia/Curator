@@ -3052,7 +3052,43 @@ def reuse_scan(recipe: Recipe | dict[str, Any], *, data: str | None = None, limi
         result["rationale"] = f"prior work was not considered: {binding.reason}"
     if result.get("decision") == "fresh" and dataset_key and dp is not None:
         _attach_delta(result, rec, dp)
+    if result.get("decision") == "fresh":
+        _attach_prior_on_path(result, rec, binding, dp, dataset_key)
     return _safety.redact(result)
+
+
+def _attach_prior_on_path(
+    result: dict[str, Any],
+    rec: Recipe,
+    binding: Any,  # noqa: ANN401 - DatasetBinding
+    dp: Any,  # noqa: ANN401 - DataProfile | None
+    dataset_key: str,
+) -> None:
+    """Disclose a prior run that read THIS folder, even when its keys and recipe do not match.
+
+    The step-key matchers answer "can I reuse bytes"; this answers the question a person asks
+    first -- "have I done this here before". It is advisory: it never changes ``decision`` or
+    reuses anything, only adds ``prior_on_same_path`` for the host to surface. Skipped for a
+    generated or pathless source, which has no folder to have been curated before.
+    """
+    from nemo_curator.audio_agent import reuse as _reuse
+
+    source_path = getattr(binding, "primary_path", None)
+    if not source_path or getattr(binding, "generated", False):
+        return
+    prior = _reuse.prior_on_path(
+        rec,
+        source_path=source_path,
+        dataset_key=dataset_key,
+        current_inventory=(dp.inventory or None) if dp is not None else None,
+    )
+    if prior is None:
+        return
+    result["prior_on_same_path"] = prior
+    # "fresh" reads as "never done here". When the folder HAS been curated, say so in the line a
+    # host is most likely to read, without overriding the decision the key probe correctly made.
+    if result.get("decision") == "fresh":
+        result["rationale"] = f"{result.get('rationale', '')}; {prior['note']}".lstrip("; ")
 
 
 def _attach_delta(result: dict[str, Any], rec: Recipe, dp: Any) -> None:  # noqa: ANN401 - DataProfile

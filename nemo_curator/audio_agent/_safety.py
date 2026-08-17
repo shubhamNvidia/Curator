@@ -338,6 +338,23 @@ def redact_secret_text(value: str) -> str:
     return _PREFIXED_TOKEN_VALUE.sub("<redacted-secret>", text)
 
 
+def is_secret_key(name: Any) -> bool:  # noqa: ANN401 - any key a caller wants to test
+    """Whether a key name designates a secret whose VALUE must never be shown.
+
+    Extracted from :func:`redact` so a caller holding a value under a neutral key -- a recipe
+    diff filing ``hf_token``'s old value under ``from`` -- can mask it before it reaches a
+    payload ``redact`` would only scan by key. One definition of "secret" for both, so a name
+    redaction trusts and a name it does not cannot diverge.
+    """
+    if str(name).lower() in _OWN_TOKEN_FIELDS:
+        return False
+    split_case = _CAMEL_BOUNDARY.sub("_", str(name))
+    words = [w for w in _KEY_WORD_SPLIT.split(split_case.lower()) if w]
+    if any(w in _SECRET_WORDS or w in _SECRET_GLUED_PAIRS for w in words):
+        return True
+    return any(pair in _SECRET_WORD_PAIRS for pair in itertools.pairwise(words))
+
+
 def redact(obj: Any, *, redact_transcripts: bool = True) -> Any:  # noqa: ANN401
     """Recursively strip secret-keyed values and (optionally) transcript text.
 
@@ -346,13 +363,7 @@ def redact(obj: Any, *, redact_transcripts: bool = True) -> Any:  # noqa: ANN401
     """
 
     def _is_secret(k: Any) -> bool:  # noqa: ANN401
-        if str(k).lower() in _OWN_TOKEN_FIELDS:
-            return False
-        split_case = _CAMEL_BOUNDARY.sub("_", str(k))
-        words = [w for w in _KEY_WORD_SPLIT.split(split_case.lower()) if w]
-        if any(w in _SECRET_WORDS or w in _SECRET_GLUED_PAIRS for w in words):
-            return True
-        return any(pair in _SECRET_WORD_PAIRS for pair in itertools.pairwise(words))
+        return is_secret_key(k)
 
     def _redacted_transcript(value: Any) -> Any:  # noqa: ANN401
         """Transcript text under a transcript key, whatever shape it arrives in.
