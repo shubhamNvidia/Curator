@@ -210,7 +210,7 @@ def test_resolve_audio_path_no_input_returns_none():
 
 def _writers(directory: str) -> dict[str, object]:
     """One thunk per stage that writes in-memory audio, all sharing ``write_audio_stable``."""
-    from nemo_curator.stages.audio.preprocessing.channel_conversion import ChannelConversionStage
+    from nemo_curator.stages.audio.preprocessing.channel_count import ChannelCountStage
     from nemo_curator.stages.audio.preprocessing.concatenation import SegmentConcatenationStage
     from nemo_curator.stages.audio.preprocessing.mono_conversion import MonoConversionStage
     from nemo_curator.stages.audio.segmentation.speaker_separation import SpeakerSeparationStage
@@ -220,7 +220,7 @@ def _writers(directory: str) -> dict[str, object]:
     task = AudioTask(task_id="t", dataset_name="d", data={"audio_filepath": "/data/spk1/utt1.wav"})
     return {
         "mono": lambda: MonoConversionStage(output_dir=directory)._write_audio(wav, 16000, task),
-        "channel": lambda: ChannelConversionStage(output_dir=directory)._write_audio(wav, 16000, task),
+        "channel": lambda: ChannelCountStage(action="convert", output_dir=directory)._write_audio(wav, 16000, task),
         "concat": lambda: SegmentConcatenationStage(write_to_disk=True, output_dir=directory)._write_wav(
             wav, 16000, "/data/spk1/utt1.wav"
         ),

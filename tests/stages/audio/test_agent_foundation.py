@@ -331,11 +331,11 @@ class TestStagesDeclareTheirOwnAgentFacts:
 
     def test_a_stage_can_declare_a_bookkeeping_key_without_touching_the_shared_table(self) -> None:
         from nemo_curator.stages.audio._roles import INTERNAL_KEY_FIELDS, field_has_declared_role
-        from nemo_curator.stages.audio.preprocessing import ChannelConversionStage
+        from nemo_curator.stages.audio.preprocessing import ChannelCountStage
 
         assert "num_channels_key" not in INTERNAL_KEY_FIELDS, "not in the central table"
-        assert "num_channels_key" in ChannelConversionStage.INTERNAL_KEY_FIELDS
-        assert field_has_declared_role("num_channels_key", ChannelConversionStage)
+        assert "num_channels_key" in ChannelCountStage.INTERNAL_KEY_FIELDS
+        assert field_has_declared_role("num_channels_key", ChannelCountStage)
         # ...and it is still undeclared for a stage that did not claim it.
         assert not field_has_declared_role("num_channels_key")
 
@@ -349,17 +349,17 @@ class TestStagesDeclareTheirOwnAgentFacts:
         shared table gets copied downwards one subclass at a time.
         """
         from nemo_curator.stages.audio._roles import field_has_declared_role
-        from nemo_curator.stages.audio.preprocessing import ChannelConversionStage
+        from nemo_curator.stages.audio.preprocessing import ChannelCountStage
 
-        class NarrowerChannelConversion(ChannelConversionStage):
+        class NarrowerChannelCount(ChannelCountStage):
             INTERNAL_KEY_FIELDS = frozenset({"my_own_key"})
 
-        assert field_has_declared_role("my_own_key", NarrowerChannelConversion)
-        assert field_has_declared_role("num_channels_key", NarrowerChannelConversion)
+        assert field_has_declared_role("my_own_key", NarrowerChannelCount)
+        assert field_has_declared_role("num_channels_key", NarrowerChannelCount)
 
     def test_an_undeclared_key_is_still_caught(self) -> None:
         """The gate must keep catching a genuinely forgotten role mapping."""
         from nemo_curator.stages.audio._roles import field_has_declared_role
-        from nemo_curator.stages.audio.preprocessing import ChannelConversionStage
+        from nemo_curator.stages.audio.preprocessing import ChannelCountStage
 
-        assert not field_has_declared_role("invented_thing_key", ChannelConversionStage)
+        assert not field_has_declared_role("invented_thing_key", ChannelCountStage)

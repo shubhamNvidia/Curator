@@ -75,6 +75,17 @@ then discards it** — downstream still scores the ORIGINAL files. Either make i
 (`write_to_disk=true` + `update_audio_filepath`, or keep the waveform and have the next stage
 read it via `input_residency`) or drop the stage.
 
+**Measuring, selecting and converting are different requests.** A stage with an `action` param
+does exactly one of them per instance, and picking the wrong one is silent: converting a corpus
+the user wanted narrowed keeps rows they meant to exclude, and narrowing one they wanted
+converted throws away most of it. So decide from the wording — a property stated as a
+requirement of the OUTPUT ("make it mono", "at 16 kHz") is a conversion, while one stated as a
+property of the INPUT they want kept ("the mono recordings", "only the 48 kHz ones") is a
+selection, and a request to find out ("how many channels do these have?") is neither. When the
+wording carries both readings, ask rather than guess: `annotate` first is the cheap way to show
+the user what their corpus actually holds before either choice is made. Stages that can drop
+rows say so in `cardinality_options` even when the action you configured does not.
+
 ## Resolve outcomes to parameters (never expose internal numbers)
 
 Do not hand-pick thresholds. Map the user's **outcome** to a concrete param with

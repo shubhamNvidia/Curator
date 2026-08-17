@@ -10,7 +10,7 @@ patterns:
   - id: mono-first
     kind: advisory
     when: "input may be stereo/multi-channel"
-    then: "put MonoConversionStage first so downstream models get consistent mono input"
+    then: "make the channel count consistent first, so downstream models get consistent mono input: ChannelCountStage(action='convert', target_channels=1) when the rate should be left alone, or MonoConversionStage when a single-rate gate is wanted with it. Use action='filter' instead only when the intent is to KEEP the already-mono rows rather than convert the others"
 
   - id: resample-before-16k-models
     kind: advisory

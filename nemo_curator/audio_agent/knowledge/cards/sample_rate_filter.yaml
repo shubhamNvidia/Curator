@@ -15,13 +15,13 @@ use_cases:
   good_for:
     - "excluding a corpus's off-rate rows before any decoding stage runs"
     - "annotating every row with its sample rate for reporting, with no constraint set"
-    - "pairing with ChannelConversionStage when rate policy and channel policy should be set separately"
+    - "pairing with ChannelCountStage when rate policy and channel policy should be set separately"
   avoid_for:
     - "changing the sample rate -- this stage only SELECTS; use ResampleAudioStage to convert"
     - "a corpus that must be made uniform (resample instead of discarding the minority rate)"
 composition:
   typical_upstream: [ManifestReader, CreateInitialManifestReadSpeechStage, CreateInitialManifestAudioFolderStage]
-  typical_downstream: [ChannelConversionStage, ResampleAudioStage, VADSegmentationStage, GetAudioDurationStage]
+  typical_downstream: [ChannelCountStage, ResampleAudioStage, VADSegmentationStage, GetAudioDurationStage]
 params_of_note:
   allowed_sample_rates: "explicit rates to keep, e.g. [16000, 22050]. None (default) = no constraint from this parameter."
   min_sample_rate: "lowest acceptable rate, inclusive. None (default) = unbounded below."
@@ -52,7 +52,7 @@ semantic_facts:
       - "Not a promise the corpus is uniform. Every surviving row satisfies the constraint, but with a range or a multi-value list the survivors can still hold several different rates."
 comparison:
   ResampleAudioStage: "CONVERTS rates via ffmpeg, preserving every row. Use it when the corpus must become uniform. This stage instead DISCARDS the rows that do not already comply -- picking wrongly between them either destroys the minority of the corpus or silently leaves it unconverted."
-  ChannelConversionStage: "brings audio to a requested channel count without touching the rate. Pairs with this stage when both policies matter."
+  ChannelCountStage: "the channel-side counterpart, with the same choice named explicitly by its `action`: record the count, select on it, or convert to it -- none of which touches the rate. Pairs with this stage when both policies matter; action='filter' is the exact analog of what this stage does for rates."
   MonoConversionStage: "an alternative that gates on a single exact rate and converts channels together, decoding each file to do so. Use this stage instead for a set or range of rates, or to avoid decoding."
 verified: {params: mechanical, semantic_facts: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess}
 provenance: {model_card_url: null, card_version: 1, last_validated: "2026-08-14"}

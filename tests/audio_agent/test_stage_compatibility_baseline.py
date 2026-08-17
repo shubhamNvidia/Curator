@@ -84,7 +84,7 @@ LEGACY_STAGE_NAMES = (
 )
 
 ADDITIVE_STAGE_NAMES = (
-    "ChannelConversionStage",
+    "ChannelCountStage",
     "DocumentBatchJsonlWriterStage",
     "SampleRateFilterStage",
 )
