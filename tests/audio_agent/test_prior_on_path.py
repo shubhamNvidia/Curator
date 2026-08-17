@@ -179,6 +179,25 @@ class TestItFiresWhenTheFolderWasCuratedByADifferentPipeline:
         assert result["decision"] == "fresh"
         assert result["reuse_point"] is None
 
+    def test_the_notice_forces_a_prompt_so_the_host_cannot_skip_it(self, store: Path) -> None:
+        """The bug this closes: a populated notice beside prompt_user=false was read as
+        'nothing to reuse', and a real session reported exactly that over a just-curated folder.
+        Disclosure has to flip the one signal the 'never nag' rule cannot ignore."""
+        folder = _folder(store, ["a.wav", "b.wav", "c.wav"])
+        _save_prior_run(
+            folder,
+            _prior_recipe(folder, source="CreateInitialManifestReadSpeechStage", mono=True, mos=3.4),
+            prior_profile=_profile(folder),
+        )
+        (Path(folder) / "d.wav").write_bytes(b"RIFF" + b"\x09" * 5000)
+        current = _current_recipe(folder, source="CreateInitialManifestAudioFolderStage", mono=False, mos=2.5)
+
+        result = verbs.reuse_scan(current, data=folder)
+
+        assert result["decision"] == "fresh"
+        assert result["prompt_user"] is True
+        assert result["prior_on_same_path"]["note"] in result["rationale"]
+
 
 class TestItStaysSilentWhenThereIsNothingToDisclose:
     def test_a_different_folder_is_not_matched(self, store: Path) -> None:

@@ -36,10 +36,17 @@ is real, just not one a rerun is promised to match.
   Reuse decisions go through `reuse-scan` exclusively — it works on config hashes, not
   content. Artifact URIs are for human reference only.
 
-- **Never reuse silently.** If `prompt_user` is true, show the candidate card — objective,
-  pipeline, input/output, key params, date, metrics, estimated time saved — and offer the
-  three choices. Use the scan's `recommended` as your default; it is `fresh` whenever
-  `trust` is `low` (say why: the `weaknesses` list is written for a human).
+- **Never reuse silently.** If `prompt_user` is true, disclose before running. Usually that
+  means a reuse candidate: show its card — objective, pipeline, input/output, key params, date,
+  metrics, estimated time saved — and offer the three choices, defaulting to the scan's
+  `recommended` (which is `fresh` whenever `trust` is `low`; say why — the `weaknesses` list is
+  written for a human). But `prompt_user` is *also* set when there is no reuse candidate and only
+  a `prior_on_same_path` notice — a `fresh`/`delta` result over a folder curated before. Then
+  there is no as_is/extend card to show; surface the notice instead (see
+  [When you've curated this folder before](#when-youve-curated-this-folder-before-with-a-different-pipeline))
+  and let the user choose to align or proceed. Read `prior_on_same_path` whenever it is present —
+  do not summarise a scan from `decision`/`prompt_user` alone, which is how a correct notice went
+  unspoken and the user was told "nothing to reuse" over a folder they had just curated.
 - **Never nag.** `prompt_user: false` means don't ask: either there is nothing to reuse
   (just run) or the saving was *measured* and is trivial (take it, and mention it in your
   summary). When `unpriced_stages` is non-empty the question is not about the size of the

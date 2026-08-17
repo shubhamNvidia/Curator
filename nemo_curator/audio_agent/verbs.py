@@ -3085,6 +3085,14 @@ def _attach_prior_on_path(
     if prior is None:
         return
     result["prior_on_same_path"] = prior
+    # Make the host STOP on it. A notice left beside ``decision: fresh`` / ``prompt_user: false``
+    # is read as nothing to do -- the "never nag" rule says exactly that -- and a real session
+    # proved it: the field was populated, correct, and the host still reported "nothing to
+    # reuse" because it summarised the decision, not the notice. ``prompt_user`` is the one
+    # signal that rule cannot skip, so disclosing the prior run means setting it. This does not
+    # reuse anything or change ``decision``; it obliges the host to surface the fact and let the
+    # user choose, which was the entire point of the notice.
+    result["prompt_user"] = True
     # "fresh" reads as "never done here". When the folder HAS been curated, say so in the line a
     # host is most likely to read, without overriding the decision the key probe correctly made.
     if result.get("decision") == "fresh":
