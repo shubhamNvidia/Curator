@@ -1760,6 +1760,14 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
             "recipe_id": rec.recipe_id,
             "violations": pviol,
         }
+    # Profiles first and checks _binding_blocks_execution further down, where ``smoke`` does
+    # the opposite. Safe in both orders, for a reason worth stating rather than rediscovering:
+    # _profile_binding returns None unless the status is 'resolved' or 'ambiguous', so a
+    # 'missing'/'mismatch'/'unsupported' binding reads nothing here despite being profiled
+    # first. The orders are only distinguishable for an 'ambiguous' binding that also blocks,
+    # where this reads the source before refusing and smoke refuses before reading -- wasted
+    # I/O, never a different answer. Anyone re-ordering one of the eight verbs that share this
+    # preamble should know the other seven are not all identical.
     binding = _dataset_binding(rec, data)
     dp_obj = _profile_binding(binding)
     data_profile = dp_obj.to_dict() if dp_obj else None
