@@ -78,7 +78,7 @@ def test_mcp_parameter_contract_matches_public_verb_surface(monkeypatch) -> None
 
     expected_parameters = {
         "report": ["output", "recipe", "data"],
-        "runs": ["run_id", "data", "stage", "since", "limit"],
+        "runs": ["run_id", "data", "stage", "since", "limit", "goal"],
         "reuse_scan": ["recipe", "data", "limit"],
         "run": [
             "recipe",
@@ -218,6 +218,7 @@ def test_mcp_forwards_provenance_and_reuse_arguments(monkeypatch) -> None:
         stage="SomeStage",
         since="2026-07-01T00:00:00Z",
         limit=7,
+        goal="16 kHz mono with a quality filter",
     ) == {"runs": []}
     runs_mock.assert_called_once_with(
         run_id=None,
@@ -225,6 +226,7 @@ def test_mcp_forwards_provenance_and_reuse_arguments(monkeypatch) -> None:
         stage="SomeStage",
         since="2026-07-01T00:00:00Z",
         limit=7,
+        goal="16 kHz mono with a quality filter",
     )
 
     assert tools["reuse_scan"](recipe, data="/data/input.jsonl", limit=3) == {

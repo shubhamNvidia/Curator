@@ -391,6 +391,9 @@ class TestOneRunIsExplainedWithoutReadingEveryParam:
 
         assert "UTMOSFilterStage" in overview["pipeline"]
         assert overview["objective"] == "quality_filter"
+        assert overview["prompt"] == "quality_filter"
+        assert overview["pipeline_summary"].startswith("CreateInitialManifest")
+        assert "UTMOSFilter" in overview["pipeline_summary"]
         assert overview["data"]["source"] == folder
         assert overview["data"]["input_count"] == 2
         assert overview["outputs"] == [_PRIOR_OUT]

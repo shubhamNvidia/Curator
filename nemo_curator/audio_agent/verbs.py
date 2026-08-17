@@ -2480,6 +2480,12 @@ def _record_run(  # noqa: PLR0913 - a provenance record intentionally gathers ma
     from nemo_curator.audio_agent.contracts import RunRecord
 
     env = env or {}
+    pipeline_summary = ""
+    if not failed:
+        from nemo_curator.audio_agent import reuse as _reuse
+
+        with contextlib.suppress(Exception):  # summary is best-effort; blank falls back at read time
+            pipeline_summary = _reuse.summarize_pipeline(rec)
     record = RunRecord(
         run_id=run_id,
         # Redact secret-valued params (e.g. hf_token) so they never land in the on-disk record.
@@ -2489,6 +2495,7 @@ def _record_run(  # noqa: PLR0913 - a provenance record intentionally gathers ma
         contract_hash=rec.contract_hash,
         parent_run_id=rec.parent_run_id,
         goal=dict(goal or {}),
+        pipeline_summary=pipeline_summary,
         data_source=data,
         data_fingerprint=data_fp,
         dataset_key=dataset_key,
@@ -2942,6 +2949,7 @@ def runs(
     stage: str | None = None,
     since: str | None = None,
     limit: int = 50,
+    goal: dict[str, Any] | str | None = None,
 ) -> dict[str, Any]:
     """List local run records, or load one by ``run_id`` (provenance for tracing).
 
@@ -2956,6 +2964,11 @@ def runs(
     reading every param of every stage. Given a folder PATH, the listing also includes runs that
     read that folder when its contents were different — the same-corpus key filter alone reports
     a folder curated last week as never curated at all.
+
+    Pass ``goal`` (the user's current request) with a folder path to rank those priors by how
+    much of the request is covered by each prior's recorded prompt plus its
+    ``pipeline_summary`` — before inventing a new recipe. Ranking is never by stage
+    edit-distance to a draft pipeline.
     """
     from nemo_curator.audio_agent import run_index, run_store
 
@@ -2965,7 +2978,13 @@ def runs(
             return {"error": f"no run record {run_id!r}"}
         from nemo_curator.audio_agent import reuse as _reuse
 
-        return _safety.redact({**rec.to_dict(), "overview": _reuse.run_overview(rec)})
+        return _safety.redact(
+            {
+                **rec.to_dict(),
+                "overview": _reuse.run_overview(rec),
+                "host_directive": _reuse.SUMMARIZE_DIRECTIVE,
+            }
+        )
     if data or stage or since:
         names_a_path = bool(data) and not str(data).startswith(tuple(f"{tier}:" for tier in DATASET_KEY_TIERS))
         pviol = _safety.path_violations([data] if names_a_path else [])
@@ -2988,6 +3007,14 @@ def runs(
         }
         if names_a_path:
             _attach_same_folder_runs(payload, str(data), since=since, limit=limit)
+            from nemo_curator.audio_agent import reuse as _reuse
+
+            enriched = _reuse.enrich_folder_run_cards(list(payload["runs"]), goal=goal)
+            payload["runs"] = enriched["runs"]
+            payload["host_directive"] = enriched["host_directive"]
+            if "ranked_by" in enriched:
+                payload["ranked_by"] = enriched["ranked_by"]
+                payload["goal"] = enriched["goal"]
         return _safety.redact(payload)
     # ``limit`` applies here too. The filtered branch above has always honoured it while this one
     # returned every record ever written, so the argument silently meant different things

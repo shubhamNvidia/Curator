@@ -36,6 +36,8 @@ See ``REUSE_ARCHITECTURE.md``.
 
 from __future__ import annotations
 
+import contextlib
+import re
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
@@ -53,6 +55,39 @@ _MAX_PRIOR_RUNS = 50
 # How many prior runs on the same folder to describe in full. A choice between three
 # recognisable runs is one a person can make; a list of fifteen is one they skip.
 _MAX_PRIOR_CARDS = 3
+# Tokens shorter than this add noise to prompt↔summary matching (a, to, of, …).
+_MIN_MATCH_TOKEN_LEN = 2
+# Path-like params identify WHERE, not WHAT the pipeline did, and two runs of the same recipe
+# on the same folder differ only in their scratch dirs — that is noise when comparing intent.
+_SUMMARY_PATH_SUFFIXES = ("_dir", "_path", "_uri", "_file", "_folder")
+_SUMMARY_PATH_KEYS = frozenset(
+    {
+        "output_path",
+        "data_dir",
+        "raw_data_dir",
+        "resampled_audio_dir",
+        "audio_dir",
+        "manifest_filepath",
+    }
+)
+# Written where a run has no recorded goal. Matched against as a literal so its filler words
+# ("run", "that", "for") never count as intent overlap.
+_NO_OBJECTIVE = "(objective not recorded for that run)"
+
+SUMMARIZE_DIRECTIVE = (
+    "pipeline_summary is the complete stage list with every behavioural param -- it is written "
+    "for comparison, not for reading aloud. Never paste it verbatim. Retell it in one plain line: "
+    "what the run produced, plus only the settings that differ between the priors you are showing "
+    "or that the user asked about (thresholds, rates, channels, filters). Drop plumbing params."
+)
+
+_HOST_DIRECTIVE_FOLDER_RUNS = (
+    "Before inventing a recipe, compare the user's current request to each prior's "
+    "prompt (recorded goal) and pipeline_summary. Prefer a prior whose capabilities "
+    "cover the full request over one that only covers a subset. Show the top 2–3 with "
+    "stats; on pick use delta-run --from-run <run_id>. Do not invent a competing recipe first. "
+    + SUMMARIZE_DIRECTIVE
+)
 
 
 def scan(recipe: Recipe, *, dataset_key: str, limit: int = 5) -> dict[str, Any]:
@@ -611,6 +646,8 @@ def _prior_on_path_card(
         "run_id": record.run_id,
         "created_at": record.created_at,
         "goal": record.goal or None,
+        "prompt": _objective(record),
+        "pipeline_summary": resolve_pipeline_summary(record),
         "same_recipe": match.same_recipe,
         "prior_stages": [s.ref for s in (match.recipe.stages if match.recipe else [])],
         "prior_output_paths": list(getattr(record, "output_paths", []) or [])[:8],
@@ -672,6 +709,8 @@ def run_overview(record: Any) -> dict[str, Any]:  # noqa: ANN401 - RunRecord wit
         "created_at": record.created_at,
         "status": record.status,
         "objective": _objective(record),
+        "prompt": _objective(record),
+        "pipeline_summary": resolve_pipeline_summary(record),
         "pipeline": stages,
         "key_params": _pipeline_key_params(recipe),
         "data": {
@@ -685,6 +724,235 @@ def run_overview(record: Any) -> dict[str, Any]:  # noqa: ANN401 - RunRecord wit
         "acceptance": _acceptance_view(record),
         "reuse": dict(getattr(record, "reuse", None) or {}),
     }
+
+
+def summarize_pipeline(recipe: Recipe | None) -> str:
+    """What the run did: every stage with the params that decide its behaviour.
+
+    Written onto a successful run so a later session can compare a new request to "what that
+    run did" without loading the full recipe. Complete and uncapped on purpose -- truncating
+    here is guesswork about which threshold matters, and a clipped line makes two runs that
+    differ only in that threshold look identical. Condensing for display is the host's job;
+    ``host_directive`` on the payload says so. Locations are dropped (see the constants above).
+    """
+    if recipe is None:
+        return ""
+    parts: list[str] = []
+    for stage in recipe.stages:
+        params = _summary_params(stage.semantic_params())
+        if params:
+            parts.append(f"{stage.ref}({', '.join(f'{k}={v}' for k, v in params)})")
+        else:
+            parts.append(stage.ref)
+    return " -> ".join(parts)
+
+
+def _summary_params(params: dict[str, Any]) -> list[tuple[str, Any]]:
+    """Behavioural params in recipe order: everything bar locations and no-op settings."""
+    return [(k, v) for k, v in params.items() if not _is_location_param(k, v) and not _is_no_constraint(k, v)]
+
+
+def _is_no_constraint(key: str, value: Any) -> bool:  # noqa: ANN401
+    """A cap that caps nothing says nothing about the run -- ``max_samples=-1`` is not a choice."""
+    if value is None:
+        return True
+    key_l = key.lower()
+    unbounded_limit = key_l.endswith(("samples", "rows", "limit", "count"))
+    return bool(unbounded_limit and isinstance(value, int) and value <= 0)
+
+
+def _is_location_param(key: str, value: Any) -> bool:  # noqa: ANN401
+    key_l = key.lower()
+    if key_l in _SUMMARY_PATH_KEYS:
+        return True
+    if any(key_l.endswith(suffix) for suffix in _SUMMARY_PATH_SUFFIXES):
+        return True
+    return isinstance(value, str) and (value.startswith("/") or value.startswith("~"))
+
+
+def _match_aliases(key: str, value: Any) -> list[str]:  # noqa: ANN401
+    """Words a person would use for a numeric param, added to the match corpus only.
+
+    People ask for "16 kHz mono", recipes store ``target_sample_rate=16000`` and
+    ``target_channels=1``. The aliases live here rather than in the displayed summary so
+    matching does not push machine spellings like ``16000/16kHz`` in front of the reader.
+    """
+    key_l = key.lower()
+    if "sample_rate" in key_l and isinstance(value, (int, float)) and value >= 1000:
+        rate = int(value)
+        khz = rate // 1000
+        return [str(rate), str(khz), f"{khz}k", f"{khz}khz"]
+    if "channel" in key_l and isinstance(value, int):
+        return {1: ["mono"], 2: ["stereo"]}.get(value, [])
+    return []
+
+
+def resolve_pipeline_summary(record: Any, recipe: Recipe | None = None) -> str:  # noqa: ANN401
+    """Stored summary when present; otherwise derive from the record's recipe (older runs)."""
+    stored = str(getattr(record, "pipeline_summary", "") or "").strip()
+    if stored:
+        return stored
+    if recipe is not None:
+        return summarize_pipeline(recipe)
+    raw = getattr(record, "recipe", None)
+    if not isinstance(raw, dict):
+        return ""
+    from nemo_curator.audio_agent.recipe import Recipe as _Recipe
+
+    try:
+        return summarize_pipeline(_Recipe.from_dict(raw))
+    except ValueError:
+        return ""
+
+
+def goal_text(goal: dict[str, Any] | str | None) -> str:
+    """Normalize a current or stored goal into a single comparable string."""
+    if goal is None:
+        return ""
+    if isinstance(goal, str):
+        return goal.strip()
+    if isinstance(goal, dict):
+        for key in ("task", "objective", "request", "summary"):
+            if goal.get(key):
+                return str(goal[key]).strip()
+        return str(goal).strip() if goal else ""
+    return str(goal).strip()
+
+
+def prompt_summary_match(
+    current_goal: dict[str, Any] | str | None,
+    prior_prompt: str,
+    pipeline_summary: str,
+    *,
+    match_corpus: str | None = None,
+) -> dict[str, Any]:
+    """How much of the current request is covered by the prior's prompt + pipeline.
+
+    ``pipeline_summary`` is the short display string; ``match_corpus`` (when provided) is the
+    uncapped stage+param text used for scoring so a truncated one-liner cannot hide a filter
+    that actually ran. Score is coverage of current-request tokens. Empty current goal → 0.
+    """
+    current = _match_tokens(goal_text(current_goal))
+    if match_corpus is None:
+        prompt = "" if prior_prompt.strip() == _NO_OBJECTIVE else prior_prompt
+        match_corpus = f"{prompt} {pipeline_summary}"
+    prior = _match_tokens(match_corpus)
+    if not current:
+        return {"score": 0.0, "matched": [], "unmatched": [], "basis": "prior_prompt+pipeline_summary"}
+    matched = sorted(current & prior)
+    unmatched = sorted(current - prior)
+    return {
+        "score": round(len(matched) / len(current), 3),
+        "matched": matched,
+        "unmatched": unmatched,
+        "basis": "prior_prompt+pipeline_summary",
+    }
+
+
+def match_corpus_for_record(record: Any, recipe: Recipe | None = None) -> str:  # noqa: ANN401
+    """Uncapped prompt + stage refs + identifying params for ranking (not for display)."""
+    # A run with no recorded goal must score on its pipeline alone. Left in, the placeholder's
+    # filler ("run", "that", "for") counts as intent overlap with almost any request.
+    prompt = _objective(record)
+    if prompt.strip() == _NO_OBJECTIVE:
+        prompt = ""
+    if recipe is None:
+        raw = getattr(record, "recipe", None)
+        if isinstance(raw, dict):
+            from nemo_curator.audio_agent.recipe import Recipe as _Recipe
+
+            with contextlib.suppress(ValueError):
+                recipe = _Recipe.from_dict(raw)
+    parts = [prompt, resolve_pipeline_summary(record, recipe)]
+    if recipe is not None:
+        for stage in recipe.stages:
+            parts.append(stage.ref)
+            for key, value in _summary_params(stage.semantic_params()):
+                parts.append(f"{key}={value}")
+                parts.extend(_match_aliases(key, value))
+    return " ".join(p for p in parts if p)
+
+
+def _match_tokens(text: str) -> set[str]:
+    """Alphanumeric tokens plus CamelCase splits so ``UTMOSFilterStage`` yields ``filter``."""
+    lower = text.lower()
+    tokens = {t for t in re.findall(r"[a-z0-9]+", lower) if len(t) >= _MIN_MATCH_TOKEN_LEN}
+    for piece in re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+", text):
+        p = piece.lower()
+        if len(p) >= _MIN_MATCH_TOKEN_LEN:
+            tokens.add(p)
+    return tokens
+
+
+def enrich_folder_run_cards(
+    rows: list[dict[str, Any]],
+    *,
+    goal: dict[str, Any] | str | None = None,
+) -> dict[str, Any]:
+    """Attach prompt, pipeline_summary and optional match score to thin index rows.
+
+    Used by ``runs --data <folder> [--goal ...]`` so a host can compare the current
+    request to prior work *before* inventing a recipe. Ranking (when ``goal`` is set)
+    is by match score, then recency — never by stage edit-distance to a draft recipe.
+    """
+    from nemo_curator.audio_agent import run_store
+    from nemo_curator.audio_agent.recipe import Recipe as _Recipe
+
+    cards: list[dict[str, Any]] = []
+    for row in rows:
+        rid = str(row.get("run_id") or "")
+        record = run_store.load(rid) if rid else None
+        if record is None:
+            cards.append({**row, "card_incomplete": True})
+            continue
+        overview = run_overview(record)
+        prompt = overview["prompt"]
+        summary = overview["pipeline_summary"]
+        recipe = None
+        if isinstance(record.recipe, dict):
+            with contextlib.suppress(ValueError):
+                recipe = _Recipe.from_dict(record.recipe)
+        card = {
+            **row,
+            "goal": record.goal or None,
+            "prompt": prompt,
+            "pipeline_summary": summary,
+            "pipeline": overview["pipeline"],
+            "key_params": overview["key_params"],
+            "input_count": overview["data"]["input_count"],
+            "accepted": overview["stats"]["accepted"],
+            "elapsed_sec": overview["stats"]["elapsed_sec"],
+            "outputs": list(overview["outputs"] or [])[:8],
+            "acceptance": overview["acceptance"],
+            "next": _prior_next_steps(rid, str(getattr(record, "data_source", "") or "")),
+        }
+        if goal is not None:
+            card["match"] = prompt_summary_match(
+                goal,
+                prompt,
+                summary,
+                match_corpus=match_corpus_for_record(record, recipe),
+            )
+        cards.append(card)
+
+    out: dict[str, Any] = {"runs": cards, "host_directive": _HOST_DIRECTIVE_FOLDER_RUNS}
+    if goal is not None:
+        # Among priors that match the request equally well, prefer the one that already
+        # processed more of the folder: adopting it leaves a smaller delta to recompute.
+        # ``input_count`` is the cheap proxy -- the exact overlap costs a delta probe per run.
+        cards.sort(
+            key=lambda c: (
+                float((c.get("match") or {}).get("score") or 0.0),
+                int(c.get("input_count") or 0),
+                -len((c.get("match") or {}).get("unmatched") or []),
+                str(c.get("created_at") or ""),
+            ),
+            reverse=True,
+        )
+        out["runs"] = cards
+        out["goal"] = goal_text(goal)
+        out["ranked_by"] = "current_prompt vs prior_prompt + pipeline_summary, then prior coverage"
+    return out
 
 
 def _pipeline_key_params(recipe: Recipe | None) -> list[dict[str, Any]]:
@@ -1079,7 +1347,7 @@ def _objective(run: Any) -> str:  # noqa: ANN401
     for key in ("task", "objective", "request", "summary"):
         if goal.get(key):
             return str(goal[key])
-    return str(goal) if goal else "(objective not recorded for that run)"
+    return str(goal) if goal else _NO_OBJECTIVE
 
 
 def _key_params(params: dict[str, Any]) -> dict[str, Any]:

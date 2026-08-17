@@ -1,15 +1,48 @@
 # Don't redo finished work: reusing prior runs
 
-Loaded on demand from `SKILL.md` step 8. Read this once you have a candidate recipe,
-**before** smoking or running it.
+Loaded on demand from `SKILL.md` step 8. Read this once you know the data path —
+**before inventing a recipe** — and again once you have a candidate recipe, before smoking.
 
-Every completed step publishes a content-addressed **artifact**, so a later request can
-reuse it instead of recomputing it (design: `nemo_curator/audio_agent/REUSE_ARCHITECTURE.md`).
-Once you have a candidate recipe — **before** smoking or running — scan for prior work:
+## Before inventing a recipe: same-folder priors by prompt + summary
+
+Ranking a freshly invented pipeline against prior runs by stage edit-distance is what made
+a shallow convert-only prior outrank richer work that already covered most of the folder.
+Do not invent first. Compare the **current user request** to each prior's recorded
+**prompt** (`goal`) and durable **`pipeline_summary`**:
+
+```bash
+python -m nemo_curator.audio_agent runs --data /path/to/folder \
+  --goal "the user's current request"
+```
+
+Each card carries `prompt`, `pipeline_summary`, stats, and (when `--goal` is set) a
+`match` score: the fraction of the current request's tokens covered by that prior's
+prompt + summary. Prefer a prior whose capabilities cover the **full** request over one
+that only covers a subset. Show the top 2–3; on pick:
+
+```bash
+python -m nemo_curator.audio_agent delta-run --from-run <run_id> --data /path/to/folder
+```
+
+Successful runs persist `pipeline_summary` automatically. Older records without it are
+summarized at read time from the stored recipe. Always pass `--goal` on `run` /
+`delta-run` so the next session has a prior prompt to compare.
+
+`pipeline_summary` is the **complete** stage list with every behavioural param — written to
+be compared, not read aloud. It is deliberately not truncated: clipping it would decide for
+you which threshold matters, and two runs differing only in that threshold would look
+identical. **Never paste it verbatim.** Retell it in one plain line: what the run produced,
+plus only the settings that differ between the priors you are showing or that the user asked
+about. The payload repeats this in `host_directive`.
+
+Once you have a candidate recipe — **before** smoking or running — also scan:
 
 ```bash
 python -m nemo_curator.audio_agent reuse-scan --recipe recipe.yaml --data /path/to/data
 ```
+
+Every completed step publishes a content-addressed **artifact**, so a later request can
+reuse it instead of recomputing it (design: `nemo_curator/audio_agent/REUSE_ARCHITECTURE.md`).
 
 The `decision` is `already_done` (this pipeline matches a prior computation and
 dataset key at the reported trust tier), `incremental` (the first *N* stages are
@@ -179,7 +212,8 @@ through `continue` / `delta-run`, never by editing bytes.
 
 `runs --data /path/to/folder` answers the same question outside a scan: it lists runs on that
 exact corpus *and* runs that read the folder when its contents differed, with the latter named in
-`same_folder_only`.
+`same_folder_only`. Pass `--goal` to rank those cards by current-request coverage of each prior's
+`prompt` + `pipeline_summary` before inventing a recipe.
 
 ## When the scan says the work was done but nothing was saved
 
@@ -204,5 +238,6 @@ This returns the recipe with the writer in place and changes nothing on disk. Sa
 says whether the work is too cheap to be worth a file, a writer is already there, or the
 pipeline holds audio in memory to the end. Never propose a checkpoint the offer did not.
 
-Record what a run was FOR with `run --goal "..."` — that objective is what makes the
-candidate legible to a human months later.
+Record what a run was FOR with `run --goal "..."` — that objective is the prior **prompt**
+the next session compares against, together with the stored `pipeline_summary` written on
+success. Empty goals force ranking to fall back to the summary alone.

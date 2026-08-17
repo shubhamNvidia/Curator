@@ -860,6 +860,10 @@ class RunRecord:
     config_hash: str | None = None
     parent_run_id: str | None = None
     goal: dict[str, Any] = field(default_factory=dict)
+    # Brief deterministic one-liner of stages + identifying params, written on success so a
+    # later session can compare the user's new request to "what this run did" without loading
+    # every param. Empty on older records -- readers derive it from ``recipe`` when missing.
+    pipeline_summary: str = ""
     data_source: str | None = None
     data_fingerprint: str | None = None
     acceptance_criteria: list[dict[str, Any]] = field(default_factory=list)

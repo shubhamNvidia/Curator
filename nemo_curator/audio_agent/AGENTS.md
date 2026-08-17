@@ -73,6 +73,7 @@ All verbs print JSON. Run them with the repo virtualenv interpreter from the rep
 .venv/bin/python -m nemo_curator.audio_agent describe UTMOSFilterStage --params '{...}'
 .venv/bin/python -m nemo_curator.audio_agent producers duration             # who writes a key
 .venv/bin/python -m nemo_curator.audio_agent context --goal '{...}' --data DATA
+.venv/bin/python -m nemo_curator.audio_agent runs --data DATA --goal '...'  # BEFORE inventing a recipe
 .venv/bin/python -m nemo_curator.audio_agent doctor --json
 .venv/bin/python -m nemo_curator.audio_agent diagnose --error '...' --recipe R.yaml
 .venv/bin/python -m nemo_curator.audio_agent resolve --stage UTMOSFilterStage --label studio
@@ -99,6 +100,11 @@ clobbered).
    `acceptance_criteria`. Refuse if out of scope.
 2. Inspect: `context --data DATA` for the data profile, environment and matched
    blueprints. Report the findings — they are often news to the user.
+   **Also** `runs --data DATA --goal "..."` before inventing a recipe: compare the
+   current request to each prior's recorded prompt + `pipeline_summary`, show the
+   top 2–3, and on pick adopt with `delta-run --from-run` (never invent a competing
+   recipe first). `pipeline_summary` is the full stage+param list for comparison —
+   retell it in one line rather than pasting it.
 3. Route coarse-to-fine: `catalog-tree` -> prune categories -> `cards --category` ->
    `cards --names` -> `describe` with the params you intend to use. Prefer adapting a
    matched blueprint over composing from scratch, and prune to the request.
@@ -140,11 +146,13 @@ clobbered).
   scan says why in `delta.reason`; relay that reason rather than inventing a cause. A host
   once read `fresh`, recurated a whole corpus over one added file, and reported a missing
   checkpoint that the recipe did not need.
-- **`prior_on_same_path` means this folder was curated before.** It appears when the keys
-  missed but the source folder matches a completed run, which is what recipe drift looks like.
-  Say so before running anything, show what differs (`recipe_diff.phrase`, `data_delta.phrase`),
-  offer `runs --run-id <id>` for the detail, and on a yes adopt that run's own recipe with
+- **`prior_on_same_path` / same-folder `runs` means this folder was curated before.**
+  Call `runs --data DATA --goal "..."` *before* inventing a recipe and compare the
+  current request to each prior's `prompt` + `pipeline_summary`. When keys miss after a
+  recipe exists, `prior_on_same_path` still appears — surface it; on a yes adopt with
   `delta-run --from-run <id>` rather than retyping the pipeline.
+- **Always pass `--goal`** on `run` / `continue` / `delta-run` so the next session has a
+  prior prompt to compare against (together with the stored `pipeline_summary`).
 - **Environment questions have one home:** `doctor`. Do not diagnose the environment from
   stage cards, and never silently install, upgrade, switch CPU/GPU, or retry a failure.
 - **Write scratch recipes to `scratch_dir()`**, not the working directory — that is a git

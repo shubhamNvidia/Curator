@@ -198,10 +198,16 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
         stage: str | None = None,
         since: str | None = None,
         limit: int = 50,
+        goal: dict[str, Any] | str | None = None,
     ) -> dict[str, Any]:
         """List local run records (provenance), or load one by run_id. Local history,
-        not shared memory/learning. Filter by dataset path/key, stage, and time."""
-        return aa.runs(run_id=run_id, data=data, stage=stage, since=since, limit=limit)
+        not shared memory/learning. Filter by dataset path/key, stage, and time.
+
+        With a folder ``data`` path and ``goal`` (the user's current request), ranks
+        priors by how much of that request is covered by each prior's recorded prompt
+        plus ``pipeline_summary`` — call this before inventing a recipe.
+        """
+        return aa.runs(run_id=run_id, data=data, stage=stage, since=since, limit=limit, goal=goal)
 
     @server.tool()
     def reuse_scan(

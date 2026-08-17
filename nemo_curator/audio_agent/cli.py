@@ -295,9 +295,16 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block
     ru = sub.add_parser("runs", help="list local run records (provenance) or show one by id")
     ru.add_argument("--run-id", help="show a single run record")
     ru.add_argument("--data", help="filter to runs/artifacts for this source dataset (a path, or a dataset_key)")
+    ru.add_argument(
+        "--goal",
+        help=(
+            "with --data as a folder path: rank priors by how much of this current request is "
+            "covered by each prior's recorded prompt + pipeline_summary (compare before inventing a recipe)"
+        ),
+    )
     ru.add_argument("--stage", help="filter artifacts to one stage")
     ru.add_argument("--since", help="only records created at/after this ISO timestamp")
-    ru.add_argument("--limit", type=int, default=50)
+    ru.add_argument("--limit", type=int, default=50, help="max runs/artifacts to return")
 
     sc = sub.add_parser("reuse-scan", help="find prior work this recipe could reuse (read-only)")
     sc.add_argument("--recipe", required=True, help="the recipe to scan for (or - for stdin)")
@@ -500,6 +507,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0912 - a flat 
                     stage=args.stage,
                     since=args.since,
                     limit=args.limit,
+                    goal=args.goal,
                 ),
             )
         elif cmd == "reuse-scan":

@@ -109,6 +109,19 @@ python -m nemo_curator.audio_agent context --goal '{"task":"quality_filter","dom
 (GPU? ffmpeg? installed extras?), matched blueprints/recipes, and patterns.
 Tell the user what you found (it is often news to them).
 
+**Same folder already curated?** Before inventing a recipe, list priors and compare
+the user's current request to each prior's recorded prompt and `pipeline_summary`:
+
+```bash
+python -m nemo_curator.audio_agent runs --data /path/to/data --goal "the user's current request"
+```
+
+Prefer a prior whose capabilities cover the full request over one that only covers a
+subset. Show the top 2–3 with stats; on pick use `delta-run --from-run <run_id>` rather
+than retyping stages. `pipeline_summary` is the full stage+param list for comparison —
+never paste it verbatim; retell it in one line, naming only what differs between the
+priors you show. See `references/reuse.md`.
+
 For environment health specifically, run `doctor` (the single source of truth for env):
 
 ```bash
