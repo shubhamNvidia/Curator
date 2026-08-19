@@ -41,6 +41,46 @@ Once you have a candidate recipe — **before** smoking or running — also scan
 python -m nemo_curator.audio_agent reuse-scan --recipe recipe.yaml --data /path/to/data
 ```
 
+## A recipe branch is not reuse or continuation
+
+Replacing one component with another (for example, BandFilter with UTMOS), changing
+the metric or acceptance criteria, changing a semantic stage parameter, reordering
+stages, or changing checkpoint topology creates a new recipe branch. Do not call
+that threshold feedback, delta work, or continuation to inherit recipe evidence.
+The old validation, host critique, checkpoint choice, reuse scan, smoke, and
+approval are invalid. Same-chat context, a still-valid dataset profile, and the
+soft curation preference may be inherited without needless repetition.
+
+Construct the exact new recipe and embedded contract, validate it, emit the
+exact-hash host semantic critique, resolve checkpoint placement from explicit
+user choices, and revalidate/re-critique any transformed recipe before this
+reference's `reuse-scan`. Then smoke the exact final hash, present its evidence
+and limitations, checkpoint effects, and any grounded occupied-output warning,
+ask for approval, and stop. Only a subsequent user answer may authorize the
+execution verb; hash/token gates do not prove consent.
+
+For an expected same-dataset feedback loop, the proactive first-run decision happens even
+before this scan: after validation and semantic critique, use the `checkpoint-placement`
+skill and `plan-checkpoint`. It may choose only a core-generated candidate and must first
+show its trade-off through structured AskQuestion. Never call `--choice baseline`,
+`--choice checkpoint`, `--output-path`, or an equivalent MCP choice until the user selects
+that response; ask separately for the path after acceptance. The soft planning-mode answer
+is not checkpoint consent, and at most one checkpoint may be added. Any returned
+transformation requires validation and a new exact-hash host critique. Unresolved
+recommendations are refused by smoke and run. Do not confuse that opt-in preparation with
+the reactive `prior_unsaved` offer below, which explains why work that already ran cannot
+now be resumed.
+
+For feedback on a completed retained checkpoint, scalar decisions use
+`plan-checkpoint --from-run ... --decision-value <scalar>`. Card-declared compound
+decisions use the separate `--decision-conditions '<JSON>'` surface. Supply the
+complete desired non-empty condition set (configured score keys, finite numeric targets,
+`ge` only); omission disables a dimension. Never put a list/mapping into
+`decision_value` or edit selector recipes manually. The core preserves AND logic,
+missing-score drop, nested-list parent policy, producer identity, and checkpoint identity,
+and refuses a newly enabled dimension when the completed annotation checkpoint does not
+prove that score is present.
+
 Every completed step publishes a content-addressed **artifact**, so a later request can
 reuse it instead of recomputing it (design: `nemo_curator/audio_agent/REUSE_ARCHITECTURE.md`).
 
@@ -88,6 +128,15 @@ is real, just not one a rerun is promised to match.
 
 Then act on the choice — don't hand-edit the recipe:
 
+Before an executed `extend` or `fresh` continuation reaches its final confirmation,
+inspect the continuation card together with deterministic `output_targets`, resolved
+stage output-path contracts, and current read-only path facts. Name each exact occupied
+manifest/data/output/checkpoint path that the chosen execution is proven to replace or
+overwrite, and remind the user to copy or save anything there they need. Do not mutate,
+clean, rename, pre-create, or back up the path for them. If the card does not prove
+append-versus-replace behavior, say so and ask. Do not issue an overwrite warning for
+`as_is` when it only serves an existing artifact without mutation.
+
 ```bash
 python -m nemo_curator.audio_agent continue --recipe new.yaml --data /path/to/data \
   --execute --choice extend --confirm <config_hash>
@@ -97,6 +146,14 @@ python -m nemo_curator.audio_agent continue --recipe new.yaml --data /path/to/da
 - **extend** — rewrite the recipe to start from the reused artifact, re-validate the
   remaining stages against what that artifact actually carries, and run only those.
 - **fresh** — ignore prior work and recompute.
+
+After the choice succeeds, include the **Saved files** block required by
+`smoke-and-run.md`. For `as_is`/`already_done`, distinguish the existing served/reused
+artifact from newly written files and say **No new output was written** when the result
+proves that. For an executed `extend` or `fresh`, distinguish its newly written/replaced
+terminal outputs from the existing artifacts it read and from checkpoint/intermediate
+files. Report the exact recipe path only when run-record recipe metadata or a returned
+scratch recipe path identifies it; otherwise say the recipe path was not reported.
 
 `--parent-run-id <id>` is optional and additive: it diffs against that specific run, and
 whichever engine reuses more wins. `runs --data /path/to/data` shows everything already
@@ -123,6 +180,14 @@ python -m nemo_curator.audio_agent delta-run --recipe recipe.yaml --data /path/t
   --confirm <config_hash>
 ```
 
+The unconfirmed delta card is the pre-run source of truth. Before asking for that
+confirmation, combine its manifests/targets and change/merge facts with deterministic
+`output_targets`, resolved stage contracts, and current read-only path facts. Name every
+exact occupied path the delta is proven to rewrite, and remind the user to save/copy work
+they need first. Never clean or back it up automatically. Do not generalize the in-place
+manifest rewrite below to append stages or unrelated outputs; if another target's behavior
+is unproven, say so and ask.
+
 This runs the user's own stages over the changed files, merges the rows into the existing
 manifest, and republishes it under the key the full pipeline has for the enlarged corpus — so
 the next `reuse-scan` answers `already_done` by an ordinary probe. It rewrites the manifest in
@@ -133,6 +198,13 @@ prefix of the recipe, so the stages after the checkpoint still have to see every
 listed in `tail.stale_outputs` are on disk describing the corpus as it was *before* the change,
 so do not report the work as finished — run the `continue --execute --choice extend` from its
 `next` first, then report. Only `status: completed` means the deliverable is current.
+
+When a delta (and any required tail continuation) completes, the final response must
+separate the manifest/output paths newly written or replaced by this execution from prior
+rows/artifacts that were reused and from checkpoint/intermediate files. Include generated
+audio/output directories and the exact executed recipe path when the structured result
+reports them. Never list `tail.stale_outputs` as current saved deliverables, and say “not
+reported” for any requested durable path absent from the structured evidence.
 
 `status: no_delta` is an answer, not an error, and its `reason` is worth relaying because it
 says what would have to change. Common ones: nothing is persisted early enough to merge into
@@ -234,9 +306,11 @@ python -m nemo_curator.audio_agent add-checkpoint --recipe recipe.yaml \
 ```
 
 This returns the recipe with the writer in place and changes nothing on disk. Save it, then
-`validate` → smoke → `run` as usual. `action: no_checkpoint` means don't raise it: the `why`
-says whether the work is too cheap to be worth a file, a writer is already there, or the
-pipeline holds audio in memory to the end. Never propose a checkpoint the offer did not.
+`validate` → smoke → `run` as usual. In this reactive post-miss path,
+`action: no_checkpoint` means don't raise it: the `why` says whether the work is too cheap
+to be worth a file, a writer is already there, or the pipeline holds audio in memory to the
+end. Never invent a reactive checkpoint the offer did not. Proactive checkpoint selection
+for a not-yet-run recipe belongs only to `checkpoint-placement` + `plan-checkpoint`.
 
 Record what a run was FOR with `run --goal "..."` — that objective is the prior **prompt**
 the next session compares against, together with the stored `pipeline_summary` written on

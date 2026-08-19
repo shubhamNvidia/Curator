@@ -38,12 +38,36 @@ Detailed procedure lives beside this file and is loaded only when the step is re
   directory ahead of the confirm gate — above all not the user's output. A gate the agent has
   already prepared the ground for is not a gate. `validate` returns `output_targets`, stating
   what already exists at every path the recipe writes to (with row and file counts): put that
-  in the plan and let the user decide. Never pre-clean an output "so the rerun is clean" — the
-  pipeline replaces its own manifest output, so a rerun does **not** accumulate rows. Reading
-  `ManifestWriterStage.process` alone suggests it does (it opens in append mode), but `setup`
-  truncates first and the stage is pinned to a single worker; two consecutive runs over 4 files
-  yield 4 rows, not 8. This is not hypothetical: an agent deleted a user's file before the gate
-  on exactly this misreading.
+  in the plan and let the user decide. Never pre-clean an output "so the rerun is clean."
+  Determine append/replace behavior from the resolved stage output-path contract and current
+  core facts, not a writer's apparent file-open mode, and never generalize one sink's behavior
+  to another. In particular, the core-proven `ManifestWriterStage` setup replaces its manifest
+  rather than accumulating rerun rows; that fact does not make an unrelated append sink a
+  replacing sink. This is not hypothetical: an agent deleted a user's file before the gate on
+  exactly this misreading.
+- **Warn before replacing occupied paths.** Immediately before the final approval for a full
+  `run`, `delta-run`, executed `continue`, or any other execution that can mutate an existing
+  output, inspect deterministic `output_targets`, resolved stage output-path contracts, the
+  continuation/reuse card, and safe read-only current path facts. Briefly name every exact
+  occupied path that those facts prove will be replaced/overwritten and remind the user to
+  copy or save anything they need before proceeding. Do not copy, delete, rename, clean, or
+  pre-create it yourself. Do not warn when all targets are new or successful reuse only serves
+  an existing artifact without mutation. If whether a path is mutated is not proven, say that
+  and ask instead of guessing. This warning supplements the explicit confirmation,
+  exact-`config_hash`, and smoke-token gates; it replaces none of them.
+- **End every successful result with saved-path facts.** After a successful full run, delta,
+  executed continuation, `already_done`/reuse, or serve-as-is result, include a concise
+  **Saved files** block grounded only in structured results. Distinguish final newly
+  written/replaced deliverables, existing reused/served paths, and intermediate/checkpoint
+  artifacts. Include the exact recipe path actually used or saved when reported, output
+  manifests/deliverables, checkpoint paths, generated output directories, and other persisted
+  stage artifacts. Use only returned `output_paths`/`output_targets`, published
+  artifacts/lineage, run-record recipe metadata or scratch recipe path, the report, or
+  deterministic stage-path discovery. Check existence read-only when safe before saying a file
+  was saved. Never present smoke-isolated, in-memory, or temporary paths as durable; for
+  reuse-as-is, say that no new output was written when true and list the existing served
+  artifact. If a requested path was not reported, say so rather than inventing it. This path
+  summary is required even when acceptance is reported separately.
 - **Evidence only.** Never claim quality/throughput improved without before/after
   numbers from a `report`.
 - **Define success up front, verify it after.** Derive `acceptance_criteria` (the
@@ -74,6 +98,96 @@ Detailed procedure lives beside this file and is loaded only when the step is re
   `output_rows_written` (read back from the file rather than counted in memory) and
   `sparse_fields`, naming each written field left blank in some rows — surface both. Never
   call an output complete or ready while a field the request depends on is empty in most rows.
+
+## Choose one soft curation mode at workflow start
+
+At the start of every **new executable audio-curation workflow**, before calling
+`context`, routing, or constructing a recipe, use the host's fancy structured
+**single-select** question UI with exactly:
+
+- Title: **Optimize this curation**
+- Question: **How should I optimize this curation? This only guides choices between equally correct pipelines.**
+- **Easy to refine later** (`refine_later`): prefer reusable file-backed handoffs,
+  explicit task/segment scope, exact annotate-then-selector forms, and at most one
+  worthwhile metadata checkpoint. Demerit: the first run may use more metadata
+  storage and I/O.
+- **Fastest first run** (`fast_first`): prefer adjacent in-memory handoffs, native
+  filters, early row reduction, and minimal intermediate I/O. Demerit: later
+  threshold tuning may repeat model work.
+
+Do not ask when the request already answers it: wording such as "fast" or "as
+quickly as possible" means `fast_first`; "I'll tune/refine thresholds" or "reuse
+later" means `refine_later`. Record the result as:
+
+```yaml
+planning_preference:
+  schema_version: 1
+  curation_mode: refine_later  # or fast_first
+  source: explicit_user_choice  # or inferred_from_request
+```
+
+Ask once per workflow. Do **not** repeat the question during validation, semantic
+critique, smoke, approval, execution, reporting, threshold feedback, or an
+explicit continuation. A continuation inherits the stored preference from its
+recipe/run. The same folder alone does not prove that a request is a
+continuation; a new unrelated request starts a new workflow and asks again.
+
+This mode is only a soft tie-breaker between semantically equal, legal plans. It
+is never a correctness constraint or hard bound. User intent, acceptance
+criteria, mechanical validation, semantic critique, safety, and available stage
+contracts always win. If the preferred form is unavailable, illegal,
+semantically different, or not worthwhile, choose the best correct plan and
+briefly explain the deviation. The preference never authorizes a pointless
+checkpoint, delayed useful filtering that causes excessive model work, or
+intermediate audio written solely for reuse. The refine-later preference
+considers no more than one worthwhile metadata checkpoint; existing
+recipe-specific checkpoint gates remain authoritative.
+
+The question belongs to the host UI. Do not add or emulate an AskQuestion verb
+in the deterministic core. When available, pass the preference through
+`context` (`--planning-mode` / `--planning-source`) and include it in the Recipe.
+
+## Mid-workflow recipe branch reset (mandatory)
+
+After work starts, any stage add/remove/replace/reorder, semantic stage-parameter
+change, acceptance-criterion change, or checkpoint-topology change creates a new
+recipe branch. A scalar threshold change also invalidates recipe evidence; a
+stage, metric, topology, or criteria replacement must never be mislabeled as
+threshold feedback, delta work, or continuation to skip the reset.
+
+The same-chat goal/context, still-valid dataset profile, and soft
+`planning_preference` may be inherited without asking or profiling again.
+Recipe-level validation, host critique, checkpoint decisions, reuse scan, smoke,
+and execution approval may not: all are invalid for the changed branch.
+
+Restart in exactly this order:
+
+1. Construct the exact new recipe with its embedded acceptance contract.
+2. `validate` it, then emit the mandatory host `semantic_critique` response
+   (`mechanically_runnable`, exact `recipe_config_hash`, and `intent_status`).
+   A returned `semantic_review`/`review_required` packet is evidence for that
+   critique, not proof that the host performed it.
+3. Run checkpoint placement / `plan-checkpoint`. Before every offered
+   accept/decline or path choice, show the concise candidate trade-off through
+   the host's structured AskQuestion UI. Never call `--choice baseline`,
+   `--choice checkpoint`, `--output-path`, or an equivalent MCP choice until the
+   user selects it. The workflow's planning-mode answer is not this
+   recipe-specific decision; retain the one-checkpoint policy.
+4. If checkpoint selection transforms the recipe, `validate` and perform a new
+   exact-hash semantic critique again.
+5. Run `reuse-scan`, then authoritative `smoke` on the exact final hash.
+6. Present smoke evidence and limitations, checkpoint effects, and any grounded
+   occupied-output copy/save warning; then ask for explicit post-smoke approval.
+7. Stop. Never call `run` in the response that reports smoke. Only a subsequent
+   user answer can authorize `run`; a config hash or smoke token proves recipe
+   integrity, not consent.
+8. Run, report/verify acceptance, and finish with the existing **Saved files**
+   contract.
+
+The core cannot prove that AskQuestion produced a user answer or that the host
+actually wrote the critique. Its advisory fields and exact-hash/token gates must
+not be described as consent provenance; do not invent a token or hard gate that
+would break existing SDK/tutorial flows.
 
 ## The loop
 
@@ -188,10 +302,11 @@ outcome label into a threshold. Do not pick thresholds by hand.
 ### 4. Plan -> validate -> critique (static loop, <= 3 iterations)
 
 Emit a Recipe (YAML): `{stages: [{ref, params}], inputs, preset,
-acceptance_criteria}`. The complete success contract **must live inside this
-recipe before validation, smoke, confirmation, and run**. That makes it part of
-`config_hash`; a separate criteria file alone is not executable intent and must
-never be the only copy.
+acceptance_criteria, planning_preference}`. The complete success contract **must
+live inside this recipe before validation, smoke, confirmation, and run**. That
+makes it part of `config_hash`; a separate criteria file alone is not executable
+intent and must never be the only copy. `planning_preference` is different:
+optional, non-semantic planning provenance that does not change any recipe hash.
 
 For every recipe-driven verb, the first supported source stage's configured
 parameter is execution truth. `Recipe.inputs` and `--data` are optional
@@ -252,7 +367,9 @@ composable under the checks the core can enforce. It does **not** prove that a
 valid field means what the user meant, that a filter is applied at the right
 entity/granularity, or that the chosen model/metric is a good proxy for the
 request. Treat green validation as necessary plumbing evidence, never as an
-intent verdict.
+intent verdict. Likewise, `semantic_review`, `review_required: true`, and the
+included `required_response` are only evidence/instructions: they do not mean
+the host emitted or satisfied the response contract.
 
 **Semantic verification checklist — run it on every field you filter and every
 stage you pick, grounding each answer in the packet's `semantic_facts`/notes (or
@@ -337,9 +454,14 @@ The result controls the loop:
 
 - `pass` — intent and plumbing both look coherent; proceed to smoke.
 - `revise` — change the recipe, then re-run **validate -> semantic critique**.
-  Any recipe change invalidates the prior critique and config hash.
+  Any recipe change invalidates the prior critique and config hash and follows
+  the mid-workflow recipe branch reset above.
 - `ask` — stop before smoke and ask the minimum user-facing question. After the
   answer, revise as needed and repeat validation + critique.
+
+On `pass`, before authoritative smoke, read the `checkpoint-placement` skill and call
+`plan-checkpoint`; select only a core-generated candidate, or use the core-returned baseline
+after the user explicitly declines. Smoke will refuse an unresolved recommended choice.
 
 This is an LLM judgment over grounded card/data evidence, not a request for a new
 deterministic rule per module. Crashes, corruption, impossible composition and

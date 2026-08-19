@@ -81,6 +81,59 @@ then discards it** — downstream still scores the ORIGINAL files. Either make i
 (`write_to_disk=true` + `update_audio_filepath`, or keep the waveform and have the next stage
 read it via `input_residency`) or drop the stage.
 
+## Reuse-aware pipeline construction
+
+Correct semantics and the user's request come first; never add a stage solely for reuse.
+Apply the workflow's curation mode only when both shapes are correct:
+
+| Decision | `refine_later` — Easy to refine later | `fast_first` — Fastest first run |
+|---|---|---|
+| Residency | Prefer durable file-backed boundaries and serializable path/offset metadata. | Prefer adjacent in-memory handoffs when contracts prove compatibility. |
+| Annotate/filter | Prefer exact card-declared annotate then selector forms. | Prefer a native filter and early row reduction. |
+| Checkpoint | Consider at most one worthwhile metadata checkpoint; never intermediate audio solely for reuse. | Minimize intermediate I/O, but still obey the recipe-specific checkpoint decision gate. |
+| Ordering | Keep reusable measurement above its exact destructive selector; do not delay another useful filter enough to cause excessive model work. | Put cheap/native filters early when that reduces expensive downstream work without changing meaning. |
+| First run | May spend extra metadata I/O and storage. | Usually minimizes first-run latency and storage. |
+| Future tuning | Threshold-only changes can reuse retained annotations when the core proves the boundary. | Later threshold changes may rerun model work. |
+
+This matrix is soft preference guidance, never a correctness constraint or hard
+bound. If the preferred form is illegal, unavailable, semantically different, or
+not worthwhile, use the best correct authored shape and explain the deviation.
+No mode authorizes a pointless checkpoint, a delayed useful filter that causes
+excessive model work, or more than one metadata checkpoint for this preference.
+
+Under `refine_later`, inspect each finalist's full decision card while authoring.
+Use annotate-before-filter only when its `decision` contract proves exact
+separation and retaining the annotation is worthwhile. UTMOS task separation
+uses `PreserveByValueStage`; explicit segment separation uses one
+`PreserveByValueConditionsStage` condition. That stage supports generic
+`condition_logic='or'` pipelines, but card-declared UTMOS/SIGMOS exact reuse
+always sets `condition_logic='and'`; never suggest OR as a native-filter
+equivalent. SIGMOS requires one compound AND selector containing every enabled
+threshold with its configured score key; never reduce it to OVRL. For segment
+mode, set the selector's generic `items_key` exactly to the producer's
+configured `segments_key`, keep missing-score `drop` and
+`drop_parent_if_empty=true`, and persist only JSON-serializable path/offset
+metadata. Prefer explicit `mode=task` or
+`mode=segments` over `mode=auto` only when scope is mechanically proven. If
+scope is not proven, keep the best correct mode and explain why the
+refine-later form was unavailable; never invent task, segment, nested, tensor,
+multi-scope, or corpus-level equivalence.
+
+Keep cheap, recursive-nested, missing-sensitive, private-metadata-dependent and
+corpus-dependent filters native. Under `fast_first`, native filtering remains a
+preference, not permission to bypass the existing `plan-checkpoint` decision
+gate. A candidate returned by `plan-checkpoint` is still a new recipe: validate
+and semantically critique it again before authoritative smoke. When the core
+marks an expensive candidate recommended, smoke/run require either that
+candidate or the exact baseline recipe returned after
+`plan-checkpoint --choice baseline`.
+
+For `refine_later`, read `validate.planning_advisories` during semantic review.
+It is non-blocking evidence that the current recipe remains valid while an exact
+card-declared reusable alternative exists. Never treat it as an Issue, rewrite
+the recipe automatically, or force a checkpoint. For `fast_first` or an absent
+preference, no preference advisory should appear.
+
 **Measuring, selecting and converting are different requests.** A stage with an `action` param
 does exactly one of them per instance, and picking the wrong one is silent: converting a corpus
 the user wanted narrowed keeps rows they meant to exclude, and narrowing one they wanted

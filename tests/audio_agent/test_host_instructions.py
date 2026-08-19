@@ -45,6 +45,7 @@ _SKILLS = Path(skills_dir())
 _SHIMS = {
     ".agents/skills/audio-curation": "audio-curation",
     ".agents/skills/audio-stage-authoring": "audio-stage-authoring",
+    ".agents/skills/checkpoint-placement": "checkpoint-placement",
     ".claude/skills/audio-curation": "audio-curation",
 }
 
@@ -80,8 +81,49 @@ def cli_verbs() -> set[str]:
     }
 
 
+@pytest.fixture
+def mid_workflow_component_replacement_scenario() -> dict[str, object]:
+    """The observed failure: old evidence was reused after replacing the quality branch."""
+    return {
+        "initial_recipe": {
+            "quality_stage": "BandFilter",
+            "acceptance_metric": "band_quality",
+            "checkpoint_topology": "candidate",
+        },
+        "branch_change": {
+            "quality_stage": "UTMOSFilterStage",
+            "acceptance_metric": "utmos_mos",
+            "checkpoint_topology": "new candidate set",
+        },
+        "may_inherit": [
+            "same-chat context",
+            "dataset profile",
+            "soft curation preference",
+        ],
+        "must_invalidate": [
+            "validation",
+            "semantic critique",
+            "checkpoint decision",
+            "reuse scan",
+            "smoke",
+            "execution approval",
+        ],
+        "ordered_milestones": [
+            "Construct the exact new recipe with its embedded acceptance contract.",
+            "`validate` it, then emit the mandatory host `semantic_critique` response",
+            "Run checkpoint placement / `plan-checkpoint`.",
+            "If checkpoint selection transforms the recipe",
+            "Run `reuse-scan`, then authoritative `smoke` on the exact final hash.",
+            "Present smoke evidence and limitations",
+            "Stop. Never call `run` in the response that reports smoke.",
+            "Only a subsequent user answer can authorize `run`",
+            "Run, report/verify acceptance",
+        ],
+    }
+
+
 def test_the_packaged_skills_are_the_ones_we_expect() -> None:
-    assert available_skills() == ["audio-curation", "audio-stage-authoring"]
+    assert available_skills() == ["audio-curation", "audio-stage-authoring", "checkpoint-placement"]
 
 
 @pytest.mark.parametrize("skill", available_skills())
@@ -114,6 +156,274 @@ def test_every_skill_description_survives_the_strictest_host(skill: str) -> None
     assert "use " in description.lower(), (
         f"{skill}: description must name its trigger conditions, not only what it is"
     )
+
+
+def test_curation_mode_question_is_plain_once_per_new_workflow_guidance() -> None:
+    skill = (_SKILLS / "audio-curation/SKILL.md").read_text(encoding="utf-8")
+    agents = (_REPO / "nemo_curator/audio_agent/AGENTS.md").read_text(
+        encoding="utf-8"
+    )
+    exact_question = (
+        "How should I optimize this curation? This only guides choices between "
+        "equally correct pipelines."
+    )
+
+    for text in (skill, agents):
+        normalized = " ".join(text.lower().split())
+        assert "Optimize this curation" in text
+        assert exact_question in text
+        assert "Easy to refine later" in text
+        assert "Fastest first run" in text
+        assert "single-select" in text
+        assert "same folder alone does not prove" in normalized
+        assert "new unrelated request" in normalized
+        assert "explicit continuation" in normalized
+        assert "inherit" in normalized
+        assert "stored" in normalized
+    assert skill.index("Choose one soft curation mode") < skill.index(
+        "### 1. Interpret"
+    )
+    assert "Do **not** repeat the question during validation" in skill
+    assert '"fast" or "as\nquickly as possible" means `fast_first`' in skill
+    assert '"I\'ll tune/refine thresholds" or "reuse\nlater" means `refine_later`' in skill
+
+
+def test_curation_modes_remain_soft_and_disclose_the_tradeoffs() -> None:
+    skill = (_SKILLS / "audio-curation/SKILL.md").read_text(encoding="utf-8")
+    routing = (
+        _SKILLS / "audio-curation/references/routing.md"
+    ).read_text(encoding="utf-8")
+    combined = skill + routing
+
+    assert "only a soft tie-breaker" in skill
+    assert "never a correctness constraint or hard bound" in combined
+    assert "briefly explain the deviation" in combined
+    for fact in (
+        "file-backed",
+        "in-memory",
+        "native filter",
+        "early row reduction",
+        "metadata checkpoint",
+        "First run",
+        "Future tuning",
+        "storage",
+    ):
+        assert fact in combined
+    assert "inspect each finalist's full decision card" in routing
+    assert "supports generic\n`condition_logic='or'` pipelines" in routing
+    assert "always sets `condition_logic='and'`" in routing
+    assert "never suggest OR as a native-filter\nequivalent" in routing
+    assert "Prefer explicit `mode=task` or\n`mode=segments` over `mode=auto` only when scope is mechanically proven" in routing
+    assert "bypass the existing `plan-checkpoint` decision\ngate" in routing
+    assert "planning_advisories" in routing
+    assert "must insert a checkpoint" not in combined.lower()
+    assert "always use file-backed" not in combined.lower()
+    assert "refuse `mode=auto`" not in combined
+
+
+def test_component_replacement_mid_chat_requires_the_full_ordered_reset(
+    mid_workflow_component_replacement_scenario: dict[str, object],
+) -> None:
+    skill = (_SKILLS / "audio-curation/SKILL.md").read_text(encoding="utf-8")
+    reset = skill.split("## Mid-workflow recipe branch reset (mandatory)", 1)[1].split(
+        "## The loop", 1
+    )[0]
+    milestones = mid_workflow_component_replacement_scenario["ordered_milestones"]
+    assert isinstance(milestones, list)
+    normalized_reset = " ".join(reset.split())
+    positions = [
+        normalized_reset.index(" ".join(str(milestone).split()))
+        for milestone in milestones
+    ]
+    assert positions == sorted(positions), "the branch reset must preserve gate order"
+
+    normalized = normalized_reset.lower()
+    scenario_text = repr(mid_workflow_component_replacement_scenario)
+    assert "BandFilter" in scenario_text
+    assert "UTMOSFilterStage" in scenario_text
+    for evidence in mid_workflow_component_replacement_scenario["must_invalidate"]:
+        assert str(evidence) in normalized
+    for inherited in ("same-chat", "dataset profile", "`planning_preference`"):
+        assert inherited in normalized
+    for trigger in (
+        "stage add/remove/replace/reorder",
+        "semantic stage-parameter change",
+        "acceptance-criterion change",
+        "checkpoint-topology change",
+    ):
+        assert trigger in normalized
+    assert "must never be mislabeled as threshold feedback, delta work, or continuation" in normalized
+
+
+def test_branch_reset_is_repeated_at_each_host_decision_boundary() -> None:
+    skill = (_SKILLS / "audio-curation/SKILL.md").read_text(encoding="utf-8")
+    agents = (_REPO / "nemo_curator/audio_agent/AGENTS.md").read_text(
+        encoding="utf-8"
+    )
+    smoke = (
+        _SKILLS / "audio-curation/references/smoke-and-run.md"
+    ).read_text(encoding="utf-8")
+    reuse = (
+        _SKILLS / "audio-curation/references/reuse.md"
+    ).read_text(encoding="utf-8")
+    checkpoint = (_SKILLS / "checkpoint-placement/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+    for text in (skill, agents, smoke, reuse, checkpoint):
+        normalized = " ".join(text.lower().split())
+        assert "recipe branch" in normalized
+        assert "semantic" in normalized
+        assert "reuse-scan" in normalized or "reuse scan" in normalized
+        assert "smoke" in normalized
+        assert "subsequent user answer" in normalized
+    assert "BandFilter with UTMOS" in reuse
+    reuse_normalized = " ".join(reuse.lower().split())
+    assert "do not call that threshold feedback, delta work, or continuation" in reuse_normalized
+
+
+def test_checkpoint_choices_are_never_made_for_the_user() -> None:
+    skill = (_SKILLS / "audio-curation/SKILL.md").read_text(encoding="utf-8")
+    agents = (_REPO / "nemo_curator/audio_agent/AGENTS.md").read_text(
+        encoding="utf-8"
+    )
+    checkpoint = (_SKILLS / "checkpoint-placement/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    reuse = (
+        _SKILLS / "audio-curation/references/reuse.md"
+    ).read_text(encoding="utf-8")
+
+    for text in (skill, agents, checkpoint, reuse):
+        normalized = " ".join(text.split())
+        assert "AskQuestion" in normalized
+        assert "--choice baseline" in normalized
+        assert "--choice checkpoint" in normalized
+        assert "--output-path" in normalized
+        assert "user" in normalized
+        assert "select" in normalized
+    assert "one-checkpoint policy" in skill
+    assert "Never place more than one new checkpoint" in checkpoint
+    assert "at most one checkpoint may be added" in reuse
+    assert "planning-mode answer is not checkpoint consent" in " ".join(reuse.split())
+    assert "soft curation-mode choice is not this recipe-specific" in " ".join(
+        checkpoint.split()
+    )
+
+
+def test_semantic_packet_and_integrity_tokens_are_not_mistaken_for_host_consent() -> None:
+    skill = (_SKILLS / "audio-curation/SKILL.md").read_text(encoding="utf-8")
+    agents = (_REPO / "nemo_curator/audio_agent/AGENTS.md").read_text(
+        encoding="utf-8"
+    )
+    smoke = (
+        _SKILLS / "audio-curation/references/smoke-and-run.md"
+    ).read_text(encoding="utf-8")
+    normalized = " ".join((skill + agents + smoke).split())
+
+    for field in (
+        "`semantic_review`",
+        "`review_required",
+        "`mechanically_runnable",
+        "`recipe_config_hash`",
+        "`intent_status",
+    ):
+        assert field in normalized
+    assert "does not mean the host performed semantic critique" in agents
+    assert "not proof that the host performed it" in skill
+    smoke_normalized = " ".join(smoke.split())
+    assert "Never call `run` in the response that presents the smoke result" in smoke_normalized
+    assert "not evidence that the user approved it" in smoke_normalized
+    assert "cannot prove AskQuestion provenance" in normalized
+    assert "do not invent consent tokens or hard gates" in " ".join(agents.split())
+    assert "existing SDK/tutorial flows" in normalized
+
+
+def test_execution_gate_warns_only_for_grounded_occupied_overwrites() -> None:
+    skill = (_SKILLS / "audio-curation/SKILL.md").read_text(encoding="utf-8")
+    smoke = (
+        _SKILLS / "audio-curation/references/smoke-and-run.md"
+    ).read_text(encoding="utf-8")
+    reuse = (
+        _SKILLS / "audio-curation/references/reuse.md"
+    ).read_text(encoding="utf-8")
+    checkpoint = (_SKILLS / "checkpoint-placement/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    agents = (_REPO / "nemo_curator/audio_agent/AGENTS.md").read_text(
+        encoding="utf-8"
+    )
+    normalized = " ".join((skill + smoke + reuse + checkpoint + agents).split())
+
+    for required in (
+        "`output_targets`",
+        "resolved stage output-path contracts",
+        "continuation/reuse card",
+        "safe read-only current path facts",
+        "exact occupied path",
+        "copy or save",
+        "all targets are new",
+        "without mutation",
+        "append",
+        "replace",
+        "unproven",
+    ):
+        assert required in normalized
+    for execution in ("full `run`", "`delta-run`", "executed `continue`"):
+        assert execution in normalized
+    assert "Immediately before the final approval" in skill
+    assert "supplements the explicit confirmation" in skill
+    assert "Never copy, delete, rename, clean, truncate, or pre-create" in smoke
+    assert "Do not issue an overwrite warning for\n`as_is`" in reuse
+    assert "The unconfirmed delta card is the pre-run source of truth" in reuse
+    assert "exact-hash approval, and a smoke token" in checkpoint
+
+
+def test_success_responses_inventory_only_proven_durable_paths() -> None:
+    skill = (_SKILLS / "audio-curation/SKILL.md").read_text(encoding="utf-8")
+    smoke = (
+        _SKILLS / "audio-curation/references/smoke-and-run.md"
+    ).read_text(encoding="utf-8")
+    reuse = (
+        _SKILLS / "audio-curation/references/reuse.md"
+    ).read_text(encoding="utf-8")
+    checkpoint = (_SKILLS / "checkpoint-placement/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    agents = (_REPO / "nemo_curator/audio_agent/AGENTS.md").read_text(
+        encoding="utf-8"
+    )
+    normalized = " ".join((skill + smoke + reuse + checkpoint + agents).split())
+
+    for result in (
+        "full run",
+        "delta run",
+        "executed continuation",
+        "`already_done`",
+        "serve-as-is",
+    ):
+        assert result in normalized
+    for required in (
+        "**Saved files**",
+        "**Recipe used/saved:**",
+        "**Final outputs:**",
+        "**Reused/served existing outputs:**",
+        "**Intermediate/checkpoint files:**",
+        "`output_paths`",
+        "`output_targets`",
+        "published artifacts/lineage",
+        "run-record recipe metadata",
+        "generated audio/output directories",
+        "No new output was written",
+        "not reported",
+        "check a path's existence read-only",
+        "smoke-isolated",
+        "in-memory",
+    ):
+        assert required in normalized
+    assert "Never list `tail.stale_outputs` as current saved deliverables" in reuse
+    assert "planned-but-unexecuted path as durable" in normalized
+    assert "end every successful full/delta/continue/\n   reuse/serve-as-is result" in agents
 
 
 @pytest.mark.parametrize(("shim", "skill"), sorted(_SHIMS.items()))

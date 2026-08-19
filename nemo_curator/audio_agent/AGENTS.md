@@ -85,6 +85,7 @@ All verbs print JSON. Run them with the repo virtualenv interpreter from the rep
 .venv/bin/python -m nemo_curator.audio_agent verify --criteria C.yaml --evidence E.json --recipe R.yaml
 .venv/bin/python -m nemo_curator.audio_agent continue --recipe R.yaml --data DATA --execute --choice extend --confirm <hash>
 .venv/bin/python -m nemo_curator.audio_agent add-checkpoint --recipe R.yaml --output-path CK.jsonl  # make GPU work resumable
+.venv/bin/python -m nemo_curator.audio_agent plan-checkpoint --recipe R.yaml  # core-proven pre-gate candidates
 .venv/bin/python -m nemo_curator.audio_agent delta-run --recipe R.yaml --data DATA --confirm <hash>  # only the files that changed
 .venv/bin/python -m nemo_curator.audio_agent delta-run --from-run RUN_ID --data DATA  # same, adopting a prior run's own recipe
 ```
@@ -94,9 +95,75 @@ local head (free port, plasma on /tmp, API limit) so no manual setup is needed; 
 cluster already exists, set `RAY_ADDRESS` and omit the flag (it is respected, never
 clobbered).
 
+## Ask for the soft curation mode once
+
+At the start of each **new executable** audio-curation workflow, before
+`context`, routing, or recipe construction, use the host's fancy structured
+single-select UI:
+
+- Title: **Optimize this curation**
+- Question: **How should I optimize this curation? This only guides choices between equally correct pipelines.**
+- **Easy to refine later** (`refine_later`): reusable file-backed handoffs,
+  exact annotate/select forms, and at most one worthwhile metadata checkpoint;
+  the first run may use more metadata storage/I/O.
+- **Fastest first run** (`fast_first`): adjacent in-memory handoffs, native
+  filters, early row reduction, and minimal intermediate I/O; later tuning may
+  repeat model work.
+
+Infer `fast_first` from "fast/as quickly as possible" and `refine_later` from
+"tune/refine thresholds/reuse later"; otherwise ask. Ask only once: validation,
+smoke, approval, reporting, threshold feedback, and explicit continuations do
+not ask again. Continuations inherit the stored `planning_preference`. The same
+folder alone does not prove continuation, and a new unrelated request asks
+again.
+
+This is a soft tie-breaker, never a correctness constraint or hard bound.
+Correctness, user intent, acceptance criteria, validation, semantic critique,
+safety, and stage contracts win. If the preferred form is illegal,
+semantically different, unavailable, or not worthwhile, use the best correct
+plan and briefly explain why. Never add pointless checkpoints, delay a useful
+filter into excessive model work, write intermediate audio solely for reuse, or
+bypass the existing recipe-specific checkpoint decision gate. The question is
+host-UI behavior; do not add an AskQuestion verb to core.
+
+## Reset on a mid-workflow recipe branch
+
+Any stage add/remove/replace/reorder, semantic stage-parameter change,
+acceptance-criterion change, or checkpoint-topology change creates a new recipe
+branch and invalidates every prior recipe-level validation, semantic critique,
+checkpoint decision, reuse scan, smoke, and execution approval. In particular,
+a topology, metric, stage, or criteria replacement is not threshold feedback,
+delta work, or continuation. A threshold change also invalidates recipe
+evidence. Same-chat context, a still-valid dataset profile, and the soft
+curation preference may be inherited; do not needlessly ask/profile again.
+
+The required restart is: construct the exact new recipe + embedded contract ->
+`validate` -> host semantic critique with `mechanically_runnable`, exact
+`recipe_config_hash`, and `intent_status` -> checkpoint placement /
+`plan-checkpoint` -> explicit user selection for every offered accept/decline
+and path decision -> if transformed, validate + critique again -> `reuse-scan`
+-> authoritative smoke of the exact final hash -> present smoke/limitations,
+checkpoint effects, and any occupied-output copy/save warning -> explicit
+post-smoke user approval -> `run` -> report + **Saved files**.
+
+Never invoke `plan-checkpoint --choice baseline`, `--choice checkpoint`,
+`--output-path`, or an equivalent MCP choice for the user. First show the
+candidate trade-off with the host's structured AskQuestion UI and use only the
+selected response; the earlier soft planning-mode choice is not checkpoint
+consent. Never call `run` in the same response that reports smoke: only a
+subsequent user answer can approve execution. Hashes and smoke tokens bind
+artifacts, not consent.
+
+`validate` returning `semantic_review`, `review_required`, or a response schema
+does not mean the host performed semantic critique; the complete response
+contract above is required for the exact hash. The core cannot prove
+AskQuestion provenance or host judgment, so do not invent consent tokens or
+hard gates that break existing SDK/tutorial flows.
+
 ## The loop
 
-1. Interpret + clarify the goal (task, domain, quality bar, output) and derive
+1. After the once-per-workflow mode choice/inference, interpret + clarify the
+   goal (task, domain, quality bar, output) and derive
    `acceptance_criteria`. Refuse if out of scope.
 2. Inspect: `context --data DATA` for the data profile, environment and matched
    blueprints. Report the findings — they are often news to the user.
@@ -112,6 +179,10 @@ clobbered).
    role means the card set was incomplete, so re-retrieve for that role rather than
    stopping at the first set.
 5. Mandatory semantic critique -> `pass` / `revise` / `ask`. Only `pass` may continue.
+   On `pass`, use the `checkpoint-placement` skill before smoke; it may select only a
+   complete candidate returned by `plan-checkpoint`. Ask before applying any offered
+   checkpoint or baseline choice; use only the user's selected response. Smoke/run refuse an
+   unresolved recommendation; never hand-edit a checkpoint strategy or decline marker.
 6. `reuse-scan` before spending compute, then `smoke --sample N` and show
    retained/rejected plus examples (at most 2 rounds). When the scan answers
    `decision: delta` (`delta.status: ready`), a few files changed since a prior run: offer
@@ -120,8 +191,18 @@ clobbered).
    the checkpoint up to date and the files in `tail.stale_outputs` still describe the old
    corpus. Run the `continue` in its `next` before reporting anything as done.
 7. Present the plan, the semantic pass, the smoke evidence, the scale estimate and the
-   acceptance contract; get explicit user approval; then `run --confirm <hash>`.
-8. Summarize the `report`, verify acceptance, and propose a next action.
+   acceptance contract. Immediately before final approval, use deterministic
+   `output_targets`, resolved stage path contracts, continuation/reuse cards, and current
+   read-only path facts to name exact occupied paths proven to be replaced/overwritten;
+   remind the user to copy/save needed work. Never mutate or pre-create a target, guess
+   append-versus-replace behavior, or warn when all targets are new or reuse only serves
+   an existing artifact. Then get explicit approval and `run --confirm <hash>`.
+8. Summarize the `report`, verify acceptance, and end every successful full/delta/continue/
+   reuse/serve-as-is result with a concise **Saved files** block. From structured results
+   only, separate newly written/replaced final outputs, existing reused/served paths, and
+   intermediate/checkpoint files; include the exact reported recipe path and generated
+   output directories. Say no new output was written for non-mutating reuse when true,
+   and say a path was not reported instead of guessing.
 
 ## Non-negotiables
 
@@ -130,12 +211,15 @@ clobbered).
 - **Ask the tools what a stage reads and writes; never grep the stage source for it.**
   Pass the params you will actually use — the contract is resolved FROM them.
 - **0 silent full-scale runs.** Never `run --confirm` before the user approves, having
-  seen a smoke result and the scale estimate. The `config_hash` binds approval to plan.
+  seen a smoke result and the scale estimate. Report smoke and ask in one response, then
+  wait for a subsequent answer before running. The `config_hash` binds the plan; it does
+  not prove approval.
 - **Nothing touches the filesystem before approval.** No creating, deleting, moving or
   truncating files ahead of the gate, least of all the user's output. A gate the agent has
   already prepared the ground for is not a gate. Never pre-clean an output "so the rerun is
-  clean": the pipeline replaces its own manifest output, so a rerun does not accumulate
-  rows. An agent once deleted a user's file over exactly that misreading.
+  clean": use the resolved output-path contract to distinguish replace from append, and
+  never generalize one sink's behavior to another. An agent once deleted a user's file over
+  exactly that misreading.
 - **A green Verdict is mechanically runnable, not intent-approved.** The semantic critique
   between `validate` and `smoke` is mandatory.
 - **Evidence only.** No quality or throughput claim without before/after numbers from a
