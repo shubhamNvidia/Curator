@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from typing import Any
 
@@ -178,6 +179,37 @@ def _parse_params(raw: str | None) -> dict[str, Any] | None:
     return params
 
 
+def _parse_scalar(raw: str | None) -> Any:  # noqa: ANN401 - JSON scalar or plain string
+    """A finite JSON scalar when possible, otherwise literal string text."""
+    if raw is None:
+        return None
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+    if value is None or isinstance(value, (list, dict)):
+        msg = (
+            "--decision-value must be a JSON scalar "
+            "(boolean, number, or string); omit it for no change"
+        )
+        raise ValueError(msg)
+    if isinstance(value, float) and not math.isfinite(value):
+        msg = "--decision-value must be a finite JSON number"
+        raise ValueError(msg)
+    return value
+
+
+def _parse_conditions(raw: str | None) -> list[Any] | dict[str, Any] | None:
+    """A complete compound decision condition list or mapping."""
+    if raw is None:
+        return None
+    value = json.loads(raw)
+    if not isinstance(value, (list, dict)):
+        msg = "--decision-conditions must be a non-empty JSON list or object mapping"
+        raise ValueError(msg)  # noqa: TRY004 - public CLI input errors use ValueError
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block per subcommand
     p = argparse.ArgumentParser(prog="nemo_curator.audio_agent", description="Audio Agent (P1) tool surface")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -207,6 +239,17 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block
     ctx.add_argument("--data", help="dataset path to profile directly for pre-recipe planning")
     ctx.add_argument("--stages", nargs="*")
     ctx.add_argument("--roles", nargs="*")
+    ctx.add_argument(
+        "--planning-mode",
+        choices=("refine_later", "fast_first"),
+        help="optional soft planning tie-breaker chosen for this workflow",
+    )
+    ctx.add_argument(
+        "--planning-source",
+        choices=("explicit_user_choice", "inferred_from_request"),
+        default="explicit_user_choice",
+        help="how --planning-mode was selected",
+    )
 
     v = sub.add_parser(
         "validate",
@@ -339,6 +382,32 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block
     ck.add_argument("--output-path", help="write the checkpointed recipe's manifest here (omit for advice only)")
     ck.add_argument("--after", help="place it after this stage instead of where the agent would put it")
 
+    pc = sub.add_parser(
+        "plan-checkpoint",
+        help="build validated same-dataset checkpoint candidates before authoritative smoke",
+    )
+    pc.add_argument("--recipe", help="initial recipe to analyze (or - for stdin); omit with --from-run")
+    pc.add_argument("--from-run", help="adopt an exact completed recipe for threshold feedback")
+    pc.add_argument("--data", help="current dataset path; with --from-run it must match the prior dataset")
+    pc.add_argument("--output-path", help="new local JSONL checkpoint path (omit for analysis only)")
+    pc.add_argument("--decision-stage", help="producer stage whose downstream decision is being tuned")
+    decision = pc.add_mutually_exclusive_group()
+    decision.add_argument("--decision-value", help="new JSON scalar decision value for scalar feedback")
+    decision.add_argument(
+        "--decision-conditions",
+        help=(
+            "complete JSON list/object of card-declared compound ge conditions; "
+            "replaces the selector condition set"
+        ),
+    )
+    pc.add_argument(
+        "--choice",
+        choices=["checkpoint", "baseline"],
+        help="select the checkpoint candidate or explicitly decline it for the baseline",
+    )
+    pc.add_argument("--retention-sec", type=int, default=0, help="0 means user-managed/no expiry")
+    pc.add_argument("--owner", default="user", help="who owns checkpoint retention/deletion")
+
     sub.add_parser("reindex", help="rebuild the run/artifact index from the JSON records")
 
     cont = sub.add_parser("continue", help="plan (and optionally execute) a follow-up run that reuses prior work")
@@ -412,6 +481,15 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0912 - a flat 
                     data=args.data,
                     stages=args.stages,
                     roles=args.roles,
+                    planning_preference=(
+                        {
+                            "schema_version": 1,
+                            "curation_mode": args.planning_mode,
+                            "source": args.planning_source,
+                        }
+                        if args.planning_mode
+                        else None
+                    ),
                 ),
             )
         elif cmd == "validate":
@@ -540,6 +618,22 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0912 - a flat 
                     _load_recipe(args.recipe),
                     output_path=args.output_path,
                     after=args.after,
+                ),
+            )
+        elif cmd == "plan-checkpoint":
+            return _finish(
+                cmd,
+                aa.plan_checkpoint(
+                    _load_recipe(args.recipe) if args.recipe else None,
+                    from_run=args.from_run,
+                    data=args.data,
+                    output_path=args.output_path,
+                    decision_stage=args.decision_stage,
+                    decision_value=_parse_scalar(args.decision_value),
+                    decision_conditions=_parse_conditions(args.decision_conditions),
+                    choice=args.choice,
+                    retention_sec=args.retention_sec,
+                    owner=args.owner,
                 ),
             )
         elif cmd == "reindex":

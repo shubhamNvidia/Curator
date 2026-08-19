@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -36,6 +37,77 @@ def test_goal_parser_accepts_free_text_and_mapping_json() -> None:
 def test_goal_parser_rejects_non_mapping_json(raw: str) -> None:
     with pytest.raises(ValueError, match="object mapping"):
         cli._parse_goal(raw)
+
+
+def test_context_cli_forwards_optional_planning_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    called: dict[str, object] = {}
+
+    def fake_context(goal: dict, **kwargs: object) -> dict:
+        called["goal"] = goal
+        called.update(kwargs)
+        return {"planning_preference": kwargs["planning_preference"]}
+
+    monkeypatch.setattr(aa, "context", fake_context)
+
+    rc = cli.main(
+        [
+            "context",
+            "--goal",
+            "clean this corpus",
+            "--planning-mode",
+            "refine_later",
+            "--planning-source",
+            "inferred_from_request",
+        ]
+    )
+    result = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert called["planning_preference"] == {
+        "schema_version": 1,
+        "curation_mode": "refine_later",
+        "source": "inferred_from_request",
+    }
+    assert result["planning_preference"] == called["planning_preference"]
+
+
+def test_plan_checkpoint_cli_forwards_compound_conditions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    recipe = tmp_path / "recipe.yaml"
+    recipe.write_text("stages: []\n", encoding="utf-8")
+    planned = {"status": "candidates"}
+    called: dict[str, object] = {}
+
+    def fake_plan_checkpoint(recipe_doc: dict, **kwargs: object) -> dict:
+        called["recipe"] = recipe_doc
+        called.update(kwargs)
+        return planned
+
+    monkeypatch.setattr(aa, "plan_checkpoint", fake_plan_checkpoint)
+    rc = cli.main(
+        [
+            "plan-checkpoint",
+            "--recipe",
+            str(recipe),
+            "--decision-stage",
+            "SIGMOSFilterStage",
+            "--decision-conditions",
+            '{"sigmos_ovrl":3.8,"sigmos_sig":{"target_value":3.6,"operator":"ge"}}',
+        ]
+    )
+
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out) == planned
+    assert called["decision_conditions"] == {
+        "sigmos_ovrl": 3.8,
+        "sigmos_sig": {"target_value": 3.6, "operator": "ge"},
+    }
 
 
 def test_run_rejects_non_mapping_goal_before_calling_the_verb(

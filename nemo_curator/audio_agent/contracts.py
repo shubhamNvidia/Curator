@@ -278,6 +278,9 @@ class PlanningContext:
     # Machine-wide checks + grounded remediation options for the host LLM.
     # Recipe-specific applicability is resolved later by ``validate``/preflight.
     env_health: dict[str, Any] | None = None
+    # Optional non-semantic workflow tie-breaker supplied by the host before
+    # routing. It is never inferred from a folder or required by execution verbs.
+    planning_preference: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return _clean(asdict(self))
@@ -346,6 +349,9 @@ class Verdict:
     # preserve existing positional construction. The deterministic core
     # assembles configured lineage/card facts but does not decide user intent.
     semantic_review: dict[str, Any] | None = None
+    # Preference-specific, non-blocking authoring suggestions. These are kept
+    # outside Issue pools so they cannot alter status or runnable.
+    planning_advisories: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def runnable(self) -> bool:
@@ -415,6 +421,7 @@ class Verdict:
             "environment_decision": _clean(self.environment_decision),
             "validation_scope": "mechanical_runnability_not_intent_approval",
             "semantic_review": _clean(self.semantic_review),
+            "planning_advisories": _clean(self.planning_advisories),
             "diagnosis": _clean(self.diagnosis),
             "summary": self.summary(),
         }

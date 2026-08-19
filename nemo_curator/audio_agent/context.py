@@ -30,16 +30,20 @@ from nemo_curator.audio_agent.index import get_index
 from nemo_curator.audio_agent.profiler import probe_env, profile_data
 
 
-def assemble(
+def assemble(  # noqa: PLR0913 - compact context surface stays keyword-addressable
     goal: dict[str, Any] | None = None,
     *,
     data: str | None = None,
     selected_stages: list[str] | None = None,
     roles: list[str] | None = None,
     include_env: bool = True,
+    planning_preference: dict[str, Any] | None = None,
 ) -> PlanningContext:
     """Build a compact PlanningContext for the host router/planner."""
+    from nemo_curator.audio_agent.recipe import parse_planning_preference
+
     goal = dict(goal or {})
+    preference = parse_planning_preference(planning_preference)
     idx = get_index()
 
     selected = idx.full_cards(selected_stages) if selected_stages else []
@@ -64,6 +68,7 @@ def assemble(
         data_profile=data_profile,
         env_profile=env_profile,
         env_health=env_health,
+        planning_preference=preference,
     )
 
 

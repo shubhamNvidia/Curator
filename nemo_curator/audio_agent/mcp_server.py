@@ -77,9 +77,16 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
         data: str | None = None,
         stages: list[str] | None = None,
         roles: list[str] | None = None,
+        planning_preference: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Assemble a PlanningContext (category tree + profile + env + blueprints)."""
-        return aa.context(goal, data=data, stages=stages, roles=roles)
+        return aa.context(
+            goal,
+            data=data,
+            stages=stages,
+            roles=roles,
+            planning_preference=planning_preference,
+        )
 
     @server.tool()
     def validate(
@@ -259,6 +266,40 @@ def build_server() -> Any:  # noqa: ANN401 - returns a FastMCP instance
         """Say where a mid-pipeline manifest would make the expensive stages reusable, and with
         an output_path return the recipe carrying it (nothing is written or run)."""
         return aa.add_checkpoint(recipe, output_path=output_path, after=after)
+
+    @server.tool()
+    def plan_checkpoint(  # noqa: PLR0913 - mirrors the public checkpoint policy surface
+        recipe: dict[str, Any] | None = None,
+        from_run: str | None = None,
+        data: str | None = None,
+        output_path: str | None = None,
+        decision_stage: str | None = None,
+        decision_value: Any = None,  # noqa: ANN401 - card-declared scalar/categorical value
+        decision_conditions: Any = None,  # noqa: ANN401 - complete card-declared compound surface
+        choice: str | None = None,
+        retention_sec: int = 0,
+        owner: str = "user",
+    ) -> dict[str, Any]:
+        """Build a complete same-dataset checkpoint candidate before authoritative smoke.
+
+        Use ``recipe`` for the first run. Use ``from_run`` plus ``decision_stage`` and
+        ``decision_value`` for scalar feedback, or ``decision_conditions`` for
+        a complete card-declared compound ge condition set. When ``data``
+        changed, the result routes to existing delta/fresh behavior rather than
+        combining both kinds of reuse.
+        """
+        return aa.plan_checkpoint(
+            recipe,
+            from_run=from_run,
+            data=data,
+            output_path=output_path,
+            decision_stage=decision_stage,
+            decision_value=decision_value,
+            decision_conditions=decision_conditions,
+            choice=choice,
+            retention_sec=retention_sec,
+            owner=owner,
+        )
 
     @server.tool()
     def reindex() -> dict[str, Any]:

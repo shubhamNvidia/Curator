@@ -41,7 +41,10 @@ _PACKAGE = Path(__file__).resolve().parents[2] / "nemo_curator" / "audio_agent"
 
 # symbol -> (home module, modules that import it)
 _CROSS_MODULE_PRIVATES: dict[str, tuple[str, frozenset[str]]] = {
-    "_resume_breaks_on_disk_boundary": ("continuation", frozenset({"checkpoint", "delta", "reuse"})),
+    "_resume_breaks_on_disk_boundary": (
+        "continuation",
+        frozenset({"checkpoint", "delta", "reusable_pipeline", "reuse"}),
+    ),
     "_ensure_private_dir": ("run_store", frozenset({"artifacts", "calibration_store"})),
     "_write_private_json": ("run_store", frozenset({"artifacts", "calibration_store"})),
     "_clean": ("contracts", frozenset({"report"})),

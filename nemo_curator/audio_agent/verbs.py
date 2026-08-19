@@ -39,7 +39,7 @@ import sys
 import tempfile
 import time
 import types
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -52,6 +52,7 @@ from nemo_curator.audio_agent.profiler import probe_env, profile_data
 from nemo_curator.audio_agent.recipe import (
     EXECUTION_KNOB_PARAMS,
     OUTPUT_LOCATION_PARAMS,
+    REUSABLE_CHECKPOINT_PROVENANCE,
     Recipe,
     build_stages,
 )
@@ -133,8 +134,10 @@ def _as_recipe(recipe: Recipe | dict[str, Any]) -> Recipe:
     # Recipe.from_dict. Hold that path to the same fail-closed contract boundary
     # before validate/smoke/run/reuse performs any I/O.
     from nemo_curator.audio_agent.acceptance import parse_criteria
+    from nemo_curator.audio_agent.recipe import parse_planning_preference
 
     parse_criteria(rec.acceptance_criteria)
+    rec.planning_preference = parse_planning_preference(rec.planning_preference)
     return rec
 
 
@@ -811,6 +814,7 @@ def context(
     data: str | None = None,
     stages: list[str] | None = None,
     roles: list[str] | None = None,
+    planning_preference: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble a compact PlanningContext for the host router/planner.
 
@@ -824,7 +828,13 @@ def context(
             "reason": "path(s) resolve outside the allowed workspace",
             "violations": pviol,
         }
-    return _context.assemble(goal, data=data, selected_stages=stages, roles=roles).to_dict()
+    return _context.assemble(
+        goal,
+        data=data,
+        selected_stages=stages,
+        roles=roles,
+        planning_preference=planning_preference,
+    ).to_dict()
 
 
 def resolve(
@@ -1001,7 +1011,6 @@ def validate(
             )
         )
         return verdict.to_dict()
-
     binding = _dataset_binding(rec, data)
     verdict.data_binding = binding.to_dict()
     binding_issue = _binding_issue(binding, data)
@@ -1018,6 +1027,23 @@ def validate(
                 stage_index=binding.source_index,
                 stage=binding.source_ref,
                 fix="repair or replace the manifest before validation or execution",
+            )
+        )
+    reusable_dataset_key = (
+        dp_obj.dataset_key()
+        if dp_obj is not None and not _profile_error(dp_obj)
+        else None
+    )
+    for reason in _checkpoint_output_refusals(
+        rec,
+        reusable_dataset_key=reusable_dataset_key,
+    ):
+        verdict.issues.append(
+            Issue(
+                "checkpoint_output_occupied",
+                "error",
+                reason,
+                fix="choose a new, distinct, versioned local JSONL path for ManifestCheckpointStage",
             )
         )
     env = probe_env()
@@ -1162,6 +1188,28 @@ def validate(
                 issue.escalate_to = "user"
         else:
             verdict.gate_flags.append(env_issue)
+    # Soft authoring preferences never participate in mechanical runnability.
+    # Their advisory builder fails closed: incomplete equivalence evidence means
+    # an empty list, never a guessed alternative or a validation error.
+    authoring_valid = not any(
+        issue.severity == "error"
+        for pool in (verdict.issues, verdict.card_violations)
+        for issue in pool
+    )
+    if authoring_valid:
+        try:
+            from nemo_curator.audio_agent.planning_advisory import (
+                build_planning_advisories,
+            )
+
+            verdict.planning_advisories = build_planning_advisories(
+                rec,
+                stages,
+                initial_keys=keys0,
+                data_profile=data_profile,
+            )
+        except Exception:  # noqa: BLE001 - optional advice cannot break validate
+            verdict.planning_advisories = []
     verdict.output_targets = _output_targets(rec)
     return verdict.to_dict()
 
@@ -1199,6 +1247,128 @@ def _output_targets(rec: Recipe) -> list[dict[str, Any]]:
     return targets
 
 
+def _checkpoint_output_refusals(  # noqa: C901 - one branch per checkpoint path invariant
+    rec: Recipe,
+    *,
+    reusable_dataset_key: str | None = None,
+) -> list[str]:
+    """Fail-closed execution checks unique to the dedicated reusable checkpoint.
+
+    Ordinary writers intentionally replace their output. A checkpoint is different: an existing
+    path may be the only reusable copy of an earlier run, so silently truncating it destroys the
+    evidence this feature exists to retain. Planning catches this first; run repeats it to close
+    the race between approval and execution.
+
+    Validation is read-only and may inspect an occupied checkpoint only when
+    ``reusable_dataset_key`` proves that the exact recipe prefix has a complete,
+    content-bound artifact for this dataset. Execution deliberately omits that
+    evidence and therefore still refuses every occupied destination.
+    """
+    from urllib.parse import urlsplit
+
+    outputs: dict[str, list[str]] = {}
+    checkpoint_paths: list[tuple[int, str, str]] = []
+    for index, stage in enumerate(rec.stages):
+        for key in OUTPUT_LOCATION_PARAMS:
+            raw = stage.params.get(key)
+            if not isinstance(raw, str) or not raw:
+                continue
+            parsed = urlsplit(raw)
+            canonical = (
+                os.path.realpath(os.path.expanduser(raw))
+                if not parsed.scheme
+                else raw
+            )
+            outputs.setdefault(canonical, []).append(f"{stage.ref}[{index}].{key}")
+            if stage.ref == "ManifestCheckpointStage" and key == "output_path":
+                checkpoint_paths.append((index, raw, canonical))
+    reasons: list[str] = []
+    for index, raw, canonical in checkpoint_paths:
+        parsed = urlsplit(raw)
+        if parsed.scheme:
+            reasons.append(
+                f"{raw!r}: dedicated checkpoint reuse requires a plain local path, not a URI"
+            )
+            continue
+        users = outputs.get(canonical, [])
+        if len(users) > 1:
+            reasons.append(f"{raw!r}: checkpoint output collides with {', '.join(users)}")
+        if os.path.exists(canonical):
+            reusable_reason = _configured_reusable_checkpoint_reason(
+                rec,
+                checkpoint_index=index,
+                canonical_path=canonical,
+                dataset_key=reusable_dataset_key,
+            )
+            if reusable_reason:
+                reasons.append(f"{raw!r}: {reusable_reason}")
+        elif os.path.exists(f"{canonical}._COMPLETE"):
+            reasons.append(
+                f"{raw!r}: a stale completion marker exists without its checkpoint; "
+                "choose a new versioned path or have the user remove the stale marker"
+            )
+    return reasons
+
+
+def _configured_reusable_checkpoint_reason(  # noqa: PLR0911 - one refusal per artifact proof
+    rec: Recipe,
+    *,
+    checkpoint_index: int,
+    canonical_path: str,
+    dataset_key: str | None,
+) -> str:
+    """Why an occupied checkpoint is not proven safe for read-only validation."""
+    if not dataset_key:
+        return (
+            "checkpoint output already exists and no matching dataset identity "
+            "is available; choose a new versioned path instead of overwriting retained work"
+        )
+
+    from nemo_curator.audio_agent import artifacts
+
+    plans = artifacts.plan_steps(rec, dataset_key)
+    if checkpoint_index >= len(plans):
+        return "checkpoint prefix identity could not be derived"
+    plan = plans[checkpoint_index]
+    if plan.stage_ref != "ManifestCheckpointStage":
+        return "checkpoint prefix identity resolved to a different stage"
+    planned_path = os.path.realpath(os.path.expanduser(plan.uri))
+    if planned_path != canonical_path:
+        return "checkpoint artifact path does not match the configured recipe prefix"
+    artifact, invalid = artifacts.lookup(plan.step_key, dataset_key=dataset_key)
+    if artifact is None:
+        return "checkpoint output exists but no matching artifact record proves it complete"
+    artifact_path = os.path.realpath(os.path.expanduser(artifact.uri))
+    if artifact_path != canonical_path:
+        return "matching checkpoint record points at a different output path"
+    if invalid:
+        return "checkpoint artifact is not reusable: " + "; ".join(invalid)
+    return ""
+
+
+def _is_reusable_checkpoint_plan(rec: Recipe) -> bool:
+    """Whether this exact recipe opted into the planner's stricter run gate."""
+    return any(
+        stage.ref == "ManifestCheckpointStage"
+        and stage.params.get("planning_provenance") == REUSABLE_CHECKPOINT_PROVENANCE
+        for stage in rec.stages
+    )
+
+
+def _checkpoint_decision_refusal(rec: Recipe) -> dict[str, Any] | None:
+    """Block smoke/run until a recommended checkpoint is accepted or declined."""
+    from nemo_curator.audio_agent import reusable_pipeline
+
+    requirement = reusable_pipeline.checkpoint_decision_requirement(rec)
+    if requirement is None:
+        return None
+    return {
+        "status": "refused",
+        "recipe_id": rec.recipe_id,
+        **requirement,
+    }
+
+
 def _issue_from_dict(d: dict[str, Any]) -> Issue:
     return Issue(
         code=d.get("code", "error"),
@@ -1218,6 +1388,37 @@ def _is_streaming_infeasible(err: Exception) -> bool:
     return "streaming mode" in m and any(k in m for k in ("not enough gpu", "batch mode", "requires"))
 
 
+def _automatic_retry_reset_hook(
+    stages: list[Any],
+    *,
+    extra_reset: Callable[[], Any] | None = None,
+) -> Callable[[], None] | None:
+    """Compose stage-owned reset hooks with existing pipeline finalizer cleanup."""
+    stage_resets = [
+        reset
+        for stage in stages
+        if callable(reset := getattr(stage, "reset_for_retry", None))
+    ]
+    if not stage_resets and extra_reset is None:
+        return None
+
+    def _reset() -> None:
+        for reset in stage_resets:
+            reset()
+        if extra_reset is not None:
+            extra_reset()
+
+    return _reset
+
+
+def _release_retry_reservations(stages: list[Any]) -> None:
+    """Discard cross-process retry ownership records after a successful attempt."""
+    for stage in stages:
+        release = getattr(stage, "release_retry_reservation", None)
+        if callable(release):
+            release()
+
+
 def _run_pipeline_autofallback(
     stages: list[Any], mode: str, caller_executor: Any, *,  # noqa: ANN401
     checkpoint_path: str | None = None, note: Any = None,  # noqa: ANN401
@@ -1229,7 +1430,9 @@ def _run_pipeline_autofallback(
     """
     executor = caller_executor if caller_executor is not None else _make_executor(mode)
     try:
-        return _run_pipeline(stages, executor, checkpoint_path=checkpoint_path), mode
+        results = _run_pipeline(stages, executor, checkpoint_path=checkpoint_path)
+        _release_retry_reservations(stages)
+        return results, mode
     except Exception as e:  # noqa: BLE001
         if caller_executor is None and mode != "batch" and _is_streaming_infeasible(e):
             if callable(note):
@@ -1243,7 +1446,13 @@ def _run_pipeline_autofallback(
                 # their partial streaming shards are REPLACED (not merged) without this hook
                 # -- which is why before_retry is None for a plain writer pipeline.
                 before_retry()
-            return _run_pipeline(stages, _make_executor("batch"), checkpoint_path=checkpoint_path), "batch"
+            results = _run_pipeline(
+                stages,
+                _make_executor("batch"),
+                checkpoint_path=checkpoint_path,
+            )
+            _release_retry_reservations(stages)
+            return results, "batch"
         raise
 
 
@@ -1314,6 +1523,9 @@ def smoke(
             "sample": sample,
             "config_hash": rec.config_hash,
         }
+    checkpoint_refusal = _checkpoint_decision_refusal(rec)
+    if checkpoint_refusal is not None:
+        return _safety.redact(checkpoint_refusal)
     pviol = _safety.path_violations([data, output_dir, *_safety.recipe_path_params(rec)])
     if pviol:
         return {"status": "refused", "reason": "path(s) resolve outside the allowed workspace", "violations": pviol}
@@ -1588,10 +1800,13 @@ def smoke(
             rplan.mode,
             caller_executor,
             note=rpt.notes.append,
-            before_retry=(
-                pretrain_finalizer.prepare
-                if pretrain_finalizer is not None
-                else None
+            before_retry=_automatic_retry_reset_hook(
+                stages,
+                extra_reset=(
+                    pretrain_finalizer.prepare
+                    if pretrain_finalizer is not None
+                    else None
+                ),
             ),
         )
         rpt.ran = True
@@ -1740,6 +1955,10 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
     not an input override. A mismatch is refused before execution.
     """
     rec = _as_recipe(recipe).freeze()
+    checkpoint_refusal = _checkpoint_decision_refusal(rec)
+    if checkpoint_refusal is not None:
+        return _safety.redact(checkpoint_refusal)
+    authoritative_checkpoint_plan = _is_reusable_checkpoint_plan(rec)
     if goal is not None and not isinstance(goal, dict):
         return {
             "status": "refused",
@@ -1785,7 +2004,23 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
             "recipe_id": rec.recipe_id,
             "config_hash": rec.config_hash,
             "estimate": _estimate(data_profile),
-            "confirm_with": f"pass confirm={rec.config_hash!r} (or confirm=True) to proceed",
+            "confirm_with": (
+                f"pass confirm={rec.config_hash!r} to proceed"
+                if authoritative_checkpoint_plan
+                else f"pass confirm={rec.config_hash!r} (or confirm=True) to proceed"
+            ),
+            "data_binding": binding.to_dict(),
+        }
+    if authoritative_checkpoint_plan and confirm is True:
+        return {
+            "status": "refused",
+            "reason": (
+                "checkpoint-planned recipes require exact-hash approval; "
+                "bare confirm=True is not authoritative"
+            ),
+            "recipe_id": rec.recipe_id,
+            "config_hash": rec.config_hash,
+            "confirm_with": f"pass confirm={rec.config_hash!r} to proceed",
             "data_binding": binding.to_dict(),
         }
     if isinstance(confirm, str) and confirm != rec.config_hash:
@@ -1797,10 +2032,29 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
             "data_binding": binding.to_dict(),
         }
 
-    if _safety.require_smoke() and not _safety.verify_smoke_token(smoke_token, rec.config_hash):
+    if (
+        authoritative_checkpoint_plan or _safety.require_smoke()
+    ) and not _safety.verify_smoke_token(smoke_token, rec.config_hash):
         return {
             "status": "refused",
-            "reason": "run requires smoke evidence (AUDIO_AGENT_REQUIRE_SMOKE is set): run smoke on this recipe and pass its 'smoke_token'",
+            "reason": (
+                "checkpoint-planned recipes require authoritative smoke evidence "
+                "for this exact config_hash: run smoke on this recipe and pass its "
+                "'smoke_token'"
+                if authoritative_checkpoint_plan
+                else "run requires smoke evidence (AUDIO_AGENT_REQUIRE_SMOKE is set): "
+                "run smoke on this recipe and pass its 'smoke_token'"
+            ),
+            "recipe_id": rec.recipe_id,
+            "config_hash": rec.config_hash,
+            "data_binding": binding.to_dict(),
+        }
+    checkpoint_refusals = _checkpoint_output_refusals(rec)
+    if checkpoint_refusals:
+        return {
+            "status": "refused",
+            "reason": "dedicated checkpoint output is not safe to create",
+            "violations": checkpoint_refusals,
             "recipe_id": rec.recipe_id,
             "config_hash": rec.config_hash,
             "data_binding": binding.to_dict(),
@@ -2033,10 +2287,13 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
             rplan.mode,
             caller_executor,
             checkpoint_path=checkpoint_path,
-            before_retry=(
-                pretrain_finalizer.prepare
-                if pretrain_finalizer is not None
-                else None
+            before_retry=_automatic_retry_reset_hook(
+                stages,
+                extra_reset=(
+                    pretrain_finalizer.prepare
+                    if pretrain_finalizer is not None
+                    else None
+                ),
             ),
         )
         if pretrain_finalizer is not None:
@@ -2377,7 +2634,15 @@ def _publish_artifacts(  # noqa: PLR0913 - publishing gathers the run's whole co
     roles, keys = _derive_initial(data_profile)
     rows_in = input_count
     cumulative = 0.0
+    # A dedicated metadata checkpoint stands for the whole prefix, not merely for its
+    # deterministic writer. Preserve the existing trust behavior for every other artifact:
+    # this cumulative view is opt-in and applies only to ManifestCheckpointStage.
+    prefix_deterministic = True
+    prefix_ttl_sec = 0
     for i, (plan, st) in enumerate(zip(plans, stages, strict=False)):
+        prefix_deterministic = prefix_deterministic and plan.deterministic
+        if plan.ttl_sec:
+            prefix_ttl_sec = min(prefix_ttl_sec, plan.ttl_sec) if prefix_ttl_sec else plan.ttl_sec
         with contextlib.suppress(Exception):
             c = foundation.build_contract(st)
             roles |= _roles_of(c)
@@ -2407,6 +2672,25 @@ def _publish_artifacts(  # noqa: PLR0913 - publishing gathers the run's whole co
             step_identity[i] if step_identity and i < len(step_identity)
             else (plan.step_key, plan.input_key, plan.index)
         )
+        is_checkpoint = plan.stage_ref == "ManifestCheckpointStage"
+        checkpoint_retention = int(plan.semantic_params.get("retention_sec") or 0)
+        checkpoint_policy = (
+            {
+                "owner": str(plan.semantic_params.get("owner") or "user"),
+                "retention_sec": checkpoint_retention,
+                "expires_at": (
+                    time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ",
+                        time.gmtime(time.time() + checkpoint_retention),
+                    )
+                    if checkpoint_retention
+                    else None
+                ),
+                "automatic_deletion": False,
+            }
+            if is_checkpoint
+            else {}
+        )
         art = art_mod.Artifact(
             step_key=step_key,
             input_key=input_key,
@@ -2434,8 +2718,13 @@ def _publish_artifacts(  # noqa: PLR0913 - publishing gathers the run's whole co
             impl_version=plan.impl_version,
             code_version=art_mod.code_version(),
             model_version=plan.model_version,
-            deterministic=plan.deterministic,
-            ttl_sec=plan.ttl_sec,
+            # Checkpoint bytes encode every result above this boundary. A deterministic
+            # writer after a non-deterministic model must not launder that prefix into a
+            # high-trust artifact. Other artifact types retain their historical stage-local
+            # trust declaration for backward compatibility.
+            deterministic=prefix_deterministic if is_checkpoint else plan.deterministic,
+            ttl_sec=prefix_ttl_sec if is_checkpoint else plan.ttl_sec,
+            metrics={"checkpoint_policy": checkpoint_policy} if checkpoint_policy else {},
             run_id=run_id,
         )
         try:
@@ -3296,6 +3585,202 @@ def add_checkpoint(
     })
 
 
+def plan_checkpoint(  # noqa: C901, PLR0911, PLR0912, PLR0913 - one refusal per safety proof
+    recipe: Recipe | dict[str, Any] | None = None,
+    *,
+    from_run: str | None = None,
+    data: str | None = None,
+    output_path: str | None = None,
+    decision_stage: str | None = None,
+    decision_value: Any = None,  # noqa: ANN401 - a card-declared decision value
+    decision_conditions: Any = None,  # noqa: ANN401 - complete card-declared compound surface
+    choice: str | None = None,
+    retention_sec: int = 0,
+    owner: str = "user",
+) -> dict[str, Any]:
+    """Build complete, validated metadata-checkpoint candidates before authoritative smoke.
+
+    This is additive to :func:`add_checkpoint`: the older advisor and its ordinary
+    ``ManifestWriterStage`` recipe remain unchanged. This verb only handles a card-declared
+    annotate/selector pair and uses ``ManifestCheckpointStage``.
+
+    ``from_run`` is the safe feedback path: it adopts the exact successful recipe,
+    verifies that its configured source (and optional ``data`` assertion) still has that
+    run's strong dataset key, and lets the core change only the
+    declared scalar selector value or complete compound selector conditions. A
+    changed dataset is routed to the existing delta/fresh flow.
+    """
+    if recipe is not None and from_run:
+        return {
+            "status": "refused",
+            "reason": "pass recipe for a first-run candidate or from_run for feedback, not both",
+        }
+    if choice not in {None, "checkpoint", "baseline"}:
+        return {
+            "status": "refused",
+            "reason": "choice must be 'checkpoint', 'baseline', or omitted for inspection",
+        }
+    if choice == "baseline" and output_path:
+        return {
+            "status": "refused",
+            "reason": "choice='baseline' cannot be combined with output_path",
+        }
+    early_pviol = _safety.path_violations([data, output_path])
+    if early_pviol:
+        return {
+            "status": "refused",
+            "reason": "path(s) resolve outside the allowed workspace",
+            "violations": early_pviol,
+        }
+    adopted: dict[str, Any] | None = None
+    if from_run:
+        rec, adopted, refusal = _adopt_recipe(from_run)
+        if refusal:
+            return refusal
+        rec.parent_run_id = from_run
+    elif recipe is not None:
+        rec = _as_recipe(recipe).freeze()
+    else:
+        return {
+            "status": "refused",
+            "reason": "pass recipe for checkpoint planning or from_run to tune a completed run",
+        }
+    pviol = _safety.path_violations([data, output_path, *_safety.recipe_path_params(rec)])
+    if pviol:
+        return {
+            "status": "refused",
+            "reason": "path(s) resolve outside the allowed workspace",
+            "violations": pviol,
+        }
+    dataset_state = "not_applicable"
+    if adopted is not None:
+        current_key = _dataset_key_arg(data) if data else ""
+        if not current_key:
+            binding = _dataset_binding(rec, None)
+            current_profile = _profile_binding(binding)
+            if current_profile is not None and not _profile_error(current_profile):
+                current_key = current_profile.dataset_key()
+        prior_key = str(adopted.get("dataset_key") or "")
+        if not prior_key or not current_key:
+            return {
+                "status": "dataset_identity_unproven",
+                "route": "fresh",
+                "reason": (
+                    "same-dataset feedback reuse requires a recorded and currently resolvable "
+                    "dataset key; use a fresh run when unchanged input cannot be proved"
+                ),
+                "prior_dataset_key": prior_key or None,
+                "current_dataset_key": current_key or None,
+                "adopted": adopted,
+            }
+        if current_key != prior_key:
+            return {
+                "status": "changed_dataset",
+                "route": "delta_run",
+                "reason": (
+                    "the input dataset changed since this checkpoint run; threshold feedback "
+                    "reuse is same-dataset only, so use the existing delta-run or fresh-run path"
+                ),
+                "prior_dataset_key": prior_key,
+                "current_dataset_key": current_key,
+                "adopted": adopted,
+            }
+        if not prior_key.startswith("stat:"):
+            return {
+                "status": "dataset_identity_unproven",
+                "route": "fresh",
+                "reason": (
+                    "the matching dataset identity is shape-tier and cannot prove files were "
+                    "unchanged; this feedback path requires a stat-tier identity"
+                ),
+                "prior_dataset_key": prior_key,
+                "current_dataset_key": current_key,
+                "adopted": adopted,
+            }
+        dataset_state = "verified_unchanged"
+    if decision_value is not None:
+        if not isinstance(decision_value, (bool, int, float, str)):
+            return {
+                "status": "refused",
+                "reason": (
+                    "decision_value must be a JSON scalar "
+                    "(boolean, number, or string); null means no change"
+                ),
+            }
+        if isinstance(decision_value, float) and not math.isfinite(decision_value):
+            return {
+                "status": "refused",
+                "reason": "decision_value must be a finite JSON number",
+            }
+    if decision_value is not None and decision_conditions is not None:
+        return {
+            "status": "refused",
+            "reason": (
+                "decision_value and decision_conditions are mutually exclusive; "
+                "use decision_value for scalar decisions or decision_conditions "
+                "for a complete compound decision"
+            ),
+        }
+    if decision_conditions is not None and not isinstance(
+        decision_conditions,
+        (list, Mapping),
+    ):
+        return {
+            "status": "refused",
+            "reason": "decision_conditions must be a non-empty JSON list or mapping",
+        }
+    if not isinstance(retention_sec, int) or isinstance(retention_sec, bool) or retention_sec < 0:
+        return {"status": "refused", "reason": "retention_sec must be a non-negative integer"}
+    if owner not in {"user", "project"}:
+        return {"status": "refused", "reason": "owner must be 'user' or 'project'"}
+
+    from nemo_curator.audio_agent import reusable_pipeline
+
+    result = reusable_pipeline.plan(
+        rec,
+        output_path=output_path,
+        decision_stage=decision_stage,
+        decision_value=decision_value,
+        decision_conditions=decision_conditions,
+        retention_sec=retention_sec,
+        owner=owner,
+    )
+    candidate_ids = reusable_pipeline.recommended_candidate_ids(result)
+    if choice == "baseline":
+        if not candidate_ids:
+            return {
+                "status": "refused",
+                "reason": "there is no recommended checkpoint option to decline",
+                "analysis": result,
+            }
+        baseline = reusable_pipeline.with_declined_checkpoint(rec, candidate_ids)
+        result["status"] = "baseline_selected"
+        result["checkpoint_decision_required"] = False
+        result["checkpoint_decision"] = dict(baseline.checkpoint_decision or {})
+        result["baseline"]["recipe"] = baseline.to_dict()
+        result["host_directive"] = (
+            "The user explicitly declined the recommended metadata checkpoint. "
+            "Validate, critique, and smoke only the returned baseline recipe."
+        )
+    if adopted:
+        result["adopted"] = adopted
+    if decision_value is not None:
+        result["feedback"] = {
+            "decision_stage": decision_stage,
+            "decision_value": decision_value,
+            "dataset": dataset_state,
+            "next": "reuse-scan the returned exact recipe; never execute it without a new smoke token",
+        }
+    elif decision_conditions is not None:
+        result["feedback"] = {
+            "decision_stage": decision_stage,
+            "decision_conditions": decision_conditions,
+            "dataset": dataset_state,
+            "next": "reuse-scan the returned exact recipe; never execute it without a new smoke token",
+        }
+    return _safety.redact(result)
+
+
 def delta_run(  # noqa: PLR0913 - the same execution knobs as run(), which it delegates to
     recipe: Recipe | dict[str, Any] | None = None,
     *,
@@ -3508,6 +3993,7 @@ def _adopt_recipe(run_id: str) -> tuple[Recipe, dict[str, Any] | None, dict[str,
         "pipeline": [s.ref for s in rec.stages],
         "data_source": record.data_source,
         "dataset_key": record.dataset_key,
+        "fingerprint_tier": record.fingerprint_tier,
         "identity_reproduced": reproduced,
     }
     if not reproduced:

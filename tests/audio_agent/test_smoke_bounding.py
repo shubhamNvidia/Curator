@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 from pathlib import Path
@@ -25,10 +26,11 @@ from typing import Any
 import pandas as pd
 import pytest
 
+from nemo_curator.audio_agent import calibration_store, verbs
 from nemo_curator.audio_agent.contracts import SmokeReport
 from nemo_curator.audio_agent.recipe import Recipe
-from nemo_curator.audio_agent import calibration_store, verbs
-from nemo_curator.tasks import DocumentBatch
+from nemo_curator.stages.audio.common import ManifestCheckpointStage
+from nemo_curator.tasks import AudioTask, DocumentBatch
 from nemo_curator.utils.performance_utils import StagePerfStats
 
 
@@ -830,6 +832,44 @@ def test_streaming_fallback_resets_attempt_outputs_before_batch_retry(
     assert results == []
     assert used_mode == "batch"
     assert calls == ["streaming", "reset", "batch"]
+
+
+def test_streaming_fallback_resets_owned_partial_checkpoint_before_batch_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "checkpoint.jsonl"
+    checkpoint = ManifestCheckpointStage(output_path=str(output))
+    attempts = 0
+
+    def execute(_stages, _executor, *, checkpoint_path=None):
+        nonlocal attempts
+        attempts += 1
+        # Xenna executes a serialized worker copy, so retry ownership must be
+        # durable evidence the original driver-side stage can verify.
+        worker_checkpoint = copy.deepcopy(checkpoint)
+        worker_checkpoint.setup()
+        worker_checkpoint.process(AudioTask(data={"attempt": attempts}))
+        if attempts == 1:
+            raise RuntimeError(
+                "streaming mode requires batch mode: not enough GPU capacity"
+            )
+        return []
+
+    monkeypatch.setattr(verbs, "_make_executor", lambda mode: mode)
+    monkeypatch.setattr(verbs, "_run_pipeline", execute)
+
+    results, used_mode = verbs._run_pipeline_autofallback(
+        [checkpoint],
+        "streaming",
+        None,
+        before_retry=verbs._automatic_retry_reset_hook([checkpoint]),
+    )
+
+    assert results == []
+    assert used_mode == "batch"
+    assert output.read_text(encoding="utf-8") == '{"attempt": 2}\n'
+    assert not Path(f"{output}._RETRY_OWNER").exists()
 
 
 def test_resource_planning_failure_is_structured_and_cleans_output_sandbox(

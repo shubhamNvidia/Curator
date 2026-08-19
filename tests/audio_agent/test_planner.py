@@ -14,7 +14,10 @@
 
 """Unit tests for the resource planner: mode selection + composite expansion."""
 
+import pytest
+
 from nemo_curator.audio_agent import planner
+from nemo_curator.audio_agent.context import assemble
 from nemo_curator.audio_agent.profiler import probe_env
 from nemo_curator.audio_agent.recipe import Recipe, build_stages
 from nemo_curator.stages.audio import agent as foundation
@@ -62,3 +65,46 @@ class TestPlanner:
         )
         assert "sum_gpu_reservation" in p.estimate
         assert p.estimate["sum_gpu_reservation"] >= 0
+
+
+def test_planning_context_carries_the_workflow_preference() -> None:
+    preference = {
+        "schema_version": 1,
+        "curation_mode": "fast_first",
+        "source": "inferred_from_request",
+    }
+
+    packet = assemble(
+        {"task": "quality_filter"},
+        include_env=False,
+        planning_preference=preference,
+    ).to_dict()
+
+    assert packet["planning_preference"] == preference
+
+
+@pytest.mark.parametrize(
+    "preference",
+    [
+        ["refine_later"],
+        {
+            "schema_version": 1,
+            "curation_mode": ["refine_later"],
+            "source": "explicit_user_choice",
+        },
+        {
+            "schema_version": 1,
+            "curation_mode": "fast_first",
+            "source": {"kind": "inferred_from_request"},
+        },
+    ],
+)
+def test_planning_context_rejects_malformed_preference_with_value_error(
+    preference: object,
+) -> None:
+    with pytest.raises(ValueError, match="planning_preference"):
+        assemble(
+            {"task": "quality_filter"},
+            include_env=False,
+            planning_preference=preference,  # type: ignore[arg-type]
+        )

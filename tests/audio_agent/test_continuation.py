@@ -28,6 +28,14 @@ _DUR_FILE = {"ref": "GetAudioDurationStage", "params": {"input_residency": "file
 # One of the two pairs that pass state through ``task._metadata`` rather than the row.
 _OVERLAP_FILTER = {"ref": "OverlapFilterStage", "params": {}}
 _PRETRAIN_METRICS = {"ref": "PretrainMetricsAggregatorStage", "params": {"output_path": "/tmp/metrics.json"}}
+_SNIPPET = {
+    "ref": "SnippetExtractionStage",
+    "params": {
+        "output_dir": "/tmp/snippets",
+        "output_audio_tar_path": "/tmp/snippets.tar",
+        "dry_run": True,
+    },
+}
 
 
 def _parent_prefix(new: Recipe, n: int) -> SimpleNamespace:
@@ -93,3 +101,16 @@ class TestResumeSafety:
         # boundary. Refusing here would penalize a suffix for reading what it just wrote.
         new = Recipe.from_dict({"stages": [_READER, _OVERLAP_FILTER, _OVERLAP_FILTER, _PRETRAIN_METRICS]})
         assert continuation._resume_breaks_on_disk_boundary(new.freeze(), 2) is None
+
+    def test_task_id_dependent_durable_suffix_forces_full_rerun(self) -> None:
+        new = Recipe.from_dict({"stages": [_READER, _DUR_FILE, _SNIPPET]})
+
+        result = continuation.plan_continuation(
+            new,
+            _parent_prefix(new, 2),
+            data_fingerprint=None,
+        )
+
+        assert result["mode"] == "full_rerun"
+        assert "stable framework task.task_id" in result["reason"]
+        assert "SnippetExtractionStage" in result["reason"]

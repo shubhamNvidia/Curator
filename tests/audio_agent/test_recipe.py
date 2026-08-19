@@ -96,6 +96,88 @@ class TestTheConfirmGateAnchor:
     # ``semantic_hash`` -- is already pinned by test_reuse.py::test_acceptance_change_leaves
     # _semantic_hash_alone, which asserts all three hashes at once.
 
+    def test_planning_preference_round_trips_without_changing_any_hash(self) -> None:
+        easy = Recipe.from_dict(
+            {
+                **_BASE,
+                "planning_preference": {
+                    "schema_version": 1,
+                    "curation_mode": "refine_later",
+                    "source": "explicit_user_choice",
+                },
+            }
+        ).freeze()
+        fast = Recipe.from_dict(
+            {
+                **_BASE,
+                "planning_preference": {
+                    "schema_version": 1,
+                    "curation_mode": "fast_first",
+                    "source": "inferred_from_request",
+                },
+            }
+        ).freeze()
+        old = Recipe.from_dict(_BASE).freeze()
+
+        assert easy.to_dict()["planning_preference"] == easy.planning_preference
+        assert "planning_preference" not in old.to_dict()
+        assert (
+            easy.config_hash,
+            easy.semantic_hash,
+            easy.contract_hash,
+        ) == (
+            fast.config_hash,
+            fast.semantic_hash,
+            fast.contract_hash,
+        ) == (
+            old.config_hash,
+            old.semantic_hash,
+            old.contract_hash,
+        )
+        assert (
+            Recipe.from_dict(easy.to_dict()).planning_preference
+            == easy.planning_preference
+        )
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "refine_later",
+            {},
+            {
+                "schema_version": 2,
+                "curation_mode": "refine_later",
+                "source": "explicit_user_choice",
+            },
+            {
+                "schema_version": 1,
+                "curation_mode": "always_checkpoint",
+                "source": "explicit_user_choice",
+            },
+            {
+                "schema_version": 1,
+                "curation_mode": "fast_first",
+                "source": "guessed_from_folder",
+            },
+            {
+                "schema_version": 1,
+                "curation_mode": ["refine_later"],
+                "source": "explicit_user_choice",
+            },
+            {
+                "schema_version": 1,
+                "curation_mode": "fast_first",
+                "source": {"kind": "explicit_user_choice"},
+            },
+        ],
+    )
+    def test_invalid_present_planning_preference_is_actionable(
+        self,
+        bad: object,
+    ) -> None:
+        with pytest.raises(ValueError, match="planning_preference"):
+            Recipe.from_dict({**_BASE, "planning_preference": bad})
+
 
 class TestAMalformedStageEntrySaysWhatIsWrong:
     """``validate`` exists to hand a host something it can act on. A recipe malformed in the

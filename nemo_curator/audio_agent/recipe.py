@@ -31,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -41,6 +42,16 @@ if TYPE_CHECKING:
 # Constructor keys that configure the framework, not stage semantics; peeled out
 # and re-applied via .with_() rather than passed to the dataclass constructor.
 EXECUTION_KNOB_PARAMS = frozenset({"resources", "batch_size", "runtime_env", "num_workers"})
+# Hashed policy carried by a stage but excluded from reuse identity because it
+# changes approval requirements, not the bytes the stage produces.
+NON_SEMANTIC_POLICY_PARAMS = frozenset({"planning_provenance"})
+REUSABLE_CHECKPOINT_PROVENANCE = "reusable_pipeline_v1"
+_REUSABLE_CHECKPOINT_REF = "ManifestCheckpointStage"
+PLANNING_PREFERENCE_SCHEMA_VERSION = 1
+CURATION_MODES = frozenset({"refine_later", "fast_first"})
+PLANNING_PREFERENCE_SOURCES = frozenset(
+    {"explicit_user_choice", "inferred_from_request"}
+)
 
 # Params that name WHERE a stage writes, not WHAT it computes. Changing one moves the
 # bytes; it does not change them. Excluded from ``semantic_hash`` (so a re-run into a new
@@ -112,6 +123,65 @@ def _criteria_hash_payload(raw: list[Any]) -> list[dict[str, Any]]:
     ]
 
 
+def parse_planning_preference(raw: Any) -> dict[str, Any] | None:  # noqa: ANN401
+    """Validate optional, non-semantic host planning metadata.
+
+    This is deliberately a small closed shape. A typo here must not silently
+    change how the host breaks ties, while an omitted field keeps every existing
+    recipe valid.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        msg = (
+            "planning_preference must be a mapping with schema_version, "
+            "curation_mode, and source"
+        )
+        raise ValueError(msg)  # noqa: TRY004 - one public recipe schema error type
+    value = dict(raw)
+    expected = {"schema_version", "curation_mode", "source"}
+    missing = sorted(expected - set(value))
+    unknown = sorted((key for key in value if key not in expected), key=repr)
+    if missing or unknown:
+        details = []
+        if missing:
+            details.append(f"missing required field(s) {missing}")
+        if unknown:
+            details.append(f"unknown field(s) {unknown}")
+        msg = "planning_preference has " + " and ".join(details)
+        raise ValueError(msg)
+    schema_version = value["schema_version"]
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version != PLANNING_PREFERENCE_SCHEMA_VERSION
+    ):
+        msg = (
+            "planning_preference.schema_version must be "
+            f"{PLANNING_PREFERENCE_SCHEMA_VERSION}, got {schema_version!r}"
+        )
+        raise ValueError(msg)
+    mode = value["curation_mode"]
+    if not isinstance(mode, str) or mode not in CURATION_MODES:
+        msg = (
+            f"planning_preference.curation_mode must be one of {sorted(CURATION_MODES)}, "
+            f"got {mode!r}"
+        )
+        raise ValueError(msg)
+    source = value["source"]
+    if not isinstance(source, str) or source not in PLANNING_PREFERENCE_SOURCES:
+        msg = (
+            "planning_preference.source must be one of "
+            f"{sorted(PLANNING_PREFERENCE_SOURCES)}, got {source!r}"
+        )
+        raise ValueError(msg)
+    return {
+        "schema_version": PLANNING_PREFERENCE_SCHEMA_VERSION,
+        "curation_mode": str(mode),
+        "source": str(source),
+    }
+
+
 @dataclass
 class StageRef:
     """One stage in a recipe: a registered stage class name + its params."""
@@ -125,7 +195,7 @@ class StageRef:
     def semantic_params(self) -> dict[str, Any]:
         """Params that change the stage's OUTPUT BYTES — execution knobs and output
         locations removed. This is the reuse identity of the stage's configuration."""
-        skip = EXECUTION_KNOB_PARAMS | OUTPUT_LOCATION_PARAMS
+        skip = EXECUTION_KNOB_PARAMS | OUTPUT_LOCATION_PARAMS | NON_SEMANTIC_POLICY_PARAMS
         return {k: v for k, v in self.params.items() if k not in skip}
 
     def semantic_dict(self) -> dict[str, Any]:
@@ -184,6 +254,13 @@ class Recipe:
     config_strategy: list[dict[str, Any]] | None = None  # how each param was chosen (1A.2 audit trail)
     knowledge_version: str | None = None  # knowledge/cards version the plan was approved against
     parent_run_id: str | None = None  # provenance chain for incremental continuation
+    # Host policy attestation, bound to config_hash but excluded from computation semantics.
+    # Present only when the user explicitly chose the baseline after the core exposed a
+    # recommended reusable checkpoint.
+    checkpoint_decision: dict[str, Any] | None = None
+    # Optional host planning tie-breaker. It records how this workflow was
+    # authored, not what the stages compute, so every recipe hash excludes it.
+    planning_preference: dict[str, Any] | None = None
 
     # ------------------------------------------------------------------ #
     # (de)serialization
@@ -231,11 +308,19 @@ class Recipe:
             config_strategy=d.get("config_strategy"),
             knowledge_version=d.get("knowledge_version"),
             parent_run_id=d.get("parent_run_id"),
+            checkpoint_decision=d.get("checkpoint_decision"),
+            planning_preference=parse_planning_preference(
+                d.get("planning_preference")
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)
         out["stages"] = [s.to_dict() for s in self.stages]
+        if self.checkpoint_decision is None:
+            out.pop("checkpoint_decision", None)
+        if self.planning_preference is None:
+            out.pop("planning_preference", None)
         return out
 
     def _canonical(self) -> str:
@@ -244,7 +329,9 @@ class Recipe:
 
         Deliberately excludes id/hash/rationale AND the recomputable layered-save
         annotations (``machine_plan`` / ``data_derived`` / ``config_strategy`` /
-        ``knowledge_version`` / ``parent_run_id``), so ``config_hash`` stays portable:
+        ``knowledge_version`` / ``parent_run_id`` / ``checkpoint_decision`` /
+        ``planning_preference``), so
+        ``config_hash`` stays portable:
         the same intent on a different machine or dataset hashes identically. (The
         *resolved* param values live in ``stages`` and so are hashed; the
         ``config_strategy`` audit trail explaining them is not.)
@@ -382,6 +469,26 @@ def build_stages(recipe: Recipe) -> tuple[list[ProcessingStage] | None, list[dic
     stages: list[ProcessingStage] = []
 
     for idx, s in enumerate(recipe.stages):
+        requested_workers = s.params.get("num_workers", 1)
+        if s.ref == _REUSABLE_CHECKPOINT_REF and (
+            isinstance(requested_workers, bool)
+            or not isinstance(requested_workers, int)
+            or requested_workers != 1
+        ):
+            issues.append(
+                {
+                    "code": "checkpoint_single_worker_required",
+                    "severity": "error",
+                    "stage_index": idx,
+                    "stage": s.ref,
+                    "message": (
+                        "ManifestCheckpointStage requires num_workers=1 so its exclusive "
+                        "output reservation and JSONL appends remain authoritative"
+                    ),
+                    "fix": "remove the num_workers override or set it to 1",
+                }
+            )
+            continue
         try:
             cls = resolve_stage_class(s.ref)
         except KeyError:

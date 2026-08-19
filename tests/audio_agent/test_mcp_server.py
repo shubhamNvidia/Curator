@@ -24,11 +24,16 @@ from __future__ import annotations
 import inspect
 import sys
 from types import ModuleType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
 from nemo_curator import audio_agent as aa
 from nemo_curator.audio_agent import mcp_server
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from pytest import MonkeyPatch
 
 
 class _FakeFastMCP:
@@ -68,6 +73,7 @@ def test_mcp_exposes_reuse_provenance_and_health_tools(monkeypatch) -> None:
         "reindex",
         "plan_continuation",
         "delta_run",
+        "plan_checkpoint",
         "doctor",
         "diagnose",
     } <= server.tools.keys()
@@ -77,6 +83,13 @@ def test_mcp_parameter_contract_matches_public_verb_surface(monkeypatch) -> None
     tools = _build_fake_server(monkeypatch).tools
 
     expected_parameters = {
+        "context": [
+            "goal",
+            "data",
+            "stages",
+            "roles",
+            "planning_preference",
+        ],
         "report": ["output", "recipe", "data"],
         "runs": ["run_id", "data", "stage", "since", "limit", "goal"],
         "reuse_scan": ["recipe", "data", "limit"],
@@ -123,12 +136,183 @@ def test_mcp_parameter_contract_matches_public_verb_surface(monkeypatch) -> None
             "calibration",
             "goal",
         ],
+        "plan_checkpoint": [
+            "recipe",
+            "from_run",
+            "data",
+            "output_path",
+            "decision_stage",
+            "decision_value",
+            "decision_conditions",
+            "choice",
+            "retention_sec",
+            "owner",
+        ],
     }
     for tool_name, parameter_names in expected_parameters.items():
         assert list(inspect.signature(tools[tool_name]).parameters) == parameter_names
 
     continuation_signature = inspect.signature(tools["plan_continuation"])
     assert continuation_signature.parameters["parent_run_id"].default is None
+
+
+def test_mcp_context_forwards_planning_preference(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    tool = _build_fake_server(monkeypatch).tools["context"]
+    context_mock = Mock(return_value={"planning_preference": {"curation_mode": "fast_first"}})
+    monkeypatch.setattr(aa, "context", context_mock)
+    preference = {
+        "schema_version": 1,
+        "curation_mode": "fast_first",
+        "source": "explicit_user_choice",
+    }
+
+    result = tool(
+        goal={"task": "quality_filter"},
+        planning_preference=preference,
+    )
+
+    assert result["planning_preference"]["curation_mode"] == "fast_first"
+    context_mock.assert_called_once_with(
+        {"task": "quality_filter"},
+        data=None,
+        stages=None,
+        roles=None,
+        planning_preference=preference,
+    )
+
+
+def test_mcp_checkpoint_planner_rejects_non_scalar_decision_value(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    tool = _build_fake_server(monkeypatch).tools["plan_checkpoint"]
+    recipe = {
+        "stages": [
+            {
+                "ref": "ManifestReader",
+                "params": {"manifest_path": str(tmp_path / "input.jsonl")},
+            },
+            {"ref": "GetAudioDurationStage", "params": {"duration_key": "duration"}},
+            {
+                "ref": "PreserveByValueStage",
+                "params": {
+                    "input_value_key": "duration",
+                    "target_value": 5.0,
+                    "operator": "ge",
+                },
+            },
+        ]
+    }
+
+    result = tool(recipe=recipe, decision_value={"threshold": 7})
+
+    assert result["status"] == "refused"
+    assert "JSON scalar" in result["reason"]
+
+
+def test_mcp_checkpoint_planner_fails_closed_for_compound_scalar_feedback(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    tool = _build_fake_server(monkeypatch).tools["plan_checkpoint"]
+    recipe = {
+        "stages": [
+            {
+                "ref": "ManifestReader",
+                "params": {"manifest_path": str(tmp_path / "input.jsonl")},
+            },
+            {
+                "ref": "SIGMOSFilterStage",
+                "params": {
+                    "action": "annotate",
+                    "mode": "task",
+                    "input_residency": "file",
+                },
+            },
+            {
+                "ref": "PreserveByValueConditionsStage",
+                "params": {
+                    "conditions": [
+                        {
+                            "input_value_key": "sigmos_noise",
+                            "target_value": 4.0,
+                            "operator": "ge",
+                        },
+                        {
+                            "input_value_key": "sigmos_ovrl",
+                            "target_value": 3.5,
+                            "operator": "ge",
+                        },
+                    ],
+                    "missing_value_policy": "drop",
+                },
+            },
+        ]
+    }
+
+    result = tool(
+        recipe=recipe,
+        decision_stage="SIGMOSFilterStage",
+        decision_value=4.1,
+    )
+
+    assert result["status"] == "no_candidate"
+    assert "compound decisions cannot be tuned" in result["rejected"][0]["reason"]
+
+
+def test_mcp_checkpoint_planner_accepts_complete_compound_conditions(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    tool = _build_fake_server(monkeypatch).tools["plan_checkpoint"]
+    recipe = {
+        "stages": [
+            {
+                "ref": "ManifestReader",
+                "params": {"manifest_path": str(tmp_path / "input.jsonl")},
+            },
+            {
+                "ref": "SIGMOSFilterStage",
+                "params": {
+                    "action": "annotate",
+                    "mode": "task",
+                    "input_residency": "file",
+                },
+            },
+            {
+                "ref": "PreserveByValueConditionsStage",
+                "params": {
+                    "conditions": [
+                        {
+                            "input_value_key": "sigmos_noise",
+                            "target_value": 4.0,
+                            "operator": "ge",
+                        },
+                        {
+                            "input_value_key": "sigmos_ovrl",
+                            "target_value": 3.5,
+                            "operator": "ge",
+                        },
+                    ],
+                    "missing_value_policy": "drop",
+                },
+            },
+        ]
+    }
+
+    result = tool(
+        recipe=recipe,
+        decision_stage="SIGMOSFilterStage",
+        decision_conditions={"sigmos_ovrl": 3.8, "sigmos_sig": 3.6},
+    )
+
+    assert result["status"] == "candidates"
+    assert result["candidates"][0]["conditions"] == [
+        {"input_value_key": "sigmos_ovrl", "target_value": 3.8, "operator": "ge"},
+        {"input_value_key": "sigmos_sig", "target_value": 3.6, "operator": "ge"},
+    ]
 
 
 def test_mcp_forwards_run_and_report_arguments_without_reinterpretation(monkeypatch) -> None:

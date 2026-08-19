@@ -664,6 +664,11 @@ def prefix_recipe(  # noqa: PLR0913 - the recipe plus the four facts that narrow
         name=f"{recipe.name}_delta",
         knowledge_version=recipe.knowledge_version,
         parent_run_id=recipe.parent_run_id,
+        planning_preference=(
+            dict(recipe.planning_preference)
+            if isinstance(recipe.planning_preference, dict)
+            else None
+        ),
     )
     return built.freeze(), redirect, ""
 

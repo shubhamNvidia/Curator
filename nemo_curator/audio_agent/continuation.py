@@ -96,6 +96,11 @@ def materialize(new_recipe: Recipe, *, uri: str, kind: str, prefix: int) -> tupl
         name=f"{new_recipe.name}_continued",
         knowledge_version=new_recipe.knowledge_version,
         parent_run_id=new_recipe.parent_run_id,
+        planning_preference=(
+            dict(new_recipe.planning_preference)
+            if isinstance(new_recipe.planning_preference, dict)
+            else None
+        ),
     )
     return materialized.freeze(), ""
 
@@ -103,7 +108,7 @@ def materialize(new_recipe: Recipe, *, uri: str, kind: str, prefix: int) -> tupl
 def _common_prefix_len(a: list[dict[str, Any]], b: list[dict[str, Any]]) -> int:
     """Number of leading stages identical (ref + params) in both recipes."""
     n = 0
-    for sa, sb in zip(a, b):
+    for sa, sb in zip(a, b, strict=False):
         if sa != sb:
             break
         n += 1
@@ -130,10 +135,10 @@ def _resume_breaks_on_disk_boundary(new_recipe: Recipe, prefix: int) -> str | No
     across either pair would hand the reader an empty dict and finish successfully with
     silently wrong timestamps or counts, which is the failure mode a guard is for.
 
-    Underscored but NOT private: imported by ``checkpoint``, ``delta`` and ``reuse``, which all
-    have to ask the same question before resuming a suffix from a manifest. Moving, renaming or
-    narrowing it breaks three modules, and none of them will say so until the boundary they
-    were guarding is already crossed.
+    Underscored but NOT private: imported by ``checkpoint``, ``delta``, ``reusable_pipeline``
+    and ``reuse``, which all have to ask the same question before resuming a suffix from a
+    manifest. Moving, renaming or narrowing it breaks four modules, and none of them will say
+    so until the boundary they were guarding is already crossed.
     """
     try:
         from nemo_curator.audio_agent.recipe import build_stages
@@ -169,6 +174,19 @@ def _resume_breaks_on_disk_boundary(new_recipe: Recipe, prefix: int) -> str | No
         dropped = _metadata_lost_across(parent_built, suffix_built)
         if dropped:
             reasons.append(dropped)
+        task_id_consumers = sorted(
+            {
+                type(stage).__name__
+                for stage in suffix_built
+                if foundation.build_contract(stage).gates.requires_stable_task_id
+            }
+        )
+        if task_id_consumers:
+            reasons.append(
+                "stable framework task.task_id does not survive a metadata manifest "
+                "and is required for durable output identity by "
+                + ", ".join(task_id_consumers)
+            )
         return "; ".join(reasons) or None
     except Exception:  # noqa: BLE001 - resume-safety is best-effort; never block reuse on a guard error
         return None
