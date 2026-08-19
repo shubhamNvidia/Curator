@@ -303,9 +303,11 @@ from nemo_curator.stages.audio.alm.pretrain.planning import (
 from nemo_curator.stages.audio.common import (
     CreateInitialManifestAudioFolderStage,
     GetAudioDurationStage,
+    ManifestCheckpointStage,
     ManifestReader,
     ManifestReaderStage,
     ManifestWriterStage,
+    PreserveByValueConditionsStage,
     PreserveByValueStage,
 )
 from nemo_curator.stages.audio.datasets.fleurs.create_initial_manifest import CreateInitialManifestFleursStage
@@ -355,7 +357,7 @@ class StageCase:
     scenario: str
 
 
-EXPECTED_AUDIO_AGENT_READY_STAGE_COUNT = 47
+EXPECTED_AUDIO_AGENT_READY_STAGE_COUNT = 49
 VALID_AGENT_SCENARIOS = {
     "alm",
     "alm_pretrain",
@@ -649,6 +651,11 @@ def _coverage_cases(tmp_path: Path) -> list[StageCase]:
             lambda: ManifestGroupExportStage(output_dir=str(output_dir / "groups")),
             "ingress_transform",
         ),
+        StageCase(
+            ManifestCheckpointStage,
+            lambda: ManifestCheckpointStage(output_path=str(output_dir / "checkpoint.jsonl")),
+            "ingress_transform",
+        ),
         StageCase(ManifestReader, lambda: ManifestReader(manifest_path=str(manifest)), "composite"),
         StageCase(ManifestReaderStage, ManifestReaderStage, "ingress_transform"),
         StageCase(ManifestWriterStage, lambda: ManifestWriterStage(output_path=str(output_dir / "out.jsonl")), "ingress_transform"),
@@ -658,6 +665,13 @@ def _coverage_cases(tmp_path: Path) -> list[StageCase]:
         StageCase(OverlapFilterStage, OverlapFilterStage, "alm_pretrain"),
         StageCase(PretrainMetricsAggregatorStage, lambda: PretrainMetricsAggregatorStage(str(output_dir / "metrics.json")), "alm_pretrain"),
         StageCase(PrepareModuleSegmentsStage, PrepareModuleSegmentsStage, "speech_tagging"),
+        StageCase(
+            PreserveByValueConditionsStage,
+            lambda: PreserveByValueConditionsStage(
+                [{"input_value_key": "keep", "target_value": True, "operator": "eq"}]
+            ),
+            "segmentation_quality",
+        ),
         StageCase(PreserveByValueStage, lambda: PreserveByValueStage("keep", True), "segmentation_quality"),
         StageCase(PyAnnoteDiarizationStage, lambda: PyAnnoteDiarizationStage(hf_token="fake"), "speech_tagging"),  # noqa: S106 - not a real credential
         StageCase(ReadLongFormManifestStage, lambda: ReadLongFormManifestStage(str(manifest), str(audio_dir)), "alm_pretrain"),
@@ -701,6 +715,7 @@ def _discover_agent_ready_classes() -> set[type]:
         InverseTextNormalizationStage,
         JoinSplitAudioMetadataStage,
         ManifestGroupExportStage,
+        ManifestCheckpointStage,
         ManifestReader,
         ManifestReaderStage,
         ManifestWriterStage,

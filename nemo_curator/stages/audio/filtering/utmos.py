@@ -33,8 +33,9 @@ Example:
     )
 """
 
+import math
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 import torch
 import torchaudio
@@ -137,6 +138,15 @@ class UTMOSFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         Use .with_(resources=Resources(gpus=X)) to configure GPU allocation.
     """
 
+    SEPARABLE_DECISION_CONSTRAINTS: ClassVar[dict[str, Any]] = {
+        "action": "annotate",
+        "mode": "task",
+    }
+    SEPARABLE_DECISION_CONSTRAINTS_BY_SCOPE: ClassVar[dict[str, dict[str, Any]]] = {
+        "task": {"action": "annotate", "mode": "task"},
+        "segments": {"action": "annotate", "mode": "segments"},
+    }
+
     mos_threshold: float | None = 3.5
     sample_rate: int = _UTMOS_TARGET_SR
     input_residency: Literal["file", "waveform", "auto"] = "auto"
@@ -189,7 +199,7 @@ class UTMOSFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 segments_key=self.segments_key,
                 output_keys=[self.score_key],
                 assignment_condition=(
-                    "audio and model inference succeed, a numeric MOS is produced, "
+                    "audio and model inference succeed, a finite numeric MOS is produced, "
                     f"and '{self.score_key}' is assigned"
                     + (
                         " on an item that meets the configured threshold and is retained"
@@ -296,6 +306,10 @@ class UTMOSFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
 
     def _process_single(self, task: AudioTask) -> AudioTask | None:
         """Run UTMOS scoring on a single (non-nested) task."""
+        # This stage owns ``score_key``. Clear a prior annotation before
+        # inference so an unscorable rerun cannot leave a stale finite value
+        # that a downstream missing=drop selector would incorrectly retain.
+        task.data.pop(self.score_key, None)
         audio_result = _load_waveform_tensor(
             task.data,
             task.task_id,
@@ -326,6 +340,11 @@ class UTMOSFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             mos = float(score.item() if torch.is_tensor(score) else score)
         except Exception as e:  # noqa: BLE001
             logger.exception(f"[{task.task_id}] UTMOS prediction error: {e}")
+            return None
+        if not math.isfinite(mos):
+            logger.warning(
+                f"[{task.task_id}] UTMOS returned non-finite MOS; treating item as unscorable"
+            )
             return None
 
         logger.debug(f"[{task.task_id}] UTMOS MOS={mos:.3f}")

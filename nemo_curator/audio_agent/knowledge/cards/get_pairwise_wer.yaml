@@ -29,6 +29,21 @@ metrics:
       "0-10": transcription_grade               # <= 10% WER
       "10-25": usable                           # <= 25% WER
     valid_range: [0.0, 100.0]
+decision:
+  separable_from_producer: true
+  score_key_param: wer_key
+  score_key_default: wer_pct
+  value_type: number
+  scope: task
+  selector:
+    stage_id: PreserveByValueStage
+    key_param: input_value_key
+    value_param: target_value
+    operator_param: operator
+    allowed_operators: [lt, le, eq, ne, ge, gt]
+  missing_score_policy: selector_error
+  monotonic_direction: lower_better
+  atomic: true
 param_dependencies:
   pred_text_key: "requires an upstream ASR prediction (e.g. InferenceAsrNemoStage)"
   text_key: "requires reference transcripts in the source manifest"
@@ -40,5 +55,5 @@ comparison:
 conflicts_with: [ComputeWERStage]   # overlapping WER computation
 notes:
   - "WER is a percentage (5.0 == 5%)."
-verified: {params: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess, comparison: best_guess, metrics: best_guess}
-provenance: {model_card_url: null, card_version: 1, last_validated: "2026-07-20"}
+verified: {params: mechanical, tags: mechanical, resource: best_guess, use_cases: best_guess, domain: best_guess, comparison: best_guess, metrics: best_guess, decision: mechanical}
+provenance: {model_card_url: null, card_version: 3, last_validated: "2026-08-18"}

@@ -110,6 +110,60 @@ metrics:
       "2.0-2.8": "strong / roomy (RT60 ~0.4-1.2 s)"
       "0.0-2.0": "very reverberant (also check NOISE/OVRL)"
     valid_range: [0.0, 5.0]
+decision:
+  kind: compound
+  separable_from_producer: true
+  value_type: number
+  scope: task
+  producer_constraints: {action: annotate, mode: task}
+  dimensions:
+    - {threshold_param: noise_threshold, score_key_param: noise_key, score_key_default: sigmos_noise}
+    - {threshold_param: ovrl_threshold, score_key_param: ovrl_key, score_key_default: sigmos_ovrl}
+    - {threshold_param: sig_threshold, score_key_param: sig_key, score_key_default: sigmos_sig}
+    - {threshold_param: col_threshold, score_key_param: col_key, score_key_default: sigmos_col}
+    - {threshold_param: disc_threshold, score_key_param: disc_key, score_key_default: sigmos_disc}
+    - {threshold_param: loud_threshold, score_key_param: loud_key, score_key_default: sigmos_loud}
+    - {threshold_param: reverb_threshold, score_key_param: reverb_key, score_key_default: sigmos_reverb}
+  selector:
+    stage_id: PreserveByValueConditionsStage
+    conditions_param: conditions
+    condition_logic_param: condition_logic
+    required_condition_logic: and
+    missing_policy_param: missing_value_policy
+    required_missing_policy: drop
+    required_operator: ge
+  missing_score_policy: selector_drop
+  monotonic_direction: higher_better
+  atomic: true
+  variants:
+    - kind: compound
+      separable_from_producer: true
+      value_type: number
+      scope: segments
+      producer_constraints: {action: annotate, mode: segments}
+      dimensions:
+        - {threshold_param: noise_threshold, score_key_param: noise_key, score_key_default: sigmos_noise}
+        - {threshold_param: ovrl_threshold, score_key_param: ovrl_key, score_key_default: sigmos_ovrl}
+        - {threshold_param: sig_threshold, score_key_param: sig_key, score_key_default: sigmos_sig}
+        - {threshold_param: col_threshold, score_key_param: col_key, score_key_default: sigmos_col}
+        - {threshold_param: disc_threshold, score_key_param: disc_key, score_key_default: sigmos_disc}
+        - {threshold_param: loud_threshold, score_key_param: loud_key, score_key_default: sigmos_loud}
+        - {threshold_param: reverb_threshold, score_key_param: reverb_key, score_key_default: sigmos_reverb}
+      selector:
+        stage_id: PreserveByValueConditionsStage
+        conditions_param: conditions
+        condition_logic_param: condition_logic
+        required_condition_logic: and
+        missing_policy_param: missing_value_policy
+        required_missing_policy: drop
+        required_operator: ge
+        items_key_param: items_key
+        items_key_source_param: segments_key
+        empty_policy_param: drop_parent_if_empty
+        required_empty_policy: true
+      missing_score_policy: selector_drop
+      monotonic_direction: higher_better
+      atomic: true
 presets:
   # Starting points from the sensitivity study (report/SIGMOS_Study_Report.md) -- CALIBRATE to your corpus.
   studio_tts: {ovrl_threshold: 3.2, noise_threshold: 4.2, reverb_threshold: 4.3, col_threshold: 3.8, sig_threshold: 3.7, loud_threshold: 3.5}  # pristine: full-band, dry, close-mic'd, quiet
@@ -134,11 +188,12 @@ notes:
   - "SENSITIVITY rank (mean|delta| over 27 degradation families): NOISE 0.91 (most dynamic) > LOUD 0.79 > OVRL 0.72 > COL 0.68 > REVERB 0.61 ~ SIG 0.61 > DISC 0.33 (least reliable)."
   - "ROBUST COMBINE: primary gate on OVRL (calibrated), then VETO on specific dimensions -- keep = OVRL>=t AND NOISE>=t AND REVERB>=t AND COL>=t -- so one severe single-axis problem can't hide behind an okay average (the dimensions are largely independent). Per-use-case starting points: see presets."
   - "Evidence: full study at ADV/sigmos_analysis/report/SIGMOS_Study_Report.md + SIGMOS_capability_card.md; machine-readable bands/thresholds at results/sigmos_thresholds.json (254 augmented clips, 3 clean baselines, 27 degradation families)."
-  - "Writes all 7 scores regardless of which thresholds are active, so you can annotate first and post-filter."
+  - "For a scorable item, writes all 7 finite scores regardless of which thresholds are active, so you can annotate first and post-filter. If any model dimension is NaN/Inf, filter mode drops the item and annotate mode retains it without writing any of the 7 scores; a missing=drop selector is therefore exactly equivalent."
   - "Default enables BOTH noise>=4.0 AND ovrl>=3.5 (very aggressive -- clips must pass every active threshold). To gate on ONE axis, set only that threshold and leave the others None."
   - "Workflow: run action='annotate' to inspect the 7 score distributions on YOUR data, then choose per-dimension thresholds and re-run action='filter'."
+  - "Reusable decision separation is proven for explicit action='annotate' task or segment mode. Both exact forms require PreserveByValueConditionsStage condition_logic='and' and every enabled threshold with ge semantics. Segment mode additionally requires items_key=segments_key, missing_value_policy='drop', and drop_parent_if_empty=true. Generic OR remains valid outside this native-filter equivalence; mode='auto' remains native because its scope is data-dependent."
   - "Empirically the most aggressive quality filter -- place last in a cheap->expensive filter chain, or first for maximum early cull."
 caveats:
   - "Downloads the ONNX model on first run (needs network once)."
-verified: {params: mechanical, tags: mechanical, model_version: best_guess, resource: best_guess, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess, metrics: measured}
-provenance: {model_card_url: "https://github.com/microsoft/SIG-Challenge", card_version: 4, last_validated: "2026-07-24"}
+verified: {params: mechanical, tags: mechanical, model_version: best_guess, resource: best_guess, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess, metrics: measured, decision: mechanical}
+provenance: {model_card_url: "https://github.com/microsoft/SIG-Challenge", card_version: 7, last_validated: "2026-08-19"}

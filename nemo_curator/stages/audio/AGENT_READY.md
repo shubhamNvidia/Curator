@@ -67,7 +67,10 @@ class MyStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
 - **`gates`** — be honest about side effects: `requires_gpu`, `writes_to_disk`,
   `requires_internet_first_run`, `requires_ffmpeg`. Serializability (both exist on `Gates`): a sink
   that `json.dumps` `task.data` as-is must set `requires_serializable_input=True`; a converter that
-  strips tensors/audio blobs sets `sanitizes_output=True`.
+  strips tensors/audio blobs sets `sanitizes_output=True`. A stage that derives durable filenames,
+  member names, or row identity from framework `task.task_id` sets
+  `requires_stable_task_id=True`; metadata-manifest resume boundaries cannot restore that identity
+  and will reject the suffix.
 
 ### Conditional/data-dependent writes
 

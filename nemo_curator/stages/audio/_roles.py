@@ -114,6 +114,7 @@ INTERNAL_KEY_FIELDS: frozenset[str] = frozenset(
         "mappings_key",
         # generic / user-defined targets
         "input_value_key",  # PreserveByValueStage: compares an arbitrary user key
+        "items_key",  # PreserveByValueConditionsStage: caller-chosen one-level list
         "output_key",  # ITN/Chinese: caller-chosen output key
         "original_key",  # preserved prior value
         "sort_key",

@@ -86,6 +86,8 @@ LEGACY_STAGE_NAMES = (
 ADDITIVE_STAGE_NAMES = (
     "ChannelCountStage",
     "DocumentBatchJsonlWriterStage",
+    "ManifestCheckpointStage",
+    "PreserveByValueConditionsStage",
     "SampleRateFilterStage",
 )
 
@@ -115,8 +117,18 @@ ADDITIVE_STAGE_NAMES = (
 #   * opt-in on-disk output knobs (write_to_disk / keep_waveform_in_task / *_dir).
 # No stage lost a param, a read/write key, or changed an existing default. Regenerate this
 # value ONLY after confirming (git diff of describe()/defaults) that a change is additive.
+#
+# Refreshed 2026-08-19 for exact model-filter separation. PreserveByValueStage gained the
+# optional missing_value_policy="error" parameter and float target typing; both preserve its
+# runtime default. The compound selector is additive and excluded from this legacy payload,
+# so its additive condition_logic="and" constructor default does not change this hash.
+#
+# Refreshed 2026-08-19 for resume task-identity safety. Gates gained the additive
+# requires_stable_task_id=False default; SnippetExtractionStage opts in from its configured
+# contract because its task.task_id fallback enters durable snippet/member names. Constructor
+# defaults, reads/writes, and runtime behavior are otherwise unchanged.
 EXPECTED_LEGACY_COMPATIBILITY_SHA256 = (
-    "870ff04457f4d13de582886a1ad6c400f5da7f9dc7bdbd8fc7264977418ef6bc"
+    "0fdca099dd04c6a5b8358e90efdc4aa711076ff606446633f99b8e26b7e3edae"
 )
 
 
@@ -263,6 +275,64 @@ def test_document_batch_writer_is_explicitly_additive() -> None:
     assert contract.accepts_task_type == "DocumentBatch"
     assert contract.produces_task_type == "DocumentBatch"
     assert [parameter.name for parameter in contract.params] == ["output_path"]
+
+
+def test_manifest_checkpoint_is_explicitly_additive() -> None:
+    cls = get_agent_ready_stage_class("ManifestCheckpointStage")
+    contract = static_contract(cls)
+
+    assert contract.accepts_task_type == "AudioTask"
+    assert contract.produces_task_type == "AudioTask"
+    assert [parameter.name for parameter in contract.params] == [
+        "output_path",
+        "retention_sec",
+        "owner",
+        "planning_provenance",
+    ]
+    assert contract.gates.writes_to_disk is True
+    assert contract.gates.output_path_params == ["output_path"]
+    assert contract.gates.requires_serializable_input is True
+    assert contract.gates.per_row_independent is True
+    assert contract.gates.lifecycle_side_effects is True
+
+
+def test_compound_value_selector_is_explicitly_additive() -> None:
+    cls = get_agent_ready_stage_class("PreserveByValueConditionsStage")
+    contract = static_contract(cls)
+
+    assert contract.accepts_task_type == "AudioTask"
+    assert contract.produces_task_type == "AudioTask"
+    assert [parameter.name for parameter in contract.params] == [
+        "conditions",
+        "missing_value_policy",
+        "items_key",
+        "drop_parent_if_empty",
+        "condition_logic",
+    ]
+    assert contract.params[-1].default == "and"
+    assert contract.params[-1].choices == ["and", "or"]
+    assert contract.batch_only is True
+
+
+def test_compound_value_selector_catalog_exposes_condition_logic() -> None:
+    from nemo_curator.stages.audio._catalog import audio_stage_catalog
+
+    entry = next(
+        item
+        for item in audio_stage_catalog()
+        if item["name"] == "PreserveByValueConditionsStage"
+    )
+    parameter = next(
+        item
+        for item in entry["contract"]["params"]
+        if item["name"] == "condition_logic"
+    )
+    schema = entry["params_schema"]["properties"]["condition_logic"]
+
+    assert parameter["default"] == "and"
+    assert parameter["choices"] == ["and", "or"]
+    assert schema["default"] == "and"
+    assert schema["enum"] == ["and", "or"]
 
 
 def test_intentional_legacy_contract_corrections_are_explicit() -> None:

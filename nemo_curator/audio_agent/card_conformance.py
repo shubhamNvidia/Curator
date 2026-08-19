@@ -28,6 +28,10 @@ drift (the exact ``resample`` / ``audio_to_document`` failure class):
   in ``verified`` instead.
 * a ``metrics`` block, if present, must use a valid ``scale.direction``, a real
   ``threshold_param``, and a ``[lo, hi]`` ``valid_range``.
+* a ``decision`` block, if present, must describe one of the explicitly supported
+  task or one-level segment score producers and its real downstream selector
+  parameters. The score key's declared fallback is checked against the constructor
+  default and the key parameter must control a real stage write.
 * ``semantic_facts``, if present, is shape-checked as advisory prose.  The gate
   never interprets scope or turns a fact into a module-specific pipeline rule.
 * a capability ``tag`` must reflect the stage's DEFAULT behavior: a tag that maps to an
@@ -55,10 +59,107 @@ _KNOWN_BOUND = frozenset({"cpu", "gpu", "io"})
 _VERIFIED_TIERS = frozenset({"mechanical", "measured", "best_guess"})
 _DIRECTIONS = frozenset({"higher_better", "lower_better"})
 _SEMANTIC_PROSE_FIELDS = frozenset({"meaning", "unit", "provenance", "scope", "propagation"})
+_DECISION_PRODUCERS = frozenset(
+    {
+        "GetAudioDurationStage",
+        "GetPairwiseWerStage",
+        "SIGMOSFilterStage",
+        "UTMOSFilterStage",
+    }
+)
+_DECISION_KINDS = {
+    "GetAudioDurationStage": "scalar",
+    "GetPairwiseWerStage": "scalar",
+    "SIGMOSFilterStage": "compound",
+    "UTMOSFilterStage": "scalar",
+}
+_DECISION_VALUE_TYPES = frozenset({"number", "string", "boolean"})
+_DECISION_FIELDS = frozenset(
+    {
+        "kind",
+        "separable_from_producer",
+        "score_key_param",
+        "score_key_default",
+        "threshold_param",
+        "dimensions",
+        "value_type",
+        "scope",
+        "selector",
+        "producer_constraints",
+        "missing_score_policy",
+        "monotonic_direction",
+        "atomic",
+        "variants",
+    }
+)
+_DECISION_COMMON_REQUIRED_FIELDS = frozenset(
+    {
+        "separable_from_producer",
+        "value_type",
+        "scope",
+        "selector",
+        "missing_score_policy",
+        "atomic",
+    }
+)
+_DECISION_SCALAR_REQUIRED_FIELDS = frozenset({"score_key_param", "score_key_default"})
+_DECISION_COMPOUND_REQUIRED_FIELDS = frozenset({"dimensions"})
+_DECISION_SCALAR_SELECTOR_FIELDS = frozenset(
+    {"stage_id", "key_param", "value_param", "operator_param", "allowed_operators"}
+)
+_DECISION_COMPOUND_SELECTOR_FIELDS = frozenset(
+    {
+        "stage_id",
+        "conditions_param",
+        "condition_logic_param",
+        "required_condition_logic",
+        "missing_policy_param",
+        "required_missing_policy",
+        "required_operator",
+    }
+)
+_DECISION_SEGMENT_SELECTOR_FIELDS = frozenset(
+    {
+        "stage_id",
+        "conditions_param",
+        "condition_logic_param",
+        "required_condition_logic",
+        "missing_policy_param",
+        "required_missing_policy",
+        "required_operator",
+        "items_key_param",
+        "items_key_source_param",
+        "empty_policy_param",
+        "required_empty_policy",
+    }
+)
+_DECISION_OPTIONAL_SELECTOR_FIELDS = frozenset(
+    {"missing_policy_param", "required_missing_policy", "required_operator"}
+)
+_DECISION_DIMENSION_FIELDS = frozenset(
+    {"score_key_param", "score_key_default", "threshold_param"}
+)
+_DECISION_OPERATORS = frozenset({"lt", "le", "eq", "ne", "ge", "gt"})
+_DECISION_SELECTOR_PARAMS = {
+    "key_param": "input_value_key",
+    "value_param": "target_value",
+    "operator_param": "operator",
+}
+_DECISION_COMPOUND_SELECTOR_PARAMS = {
+    "conditions_param": "conditions",
+    "condition_logic_param": "condition_logic",
+    "missing_policy_param": "missing_value_policy",
+}
+_DECISION_SEGMENT_SELECTOR_PARAMS = {
+    **_DECISION_COMPOUND_SELECTOR_PARAMS,
+    "items_key_param": "items_key",
+    "empty_policy_param": "drop_parent_if_empty",
+}
+_DECISION_MISSING_POLICIES = frozenset({"selector_drop", "selector_error"})
 
 
-def _stage_param_names(stage_id: str) -> set[str] | None:
-    """Constructor param names of the stage, or None if it doesn't resolve."""
+def _stage_param_specs(stage_id: str) -> dict[str, Any] | None:
+    """Constructor params keyed by name, or None if the stage doesn't resolve."""
     from nemo_curator.audio_agent._resolve import resolve_stage_class
     from nemo_curator.stages.audio._agent_registry import stage_params
 
@@ -67,12 +168,470 @@ def _stage_param_names(stage_id: str) -> set[str] | None:
     except Exception:  # noqa: BLE001 - unknown/unimportable stage
         return None
     try:
-        return {p.name for p in stage_params(cls)}
+        return {p.name: p for p in stage_params(cls)}
     except Exception:  # noqa: BLE001
-        return set()
+        return {}
 
 
-def _semantic_fact_violations(stage_id: str, raw: Any) -> list[str]:  # noqa: ANN401
+def _stage_param_names(stage_id: str) -> set[str] | None:
+    """Constructor param names of the stage, or None if it doesn't resolve."""
+    specs = _stage_param_specs(stage_id)
+    return None if specs is None else set(specs)
+
+
+def _decision_score_key_is_written(stage_id: str, score_key_param: str) -> bool:
+    """Whether changing the declared key param changes a mechanically declared write."""
+    from nemo_curator.audio_agent._resolve import resolve_stage_class
+    from nemo_curator.stages.audio import agent as foundation
+
+    marker = "__decision_score_key__"
+    try:
+        stage = resolve_stage_class(stage_id)(**{score_key_param: marker})
+        contract = foundation.build_contract(stage)
+    except Exception:  # noqa: BLE001 - malformed key params fail conformance
+        return False
+    written = set(contract.writes.data_keys)
+    for conditional in contract.conditional_writes:
+        written.update(conditional.writes.data_keys)
+    return marker in written
+
+
+def _decision_score_binding_violations(
+    stage_id: str,
+    binding: dict[str, Any],
+    *,
+    prefix: str,
+    producer_specs: dict[str, Any],
+) -> list[str]:
+    """Validate one configurable producer score key and its declared default."""
+    violations: list[str] = []
+    score_key_param = binding.get("score_key_param")
+    if not isinstance(score_key_param, str) or not score_key_param:
+        violations.append(f"{prefix}.score_key_param must be a non-empty string")
+        return violations
+    if score_key_param not in producer_specs:
+        violations.append(
+            f"{prefix}.score_key_param {score_key_param!r} is not a constructor param of the producer"
+        )
+        return violations
+
+    spec = producer_specs[score_key_param]
+    score_key_default = binding.get("score_key_default")
+    if spec.required:
+        violations.append(
+            f"{prefix}.score_key_param {score_key_param!r} must have a constructor default"
+        )
+    elif score_key_default != spec.default:
+        violations.append(
+            f"{prefix}.score_key_default {score_key_default!r} does not match "
+            f"{score_key_param!r}'s constructor default {spec.default!r}"
+        )
+    if not isinstance(score_key_default, str) or not score_key_default:
+        violations.append(f"{prefix}.score_key_default must be a non-empty string")
+    if not _decision_score_key_is_written(stage_id, score_key_param):
+        violations.append(
+            f"{prefix}.score_key_param {score_key_param!r} does not control a declared producer write"
+        )
+    return violations
+
+
+def _decision_constraints_violations(
+    stage_id: str,
+    raw: dict[str, Any],
+    *,
+    prefix: str,
+    producer_specs: dict[str, Any],
+) -> list[str]:
+    """Require card constraints to exactly mirror producer-declared safe settings."""
+    from nemo_curator.audio_agent._resolve import resolve_stage_class
+
+    try:
+        stage_class = resolve_stage_class(stage_id)
+        by_scope = getattr(stage_class, "SEPARABLE_DECISION_CONSTRAINTS_BY_SCOPE", {})
+        if by_scope:
+            scope = raw.get("scope")
+            if scope not in by_scope:
+                return [
+                    f"{prefix}.scope {scope!r} has no producer-declared safe settings "
+                    f"(supported: {sorted(by_scope)})"
+                ]
+            expected = dict(by_scope[scope])
+        else:
+            expected = dict(
+                getattr(
+                    stage_class,
+                    "SEPARABLE_DECISION_CONSTRAINTS",
+                    {},
+                )
+            )
+    except Exception:  # noqa: BLE001
+        expected = {}
+    constraints = raw.get("producer_constraints")
+    if not expected and constraints is None:
+        return []
+    if not isinstance(constraints, dict):
+        return [f"{prefix}.producer_constraints must be a mapping"]
+    violations = [
+        f"{prefix}.producer_constraints {constraints!r} must exactly match "
+        f"the producer-declared safe settings {expected!r}"
+    ] if constraints != expected else []
+    for param in constraints:
+        if param not in producer_specs:
+            violations.append(
+                f"{prefix}.producer_constraints names {param!r}, which is not a constructor param"
+            )
+    return violations
+
+
+def _decision_dimension_violations(
+    stage_id: str,
+    raw: dict[str, Any],
+    *,
+    prefix: str,
+    producer_specs: dict[str, Any],
+) -> list[str]:
+    """Validate every dimension of an atomic compound decision."""
+    from nemo_curator.audio_agent._resolve import resolve_stage_class
+
+    dimensions = raw.get("dimensions")
+    if not isinstance(dimensions, list) or not dimensions:
+        return [f"{prefix}.dimensions must be a non-empty list"]
+    violations: list[str] = []
+    actual_pairs: list[tuple[str, str]] = []
+    for index, dimension in enumerate(dimensions):
+        dimension_prefix = f"{prefix}.dimensions[{index}]"
+        if not isinstance(dimension, dict):
+            violations.append(f"{dimension_prefix} must be a mapping")
+            continue
+        violations.extend(
+            f"{dimension_prefix} has unknown key {key!r}"
+            for key in sorted(dimension, key=str)
+            if key not in _DECISION_DIMENSION_FIELDS
+        )
+        violations.extend(
+            f"{dimension_prefix} is missing required field {key!r}"
+            for key in sorted(_DECISION_DIMENSION_FIELDS)
+            if key not in dimension
+        )
+        violations.extend(
+            _decision_score_binding_violations(
+                stage_id,
+                dimension,
+                prefix=dimension_prefix,
+                producer_specs=producer_specs,
+            )
+        )
+        threshold_param = dimension.get("threshold_param")
+        if not isinstance(threshold_param, str) or not threshold_param:
+            violations.append(f"{dimension_prefix}.threshold_param must be a non-empty string")
+        elif threshold_param not in producer_specs:
+            violations.append(
+                f"{dimension_prefix}.threshold_param {threshold_param!r} "
+                "is not a constructor param of the producer"
+            )
+        score_key_param = dimension.get("score_key_param")
+        if isinstance(threshold_param, str) and isinstance(score_key_param, str):
+            actual_pairs.append((threshold_param, score_key_param))
+
+    try:
+        expected_pairs = list(
+            getattr(
+                resolve_stage_class(stage_id),
+                "SEPARABLE_DECISION_DIMENSIONS",
+                (),
+            )
+        )
+    except Exception:  # noqa: BLE001
+        expected_pairs = []
+    if actual_pairs != expected_pairs:
+        violations.append(
+            f"{prefix}.dimensions must exactly cover the producer-declared threshold/key "
+            f"dimensions {expected_pairs!r}"
+        )
+    return violations
+
+
+def _decision_selector_violations(  # noqa: C901, PLR0912, PLR0915 - exact refusal per selector invariant
+    stage_id: str,
+    raw: dict[str, Any],
+    *,
+    prefix: str,
+    kind: str,
+    producer_specs: dict[str, Any],
+) -> list[str]:
+    """Validate the exact scalar or compound selector surface."""
+    selector = raw.get("selector")
+    if not isinstance(selector, dict):
+        return [f"{prefix}.selector must be a mapping"]
+
+    if raw.get("scope") == "segments":
+        required_fields = _DECISION_SEGMENT_SELECTOR_FIELDS
+        allowed_fields = required_fields
+        expected_stage = "PreserveByValueConditionsStage"
+        expected_params = _DECISION_SEGMENT_SELECTOR_PARAMS
+    elif kind == "compound":
+        required_fields = _DECISION_COMPOUND_SELECTOR_FIELDS
+        allowed_fields = required_fields
+        expected_stage = "PreserveByValueConditionsStage"
+        expected_params = _DECISION_COMPOUND_SELECTOR_PARAMS
+    else:
+        required_fields = _DECISION_SCALAR_SELECTOR_FIELDS
+        allowed_fields = required_fields | _DECISION_OPTIONAL_SELECTOR_FIELDS
+        expected_stage = "PreserveByValueStage"
+        expected_params = _DECISION_SELECTOR_PARAMS
+
+    violations = [
+        f"{prefix}.selector has unknown key {key!r} (allowed: {sorted(allowed_fields)})"
+        for key in sorted(selector, key=str)
+        if key not in allowed_fields
+    ]
+    violations.extend(
+        f"{prefix}.selector is missing required field {key!r}"
+        for key in sorted(required_fields)
+        if key not in selector
+    )
+
+    selector_stage = selector.get("stage_id")
+    selector_specs = (
+        _stage_param_specs(selector_stage)
+        if isinstance(selector_stage, str) and selector_stage
+        else None
+    )
+    if selector_specs is None:
+        violations.append(
+            f"{prefix}.selector.stage_id {selector_stage!r} is not a registered stage"
+        )
+        return violations
+    if selector_stage != expected_stage:
+        violations.append(
+            f"{prefix}.selector.stage_id must be {expected_stage!r} for a {kind} decision"
+        )
+        return violations
+
+    for field, expected_param in expected_params.items():
+        value = selector.get(field)
+        if not isinstance(value, str) or not value:
+            violations.append(f"{prefix}.selector.{field} must be a non-empty string")
+        elif value not in selector_specs:
+            violations.append(
+                f"{prefix}.selector.{field} {value!r} is not a constructor param "
+                f"of {selector_stage}"
+            )
+        elif value != expected_param:
+            violations.append(
+                f"{prefix}.selector.{field} must be {expected_param!r} for {selector_stage}"
+            )
+
+    if kind == "scalar" and raw.get("scope") != "segments":
+        operators = selector.get("allowed_operators")
+        if (
+            not isinstance(operators, list)
+            or not operators
+            or any(not isinstance(operator, str) for operator in operators)
+        ):
+            violations.append(
+                f"{prefix}.selector.allowed_operators must be a non-empty list of operators"
+            )
+        else:
+            unknown_operators = sorted(set(operators) - _DECISION_OPERATORS)
+            if unknown_operators:
+                violations.append(
+                    f"{prefix}.selector.allowed_operators contains unsupported operators "
+                    f"{unknown_operators!r} (allowed: {sorted(_DECISION_OPERATORS)})"
+                )
+            if len(operators) != len(set(operators)):
+                violations.append(
+                    f"{prefix}.selector.allowed_operators must not contain duplicates"
+                )
+
+    required_operator = selector.get("required_operator")
+    if required_operator is not None:
+        if required_operator not in _DECISION_OPERATORS:
+            violations.append(
+                f"{prefix}.selector.required_operator must be one of {sorted(_DECISION_OPERATORS)}"
+            )
+        operators = selector.get("allowed_operators")
+        if isinstance(operators, list) and required_operator not in operators:
+            violations.append(
+                f"{prefix}.selector.required_operator must be present in allowed_operators"
+            )
+
+    if expected_stage == "PreserveByValueConditionsStage":
+        required_logic = selector.get("required_condition_logic")
+        if required_logic != "and":
+            violations.append(
+                f"{prefix}.selector.required_condition_logic must be 'and' for exact "
+                "native-filter equivalence"
+            )
+
+    if raw.get("scope") == "segments":
+        source_param = selector.get("items_key_source_param")
+        if not isinstance(source_param, str) or not source_param:
+            violations.append(
+                f"{prefix}.selector.items_key_source_param must be a non-empty string"
+            )
+        elif source_param not in producer_specs:
+            violations.append(
+                f"{prefix}.selector.items_key_source_param {source_param!r} is not "
+                f"a constructor param of {stage_id}"
+            )
+        if selector.get("required_empty_policy") is not True:
+            violations.append(
+                f"{prefix}.selector.required_empty_policy must be true for native "
+                "segment-filter equivalence"
+            )
+
+    missing_policy_param = selector.get("missing_policy_param", "missing_value_policy")
+    expected_missing = (
+        "drop" if raw.get("missing_score_policy") == "selector_drop" else "error"
+    )
+    missing_spec = selector_specs.get(str(missing_policy_param))
+    if missing_spec is None:
+        violations.append(
+            f"{prefix}.selector.missing_policy_param {missing_policy_param!r} "
+            f"is not a constructor param of {selector_stage}"
+        )
+    else:
+        effective_missing = selector.get("required_missing_policy", missing_spec.default)
+        if effective_missing != expected_missing:
+            violations.append(
+                f"{prefix}.selector requires missing policy {expected_missing!r} "
+                f"for {raw.get('missing_score_policy')!r}"
+            )
+    return violations
+
+
+def _decision_violations(  # noqa: C901, PLR0912, PLR0915 - one branch per card invariant
+    stage_id: str,
+    raw: Any,  # noqa: ANN401 - untrusted card boundary
+) -> list[str]:
+    """Validate the narrow producer/selector split consumed by strategy code."""
+    prefix = f"{stage_id}: decision"
+    if not isinstance(raw, dict):
+        return [f"{prefix} must be a mapping"]
+
+    kind = raw.get("kind", "scalar")
+    required_fields = set(_DECISION_COMMON_REQUIRED_FIELDS)
+    required_fields.update(
+        _DECISION_COMPOUND_REQUIRED_FIELDS
+        if kind == "compound"
+        else _DECISION_SCALAR_REQUIRED_FIELDS
+    )
+    violations = [
+        f"{prefix} has unknown key {key!r} (allowed: {sorted(_DECISION_FIELDS)})"
+        for key in sorted(raw, key=str)
+        if key not in _DECISION_FIELDS
+    ]
+    violations.extend(
+        f"{prefix} is missing required field {key!r}"
+        for key in sorted(required_fields)
+        if key not in raw
+    )
+
+    if stage_id not in _DECISION_PRODUCERS:
+        violations.append(
+            f"{prefix} is only supported for {sorted(_DECISION_PRODUCERS)} in this phase"
+        )
+    expected_kind = _DECISION_KINDS.get(stage_id)
+    if kind not in {"scalar", "compound"}:
+        violations.append(f"{prefix}.kind must be 'scalar' or 'compound'")
+    elif expected_kind is not None and kind != expected_kind:
+        violations.append(
+            f"{prefix}.kind must be {expected_kind!r} for {stage_id}"
+        )
+    if raw.get("separable_from_producer") is not True:
+        violations.append(f"{prefix}.separable_from_producer must be true")
+
+    producer_specs = _stage_param_specs(stage_id) or {}
+    violations.extend(
+        _decision_constraints_violations(
+            stage_id,
+            raw,
+            prefix=prefix,
+            producer_specs=producer_specs,
+        )
+    )
+    if kind == "compound":
+        violations.extend(
+            _decision_dimension_violations(
+                stage_id,
+                raw,
+                prefix=prefix,
+                producer_specs=producer_specs,
+            )
+        )
+    else:
+        violations.extend(
+            _decision_score_binding_violations(
+                stage_id,
+                raw,
+                prefix=prefix,
+                producer_specs=producer_specs,
+            )
+        )
+        if raw.get("scope") == "segments":
+            threshold_param = raw.get("threshold_param")
+            if not isinstance(threshold_param, str) or not threshold_param:
+                violations.append(
+                    f"{prefix}.threshold_param must be a non-empty string for segment scope"
+                )
+            elif threshold_param not in producer_specs:
+                violations.append(
+                    f"{prefix}.threshold_param {threshold_param!r} is not a constructor "
+                    "param of the producer"
+                )
+
+    if raw.get("scope") not in {"task", "segments"}:
+        violations.append(f"{prefix}.scope must be 'task' or 'segments'")
+    if raw.get("value_type") not in _DECISION_VALUE_TYPES:
+        violations.append(
+            f"{prefix}.value_type must be one of {sorted(_DECISION_VALUE_TYPES)}"
+        )
+    if raw.get("missing_score_policy") not in _DECISION_MISSING_POLICIES:
+        violations.append(
+            f"{prefix}.missing_score_policy must be one of {sorted(_DECISION_MISSING_POLICIES)}"
+        )
+    if raw.get("atomic") is not True:
+        violations.append(f"{prefix}.atomic must be true for this single-decision phase")
+    if "monotonic_direction" in raw and raw.get("monotonic_direction") not in _DIRECTIONS:
+        violations.append(
+            f"{prefix}.monotonic_direction must be one of {sorted(_DIRECTIONS)} when present"
+        )
+    violations.extend(
+        _decision_selector_violations(
+            stage_id,
+            raw,
+            prefix=prefix,
+            kind=str(kind),
+            producer_specs=producer_specs,
+        )
+    )
+
+    variants = raw.get("variants")
+    if variants is not None:
+        if not isinstance(variants, list) or not variants:
+            violations.append(f"{prefix}.variants must be a non-empty list")
+        else:
+            seen_scopes = {raw.get("scope")}
+            for index, variant in enumerate(variants):
+                variant_prefix = f"{prefix}.variants[{index}]"
+                if not isinstance(variant, dict):
+                    violations.append(f"{variant_prefix} must be a mapping")
+                    continue
+                if "variants" in variant:
+                    violations.append(f"{variant_prefix} must not contain nested variants")
+                    continue
+                scope = variant.get("scope")
+                if scope in seen_scopes:
+                    violations.append(
+                        f"{variant_prefix}.scope {scope!r} duplicates another decision scope"
+                    )
+                seen_scopes.add(scope)
+                violations.extend(_decision_violations(stage_id, variant))
+    return violations
+
+
+def _semantic_fact_violations(stage_id: str, raw: Any) -> list[str]:  # noqa: ANN401, C901
     """Validate only the JSON/YAML shape of optional semantic reasoning prose.
 
     A compact string and a richer mapping are both accepted.  Meaning, scope,
@@ -225,6 +784,7 @@ _KNOWN_CARD_FIELDS = frozenset(
         "constraints", "resource", "use_cases", "composition", "verified", "params_of_note",
         "provenance", "notes", "param_dependencies", "comparison", "semantic_facts",
         "conflicts_with", "presets", "caveats", "metrics", "versions", "deterministic",
+        "decision",
     }
 )
 
@@ -315,7 +875,10 @@ def _composite_legibility(stage_id: str) -> list[str]:
     ]
 
 
-def check_card(stage_id: str, card: Any) -> list[str]:  # noqa: ANN401
+def check_card(  # noqa: C901, PLR0912, PLR0915 - one branch per card section
+    stage_id: str,
+    card: Any,  # noqa: ANN401 - untrusted card boundary
+) -> list[str]:
     """Return a list of mechanical conformance violations for one card (empty = ok)."""
     if not isinstance(card, dict):
         return [f"{stage_id}: card is not a mapping"]
@@ -366,6 +929,8 @@ def check_card(stage_id: str, card: Any) -> list[str]:  # noqa: ANN401
 
     v.extend(_composition_violations(stage_id, card))
     v.extend(_composite_legibility(stage_id))
+    if "decision" in card:
+        v.extend(_decision_violations(stage_id, card["decision"]))
 
     # A model stage used to be REQUIRED to pin a ``model_version``, justified as "so an upgrade
     # can't silently change facts". Removed, because that protection was never built: nothing
@@ -455,6 +1020,15 @@ def check_card(stage_id: str, card: Any) -> list[str]:  # noqa: ANN401
             v.append(
                 f"{stage_id}: semantic_facts must declare its evidence tier in "
                 "verified.semantic_facts"
+            )
+        if "decision" in card and verified.get("decision") != "mechanical":
+            v.append(
+                f"{stage_id}: decision must declare mechanically checked evidence as "
+                "verified.decision: mechanical"
+            )
+        if "decision" not in card and "decision" in verified:
+            v.append(
+                f"{stage_id}: verified.decision is set but the card has no decision block"
             )
 
     # tag <-> default-gate consistency (M5b): a capability tag must reflect DEFAULT behavior.

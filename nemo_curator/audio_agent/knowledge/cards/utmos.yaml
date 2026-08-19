@@ -51,13 +51,57 @@ metrics:
       "2.5-3.0": "decent -- usable but with a little audible noise"
       "0.0-2.5": "poor -- observable noise / degradation, usually rejected"
     valid_range: [0.0, 5.0]
+decision:
+  kind: scalar
+  separable_from_producer: true
+  score_key_param: score_key
+  score_key_default: utmos_mos
+  value_type: number
+  scope: task
+  producer_constraints: {action: annotate, mode: task}
+  selector:
+    stage_id: PreserveByValueStage
+    key_param: input_value_key
+    value_param: target_value
+    operator_param: operator
+    allowed_operators: [ge]
+    required_operator: ge
+    missing_policy_param: missing_value_policy
+    required_missing_policy: drop
+  missing_score_policy: selector_drop
+  monotonic_direction: higher_better
+  atomic: true
+  variants:
+    - kind: scalar
+      separable_from_producer: true
+      score_key_param: score_key
+      score_key_default: utmos_mos
+      threshold_param: mos_threshold
+      value_type: number
+      scope: segments
+      producer_constraints: {action: annotate, mode: segments}
+      selector:
+        stage_id: PreserveByValueConditionsStage
+        conditions_param: conditions
+        condition_logic_param: condition_logic
+        required_condition_logic: and
+        missing_policy_param: missing_value_policy
+        required_missing_policy: drop
+        required_operator: ge
+        items_key_param: items_key
+        items_key_source_param: segments_key
+        empty_policy_param: drop_parent_if_empty
+        required_empty_policy: true
+      missing_score_policy: selector_drop
+      monotonic_direction: higher_better
+      atomic: true
 semantic_facts:
   utmos_mos:
     meaning: "When scoring succeeds, the UTMOS-predicted overall perceptual speech naturalness/quality for the audio item that was scored; it is not a direct measurement of one specific defect."
     unit: "predicted MOS on a 0-5 scale (float, higher is better)"
     provenance: "Predicted by utmos22_strong after the selected task/segment audio is internally resampled to sample_rate (default 16 kHz)."
     scope: "mode='task' writes one top-level score for the current AudioTask; mode='segments' writes one score inside each nested segment; mode='auto' chooses segment scope whenever segments_key is present, otherwise task scope"
-    propagation: "action='annotate' always retains the task/segment and adds the score only when scoring succeeds; an input/model/inference failure leaves the retained item without score_key. action='filter' removes the task or individual nested segments that fail the threshold or cannot be scored."
+    propagation: "action='annotate' always retains the task/segment and adds the score only when scoring succeeds with a finite MOS; an input/model/inference failure or NaN/Inf output leaves the retained item without score_key. action='filter' removes the task or individual nested segments that fail the threshold or cannot be scored."
     counterexamples:
       - "A top-level task score does not establish that every nested segment has the same quality, and a mean across row scores is a corpus statistic rather than a per-row guarantee."
       - "A high UTMOS score does not specifically prove low background noise or low reverberation; use a dimension-specific metric when that is the intent."
@@ -81,5 +125,6 @@ caveats:
   - "Downloads the model from torch.hub on first run (needs network once)."
   - "Score is a predictor of human MOS, not a ground-truth measurement."
   - "In 'filter' mode, clips that fail to score are dropped as well -- audit with 'annotate' first."
-verified: {params: mechanical, semantic_facts: mechanical, tags: mechanical, model_version: mechanical, resource: best_guess, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess, metrics: best_guess}
-provenance: {model_card_url: "https://github.com/tarepan/SpeechMOS", card_version: 4, last_validated: "2026-07-30"}
+  - "Reusable decision separation is proven for explicit action='annotate' task mode with PreserveByValueStage, and explicit segment mode with one PreserveByValueConditionsStage condition over items_key=segments_key. Segment exactness explicitly requires condition_logic='and'; both forms require ge and missing-score drop. Generic OR remains valid outside this native-filter equivalence; mode='auto' remains native because its scope is data-dependent."
+verified: {params: mechanical, semantic_facts: mechanical, tags: mechanical, model_version: mechanical, resource: best_guess, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess, metrics: best_guess, decision: mechanical}
+provenance: {model_card_url: "https://github.com/tarepan/SpeechMOS", card_version: 7, last_validated: "2026-08-19"}

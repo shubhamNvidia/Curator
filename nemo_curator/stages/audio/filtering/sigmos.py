@@ -39,10 +39,11 @@ Example:
     )
 """
 
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 import numpy as np
 import requests
@@ -172,6 +173,24 @@ class SIGMOSFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         Use .with_(resources=Resources(gpus=X)) to configure GPU allocation.
     """
 
+    SEPARABLE_DECISION_CONSTRAINTS: ClassVar[dict[str, Any]] = {
+        "action": "annotate",
+        "mode": "task",
+    }
+    SEPARABLE_DECISION_CONSTRAINTS_BY_SCOPE: ClassVar[dict[str, dict[str, Any]]] = {
+        "task": {"action": "annotate", "mode": "task"},
+        "segments": {"action": "annotate", "mode": "segments"},
+    }
+    SEPARABLE_DECISION_DIMENSIONS: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("noise_threshold", "noise_key"),
+        ("ovrl_threshold", "ovrl_key"),
+        ("sig_threshold", "sig_key"),
+        ("col_threshold", "col_key"),
+        ("disc_threshold", "disc_key"),
+        ("loud_threshold", "loud_key"),
+        ("reverb_threshold", "reverb_key"),
+    )
+
     model_dir: str = _DEFAULT_MODEL_DIR
     model_path: str | None = None
     noise_threshold: float | None = 4.0
@@ -252,7 +271,8 @@ class SIGMOSFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 segments_key=self.segments_key,
                 output_keys=score_keys,
                 assignment_condition=(
-                    "audio and model inference succeed and all configured SIGMOS score keys are assigned"
+                    "audio and model inference succeed and all configured SIGMOS "
+                    "dimensions are finite before any score key is assigned"
                     + (
                         " on an item that meets every enabled threshold and is retained"
                         if self.action == "filter"
@@ -409,6 +429,19 @@ class SIGMOSFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
 
     def _process_single(self, task: AudioTask) -> AudioTask | None:
         """Run SIGMOS scoring on a single (non-nested) task."""
+        # The compound annotation is atomic. Remove every prior output before
+        # inference so a failed/non-finite rerun cannot expose a stale partial
+        # score set to the downstream missing=drop selector.
+        for score_key in (
+            self.noise_key,
+            self.ovrl_key,
+            self.sig_key,
+            self.col_key,
+            self.disc_key,
+            self.loud_key,
+            self.reverb_key,
+        ):
+            task.data.pop(score_key, None)
         audio_result = _get_audio_numpy_sr(
             task.data,
             task.task_id,
@@ -431,6 +464,12 @@ class SIGMOSFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             return None
 
         s = self._scores_from_prediction(score_data)
+        if not all(math.isfinite(value) for value in s.values()):
+            logger.warning(
+                f"[{task.task_id}] SIGMOS returned at least one non-finite dimension; "
+                "treating item as unscorable"
+            )
+            return None
         passed, fail_reasons = self._check_thresholds(s)
         task.data[self.noise_key] = s["noise"]
         task.data[self.ovrl_key] = s["ovrl"]

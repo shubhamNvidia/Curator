@@ -51,6 +51,7 @@ verified: {params: mechanical, resource: best_guess, model_version: measured, us
 | `params_of_note` | rec. | `{param: description}` — **keys must be real constructor params** (gate-checked). |
 | `presets` | opt. | `{name: {param: value}}` — **keys must be real params** (gate-checked). |
 | `metrics` | opt. | `{metric: {scale:{min,max,direction}, threshold_param, valid_range:[lo,hi], presets}}` — the deterministic source of score directions/targets (1A.2) that keeps a filter from being inverted. `scale.direction` must be `higher_better`/`lower_better`; `threshold_param` (if set) must be a real param; `valid_range` must be `[lo, hi]` (all gate-checked). Omit `threshold_param` for annotate-only stages that are filtered downstream (e.g. `ComputeWERStage` → `PreserveByValueStage`). |
+| `decision` | opt. | A mechanically checked declaration that annotation is already separate from a downstream selector. The primary declaration remains task-scoped for compatibility; optional full `variants` may declare an exact one-level `segments` scope. See below. |
 | `semantic_facts` | opt. | Advisory mapping from an externally consumed output/concept to prose facts such as `{meaning, unit, provenance, scope, propagation, counterexamples}`. It helps the host reason across filters, fan-out and aggregation; it is deliberately not a deterministic ontology or runtime gate. |
 | `versions` | opt. | model-backed stages only: `{model_id: "when-to-use"}` for checkpoints verified interchangeable via `model_name`/`model_path` (same output structure, no module code change). Any version-selecting `preset` (one that sets `model_name`/`model_path`) **must list its model id here** (gate-checked). Mark `verified.versions` `measured` when empirically tested. |
 | `conflicts_with` | opt. | stage_ids that are alternatives / shouldn't co-occur. |
@@ -58,6 +59,131 @@ verified: {params: mechanical, resource: best_guess, model_version: measured, us
 | `comparison` | opt. | disambiguation fields for overlapping modules: `{language_support, accuracy_hint, latency_hint, config_complexity, known_limitations}`. |
 | `notes` / `caveats` | opt. | free text. |
 | `provenance` | rec. | `{model_card_url, card_version, last_validated}`. |
+
+## Separable decisions (deterministic strategy layer)
+
+`decision` is narrower than `metrics`: it is an executable producer/selector
+relationship, not general score documentation. Scalar decisions use
+`PreserveByValueStage`. Exact compound decisions use
+`PreserveByValueConditionsStage` and must enumerate every producer-declared
+threshold/key dimension. Explicit one-level segment decisions use
+`PreserveByValueConditionsStage` with a generic configured `items_key`;
+recursive nested, metadata-private and batch/corpus decisions remain unsupported.
+
+```yaml
+decision:
+  kind: scalar                         # optional for legacy scalar cards
+  separable_from_producer: true
+  score_key_param: wer_key
+  score_key_default: wer_pct
+  value_type: number                  # number|string|boolean; checked before planning
+  scope: task
+  selector:
+    stage_id: PreserveByValueStage
+    key_param: input_value_key
+    value_param: target_value
+    operator_param: operator
+    allowed_operators: [lt, le, eq, ne, ge, gt]
+  missing_score_policy: selector_error
+  monotonic_direction: lower_better  # optional; omit when no single direction applies
+  atomic: true                       # one selector decision, never a partial multi-gate rewrite
+verified:
+  decision: mechanical
+```
+
+The resolved score key is the producer's actual `score_key_param` value when
+configured, otherwise `score_key_default`. Conformance verifies that the param
+exists, the declared default equals the constructor default, and changing that
+param changes a declared producer write. A threshold value is deliberately
+absent: it belongs to the downstream selector's `value_param`, so changing it
+does not change producer identity.
+
+`scope: task` scalar selector parameter names must be real
+constructor parameters and must be `input_value_key`/`target_value`/`operator`
+on `PreserveByValueStage`. Model filters that are safe only under exact
+configuration add `producer_constraints` (for example
+`{action: annotate, mode: task}`), which conformance compares with the
+producer's class-declared safe settings.
+`value_type` is a mechanically enforced JSON-scalar type. The two phase-1
+producers declare `number`, which rejects booleans, strings, null, containers,
+and non-finite floats before a candidate can be ready or configured.
+`allowed_operators` may contain only `lt`, `le`, `eq`, `ne`, `ge`, `gt`.
+`missing_score_policy: selector_error` records the default behavior: an absent
+score key raises. Exact separation from a native filter that drops unscorable
+rows uses `selector_drop` plus
+`selector.missing_policy_param: missing_value_policy` and
+`selector.required_missing_policy: drop`. `GetAudioDurationStage`'s existing
+`-1.0` file-read sentinel is still a present value and is compared normally.
+
+Compound decisions are atomic: the selector conditions are a complete AND
+surface with explicit `condition_logic='and'`, never one arbitrarily chosen
+"primary" threshold. Generic `PreserveByValueConditionsStage` pipelines may
+use OR, but OR is not exact native-filter separation. Each dimension binds
+a producer threshold parameter to its configurable score-key parameter/default:
+
+```yaml
+decision:
+  kind: compound
+  separable_from_producer: true
+  value_type: number
+  scope: task
+  producer_constraints: {action: annotate, mode: task}
+  dimensions:
+    - {threshold_param: noise_threshold, score_key_param: noise_key, score_key_default: sigmos_noise}
+    - {threshold_param: ovrl_threshold, score_key_param: ovrl_key, score_key_default: sigmos_ovrl}
+    # ...all remaining producer-declared dimensions are required...
+  selector:
+    stage_id: PreserveByValueConditionsStage
+    conditions_param: conditions
+    condition_logic_param: condition_logic
+    required_condition_logic: and
+    missing_policy_param: missing_value_policy
+    required_missing_policy: drop
+    required_operator: ge
+  missing_score_policy: selector_drop
+  atomic: true
+```
+
+Conformance requires the dimension list to exactly match the producer's
+`SEPARABLE_DECISION_DIMENSIONS`; planning then requires conditions for every
+enabled (non-null) threshold using the configured score keys. Initial checkpoint
+planning is supported. Scalar `decision_value` remains scalar-only and fails
+closed for compound decisions. Compound feedback uses the separate
+`decision_conditions` surface: a complete non-empty list/mapping of configured
+declared score keys, finite targets, and exact `ge` operators. It replaces only
+the selector condition set, may omit dimensions to disable them, and may enable
+a dimension only when the annotation contract—and an existing checkpoint when
+present—proves that score key is available. AND logic, missing-score drop, and
+nested item/empty-parent policies are fixed by the card and cannot be changed
+through feedback.
+
+An optional `decision.variants` list contains full decision declarations. UTMOS
+and SIGMOS use one `scope: segments` variant whose
+`producer_constraints` require explicit `mode: segments`; `mode: auto` is
+refused because the runtime data chooses its scope. Segment selectors must bind:
+
+```yaml
+selector:
+  stage_id: PreserveByValueConditionsStage
+  conditions_param: conditions
+  condition_logic_param: condition_logic
+  required_condition_logic: and
+  missing_policy_param: missing_value_policy
+  required_missing_policy: drop
+  required_operator: ge
+  items_key_param: items_key
+  items_key_source_param: segments_key
+  empty_policy_param: drop_parent_if_empty
+  required_empty_policy: true
+```
+
+The planner resolves `items_key` from the configured producer
+`segments_key`, requires exact equality and `condition_logic='and'`, and treats
+every enabled SIGMOS threshold as one AND condition. UTMOS uses one condition
+over its configured score key and still requires explicit AND in its exact
+segment contract. The selector filters only direct children of that list; it
+does not recurse. Missing list containers, non-list values, and non-mapping
+children are structural errors rather than missing-score policy cases.
 
 ## Semantic output facts (LLM reasoning layer)
 
@@ -125,6 +251,10 @@ default, not a hard truth.
 - sets `model_id` without a `model_version`;
 - declares a `versions` block that isn't a `{model_id: string}` map, sets it without a `model_id`, or has a model-selecting `preset` (sets `model_name`/`model_path`) whose model id isn't documented in `versions`;
 - declares a `metrics` block with a bad `scale.direction`, a `threshold_param` that isn't a real param, or a `valid_range` that isn't `[lo, hi]`;
+- declares a `decision` outside the supported producers, uses unknown/missing
+  fields or unsupported values, drifts from producer/selector constructor
+  params/defaults/writes, omits exact producer constraints/compound dimensions,
+  or omits `verified.decision: mechanical`;
 - declares `semantic_facts` with a non-mapping top level, non-prose values, or malformed `counterexamples`;
 - declares `semantic_facts` without a corresponding
   `verified.semantic_facts` evidence tier, or uses a `verified` tier outside

@@ -128,13 +128,22 @@ class SnippetExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             ),
             cardinality="1:N fan-out",
             iteration_key=_PLAN_DATA_KEY,
-            gates=Gates(writes_to_disk=not self.dry_run, lifecycle_side_effects=not self.dry_run, output_path_params=["output_dir", "output_audio_tar_path"],
+            gates=Gates(
+                writes_to_disk=not self.dry_run,
+                lifecycle_side_effects=not self.dry_run,
+                output_path_params=["output_dir", "output_audio_tar_path"],
+                # ``task.data["id"]`` is preferred, but its documented fallback
+                # is framework task.task_id and that value enters durable
+                # snippet/member names. A manifest resume creates new task ids,
+                # so candidate boundaries must conservatively refuse this suffix.
+                requires_stable_task_id=True,
                 # The tar shard is shared across rows, but nothing a row writes into it is
                 # decided by the other rows: ``make_snippet_id`` builds the member name from the
                 # row's own id and its own planned start/end, and that same name is the
                 # ``audio_filepath`` the row carries out. Which members the archive ends up
                 # holding is a fact about the run, not about any row's values.
-                per_row_independent=True),
+                per_row_independent=True,
+            ),
         )
 
     def ray_stage_spec(self) -> dict[str, Any]:

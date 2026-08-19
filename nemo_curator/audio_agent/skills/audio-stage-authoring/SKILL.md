@@ -59,6 +59,9 @@ than a missing one. Three traps worth naming:
 - **`gates` are environment facts, not aspirations.** `writes_to_disk=True` with an empty
   `output_path_params` is refused by smoke, because it claims disk writes while offering
   nothing to redirect into the sandbox.
+- **Durable task-ID dependencies are resume facts.** If framework `task.task_id` enters an
+  output filename, archive member, or durable row identifier, declare
+  `gates.requires_stable_task_id=True`; metadata checkpoints do not serialize that identity.
 - **`ConditionalWrite` labels possibility, not intent.** Its `condition` must describe a
   real code branch using configured key values. Use `value_origin="upstream_same_key"` when
   the stage merely copies a field, so the original producer keeps credit for the meaning and

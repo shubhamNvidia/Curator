@@ -277,6 +277,7 @@ class TestStagesDeclareTheirOwnAgentFacts:
         "CreateInitialManifestReadSpeechStage": [],
         "DocumentBatchJsonlWriterStage": ["output_path"],
         "InferenceSortformerStage": ["rttm_out_dir"],
+        "ManifestCheckpointStage": ["output_path"],
         "ManifestGroupExportStage": ["output_dir"],
         "ManifestWriterStage": ["output_path"],
         "MonoConversionStage": ["output_dir"],
@@ -420,7 +421,9 @@ class TestEveryStageSaysWhetherItsRowsStandAlone:
         except (TypeError, ValueError):
             pass
 
-        def placeholder(name: str) -> str:
+        def placeholder(name: str) -> object:
+            if name == "conditions":
+                return [{"input_value_key": "score", "target_value": 0.0, "operator": "ge"}]
             return "/tmp/x" if ("dir" in name or "path" in name) else "x"  # noqa: S108
 
         if is_dataclass(stage_cls):

@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import torch
 
+from nemo_curator.stages.audio.common import PreserveByValueConditionsStage, PreserveByValueStage
 from nemo_curator.stages.audio.filtering.utmos import UTMOSFilterStage
 from nemo_curator.tasks import AudioTask
 
@@ -38,6 +39,13 @@ def _mock_model(score: float) -> MagicMock:
 
 
 class TestUTMOSFilterStage:
+    def test_native_defaults_remain_filter_and_auto(self) -> None:
+        stage = UTMOSFilterStage()
+
+        assert stage.action == "filter"
+        assert stage.mode == "auto"
+        assert stage.mos_threshold == 3.5
+
     @patch("nemo_curator.stages.audio.filtering.utmos.UTMOSFilterStage._ensure_model")
     def test_process_passes_above_threshold(self, mock_ensure: MagicMock) -> None:
         stage = UTMOSFilterStage(mos_threshold=3.0)
@@ -177,3 +185,173 @@ class TestUTMOSFilterStage:
         assert isinstance(result, AudioTask)
         assert len(result.data["segments"]) == 3
         assert all(seg["utmos_mos"] == 2.0 for seg in result.data["segments"])
+
+    @patch("nemo_curator.stages.audio.filtering.utmos.UTMOSFilterStage._ensure_model")
+    def test_task_annotate_then_drop_selector_matches_native_filter(
+        self,
+        mock_ensure: MagicMock,
+    ) -> None:
+        threshold = 3.5
+        cases = [
+            ("passing", _make_task(), 4.2),
+            ("failing", _make_task(), 2.8),
+            ("nan", _make_task(), float("nan")),
+            ("positive_inf", _make_task(), float("inf")),
+            ("negative_inf", _make_task(), float("-inf")),
+            ("unscorable", AudioTask(data={"id": "missing"}), None),
+        ]
+
+        for case_id, source, score in cases:
+            source.data["id"] = case_id
+            if case_id in {"nan", "positive_inf", "negative_inf"}:
+                source.data["custom_utmos"] = 99.0
+            native = UTMOSFilterStage(
+                action="filter",
+                mode="task",
+                mos_threshold=threshold,
+                score_key="custom_utmos",
+            )
+            annotate = UTMOSFilterStage(
+                action="annotate",
+                mode="task",
+                mos_threshold=threshold,
+                score_key="custom_utmos",
+            )
+            if score is not None:
+                native._model = _mock_model(score)
+                annotate._model = _mock_model(score)
+
+            native_result = native.process(
+                AudioTask(data=dict(source.data), dataset_name=source.dataset_name)
+            )
+            annotated = annotate.process(
+                AudioTask(data=dict(source.data), dataset_name=source.dataset_name)
+            )
+            assert isinstance(annotated, AudioTask)
+            if case_id in {"nan", "positive_inf", "negative_inf"}:
+                assert "custom_utmos" not in annotated.data
+            selected = PreserveByValueStage(
+                input_value_key="custom_utmos",
+                target_value=threshold,
+                operator="ge",
+                missing_value_policy="drop",
+            ).process_batch([annotated])
+
+            assert bool(selected) is isinstance(native_result, AudioTask)
+
+    @patch("nemo_curator.stages.audio.filtering.utmos.UTMOSFilterStage._ensure_model")
+    def test_segment_annotate_then_generic_selector_matches_native_filter(
+        self,
+        mock_ensure: MagicMock,
+    ) -> None:
+        threshold = 3.5
+        sample_rate = 16000
+
+        def make_parent() -> AudioTask:
+            return AudioTask(
+                data={
+                    "recording": "r1",
+                    "clips": [
+                        {
+                            "id": "pass",
+                            "waveform": torch.randn(1, sample_rate),
+                            "sample_rate": sample_rate,
+                        },
+                        {
+                            "id": "fail",
+                            "waveform": torch.randn(1, sample_rate),
+                            "sample_rate": sample_rate,
+                        },
+                        {
+                            "id": "nan",
+                            "waveform": torch.randn(1, sample_rate),
+                            "sample_rate": sample_rate,
+                            "quality": 99.0,
+                        },
+                        {
+                            "id": "inf",
+                            "waveform": torch.randn(1, sample_rate),
+                            "sample_rate": sample_rate,
+                            "quality": 99.0,
+                        },
+                        {"id": "unscorable"},
+                    ],
+                },
+                dataset_name="test",
+            )
+
+        def sequence_model() -> MagicMock:
+            scores = iter([4.2, 2.8, float("nan"), float("inf")])
+            model = MagicMock(side_effect=lambda *_args, **_kwargs: torch.tensor([next(scores)]))
+            model.parameters = lambda: iter([torch.tensor([0.0])])
+            return model
+
+        native = UTMOSFilterStage(
+            action="filter",
+            mode="segments",
+            segments_key="clips",
+            score_key="quality",
+            mos_threshold=threshold,
+        )
+        annotate = UTMOSFilterStage(
+            action="annotate",
+            mode="segments",
+            segments_key="clips",
+            score_key="quality",
+            mos_threshold=threshold,
+        )
+        native._model = sequence_model()
+        annotate._model = sequence_model()
+
+        native_result = native.process(make_parent())
+        annotated = annotate.process(make_parent())
+        assert isinstance(native_result, AudioTask)
+        assert isinstance(annotated, AudioTask)
+        invalid = {
+            item["id"]: item
+            for item in annotated.data["clips"]
+            if item["id"] in {"nan", "inf"}
+        }
+        assert all("quality" not in item for item in invalid.values())
+        selected = PreserveByValueConditionsStage(
+            [{"input_value_key": "quality", "target_value": threshold, "operator": "ge"}],
+            missing_value_policy="drop",
+            items_key="clips",
+            drop_parent_if_empty=True,
+        ).process_batch([annotated])
+
+        assert [item["id"] for item in native_result.data["clips"]] == ["pass"]
+        assert [item["id"] for item in selected[0].data["clips"]] == ["pass"]
+
+        native_all_fail = UTMOSFilterStage(
+            action="filter",
+            mode="segments",
+            segments_key="clips",
+            mos_threshold=threshold,
+        )
+        annotate_all_fail = UTMOSFilterStage(
+            action="annotate",
+            mode="segments",
+            segments_key="clips",
+            mos_threshold=threshold,
+        )
+        native_all_fail._model = _mock_model(2.0)
+        annotate_all_fail._model = _mock_model(2.0)
+        native_empty = native_all_fail.process(
+            AudioTask(
+                data={"clips": [{"waveform": torch.randn(1, sample_rate), "sample_rate": sample_rate}]}
+            )
+        )
+        annotated_empty = annotate_all_fail.process(
+            AudioTask(
+                data={"clips": [{"waveform": torch.randn(1, sample_rate), "sample_rate": sample_rate}]}
+            )
+        )
+        selected_empty = PreserveByValueConditionsStage(
+            [{"input_value_key": "utmos_mos", "target_value": threshold, "operator": "ge"}],
+            missing_value_policy="drop",
+            items_key="clips",
+            drop_parent_if_empty=True,
+        ).process_batch([annotated_empty])
+        assert native_empty == []
+        assert selected_empty == []

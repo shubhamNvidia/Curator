@@ -164,6 +164,12 @@ class Gates:
     #     downstream of it is serialization-safe.
     requires_serializable_input: bool = False
     sanitizes_output: bool = False
+    # The stage derives durable output identity (filenames, member names, row
+    # identifiers, etc.) from framework ``task.task_id``. Metadata manifests
+    # serialize only task.data, so a resume reader cannot recreate that
+    # framework identity unless a future boundary explicitly gains such a
+    # restoration contract. Resume planners must refuse while it is unstable.
+    requires_stable_task_id: bool = False
     # Is each output row computed from its own input row ALONE?
     #
     # ``None`` means NOT DECLARED and is deliberately distinct from ``True``, exactly as with
