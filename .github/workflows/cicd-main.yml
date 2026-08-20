@@ -62,7 +62,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        folder: ["backends", "benchmarking", "config", "core", "models", "pipelines", "stages-audio", "stages-common", "stages-deduplication", "stages-image", "stages-interleaved", "stages-math_stages", "stages-synthetic", "stages-text", "stages-video", "eval", "tasks", "utils"]
+        folder: ["audio_agent", "backends", "benchmarking", "config", "core", "models", "pipelines", "stages-audio", "stages-common", "stages-deduplication", "stages-image", "stages-interleaved", "stages-math_stages", "stages-synthetic", "stages-text", "stages-video", "eval", "tasks", "utils"]
     needs: [pre-flight, cicd-wait-in-queue]
     runs-on: ubuntu-latest
     name: Unit_Test_${{ matrix.folder }}_CPU
@@ -87,7 +87,7 @@ jobs:
           sudo rm -rf /usr/local/share/boost
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"
       - name: Install system dependencies for audio tests
-        if: matrix.folder == 'stages-audio'
+        if: matrix.folder == 'stages-audio' || matrix.folder == 'audio_agent'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg
@@ -101,6 +101,10 @@ jobs:
       - name: Run CPU tests (Python 3.13)
         timeout-minutes: 40
         run: bash tests/L0_Unit_Test_CPU.sh "${{ matrix.folder }}" 3.13
+
+      - name: Audio-agent capability-card conformance gate
+        if: matrix.folder == 'audio_agent'
+        run: uv run python -m nemo_curator.audio_agent.card_conformance
 
       - name: Generate report
         id: check
