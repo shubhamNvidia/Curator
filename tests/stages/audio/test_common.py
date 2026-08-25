@@ -24,6 +24,9 @@ import numpy as np
 import pytest
 import torch
 
+from nemo_curator.backends.xenna import XennaExecutor
+from nemo_curator.pipeline import Pipeline
+from nemo_curator.stages.audio.alm import ALMDataBuilderStage, ALMDataOverlapStage
 from nemo_curator.stages.audio.common import (
     GetAudioDurationStage,
     ManifestCheckpointStage,
@@ -699,6 +702,37 @@ class TestManifestReaderIntegration:
             assert "audio_filepath" in entry_data
             assert "segments" in entry_data
             assert len(entry_data["segments"]) > 0
+
+    def test_composite_end_to_end_with_directory(self) -> None:
+        """End-to-end: ManifestReader composite with directory input through full pipeline."""
+        nested = ALM_FIXTURES_DIR / "nested_manifests"
+
+        pipeline = Pipeline(name="test_dir_e2e", description="Directory discovery end-to-end test")
+        pipeline.add_stage(ManifestReader(manifest_path=str(nested)))
+        pipeline.add_stage(
+            ALMDataBuilderStage(
+                target_window_duration=120.0,
+                tolerance=0.1,
+                min_sample_rate=16000,
+                min_bandwidth=8000,
+                min_speakers=2,
+                max_speakers=5,
+            )
+        )
+        pipeline.add_stage(ALMDataOverlapStage(overlap_percentage=50, target_duration=120.0))
+
+        executor = XennaExecutor()
+        results = pipeline.run(executor)
+
+        output_entries = []
+        for task in results or []:
+            output_entries.append(task.data)
+
+        assert len(output_entries) == 20  # 4 files x 5 entries
+        total_windows = sum(len(e.get("filtered_windows", [])) for e in output_entries)
+        assert total_windows == 100  # 25 per file x 4 files
+        total_dur = sum(e.get("filtered_dur", 0) for e in output_entries)
+        assert abs(total_dur - 12142.0) < 1.0
 
 
 # ---------------------------------------------------------------------------
