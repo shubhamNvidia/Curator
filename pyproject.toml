@@ -472,7 +472,6 @@ fixable = ["ALL"]
     "EM101",                       # inline exception strings in tests
     "TC002", "TC003",              # type-only imports kept inline for readability
     "RUF012",                      # mutable class attrs are test data
-    "RUF001",                      # ambiguous unicode in test strings is intentional
 ]
 "tests/audio_agent/**/*.py" = [
     "ANN001", "ANN202", "ANN401",
@@ -483,7 +482,6 @@ fixable = ["ALL"]
     "EM101",
     "TC002", "TC003",
     "RUF012",
-    "RUF001",
 ]
 "benchmarking/**" = [
     "BLE001", # allow catching blind exceptions (benchmark runners need catch-all error handling)

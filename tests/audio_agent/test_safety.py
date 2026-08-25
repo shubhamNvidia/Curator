@@ -341,7 +341,7 @@ class TestSmokeToken:
     @pytest.mark.parametrize(
         ("label", "token"),
         [
-            ("an en-dash from a chat UI", "9f3c1e–abcdef"),
+            ("an en-dash from a chat UI", "9f3c1e–abcdef"),  # noqa: RUF001 - en dash is intentional in this message
             ("an accented character", "tokén-from-a-host"),
             ("a lone surrogate", "\ud800abc"),
             ("an int", 12345),
@@ -369,7 +369,7 @@ class TestSmokeToken:
             out = verbs.run(
                 recipe={"stages": [{"ref": "MonoConversionStage", "params": {}}]},
                 confirm=True,
-                smoke_token="9f3c1e–abcdef",
+                smoke_token="9f3c1e–abcdef",  # noqa: RUF001 - en dash is intentional in this message
             )
         finally:
             os.environ.pop("AUDIO_AGENT_REQUIRE_SMOKE", None)
