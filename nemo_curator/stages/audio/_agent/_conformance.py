@@ -25,6 +25,11 @@ The static checks alone catch the contract↔reality drift the prototype lacked
 and can sweep every stage with no fixtures (see ``assert_contract_wellformed``).
 """
 
+# ruff: noqa: S101 - this module IS the assertion harness; `assert` is its output format.
+# It ships under nemo_curator/ (not tests/) because stage authors call it from their own
+# suites, so the tests/** ignore does not reach it; raising would lose pytest's assertion
+# rewriting that makes these failures readable.
+
 from __future__ import annotations
 
 import json
@@ -90,7 +95,7 @@ def reads_satisfied_by_role(consumer: StageContract, available_roles: set[str]) 
 # --------------------------------------------------------------------------- #
 # Static checks (no execution)
 # --------------------------------------------------------------------------- #
-def _check_shape(c: StageContract, name: str) -> None:
+def _check_shape(c: StageContract, name: str) -> None:  # noqa: C901
     assert c.cardinality in _VALID_CARDINALITY, f"{name}: invalid cardinality {c.cardinality!r}"
     for opt in c.cardinality_options:
         # cardinality_options are short flag names (e.g. "fan_out","nested") OR full cardinalities

@@ -39,7 +39,6 @@ _GPU_BLOCKERS = frozenset({"gpu_unavailable", "cuda_driver_toolkit"})
 _SAFE_ERROR_LIMIT = 500
 
 
-
 @dataclass
 class StageEnvironmentRequirement:
     """Environment facts for one concrete execution leaf."""
@@ -98,12 +97,12 @@ class EnvironmentDecision:
         return asdict(self)
 
 
-def _execution_requirements(stages: list[Any]) -> list[StageEnvironmentRequirement]:
+def _execution_requirements(stages: list[Any]) -> list[StageEnvironmentRequirement]:  # noqa: C901, PLR0915
     """Flatten configured composites and read their actual execution gates/cards."""
     try:
         from nemo_curator.stages.base import CompositeStage
     except Exception:  # noqa: BLE001 - missing base type makes composite support unknown
-        CompositeStage = ()  # type: ignore[assignment]
+        CompositeStage = ()  # type: ignore[assignment]  # noqa: N806
 
     from nemo_curator.audio_agent.index import get_index
     from nemo_curator.stages.audio import agent as foundation
@@ -141,15 +140,11 @@ def _execution_requirements(stages: list[Any]) -> list[StageEnvironmentRequireme
         # the process environment. Honour that established execution path while
         # reporting presence only; never copy the configured value into evidence.
         satisfied_runtime_secrets = [
-            secret
-            for secret in runtime_secrets
-            if bool(getattr(stage, secret.lower(), None))
+            secret for secret in runtime_secrets if bool(getattr(stage, secret.lower(), None))
         ]
         cuda_runtime_jit: bool | None = False
         if name in {"NeMoASRAlignerStage", "SplitASRAlignJoinStage"}:
-            cuda_runtime_jit = str(
-                getattr(stage, "decoder_type", "rnnt") or "rnnt"
-            ).lower() != "ctc"
+            cuda_runtime_jit = str(getattr(stage, "decoder_type", "rnnt") or "rnnt").lower() != "ctc"
         elif name == "ASRStage":
             adapter_target = str(getattr(stage, "adapter_target", "") or "")
             if adapter_target == "nemo_curator.models.asr.nemo_asr.NeMoASRAdapter":
@@ -171,9 +166,7 @@ def _execution_requirements(stages: list[Any]) -> list[StageEnvironmentRequireme
                 gpu_optional=gpu_optional,
                 cuda_runtime_jit=cuda_runtime_jit,
                 requires_ffmpeg=bool(getattr(gates, "requires_ffmpeg", False)),
-                requires_internet_first_run=bool(
-                    getattr(gates, "requires_internet_first_run", False)
-                ),
+                requires_internet_first_run=bool(getattr(gates, "requires_internet_first_run", False)),
                 writes_to_disk=bool(getattr(gates, "writes_to_disk", False)),
                 runtime_secrets=runtime_secrets,
                 satisfied_runtime_secrets=satisfied_runtime_secrets,
@@ -183,7 +176,7 @@ def _execution_requirements(stages: list[Any]) -> list[StageEnvironmentRequireme
         )
 
     def visit(stage: Any, recipe_index: int, depth: int) -> None:  # noqa: ANN401
-        if depth >= 8:
+        if depth >= 8:  # noqa: PLR2004
             leaf(stage, recipe_index, known=False, note="composite expansion depth exceeded")
             return
         if CompositeStage and isinstance(stage, CompositeStage):
@@ -247,11 +240,7 @@ def _issue(  # noqa: PLR0913 - issues keep evidence and choices explicit at cons
 
 
 def _option_dicts(check: dict[str, Any] | None) -> list[dict[str, Any]]:
-    return [
-        dict(option)
-        for option in (check or {}).get("options", [])
-        if isinstance(option, dict)
-    ]
+    return [dict(option) for option in (check or {}).get("options", []) if isinstance(option, dict)]
 
 
 def _reverify_gpu_options() -> list[dict[str, Any]]:
@@ -308,8 +297,7 @@ def _cpu_choice(
         kind="recipe_variant",
         label="Create a CPU-compatible recipe variant",
         summary=(
-            "Replan the affected stages for CPU without changing their module defaults "
-            "or mutating the current recipe."
+            "Replan the affected stages for CPU without changing their module defaults or mutating the current recipe."
         ),
         steps=[
             "create a new explicit recipe with CPU resources/stage alternatives",
@@ -335,11 +323,7 @@ def _cpu_choice(
 
 def _ctc_choice(requirements: list[StageEnvironmentRequirement]) -> dict[str, Any] | None:
     eligible = sorted(
-        {
-            req.stage
-            for req in requirements
-            if req.stage in {"NeMoASRAlignerStage", "SplitASRAlignJoinStage"}
-        }
+        {req.stage for req in requirements if req.stage in {"NeMoASRAlignerStage", "SplitASRAlignJoinStage"}}
     )
     if not eligible:
         return None
@@ -371,9 +355,7 @@ def _choices(
     requirements: list[StageEnvironmentRequirement],
 ) -> list[dict[str, Any]]:
     blocking_codes = [
-        str(issue.get("resolution_key") or issue.get("code"))
-        for issue in issues
-        if issue.get("blocking")
+        str(issue.get("resolution_key") or issue.get("code")) for issue in issues if issue.get("blocking")
     ]
     out: list[dict[str, Any]] = []
     by_id: dict[str, dict[str, Any]] = {}
@@ -415,8 +397,7 @@ def _recommended(choices: list[dict[str, Any]]) -> str | None:
     viable = [
         option
         for option in choices
-        if option.get("availability") == "available"
-        and not option.get("remaining_blockers")
+        if option.get("availability") == "available" and not option.get("remaining_blockers")
     ]
     for option in viable:
         if option.get("recommended"):
@@ -445,22 +426,13 @@ def environment_preflight(  # noqa: C901, PLR0912, PLR0915 - one auditable decis
     checks = _health_checks(report)
     requirements = _execution_requirements(stages)
     stage_names = sorted({req.stage for req in requirements})
-    gpu_users = [req for req in requirements if req.uses_gpu]
     gpu_needs = [req for req in requirements if req.needs_gpu]
     ffmpeg_users = [req for req in requirements if req.requires_ffmpeg]
-    disk_users = [
-        req for req in requirements
-        if req.writes_to_disk or req.requires_internet_first_run
-    ]
+    disk_users = [req for req in requirements if req.writes_to_disk or req.requires_internet_first_run]
     issues: list[dict[str, Any]] = []
 
     worker = checks.get("worker_env")
-    if (
-        stage_names
-        and execution_target == "local"
-        and worker
-        and worker.get("status") == "fail"
-    ):
+    if stage_names and execution_target == "local" and worker and worker.get("status") == "fail":
         issues.append(
             _issue(
                 "worker_env_mismatch",
@@ -472,12 +444,7 @@ def environment_preflight(  # noqa: C901, PLR0912, PLR0915 - one auditable decis
                 options=_option_dicts(worker),
             )
         )
-    elif (
-        stage_names
-        and execution_target == "local"
-        and worker
-        and worker.get("status") == "warn"
-    ):
+    elif stage_names and execution_target == "local" and worker and worker.get("status") == "warn":
         issues.append(
             _issue(
                 "worker_env_unverified",
@@ -503,10 +470,7 @@ def environment_preflight(  # noqa: C901, PLR0912, PLR0915 - one auditable decis
             reverify = gpu_status in {"possibly_masked", "unknown"}
             if gpu_status == "possibly_masked":
                 code = "gpu_possibly_masked"
-                finding = str(
-                    gpu.get("finding")
-                    or "a GPU is likely present but not reachable from this process"
-                )
+                finding = str(gpu.get("finding") or "a GPU is likely present but not reachable from this process")
                 impact = (
                     "GPU-required stages cannot be probed here, but this is NOT a hardware "
                     "absence (a sandbox/container is blocking /dev/nvidia*, or CUDA_VISIBLE_DEVICES "
@@ -585,18 +549,12 @@ def environment_preflight(  # noqa: C901, PLR0912, PLR0915 - one auditable decis
                                     "if it fails, diagnose the exact CUDA/runtime signature",
                                 ],
                                 recommended=True,
-                                applies_to=[
-                                    req.stage
-                                    for req in other_gpu_users
-                                ],
+                                applies_to=[req.stage for req in other_gpu_users],
                             ).to_dict()
                         ],
                     )
                 )
-        elif gpu_needs and (
-            not env_data.get("cuda_runtime_version")
-            or not env_data.get("cuda_driver_max_version")
-        ):
+        elif gpu_needs and (not env_data.get("cuda_runtime_version") or not env_data.get("cuda_driver_max_version")):
             cuda = checks.get("cuda_driver_toolkit") or {}
             issues.append(
                 _issue(
@@ -611,11 +569,7 @@ def environment_preflight(  # noqa: C901, PLR0912, PLR0915 - one auditable decis
                 )
             )
     elif requirements:
-        target_label = (
-            "external Ray workers"
-            if execution_target == "external_ray"
-            else "the caller-supplied executor"
-        )
+        target_label = "external Ray workers" if execution_target == "external_ray" else "the caller-supplied executor"
         issues.append(
             _issue(
                 (
@@ -645,11 +599,7 @@ def environment_preflight(  # noqa: C901, PLR0912, PLR0915 - one auditable decis
             )
         )
 
-    if (
-        execution_target == "local"
-        and ffmpeg_users
-        and not bool(env_data.get("has_ffmpeg"))
-    ):
+    if execution_target == "local" and ffmpeg_users and not bool(env_data.get("has_ffmpeg")):
         ffmpeg = checks.get("ffmpeg") or {}
         issues.append(
             _issue(
@@ -673,10 +623,7 @@ def environment_preflight(  # noqa: C901, PLR0912, PLR0915 - one auditable decis
     if execution_target == "local":
         for req in requirements:
             for secret in req.runtime_secrets:
-                if (
-                    secret not in available_secrets
-                    and secret not in req.satisfied_runtime_secrets
-                ):
+                if secret not in available_secrets and secret not in req.satisfied_runtime_secrets:
                     missing_secret_stages.setdefault(secret, []).append(req.stage)
     for secret, affected in sorted(missing_secret_stages.items()):
         issues.append(
@@ -719,10 +666,7 @@ def environment_preflight(  # noqa: C901, PLR0912, PLR0915 - one auditable decis
             )
         )
 
-    if (
-        execution_target == "local"
-        and not bool(env_data.get("python_supported", True))
-    ):
+    if execution_target == "local" and not bool(env_data.get("python_supported", True)):
         python = checks.get("python") or {}
         issues.append(
             _issue(
@@ -737,11 +681,7 @@ def environment_preflight(  # noqa: C901, PLR0912, PLR0915 - one auditable decis
         )
 
     disk = checks.get("disk") or {}
-    if (
-        execution_target == "local"
-        and disk_users
-        and disk.get("status") == "warn"
-    ):
+    if execution_target == "local" and disk_users and disk.get("status") == "warn":
         issues.append(
             _issue(
                 "disk_capacity",
@@ -781,10 +721,12 @@ def environment_preflight(  # noqa: C901, PLR0912, PLR0915 - one auditable decis
 
     # Future machine-wide FAIL checks default safe: apply only when they say
     # they affect all execution and were not already handled above.
-    handled_sources = {
-        str(issue.get("source_check"))
-        for issue in issues
-    } | {"gpu", "cuda_driver_toolkit", "ffmpeg", "worker_env"}
+    handled_sources = {str(issue.get("source_check")) for issue in issues} | {
+        "gpu",
+        "cuda_driver_toolkit",
+        "ffmpeg",
+        "worker_env",
+    }
     for check_id, check in checks.items():
         if (
             check.get("status") == "fail"
@@ -821,11 +763,7 @@ def environment_preflight(  # noqa: C901, PLR0912, PLR0915 - one auditable decis
         summary = "environment is ready for the selected recipe"
     recommended = _recommended(choices)
     label = next(
-        (
-            str(option.get("label"))
-            for option in choices
-            if option.get("id") == recommended
-        ),
+        (str(option.get("label")) for option in choices if option.get("id") == recommended),
         "",
     )
     question = ""
@@ -856,11 +794,7 @@ def environment_preflight(  # noqa: C901, PLR0912, PLR0915 - one auditable decis
         ignored_machine_checks=sorted(
             check_id
             for check_id, check in checks.items()
-            if check.get("status") != "ok"
-            and check_id not in {
-                str(issue.get("source_check"))
-                for issue in issues
-            }
+            if check.get("status") != "ok" and check_id not in {str(issue.get("source_check")) for issue in issues}
         ),
     ).to_dict()
 
@@ -874,11 +808,7 @@ def verdict_issues(decision: dict[str, Any]) -> list[Issue]:
         affected = list(finding.get("affected_stages") or [])
         recommended = str(decision.get("recommended") or "")
         option = next(
-            (
-                item
-                for item in decision.get("choices", [])
-                if item.get("id") == recommended
-            ),
+            (item for item in decision.get("choices", []) if item.get("id") == recommended),
             None,
         )
         fix = (
@@ -903,7 +833,7 @@ def _safe_error_text(error: str) -> str:
     return redact_secret_text(str(error or "")[:_SAFE_ERROR_LIMIT])
 
 
-def diagnose_failure(  # noqa: C901, PLR0912 - explicit taxonomy and applicability branches
+def diagnose_failure(  # noqa: C901, PLR0913 - explicit taxonomy and applicability branches
     error: str,
     *,
     stages: list[Any] | None = None,
@@ -935,7 +865,8 @@ def diagnose_failure(  # noqa: C901, PLR0912 - explicit taxonomy and applicabili
     asr_runtime_stages = {
         req.stage
         for req in requirements
-        if req.stage in {
+        if req.stage
+        in {
             "ASRStage",
             "NeMoASRAlignerStage",
             "SplitASRAlignJoinStage",
@@ -948,17 +879,12 @@ def diagnose_failure(  # noqa: C901, PLR0912 - explicit taxonomy and applicabili
         failure = {
             **failure,
             "code": "cuda_runtime_jit_failure",
-            "likely_cause": (
-                "a runtime-compiled CUDA/PTX kernel is incompatible with the "
-                "active driver/toolkit path"
-            ),
+            "likely_cause": ("a runtime-compiled CUDA/PTX kernel is incompatible with the active driver/toolkit path"),
             "auto_fix": (
-                "run `doctor --json` in the same execution context and choose "
-                "a supported driver/framework combination"
+                "run `doctor --json` in the same execution context and choose a supported driver/framework combination"
             ),
             "user_guidance": (
-                "inspect the affected non-ASR stage and CUDA evidence; do not "
-                "apply an ASR decoder workaround"
+                "inspect the affected non-ASR stage and CUDA evidence; do not apply an ASR decoder workaround"
             ),
         }
         code = "cuda_runtime_jit_failure"
@@ -1002,10 +928,7 @@ def diagnose_failure(  # noqa: C901, PLR0912 - explicit taxonomy and applicabili
                     ).to_dict()
                 )
             ctc = _ctc_choice(requirements)
-            if ctc is not None and not any(
-                item.get("id") == ctc.get("id")
-                for item in options
-            ):
+            if ctc is not None and not any(item.get("id") == ctc.get("id") for item in options):
                 options.append(ctc)
         elif auto_fix or guidance:
             kind: Literal[
@@ -1038,27 +961,17 @@ def diagnose_failure(  # noqa: C901, PLR0912 - explicit taxonomy and applicabili
     deduped: list[dict[str, Any]] = []
     seen: set[str] = set()
     safe_attempted_actions = [
-        _safe_error_text(str(action))
-        for action in (attempted_actions or [])
-        if str(action).strip()
+        _safe_error_text(str(action)) for action in (attempted_actions or []) if str(action).strip()
     ]
-    attempted = {
-        action.strip().lower()
-        for action in safe_attempted_actions
-    }
+    attempted = {action.strip().lower() for action in safe_attempted_actions}
     for option in options:
         option_id = str(option.get("id") or "")
         if option_id and option_id not in seen:
             item = dict(option)
-            item["remaining_blockers"] = sorted(
-                preflight_blockers - set(item.get("resolves") or [])
-            )
+            item["remaining_blockers"] = sorted(preflight_blockers - set(item.get("resolves") or []))
             if item["remaining_blockers"]:
                 item["recommended"] = False
-            if (
-                option_id.lower() in attempted
-                or str(item.get("label") or "").strip().lower() in attempted
-            ):
+            if option_id.lower() in attempted or str(item.get("label") or "").strip().lower() in attempted:
                 item["availability"] = "unavailable"
                 item["reason"] = "the user reports this action was already attempted"
                 item["recommended"] = False

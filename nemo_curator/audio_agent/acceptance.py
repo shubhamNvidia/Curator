@@ -142,7 +142,7 @@ def expected_roles_from_criteria(criteria: list[AcceptanceCriterion]) -> list[st
 # --------------------------------------------------------------------------- #
 # verification
 # --------------------------------------------------------------------------- #
-def verify(
+def verify(  # noqa: C901, PLR0912, PLR0915
     criteria: list[AcceptanceCriterion],
     evidence: dict[str, Any],
     *,
@@ -178,7 +178,7 @@ def verify(
             return set()
         if isinstance(raw, str) or not isinstance(raw, (list, tuple, set)):
             msg = f"evidence.{key} must be a collection of strings, got {type(raw).__name__}"
-            raise ValueError(msg)
+            raise ValueError(msg)  # noqa: TRY004
         if any(not isinstance(value, str) for value in raw):
             msg = f"evidence.{key} must contain only strings"
             raise ValueError(msg)
@@ -195,12 +195,8 @@ def verify(
     raw_per_item = ev.get("per_item") or []
     if not isinstance(raw_per_item, list):
         msg = f"evidence.per_item must be a list of mappings, got {type(raw_per_item).__name__}"
-        raise ValueError(msg)
-    bad_rows = [
-        f"#{i} ({type(row).__name__})"
-        for i, row in enumerate(raw_per_item)
-        if not isinstance(row, dict)
-    ]
+        raise ValueError(msg)  # noqa: TRY004
+    bad_rows = [f"#{i} ({type(row).__name__})" for i, row in enumerate(raw_per_item) if not isinstance(row, dict)]
     if bad_rows:
         msg = f"evidence.per_item entries must be mappings, got {', '.join(bad_rows)}"
         raise ValueError(msg)
@@ -246,7 +242,9 @@ def verify(
     honesty = honesty_review(frozen_criteria, criteria) if frozen_criteria is not None else []
     if honesty:
         overall = "not_met"  # a relaxed/dropped 'must' bar cannot be declared met
-    return AcceptanceReport(overall=overall, criteria=results, verdict=_summary(results, overall, honesty), honesty=honesty)
+    return AcceptanceReport(
+        overall=overall, criteria=results, verdict=_summary(results, overall, honesty), honesty=honesty
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -255,9 +253,7 @@ def verify(
 _STRICTER_WHEN = {">=": "higher", ">": "higher", "<=": "lower", "<": "lower"}
 
 
-def honesty_review(
-    frozen: list[AcceptanceCriterion], used: list[AcceptanceCriterion]
-) -> list[dict[str, Any]]:
+def honesty_review(frozen: list[AcceptanceCriterion], used: list[AcceptanceCriterion]) -> list[dict[str, Any]]:
     """Goalpost-moving violations: a confirmed ``must`` that is dropped, downgraded,
     or relaxed in the criteria actually verified. Empty when ``used`` honors ``frozen``.
     """
@@ -268,13 +264,27 @@ def honesty_review(
             continue
         uc = used_by_id.get(fc.id)
         if uc is None:
-            out.append({"code": "must_dropped", "id": fc.id, "message": f"confirmed must-criterion {fc.id!r} is missing from the verified set"})
+            out.append(
+                {
+                    "code": "must_dropped",
+                    "id": fc.id,
+                    "message": f"confirmed must-criterion {fc.id!r} is missing from the verified set",
+                }
+            )
         elif uc.severity != "must":
-            out.append({"code": "must_downgraded", "id": fc.id, "message": f"must-criterion {fc.id!r} downgraded to {uc.severity!r}"})
+            out.append(
+                {
+                    "code": "must_downgraded",
+                    "id": fc.id,
+                    "message": f"must-criterion {fc.id!r} downgraded to {uc.severity!r}",
+                }
+            )
         else:
             reason = _weakened_reason(fc, uc)
             if reason:
-                out.append({"code": "must_relaxed", "id": fc.id, "message": f"must-criterion {fc.id!r} relaxed: {reason}"})
+                out.append(
+                    {"code": "must_relaxed", "id": fc.id, "message": f"must-criterion {fc.id!r} relaxed: {reason}"}
+                )
     return out
 
 
@@ -322,35 +332,20 @@ def _weakened_reason(  # noqa: PLR0911 - explicit comparison outcomes aid audita
                 else None
             )
         if used_tol > frozen_tol:
-            return (
-                f"tolerance {frozen['tolerance']!r} -> {used['tolerance']!r} "
-                "(wider/easier to satisfy)"
-            )
+            return f"tolerance {frozen['tolerance']!r} -> {used['tolerance']!r} (wider/easier to satisfy)"
         return None
 
     stricter = _STRICTER_WHEN.get(op)
     if stricter is None:
-        return (
-            f"value {frozen_value!r} -> {used_value!r}"
-            if frozen_value != used_value
-            else None
-        )
+        return f"value {frozen_value!r} -> {used_value!r}" if frozen_value != used_value else None
     # Strict schema validation guarantees numeric values for deterministic metric
     # criteria, but keep this helper defensive for manually constructed objects.
     try:
         frozen_num, used_num = float(frozen_value), float(used_value)
     except (TypeError, ValueError):
-        return (
-            f"value {frozen_value!r} -> {used_value!r}"
-            if frozen_value != used_value
-            else None
-        )
+        return f"value {frozen_value!r} -> {used_value!r}" if frozen_value != used_value else None
     easier = used_num < frozen_num if stricter == "higher" else used_num > frozen_num
-    return (
-        f"target {frozen_value} -> {used_value} (easier to satisfy)"
-        if easier
-        else None
-    )
+    return f"target {frozen_value} -> {used_value} (easier to satisfy)" if easier else None
 
 
 def _semantic_contract(c: AcceptanceCriterion) -> dict[str, Any]:
@@ -367,11 +362,7 @@ def _semantic_contract(c: AcceptanceCriterion) -> dict[str, Any]:
         op = check.get("op")
     method = check.get("method")
     if method is None:
-        method = (
-            "reviewer_judgment"
-            if c.type in {"semantic_fit", "honesty"}
-            else "deterministic"
-        )
+        method = "reviewer_judgment" if c.type in {"semantic_fit", "honesty"} else "deterministic"
     return {
         "type": c.type,
         "kind": c.kind or "absolute",
@@ -459,7 +450,9 @@ def _verify_one(  # noqa: C901, PLR0911, PLR0912, PLR0913 - one honest branch pe
                 )
             frac = 100.0 * retained_count / input_count_value
             ok = _cmp(frac, op or "~=", _num(val), tol)
-            return result("met" if ok else "not_met", evidence=f"retained {retained}/{input_count} = {frac:.1f}% vs {op} {val}")
+            return result(
+                "met" if ok else "not_met", evidence=f"retained {retained}/{input_count} = {frac:.1f}% vs {op} {val}"
+            )
         ok = _cmp(_num(retained_count), op, _num(val), tol)
         return result("met" if ok else "not_met", evidence=f"retained={retained} vs {op} {val}")
 
@@ -488,26 +481,19 @@ def _verify_one(  # noqa: C901, PLR0911, PLR0912, PLR0913 - one honest branch pe
             if expected_output_rows is not None and expected_rows is None:
                 return result(
                     "unverifiable",
-                    note=(
-                        "invalid expected_output_rows evidence: "
-                        f"{expected_output_rows!r}"
-                    ),
+                    note=(f"invalid expected_output_rows evidence: {expected_output_rows!r}"),
                 )
             if expected_rows is not None and len(per_item) != expected_rows:
                 return result(
                     "not_met",
                     evidence=(
-                        f"per-item evidence has {len(per_item)} row(s), but "
-                        f"expected_output_rows={expected_rows}"
+                        f"per-item evidence has {len(per_item)} row(s), but expected_output_rows={expected_rows}"
                     ),
                 )
             if len(vals) != len(per_item):
                 return result(
                     "not_met",
-                    evidence=(
-                        f"{field!r} present on only {len(vals)}/{len(per_item)} "
-                        "per-item evidence row(s)"
-                    ),
+                    evidence=(f"{field!r} present on only {len(vals)}/{len(per_item)} per-item evidence row(s)"),
                 )
             numbers = [_finite_number(item) for item in vals]
             if any(number is None for number in numbers):
@@ -515,15 +501,10 @@ def _verify_one(  # noqa: C901, PLR0911, PLR0912, PLR0913 - one honest branch pe
                 return result(
                     "not_met",
                     evidence=(
-                        f"{field!r} is a finite JSON number on only "
-                        f"{valid}/{len(vals)} per-item evidence row(s)"
+                        f"{field!r} is a finite JSON number on only {valid}/{len(vals)} per-item evidence row(s)"
                     ),
                 )
-            ok = all(
-                _cmp(number, op, float(val), tol)
-                for number in numbers
-                if number is not None
-            )
+            ok = all(_cmp(number, op, float(val), tol) for number in numbers if number is not None)
             return result("met" if ok else "not_met", evidence=f"{len(vals)} items vs {op} {val}")
         if field in metrics:
             number = _finite_number(metrics[field])
@@ -540,7 +521,7 @@ def _verify_one(  # noqa: C901, PLR0911, PLR0912, PLR0913 - one honest branch pe
     return result("unverifiable", note=f"criterion type {c.type!r} is not deterministically checkable (reviewer)")
 
 
-def _per_item_scan_result(  # noqa: C901, PLR0911, PLR0912 - evidence states stay explicit
+def _per_item_scan_result(  # noqa: C901, PLR0911, PLR0912, PLR0913 - evidence states stay explicit
     field: str,
     op: str,
     target: Any,  # noqa: ANN401
@@ -565,9 +546,7 @@ def _per_item_scan_result(  # noqa: C901, PLR0911, PLR0912 - evidence states sta
             "",
             f"terminal output scan was {status}; {read_errors} file(s) could not be read",
         )
-    invalid = int(output_scan.get("malformed_rows") or 0) + int(
-        output_scan.get("blank_rows") or 0
-    )
+    invalid = int(output_scan.get("malformed_rows") or 0) + int(output_scan.get("blank_rows") or 0)
     if invalid:
         return (
             "not_met",
@@ -683,11 +662,7 @@ def _num(v: Any) -> float:  # noqa: ANN401
 
 def _finite_number(value: Any) -> float | None:  # noqa: ANN401
     """A finite JSON-style number; booleans and numeric strings are evidence errors."""
-    if (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(float(value))
-    ):
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)):
         return float(value)
     return None
 
@@ -804,11 +779,7 @@ def _completeness(  # noqa: C901, PLR0911, PLR0912, PLR0913 - explicit evidence-
         present = int(stats.get("present") or 0)
         filled = int(stats.get("non_empty") or 0)
         if present != rows or filled != rows:
-            where = (
-                "EMPTY in every row"
-                if filled == 0
-                else f"only {filled}/{rows} row(s) carry a value"
-            )
+            where = "EMPTY in every row" if filled == 0 else f"only {filled}/{rows} row(s) carry a value"
             return (
                 "not_met",
                 f"{field!r} produced but {where} (of {rows} read)",
@@ -843,17 +814,9 @@ def _completeness(  # noqa: C901, PLR0911, PLR0912, PLR0913 - explicit evidence-
                 f"output role {target!r} could not be mapped to a serialized evidence field",
             )
         present = sum(1 for row in per_item if field in row)
-        filled = sum(
-            1
-            for row in per_item
-            if field in row and not _is_empty(row[field])
-        )
+        filled = sum(1 for row in per_item if field in row and not _is_empty(row[field]))
         if present != rows or filled != rows:
-            where = (
-                "EMPTY in every row"
-                if filled == 0
-                else f"only {filled}/{rows} row(s) carry a value"
-            )
+            where = "EMPTY in every row" if filled == 0 else f"only {filled}/{rows} row(s) carry a value"
             return (
                 "not_met",
                 f"{field!r} produced but {where} (of {rows} read)",
@@ -960,7 +923,9 @@ def _summary(results: list[CriterionResult], overall: str, honesty: list[dict[st
     for h in honesty or []:
         lines.append(f"  ! honesty[{h.get('code')}]: {h.get('message')}")
     if honesty:
-        lines.append("BLOCKED: the verified contract was weaker than what the user confirmed; re-confirm a new contract instead of relaxing a 'must'.")
+        lines.append(
+            "BLOCKED: the verified contract was weaker than what the user confirmed; re-confirm a new contract instead of relaxing a 'must'."
+        )
     if overall == "not_met" and not honesty:
         lines.append(
             "options: adjust the recipe/thresholds and re-run, provide missing references, or relax a 'nice' "

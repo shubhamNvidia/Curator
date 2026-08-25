@@ -252,4 +252,3 @@ class TestNestedAndFanoutAgree:
         nested_bounds = [(seg["start_ms"], seg["end_ms"]) for seg in nested_segments]
         fanout_bounds = [(child.data["start_ms"], child.data["end_ms"]) for child in children]
         assert nested_bounds == fanout_bounds == [(0, 400), (400, 900)], "only the packaging may differ"
-

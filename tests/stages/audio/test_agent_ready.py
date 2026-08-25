@@ -31,7 +31,11 @@ from nemo_curator.stages.audio.preprocessing.concatenation import SegmentConcate
 from nemo_curator.stages.audio.preprocessing.mono_conversion import MonoConversionStage
 from nemo_curator.stages.audio.tagging.merge_alignment_diarization import MergeAlignmentDiarizationStage
 from nemo_curator.stages.audio.tagging.prepare_module_segments import PrepareModuleSegmentsStage
-from nemo_curator.stages.audio.tagging.split import JoinSplitAudioMetadataStage, SplitASRAlignJoinStage, SplitLongAudioStage
+from nemo_curator.stages.audio.tagging.split import (
+    JoinSplitAudioMetadataStage,
+    SplitASRAlignJoinStage,
+    SplitLongAudioStage,
+)
 from nemo_curator.tasks import AudioTask
 
 
@@ -56,7 +60,9 @@ def test_residency_helpers_accept_file_waveform_and_custom_keys(tmp_path) -> Non
         "wf": torch.stack([torch.ones(16), torch.zeros(16)]),
         "sr": 8000,
     }
-    temp_path = resolve_audio_path(item, residency="waveform", waveform_key="wf", sample_rate_key="sr", temp_dir=str(tmp_path))
+    temp_path = resolve_audio_path(
+        item, residency="waveform", waveform_key="wf", sample_rate_key="sr", temp_dir=str(tmp_path)
+    )
     assert temp_path is not None
     info = sf.info(temp_path)
     assert info.samplerate == 8000

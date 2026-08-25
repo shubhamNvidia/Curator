@@ -16,10 +16,10 @@ import hashlib
 import os
 import shutil
 import tempfile
-from types import SimpleNamespace
-from typing import Any
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import soundfile as sf
@@ -187,4 +187,3 @@ class TestSkippingExistingOutput:
         for _ in range(2):
             mem_stage.process(AudioTask(dataset_name="t", data={"audio_filepath": str(source), "audio_item_id": "m"}))
         assert calls["n"] == 2, "an in-memory run has no durable output to skip"
-

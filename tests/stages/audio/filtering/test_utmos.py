@@ -137,7 +137,7 @@ class TestUTMOSFilterStage:
         stage = UTMOSFilterStage(mos_threshold=3.0)
         call_count = {"n": 0}
 
-        def model_side_effect(_waveform: torch.Tensor, sr: int = 16000) -> torch.Tensor:  # noqa: ARG001
+        def model_side_effect(_waveform: torch.Tensor, sr: int = 16000) -> torch.Tensor:
             call_count["n"] += 1
             return torch.tensor([4.0 if call_count["n"] % 2 == 1 else 2.0])
 
@@ -229,4 +229,3 @@ class TestSegmentModeFiltering:
         assert isinstance(out, AudioTask)
         assert [seg["id"] for seg in out.data["agent_segments"]] == [0, 2], "only the passing segments survive"
         assert [seg["agent_utmos"] for seg in out.data["agent_segments"]] == pytest.approx([4.2, 4.1])
-

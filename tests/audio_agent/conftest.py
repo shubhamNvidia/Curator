@@ -58,4 +58,4 @@ import pytest
 @pytest.fixture(scope="session", autouse=True)
 def shared_ray_cluster() -> Iterator[str]:
     """No-op override of the repo-root Ray fixture: no cluster is started for this directory."""
-    yield "audio_agent-unit-tests://no-ray"
+    return "audio_agent-unit-tests://no-ray"

@@ -21,8 +21,8 @@ have produced, or refuses and says which file or stage stopped it. See
 
 from __future__ import annotations
 
-import os
 import json
+import os
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -78,7 +78,7 @@ def _publish(
     dataset_key: str,
     rows: list[dict[str, Any]],
     coverage: dict[str, str] | None,
-    **kw: Any,  # noqa: ANN401 - forwards arbitrary Artifact fields on purpose
+    **kw: Any,
 ) -> artifacts.Artifact:
     """Publish one step of ``rec`` with real output rows and (optionally) its coverage.
 
@@ -231,7 +231,10 @@ class TestNarrowingIsNotInvisible:
         rec = Recipe.from_dict(
             {
                 "stages": [
-                    {"ref": "CreateInitialManifestAudioFolderStage", "params": {"data_dir": "/tmp/x", "max_samples": 10}},
+                    {
+                        "ref": "CreateInitialManifestAudioFolderStage",
+                        "params": {"data_dir": "/tmp/x", "max_samples": 10},
+                    },
                     {"ref": "GetAudioDurationStage", "params": {}},
                 ]
             }
@@ -277,7 +280,7 @@ class TestInventory:
         _corpus(tmp_path / "audio", ("a.wav", "b.wav"))
         real = profiler.os.stat
 
-        def flaky(path: str, *a: Any, **kw: Any) -> Any:  # noqa: ANN401
+        def flaky(path: str, *a: Any, **kw: Any) -> Any:
             if str(path).endswith("b.wav"):
                 msg = "no"
                 raise OSError(msg)
@@ -483,7 +486,10 @@ class TestRegion:
                         },
                     },
                     {"ref": "GetPairwiseWerStage", "params": {}},
-                    {"ref": "PreserveByValueStage", "params": {"input_value_key": "wer", "target_value": 20.0, "operator": "le"}},
+                    {
+                        "ref": "PreserveByValueStage",
+                        "params": {"input_value_key": "wer", "target_value": 20.0, "operator": "le"},
+                    },
                     {"ref": "ManifestWriterStage", "params": {"output_path": str(tmp_path / "out.jsonl")}},
                 ]
             }
@@ -714,9 +720,7 @@ class TestPlan:
         from nemo_curator.audio_agent import code_identity
 
         rec, _ = _pipeline(tmp_path, tmp_path / "m.jsonl")
-        monkeypatch.setattr(
-            code_identity, "unreadable_stages", lambda _refs: ["GetAudioDurationStage"]
-        )
+        monkeypatch.setattr(code_identity, "unreadable_stages", lambda _refs: ["GetAudioDurationStage"])
 
         decision = delta.plan(rec, dataset_key=_KEY, inventory={"a.wav": "16|1"}, inventory_root=str(tmp_path))
 
@@ -895,9 +899,7 @@ class TestPlan:
         unfrozen, _ = _pipeline(tmp_path, tmp_path / "m.jsonl")
         unfrozen.semantic_hash = None
 
-        decision = delta.plan(
-            unfrozen, dataset_key=_KEY, inventory={"a.wav": "1"}, inventory_root=str(tmp_path)
-        )
+        decision = delta.plan(unfrozen, dataset_key=_KEY, inventory={"a.wav": "1"}, inventory_root=str(tmp_path))
         assert decision.status == "none"
         assert "no prior run" in decision.reason
         assert "not-mine.jsonl" not in decision.reason

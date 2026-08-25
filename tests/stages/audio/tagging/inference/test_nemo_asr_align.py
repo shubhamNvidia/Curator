@@ -54,7 +54,7 @@ class TestNeMoASRAlignerStage:
         assert decoding_cfg.rnnt_timestamp_type == "char"
         assert decoding_cfg.greedy.use_cuda_graph_decoder is False
 
-    def test_process_full_audio(self, tmpdir: Any, wav_filepath: Path) -> None:  # noqa: ANN401
+    def test_process_full_audio(self, tmpdir: Any, wav_filepath: Path) -> None:
         stage = NeMoASRAlignerStage(
             model_name="nvidia/stt_en_fastconformer_ctc_large",
             is_fastconformer=True,

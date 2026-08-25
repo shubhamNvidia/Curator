@@ -39,9 +39,7 @@ def _validate(stages: list[dict], **kw: object) -> dict:
 
 def _codes(verdict: dict) -> set[str]:
     return {
-        issue["code"]
-        for pool in ("issues", "card_violations", "gate_flags")
-        for issue in (verdict.get(pool) or [])
+        issue["code"] for pool in ("issues", "card_violations", "gate_flags") for issue in (verdict.get(pool) or [])
     }
 
 
@@ -79,8 +77,7 @@ class TestValidateContract:
         duration_edge = next(
             edge
             for edge in r["semantic_review"]["lineage"]
-            if edge["consumer"]["stage"] == "PreserveByValueStage"
-            and edge["read"]["key"] == "duration"
+            if edge["consumer"]["stage"] == "PreserveByValueStage" and edge["read"]["key"] == "duration"
         )
         assert duration_edge["latest_upstream_producer"]["stage"] == "GetAudioDurationStage"
         expected_hash = aa.Recipe.from_dict(
@@ -131,11 +128,7 @@ class TestDataFlowChecks:
         r = _validate([_READER, {"ref": "AudioToDocumentStage", "params": {}}, _WRITER])
         assert "task_type_mismatch" in _codes(r)
         assert r.get("status") == "fail"
-        issue = next(
-            issue
-            for issue in r["issues"]
-            if issue["code"] == "task_type_mismatch"
-        )
+        issue = next(issue for issue in r["issues"] if issue["code"] == "task_type_mismatch")
         assert "DocumentBatchJsonlWriterStage" in issue["fix"]
         assert "insert a converter (e.g. AudioToDocumentStage)" not in issue["fix"]
 
@@ -310,7 +303,12 @@ class TestAcceptanceContractBinding:
 class TestDiarizationContinuity:
     def test_vad_before_diarizer_without_rejoin_flagged(self) -> None:
         r = _validate(
-            [_READER, {"ref": "VADSegmentationStage", "params": {}}, {"ref": "InferenceSortformerStage", "params": {}}, _WRITER]
+            [
+                _READER,
+                {"ref": "VADSegmentationStage", "params": {}},
+                {"ref": "InferenceSortformerStage", "params": {}},
+                _WRITER,
+            ]
         )
         assert "diarization_needs_continuous_audio" in _codes(r)
 
@@ -445,9 +443,7 @@ class TestSourceSchemaHonesty:
         verdict = validate(self._recipe(manifest), data=manifest)
         assert "source_schema_mismatch" not in [i["code"] for i in verdict["issues"]]
 
-    def test_the_recipes_own_manifest_is_evidence_even_without_an_explicit_data_argument(
-        self, tmp_path
-    ) -> None:
+    def test_the_recipes_own_manifest_is_evidence_even_without_an_explicit_data_argument(self, tmp_path) -> None:
         """validate binds and profiles the source named in the recipe, so the mismatch is
         caught whether or not the caller passes ``data``."""
         manifest = self._write(tmp_path, "cv.jsonl", {"path": "/a.wav"})

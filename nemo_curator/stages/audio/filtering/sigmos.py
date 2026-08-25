@@ -466,8 +466,7 @@ class SIGMOSFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         s = self._scores_from_prediction(score_data)
         if not all(math.isfinite(value) for value in s.values()):
             logger.warning(
-                f"[{task.task_id}] SIGMOS returned at least one non-finite dimension; "
-                "treating item as unscorable"
+                f"[{task.task_id}] SIGMOS returned at least one non-finite dimension; treating item as unscorable"
             )
             return None
         passed, fail_reasons = self._check_thresholds(s)

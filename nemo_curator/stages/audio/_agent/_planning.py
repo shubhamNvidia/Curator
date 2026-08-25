@@ -245,7 +245,10 @@ def _gate_issues(
     if available_gpus is not None and contract.gates.requires_gpu and available_gpus <= 0:
         out.append(
             PipelineIssue(
-                site.index, site.name, "warning", "gpu_unavailable",
+                site.index,
+                site.name,
+                "warning",
+                "gpu_unavailable",
                 "declares requires_gpu but available_gpus <= 0",
             )
         )
@@ -254,7 +257,10 @@ def _gate_issues(
     if contract.gates.requires_serializable_input and tensor_resident:
         out.append(
             PipelineIssue(
-                site.index, site.name, "error", "tensor_into_sink",
+                site.index,
+                site.name,
+                "error",
+                "tensor_into_sink",
                 "a resident tensor/audio blob from an upstream stage reaches this "
                 "serialize-as-JSON sink; it WILL fail at json.dumps — drop the tensor "
                 "upstream (e.g. keep_segment_waveform_in_task=False) or route through "
@@ -276,7 +282,10 @@ def _ambiguity_issues(
         others = ", ".join(f"{k!r} from {p}" for k, p in rivals)
         out.append(
             PipelineIssue(
-                site.index, site.name, "warning", "ambiguous_default_key",
+                site.index,
+                site.name,
+                "warning",
+                "ambiguous_default_key",
                 f"reads {key!r} (the default for {attr}), but upstream also produced {others}. "
                 f"The default silently picks {key!r} "
                 f"({key_producer.get(key, 'the source manifest')}); if you meant the other, "
@@ -426,7 +435,10 @@ def _read_issues(walk: _Walk, site: _Site, contract: StageContract) -> list[Pipe
         if dangling:
             out.append(
                 PipelineIssue(
-                    site.index, site.name, "warning", "dangling_key",
+                    site.index,
+                    site.name,
+                    "warning",
+                    "dangling_key",
                     f"reads key(s) {sorted(dangling)} satisfied by role but not produced "
                     f"upstream under that key value nor seeded (renamed producer key?); "
                     f"available keys: {sorted(walk.available_keys)}",
@@ -446,7 +458,10 @@ def _read_issues(walk: _Walk, site: _Site, contract: StageContract) -> list[Pipe
         )
         return [
             PipelineIssue(
-                site.index, site.name, "warning", "unsatisfied_reads_in_composite",
+                site.index,
+                site.name,
+                "warning",
+                "unsatisfied_reads_in_composite",
                 f"this stage runs inside {composite_name} and requires "
                 f"{_requirement_str(contract, walk.available)}"
                 + (f" (key(s) {sorted(missing)})" if missing else "")
@@ -457,7 +472,10 @@ def _read_issues(walk: _Walk, site: _Site, contract: StageContract) -> list[Pipe
     if walk.past_composite:
         return [
             PipelineIssue(
-                site.index, site.name, "warning", "unsatisfied_reads_after_composite",
+                site.index,
+                site.name,
+                "warning",
+                "unsatisfied_reads_after_composite",
                 f"requires {_requirement_str(contract, walk.available)} "
                 f"not visibly produced — but an upstream composite hides its writes; "
                 f"decompose it to validate this read",
@@ -469,14 +487,20 @@ def _read_issues(walk: _Walk, site: _Site, contract: StageContract) -> list[Pipe
     if removed_hit:
         return [
             PipelineIssue(
-                site.index, site.name, "error", "key_removed_upstream",
+                site.index,
+                site.name,
+                "error",
+                "key_removed_upstream",
                 f"reads role(s) {sorted(removed_hit)} that an upstream stage removed "
                 f"(removes_keys) and no stage re-produced; available so far: {sorted(walk.available)}",
             )
         ]
     return [
         PipelineIssue(
-            site.index, site.name, "error", "unsatisfied_reads",
+            site.index,
+            site.name,
+            "error",
+            "unsatisfied_reads",
             f"requires {_requirement_str(contract, walk.available)} "
             f"not produced upstream; available so far: {sorted(walk.available)}",
         )
@@ -510,16 +534,13 @@ def _advance(walk: _Walk, contract: StageContract, name: str) -> None:
         # returned "unknown", so residency tracked ``_UNNAMED_TENSOR`` instead of the real
         # carrier -- and a downstream stage dropping that carrier still looked resident,
         # raising a spurious ``tensor_into_sink`` on a recipe that had cleaned up correctly.
-        carriers = {
-            k for k in written
-            if contract.key_roles.get(k, role_for_value(k)) == _TENSOR_ROLE
-        }
+        carriers = {k for k in written if contract.key_roles.get(k, role_for_value(k)) == _TENSOR_ROLE}
         walk.tensor_keys |= carriers or {_UNNAMED_TENSOR}
     if contract.gates.sanitizes_output:
         walk.tensor_keys.clear()
 
 
-def validate_pipeline(
+def validate_pipeline(  # noqa: C901
     stages: list[Any],
     *,
     initial_roles: set[str] | None = None,
@@ -580,7 +601,10 @@ def validate_pipeline(
         if index in expansion.unrunnable:
             issues.append(
                 PipelineIssue(
-                    index, type(recipe_stage).__name__, "error", "composite_unrunnable",
+                    index,
+                    type(recipe_stage).__name__,
+                    "error",
+                    "composite_unrunnable",
                     f"the executor will refuse this stage: {expansion.unrunnable[index]}",
                 )
             )
@@ -589,7 +613,10 @@ def validate_pipeline(
         if index in opaque:
             issues.append(
                 PipelineIssue(
-                    index, type(recipe_stage).__name__, "warning", "composite",
+                    index,
+                    type(recipe_stage).__name__,
+                    "warning",
+                    "composite",
                     f"composite stage — its data flow could not be resolved ({opaque[index]}), "
                     f"so reads after it cannot be judged by role",
                 )
@@ -599,7 +626,10 @@ def validate_pipeline(
         if index in partly_opaque:
             issues.append(
                 PipelineIssue(
-                    index, type(recipe_stage).__name__, "warning", "composite",
+                    index,
+                    type(recipe_stage).__name__,
+                    "warning",
+                    "composite",
                     f"composite stage — part of it is unreadable ({partly_opaque[index]}), "
                     f"so reads after it cannot be judged by role; its remaining stages are "
                     f"still checked",
@@ -632,7 +662,10 @@ def validate_pipeline(
                 # pre-expansion caution applies: warn, and judge nothing downstream by role.
                 issues.append(
                     PipelineIssue(
-                        site.index, site.name, "warning", "composite",
+                        site.index,
+                        site.name,
+                        "warning",
+                        "composite",
                         "composite stage — decompose before validating its data flow",
                     )
                 )

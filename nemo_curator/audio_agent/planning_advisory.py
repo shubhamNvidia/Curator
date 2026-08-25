@@ -51,17 +51,12 @@ def build_planning_advisories(  # noqa: C901 - each branch removes an unproven a
     exact_producers = {pair.producer_index for pair in exact_pairs}
     advisories: list[dict[str, Any]] = []
 
-    for stage_index, (stage_ref, stage) in enumerate(
-        zip(recipe.stages, configured_stages, strict=True)
-    ):
+    for stage_index, (stage_ref, stage) in enumerate(zip(recipe.stages, configured_stages, strict=True)):
         if stage_ref.ref not in _QUALITY_STAGES or stage_index in exact_producers:
             continue
         card = get_index().card(stage_ref.ref) or {}
         decision = card.get("decision")
-        if (
-            not isinstance(decision, dict)
-            or decision.get("separable_from_producer") is not True
-        ):
+        if not isinstance(decision, dict) or decision.get("separable_from_producer") is not True:
             continue
 
         scope = _explicit_scope(
@@ -94,11 +89,7 @@ def build_planning_advisories(  # noqa: C901 - each branch removes an unproven a
             if file_equivalent
             else None
         )
-        proof = (
-            _checkpoint_proof(alternative, stage_index)
-            if alternative is not None
-            else None
-        )
+        proof = _checkpoint_proof(alternative, stage_index) if alternative is not None else None
         residency_reason = ""
         if proof is None:
             alternative = _file_backed_live_waveform_alternative(
@@ -201,9 +192,7 @@ def _row_independence_advisories(
     from nemo_curator.audio_agent import artifacts as art_mod
 
     advisories: list[dict[str, Any]] = []
-    for index, (stage_ref, stage) in enumerate(
-        zip(recipe.stages, configured_stages, strict=True)
-    ):
+    for index, (stage_ref, stage) in enumerate(zip(recipe.stages, configured_stages, strict=True)):
         if _independence(stage) is not False:
             continue
         # Nothing persists below it, so the truncation costs no reuse that existed.
@@ -281,14 +270,10 @@ def _copy_recipe(recipe: Recipe, stages: list[StageRef]) -> Recipe:
         knowledge_version=recipe.knowledge_version,
         parent_run_id=recipe.parent_run_id,
         checkpoint_decision=(
-            dict(recipe.checkpoint_decision)
-            if isinstance(recipe.checkpoint_decision, dict)
-            else None
+            dict(recipe.checkpoint_decision) if isinstance(recipe.checkpoint_decision, dict) else None
         ),
         planning_preference=(
-            dict(recipe.planning_preference)
-            if isinstance(recipe.planning_preference, dict)
-            else None
+            dict(recipe.planning_preference) if isinstance(recipe.planning_preference, dict) else None
         ),
     )
 
@@ -373,9 +358,7 @@ def _file_input_is_equivalent(
     residency = getattr(stage, "input_residency", None)
     if residency == "file":
         return True
-    if residency != "auto" or not _profile_completely_defines_input_keys(
-        data_profile
-    ):
+    if residency != "auto" or not _profile_completely_defines_input_keys(data_profile):
         return False
     waveform_key = getattr(stage, "waveform_key", None)
     if not isinstance(waveform_key, str) or not waveform_key:
@@ -473,14 +456,10 @@ def _selector_for(  # noqa: C901, PLR0911, PLR0912 - fail closed per card field
         if not threshold_param:
             metrics = card.get("metrics")
             metric_entries = (
-                [entry for entry in metrics.values() if isinstance(entry, dict)]
-                if isinstance(metrics, dict)
-                else []
+                [entry for entry in metrics.values() if isinstance(entry, dict)] if isinstance(metrics, dict) else []
             )
             threshold_params = {
-                entry.get("threshold_param")
-                for entry in metric_entries
-                if entry.get("threshold_param")
+                entry.get("threshold_param") for entry in metric_entries if entry.get("threshold_param")
             }
             if len(threshold_params) != 1:
                 return None
@@ -534,23 +513,19 @@ def _selector_for(  # noqa: C901, PLR0911, PLR0912 - fail closed per card field
     params: dict[str, Any]
     if kind == "scalar" and scope == "task":
         params = {
-            str(selector.get("key_param") or "input_value_key"): conditions[0][
-                "input_value_key"
-            ],
-            str(selector.get("value_param") or "target_value"): conditions[0][
-                "target_value"
-            ],
+            str(selector.get("key_param") or "input_value_key"): conditions[0]["input_value_key"],
+            str(selector.get("value_param") or "target_value"): conditions[0]["target_value"],
             str(selector.get("operator_param") or "operator"): required_operator,
         }
     else:
         params = {
             str(selector.get("conditions_param") or "conditions"): conditions,
         }
-        params[
-            str(selector.get("condition_logic_param") or "condition_logic")
-        ] = selector.get("required_condition_logic", "and")
-    params[str(selector.get("missing_policy_param") or "missing_value_policy")] = (
-        selector.get("required_missing_policy", "drop")
+        params[str(selector.get("condition_logic_param") or "condition_logic")] = selector.get(
+            "required_condition_logic", "and"
+        )
+    params[str(selector.get("missing_policy_param") or "missing_value_policy")] = selector.get(
+        "required_missing_policy", "drop"
     )
     if scope == "segments":
         source_param = str(selector.get("items_key_source_param") or "")
@@ -558,9 +533,9 @@ def _selector_for(  # noqa: C901, PLR0911, PLR0912 - fail closed per card field
         if not isinstance(items_key, str) or not items_key:
             return None
         params[str(selector.get("items_key_param") or "items_key")] = items_key
-        params[
-            str(selector.get("empty_policy_param") or "drop_parent_if_empty")
-        ] = selector.get("required_empty_policy")
+        params[str(selector.get("empty_policy_param") or "drop_parent_if_empty")] = selector.get(
+            "required_empty_policy"
+        )
     return StageRef(ref=selector_ref, params=params)
 
 

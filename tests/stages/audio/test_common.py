@@ -161,18 +161,14 @@ def test_compound_preserve_top_level_truth_tables(
     condition_logic: str,
 ) -> None:
     conditions = [
-        {"input_value_key": f"c{index}", "target_value": True, "operator": "eq"}
-        for index in range(condition_count)
+        {"input_value_key": f"c{index}", "target_value": True, "operator": "eq"} for index in range(condition_count)
     ]
     combinations = list(product([False, True], repeat=condition_count))
     tasks = [
         AudioTask(
             data={
                 "id": combination,
-                **{
-                    f"c{index}": value
-                    for index, value in enumerate(combination)
-                },
+                **{f"c{index}": value for index, value in enumerate(combination)},
             }
         )
         for combination in combinations
@@ -198,17 +194,13 @@ def test_compound_preserve_nested_truth_tables_with_arbitrary_items_key(
     condition_logic: str,
 ) -> None:
     conditions = [
-        {"input_value_key": f"c{index}", "target_value": True, "operator": "eq"}
-        for index in range(condition_count)
+        {"input_value_key": f"c{index}", "target_value": True, "operator": "eq"} for index in range(condition_count)
     ]
     combinations = list(product([False, True], repeat=condition_count))
     children = [
         {
             "id": combination,
-            **{
-                f"c{index}": value
-                for index, value in enumerate(combination)
-            },
+            **{f"c{index}": value for index, value in enumerate(combination)},
         }
         for combination in combinations
     ]
@@ -238,9 +230,7 @@ def test_compound_preserve_condition_logic_defaults_to_and_and_rejects_invalid()
     stage = PreserveByValueConditionsStage(conditions)
 
     assert stage.condition_logic == "and"
-    assert stage.process_batch(
-        [AudioTask(data={"left": True, "right": False})]
-    ) == []
+    assert stage.process_batch([AudioTask(data={"left": True, "right": False})]) == []
     with pytest.raises(ValueError, match="condition_logic must be 'and' or 'or'"):
         PreserveByValueConditionsStage(conditions, condition_logic="xor")
 
@@ -297,9 +287,7 @@ def test_compound_preserve_mapping_form_and_default_missing_error() -> None:
         }
     )
 
-    assert stage.process_batch(
-        [AudioTask(data={"noise": 4.2, "kind": "speech"})]
-    )
+    assert stage.process_batch([AudioTask(data={"noise": 4.2, "kind": "speech"})])
     with pytest.raises(ValueError, match="failed validation"):
         stage.process_batch([AudioTask(data={"noise": 4.2})])
 
@@ -889,9 +877,7 @@ class TestManifestCheckpointStage:
         assert out.read_bytes() == b"retained artifact\n"
         assert not Path(f"{out}._RETRY_OWNER").exists()
 
-    def test_setup_refuses_stale_completion_marker_without_leaving_output(
-        self, tmp_path: Path
-    ) -> None:
+    def test_setup_refuses_stale_completion_marker_without_leaving_output(self, tmp_path: Path) -> None:
         out = tmp_path / "checkpoint.jsonl"
         Path(f"{out}._COMPLETE").write_text("stale", encoding="utf-8")
         checkpoint = ManifestCheckpointStage(output_path=str(out))
@@ -998,6 +984,7 @@ class TestManifestCheckpointStage:
         params = {"output_path": str(tmp_path / "checkpoint.jsonl"), **kwargs}
         with pytest.raises(ValueError, match=message):
             ManifestCheckpointStage(**params)
+
 
 class TestManifestWriterRoundTrip:
     """Round-trip test: write with writer, read back and verify."""

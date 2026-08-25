@@ -56,6 +56,7 @@ _NEVER_PASS_KEYS = frozenset(
     }
 )
 
+
 def _segment_bounds(seg: Any) -> tuple[float, float] | None:  # noqa: ANN401 - shape is the point
     """``(start_sec, end_sec)`` from either segment shape, or ``None`` if unreadable.
 
@@ -344,8 +345,7 @@ class TimestampMapperStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 result = self._build_output_from_diar_and_mappings(item, diar_segments, mappings)
                 if result is None:
                     logger.warning(
-                        f"[TimestampMapper] No overlapping mappings for diar segments in task "
-                        f"{task.task_id}, dropping"
+                        f"[TimestampMapper] No overlapping mappings for diar segments in task {task.task_id}, dropping"
                     )
                     return []
         else:

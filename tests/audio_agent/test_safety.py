@@ -15,7 +15,6 @@
 """Unit tests for the deterministic safety guardrails (nemo_curator.audio_agent._safety)."""
 
 import hashlib
-import hmac
 import json
 import os
 import tempfile
@@ -86,24 +85,16 @@ class TestRedact:
         assert reason.count("<redacted-secret>") == 4
 
     def test_strips_quoted_json_secret_assignments_and_multiword_values(self) -> None:
-        redacted = _safety.redact_secret_text(
-            '{"api_key": "sk-demo-secret", "password": "two words secret"}'
-        )
+        redacted = _safety.redact_secret_text('{"api_key": "sk-demo-secret", "password": "two words secret"}')
         assert "sk-demo-secret" not in redacted
         assert "two words secret" not in redacted
         assert redacted.count("<redacted-secret>") == 2
 
     def test_strips_basic_auth_url_userinfo_and_jwt(self) -> None:
         basic = "dXNlcjpwYXNzd29yZA=="
-        jwt = (
-            "eyJhbGciOiJIUzI1NiJ9."
-            "eyJzdWIiOiIxMjM0NTY3ODkwIn0."
-            "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
-        )
+        jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
         redacted = _safety.redact_secret_text(
-            f"Authorization: Basic {basic}; "
-            "registry=https://alice:correct-horse@example.test/v2; "
-            f"assertion {jwt}"
+            f"Authorization: Basic {basic}; registry=https://alice:correct-horse@example.test/v2; assertion {jwt}"
         )
         assert basic not in redacted
         assert "alice:correct-horse" not in redacted
@@ -451,9 +442,7 @@ class TestDualPurposePathParams:
         for a value that is relative and does not exist."""
         assert _safety.names_local_path("out/models/mymodel") is True
 
-    def test_classification_does_not_depend_on_where_the_agent_was_launched(
-        self, monkeypatch, tmp_path
-    ) -> None:
+    def test_classification_does_not_depend_on_where_the_agent_was_launched(self, monkeypatch, tmp_path) -> None:
         """The old existence probe ran against the working directory, so merely running next
         to a directory named ``nvidia/`` reclassified the default model id as a local file and
         refused the agent's own default recipe -- the same command passing or failing depending

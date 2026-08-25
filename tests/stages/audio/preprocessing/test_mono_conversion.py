@@ -108,6 +108,7 @@ class TestMonoConversionStage:
 
         assert result == []
 
+
 class TestMonoOutputGatingAndResidency:
     """Which destination keys appear, and which input ``auto`` residency picks.
 
@@ -163,4 +164,3 @@ class TestMonoOutputGatingAndResidency:
 
         assert "agent_mono_path" in result.data, "disk-path key must be present when write_to_disk=True"
         assert "agent_waveform" not in result.data, "tensor must be omitted when keep_waveform_in_task=False"
-

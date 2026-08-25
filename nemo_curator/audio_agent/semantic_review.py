@@ -20,6 +20,10 @@ cardinality changes, and the relevant capability-card prose.  The host LLM is
 the reviewer; this packet is only its read-only evidence.
 """
 
+# ruff: noqa: B023 - the `visit` closure captures per-stage loop vars but is invoked
+# synchronously in the same iteration (see the immediate `visit(configured_stage, ...)` call),
+# never stored, so the late binding B023 warns about cannot occur here.
+
 from __future__ import annotations
 
 import contextlib
@@ -188,10 +192,7 @@ def _configured_params(
                 value = (
                     callable_name
                     if isinstance(callable_name, str)
-                    and (
-                        callable_name in choices
-                        or str(getattr(spec, "type", "")) == "str"
-                    )
+                    and (callable_name in choices or str(getattr(spec, "type", "")) == "str")
                     else missing
                 )
             if value is missing:
@@ -215,11 +216,7 @@ def _best_effort_instance_params(
 
     names: list[str] = []
     if dataclasses.is_dataclass(stage) and not isinstance(stage, type):
-        names = [
-            field.name
-            for field in dataclasses.fields(stage)
-            if field.init and not field.name.startswith("_")
-        ]
+        names = [field.name for field in dataclasses.fields(stage) if field.init and not field.name.startswith("_")]
     else:
         with contextlib.suppress(TypeError, ValueError):
             import inspect
@@ -229,8 +226,7 @@ def _best_effort_instance_params(
                 for name, param in inspect.signature(type(stage).__init__).parameters.items()
                 if name != "self"
                 and not name.startswith("_")
-                and param.kind
-                not in (param.VAR_POSITIONAL, param.VAR_KEYWORD)
+                and param.kind not in (param.VAR_POSITIONAL, param.VAR_KEYWORD)
             ]
     excluded = {"name", "resources", "batch_size", "runtime_env", "num_workers"}
     configured: dict[str, dict[str, Any]] = {}
@@ -285,11 +281,7 @@ def _recipe_identity(recipe: Any, stage_count: int) -> dict[str, Any]:  # noqa: 
     if config_hash:
         out["config_hash"] = config_hash
         out["config_hash_source"] = hash_source
-    if (
-        authored_config_hash
-        and config_hash
-        and str(authored_config_hash) != config_hash
-    ):
+    if authored_config_hash and config_hash and str(authored_config_hash) != config_hash:
         out["authored_config_hash_mismatch"] = True
     for name in ("preset", "rationale", "acceptance_criteria", "config_strategy"):
         value = _recipe_value(recipe, name)
@@ -319,11 +311,7 @@ def _data_profile_summary(data_profile: Mapping[str, Any] | None) -> dict[str, A
         "notes",
         "fingerprint_tier",
     )
-    summary = {
-        name: _jsonable(data_profile[name])
-        for name in fields
-        if name in data_profile
-    }
+    summary = {name: _jsonable(data_profile[name]) for name in fields if name in data_profile}
     return _safety.redact(summary)
 
 
@@ -352,9 +340,7 @@ def _semantic_material(stage_ref: str) -> dict[str, Any]:
         "available": True,
         "stage_id": str(card.get("stage_id") or stage_ref),
         "category": card.get("category"),
-        "semantic_facts_status": (
-            "present" if has_semantic_facts else "semantic_facts_absent"
-        ),
+        "semantic_facts_status": ("present" if has_semantic_facts else "semantic_facts_absent"),
     }
     for field in _SEMANTIC_CARD_FIELDS:
         if field in card:
@@ -384,13 +370,11 @@ def _card_semantic_gap(
     if reason == "card_absent":
         gap["message"] = "no capability card is available for this configured stage"
     else:
-        gap["message"] = (
-            "a capability card exists, but it does not declare semantic_facts"
-        )
+        gap["message"] = "a capability card exists, but it does not declare semantic_facts"
     return gap
 
 
-def _expand_configured_stages(
+def _expand_configured_stages(  # noqa: C901, PLR0915
     configured_stages: Sequence[Any],
     *,
     recipe: Any,  # noqa: ANN401
@@ -422,7 +406,7 @@ def _expand_configured_stages(
     execution_leaf_count = 0
     leaf_limit_reported = False
 
-    def issue(
+    def issue(  # noqa: PLR0913
         *,
         code: str,
         message: str,
@@ -470,9 +454,7 @@ def _expand_configured_stages(
         outer_contract: Any = None
         try:
             outer_contract = foundation.build_contract(configured_stage)
-            group["is_source"] = (
-                getattr(outer_contract, "accepts_task_type", None) == "EmptyTask"
-            )
+            group["is_source"] = getattr(outer_contract, "accepts_task_type", None) == "EmptyTask"
         except Exception as exc:  # noqa: BLE001 - evidence assembly is fail-closed
             if is_composite:
                 issue(
@@ -484,7 +466,7 @@ def _expand_configured_stages(
                     stage=recipe_stage_ref,
                 )
 
-        def visit(
+        def visit(  # noqa: C901, PLR0912
             stage: Any,  # noqa: ANN401
             *,
             path: tuple[int, ...],
@@ -512,9 +494,7 @@ def _expand_configured_stages(
                     **provenance,
                     "composite": composite_ref,
                     "authored": not path,
-                    "authored_params": (
-                        _safety.redact(_jsonable(authored_params)) if not path else {}
-                    ),
+                    "authored_params": (_safety.redact(_jsonable(authored_params)) if not path else {}),
                     "configured_params": {},
                     "semantic_material": material,
                     "expansion_status": "partial",
@@ -522,9 +502,7 @@ def _expand_configured_stages(
                 }
                 try:
                     composite_contract = (
-                        outer_contract
-                        if not path and outer_contract is not None
-                        else foundation.build_contract(stage)
+                        outer_contract if not path and outer_contract is not None else foundation.build_contract(stage)
                     )
                     view["configured_params"] = _configured_params(
                         stage,
@@ -533,11 +511,7 @@ def _expand_configured_stages(
                         implicit_source=(
                             "default"
                             if not path and recipe is not None
-                            else (
-                                "configured_instance"
-                                if not path
-                                else "composite_effective"
-                            )
+                            else ("configured_instance" if not path else "composite_effective")
                         ),
                     )
                 except Exception as exc:  # noqa: BLE001 - expansion may still be inspectable
@@ -618,8 +592,7 @@ def _expand_configured_stages(
                         issue(
                             code="invalid_composite_child",
                             message=(
-                                "composite decomposition returned "
-                                f"{type(child).__name__}, not a ProcessingStage"
+                                f"composite decomposition returned {type(child).__name__}, not a ProcessingStage"
                             ),
                             recipe_stage_index=recipe_stage_index,
                             recipe_stage_ref=recipe_stage_ref,
@@ -627,15 +600,10 @@ def _expand_configured_stages(
                             stage=composite_ref,
                         )
                         continue
-                    child_leaf_indices.extend(
-                        visit(child, path=(*path, child_index))
-                    )
+                    child_leaf_indices.extend(visit(child, path=(*path, child_index)))
                 view["child_count"] = len(children)
                 view["execution_leaf_indices"] = child_leaf_indices
-                if (
-                    "expansion_error" not in view
-                    and len(issues) == expansion_issue_count
-                ):
+                if "expansion_error" not in view and len(issues) == expansion_issue_count:
                     view["expansion_status"] = "complete"
                 return child_leaf_indices
 
@@ -644,8 +612,7 @@ def _expand_configured_stages(
                     issue(
                         code="execution_leaf_bound_exceeded",
                         message=(
-                            "configured recipe expands beyond the "
-                            f"{_MAX_EXECUTION_LEAVES}-leaf semantic-review bound"
+                            f"configured recipe expands beyond the {_MAX_EXECUTION_LEAVES}-leaf semantic-review bound"
                         ),
                         recipe_stage_index=recipe_stage_index,
                         recipe_stage_ref=recipe_stage_ref,
@@ -676,8 +643,7 @@ def _expand_configured_stages(
                 (
                     index
                     for index, view in enumerate(composite_views)
-                    if view["recipe_stage_index"] == recipe_stage_index
-                    and not view["execution_path"]
+                    if view["recipe_stage_index"] == recipe_stage_index and not view["execution_path"]
                 ),
                 None,
             )
@@ -707,7 +673,7 @@ def _configured_key_params(stage: Any, contract: Any) -> dict[str, list[str]]:  
     return {key: sorted(set(names)) for key, names in bindings.items()}
 
 
-def _field_entry(
+def _field_entry(  # noqa: PLR0913
     key: str,
     *,
     scope: str,
@@ -777,7 +743,7 @@ def _contract_reads(contract: Any, key_params: dict[str, list[str]]) -> list[dic
     return reads
 
 
-def _contract_writes(contract: Any, key_params: dict[str, list[str]]) -> list[dict[str, Any]]:  # noqa: ANN401
+def _contract_writes(contract: Any, key_params: dict[str, list[str]]) -> list[dict[str, Any]]:  # noqa: ANN401, C901
     """Return configured writes with generic runtime-presence provenance.
 
     ``StageContract.writes`` remains the legacy mechanical declaration.
@@ -810,9 +776,7 @@ def _contract_writes(contract: Any, key_params: dict[str, list[str]]) -> list[di
     for conditional in getattr(contract, "conditional_writes", ()) or ():
         condition = {
             "condition": str(getattr(conditional, "condition", "")),
-            "value_origin": str(
-                getattr(conditional, "value_origin", "stage_generated")
-            ),
+            "value_origin": str(getattr(conditional, "value_origin", "stage_generated")),
         }
         conditional_spec = getattr(conditional, "writes", None)
         if conditional_spec is None:
@@ -890,14 +854,10 @@ def _crossed_seams(
 ) -> list[dict[str, Any]]:
     producer_index = producer.get("stage_index")
     start = int(producer_index) if isinstance(producer_index, int) else 0
-    return [
-        copy.deepcopy(seam)
-        for seam in seams
-        if start <= int(seam["stage_index"]) < consumer_index
-    ]
+    return [copy.deepcopy(seam) for seam in seams if start <= int(seam["stage_index"]) < consumer_index]
 
 
-def _checklist(
+def _checklist(  # noqa: PLR0913
     *,
     stages: list[dict[str, Any]],
     recipe_stages: list[dict[str, Any]],
@@ -914,15 +874,11 @@ def _checklist(
         1
         for stage in stages
         if any(
-            field in stage["semantic_material"]
-            for field in ("model_id", "domain", "metrics", "comparison", "caveats")
+            field in stage["semantic_material"] for field in ("model_id", "domain", "metrics", "comparison", "caveats")
         )
     )
     conditional_write_count = sum(
-        1
-        for stage in stages
-        for write in stage["writes"]
-        if write.get("certainty") == "conditional"
+        1 for stage in stages for write in stage["writes"] if write.get("certainty") == "conditional"
     )
     return [
         {
@@ -1036,7 +992,7 @@ def _checklist(
     ]
 
 
-def build_semantic_review(
+def build_semantic_review(  # noqa: C901, PLR0912, PLR0915
     stages: Sequence[Any],
     *,
     initial_keys: Sequence[str] | set[str] | None = None,
@@ -1146,11 +1102,7 @@ def build_semantic_review(
                         "produces_task_type": None,
                         "configured_params": _best_effort_instance_params(
                             stage,
-                            source=(
-                                "composite_effective"
-                                if provenance["execution_path"]
-                                else "configured_instance"
-                            ),
+                            source=("composite_effective" if provenance["execution_path"] else "configured_instance"),
                         ),
                         "reads": [],
                         "writes": [],
@@ -1192,19 +1144,14 @@ def build_semantic_review(
                 "contract_status": "configured",
                 "cardinality": str(getattr(contract, "cardinality", "1:1")),
                 "iteration_key": getattr(contract, "iteration_key", None),
-                "preserves_upstream_keys": bool(
-                    getattr(contract, "preserves_upstream_keys", True)
-                ),
+                "preserves_upstream_keys": bool(getattr(contract, "preserves_upstream_keys", True)),
                 "wrappable": bool(getattr(contract, "wrappable", True)),
                 "accepts_task_type": getattr(contract, "accepts_task_type", None),
                 "produces_task_type": getattr(contract, "produces_task_type", None),
                 "configured_params": configured_params,
                 "reads": reads,
                 "writes": writes,
-                "removes_keys": [
-                    str(key)
-                    for key in (getattr(contract, "removes_keys", ()) or ())
-                ],
+                "removes_keys": [str(key) for key in (getattr(contract, "removes_keys", ()) or ())],
                 "semantic_material": material,
             }
             stage_packets.append(stage_info)
@@ -1222,10 +1169,7 @@ def build_semantic_review(
                         "basis": "no_active_contract_writer_or_declared_initial_key",
                     }
                 history = copy.deepcopy(writer_history.get(slot, []))
-                if latest.get("kind") == "stage" and history:
-                    earlier = history[:-1]
-                else:
-                    earlier = history
+                earlier = history[:-1] if latest.get("kind") == "stage" and history else history
                 edge = {
                     "consumer": copy.deepcopy(consumer),
                     "read": copy.deepcopy(read),
@@ -1240,10 +1184,7 @@ def build_semantic_review(
                 if latest["kind"] == "initial_input":
                     edge["semantic_provenance"] = {
                         "status": "unresolved_source_schema",
-                        "reason": (
-                            "initial key presence does not establish meaning, unit, "
-                            "entity, or granularity"
-                        ),
+                        "reason": ("initial key presence does not establish meaning, unit, entity, or granularity"),
                     }
                     semantic_evidence_gaps.append(
                         {
@@ -1267,20 +1208,13 @@ def build_semantic_review(
                 # ``preserves_upstream_keys`` describes task.data reconstruction.
                 # Task metadata is a separate channel and remains live unless a
                 # future contract explicitly declares metadata removal.
-                active_writers = {
-                    slot: writer
-                    for slot, writer in active_writers.items()
-                    if slot[0] == "metadata"
-                }
+                active_writers = {slot: writer for slot, writer in active_writers.items() if slot[0] == "metadata"}
             for key in stage_info["removes_keys"]:
                 active_writers.pop(("task", key), None)
             for write in writes:
                 slot = (write["scope"], write["key"])
                 conditions = list(write.get("conditions", []))
-                origins = {
-                    str(condition.get("value_origin", "stage_generated"))
-                    for condition in conditions
-                }
+                origins = {str(condition.get("value_origin", "stage_generated")) for condition in conditions}
                 prior = copy.deepcopy(active_before_stage.get(slot))
                 passthrough_conditions = [
                     copy.deepcopy(condition)
@@ -1341,10 +1275,7 @@ def build_semantic_review(
                 if (
                     write.get("certainty") == "conditional"
                     and prior is not None
-                    and (
-                        write["scope"] == "metadata"
-                        or stage_info["preserves_upstream_keys"]
-                    )
+                    and (write["scope"] == "metadata" or stage_info["preserves_upstream_keys"])
                 ):
                     writer["when_condition_not_met"] = {
                         "outcome": "upstream_same_key_value_remains",
@@ -1367,8 +1298,7 @@ def build_semantic_review(
                         "provenance": provenance,
                         "code": "opaque_execution_leaf",
                         "message": (
-                            "an execution leaf declares wrappable=false and exposes "
-                            "no further configured lineage"
+                            "an execution leaf declares wrappable=false and exposes no further configured lineage"
                         ),
                     }
                 )
@@ -1430,11 +1360,7 @@ def build_semantic_review(
         semantic_gaps=semantic_evidence_gaps,
         contract_issues=contract_issues,
     )
-    incomplete = bool(
-        contract_issues
-        or missing_card_semantics
-        or semantic_evidence_gaps
-    )
+    incomplete = bool(contract_issues or missing_card_semantics or semantic_evidence_gaps)
     return {
         "status": "partial" if incomplete else "complete",
         "review_required": bool(configured_stages),

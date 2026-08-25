@@ -58,7 +58,10 @@ class TestIdentitySplit:
         tuned = _frozen(
             [
                 _READER,
-                {"ref": "GetAudioDurationStage", "params": {"batch_size": 64, "num_workers": 4, "resources": {"gpus": 1}}},
+                {
+                    "ref": "GetAudioDurationStage",
+                    "params": {"batch_size": 64, "num_workers": 4, "resources": {"gpus": 1}},
+                },
                 _WRITER,
             ]
         )
@@ -68,7 +71,9 @@ class TestIdentitySplit:
 
     def test_output_location_does_not_change_semantic_hash(self) -> None:
         base = _frozen([_READER, _DUR, _WRITER])
-        elsewhere = _frozen([_READER, _DUR, {"ref": "ManifestWriterStage", "params": {"output_path": "/tmp/other.jsonl"}}])
+        elsewhere = _frozen(
+            [_READER, _DUR, {"ref": "ManifestWriterStage", "params": {"output_path": "/tmp/other.jsonl"}}]
+        )
         assert elsewhere.semantic_hash == base.semantic_hash
         assert elsewhere.config_hash != base.config_hash
 
@@ -76,7 +81,9 @@ class TestIdentitySplit:
         base = _frozen([_READER, _DUR, _WRITER])
         stricter = _frozen(
             [_READER, _DUR, _WRITER],
-            acceptance_criteria=[{"id": "keep", "type": "yield", "check": {"op": ">=", "value": 0.9}, "severity": "must"}],
+            acceptance_criteria=[
+                {"id": "keep", "type": "yield", "check": {"op": ">=", "value": 0.9}, "severity": "must"}
+            ],
         )
         assert stricter.semantic_hash == base.semantic_hash  # same data -> reuse
         assert stricter.contract_hash != base.contract_hash  # different bar -> re-verify
@@ -84,7 +91,9 @@ class TestIdentitySplit:
 
     def test_semantic_param_change_does_change_semantic_hash(self) -> None:
         base = _frozen([_READER, _DUR, _WRITER])
-        other = _frozen([_READER, {"ref": "GetAudioDurationStage", "params": {"input_residency": "waveform"}}, _WRITER])
+        other = _frozen(
+            [_READER, {"ref": "GetAudioDurationStage", "params": {"input_residency": "waveform"}}, _WRITER]
+        )
         assert other.semantic_hash != base.semantic_hash
 
     def test_config_hash_is_unchanged_by_the_split(self) -> None:
@@ -143,9 +152,7 @@ class TestTieredDatasetKey:
         assert entry.startswith("a.wav|")
         assert not entry.endswith("|?")
 
-        missing_entry, missing_ok = profiler._stat_entry(
-            str(tmp_path / "missing.wav"), root=str(tmp_path)
-        )
+        missing_entry, missing_ok = profiler._stat_entry(str(tmp_path / "missing.wav"), root=str(tmp_path))
         assert missing_ok is False
         assert missing_entry == "missing.wav|?"
 
@@ -195,9 +202,7 @@ class TestTieredDatasetKey:
         assert after.num_files == before.num_files == 1
         assert after.excluded_intermediates == 2
 
-    def test_source_adapter_can_include_files_the_source_stage_really_emits(
-        self, tmp_path: Path
-    ) -> None:
+    def test_source_adapter_can_include_files_the_source_stage_really_emits(self, tmp_path: Path) -> None:
         _wav(tmp_path / "long.wav")
         _wav(tmp_path / "long.1_of_2.wav")
 
@@ -400,11 +405,7 @@ def _out(tmp_path: Path, name: str = "out.jsonl") -> str:
 def _pipeline(tmp_path: Path, *, source: str | None = None) -> tuple[Recipe, str, str]:
     """reader -> writer(mid) -> duration -> writer(final): two persisting reuse points."""
     mid, final = str(tmp_path / "mid.jsonl"), str(tmp_path / "final.jsonl")
-    reader = (
-        {"ref": "ManifestReader", "params": {"manifest_path": source}}
-        if source is not None
-        else _READER
-    )
+    reader = {"ref": "ManifestReader", "params": {"manifest_path": source}} if source is not None else _READER
     rec = _frozen(
         [
             reader,
@@ -417,8 +418,12 @@ def _pipeline(tmp_path: Path, *, source: str | None = None) -> tuple[Recipe, str
 
 
 def _publish(
-    rec: Recipe, index: int, *, dataset_key: str = _KEY, duration_sec: float = 120.0,
-    **kw: Any,  # noqa: ANN401 - forwards arbitrary Artifact fields on purpose
+    rec: Recipe,
+    index: int,
+    *,
+    dataset_key: str = _KEY,
+    duration_sec: float = 120.0,
+    **kw: Any,
 ) -> artifacts.Artifact:
     plan = artifacts.plan_steps(rec, dataset_key)[index]
     Path(plan.uri).parent.mkdir(parents=True, exist_ok=True)
@@ -452,7 +457,7 @@ class TestReuseDecision:
     ) -> None:
         rec = _frozen([_READER, _DUR, _WRITER])
 
-        def unexpected_probe(*_args: Any, **_kwargs: Any) -> Any:  # noqa: ANN401
+        def unexpected_probe(*_args: Any, **_kwargs: Any) -> Any:
             msg = "an unidentified dataset must not enter the artifact namespace"
             raise AssertionError(msg)
 
@@ -475,7 +480,7 @@ class TestReuseDecision:
     ) -> None:
         rec, _mid, _final = _pipeline(store)
 
-        def unexpected_plan(*_args: Any, **_kwargs: Any) -> Any:  # noqa: ANN401
+        def unexpected_plan(*_args: Any, **_kwargs: Any) -> Any:
             msg = "publishing must stop before planning an empty-key artifact"
             raise AssertionError(msg)
 
@@ -594,7 +599,9 @@ class TestReuseSurvivesNonSemanticChanges:
                 _DUR,
                 {"ref": "ManifestWriterStage", "params": {"output_path": final}},
             ],
-            acceptance_criteria=[{"id": "y", "type": "yield", "check": {"op": ">=", "value": 0.99}, "severity": "must"}],
+            acceptance_criteria=[
+                {"id": "y", "type": "yield", "check": {"op": ">=", "value": 0.99}, "severity": "must"}
+            ],
         )
         assert reuse.scan(stricter, dataset_key=_KEY)["decision"] == "already_done"
         assert stricter.contract_hash != rec.contract_hash  # ...but the bar must be re-checked
@@ -726,9 +733,7 @@ class TestArtifactValidity:
         monkeypatch.setattr(
             artifacts,
             "content_digest",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                AssertionError("outside artifact was read")
-            ),
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("outside artifact was read")),
         )
 
         reasons = artifacts.invalid_reasons(artifact, dataset_key=_KEY)
@@ -775,9 +780,7 @@ class TestArtifactValidity:
         assert any("could not read its own source" in r for r in reasons)
         assert not any("implementation changed" in r for r in reasons)
 
-    def test_an_unprovable_stamp_still_refuses_reuse(
-        self, store: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_an_unprovable_stamp_still_refuses_reuse(self, store: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Only the wording changed. An unproven stamp must still fail toward recompute."""
         rec, _mid, _final = _pipeline(store)
         art = _publish(rec, 3, impl_version="impl:0000000000000000")
@@ -884,10 +887,7 @@ class TestMaterializer:
 
         assert result["status"] == "refused"
         assert "does not validate" in result["reason"]
-        assert any(
-            issue["code"] == "unsatisfied_reads"
-            for issue in result["verdict"]["issues"]
-        )
+        assert any(issue["code"] == "unsatisfied_reads" for issue in result["verdict"]["issues"])
 
     def test_physical_artifact_replaces_conflicting_source_assertions(
         self,
@@ -980,13 +980,13 @@ class TestIndex:
         class LockedOnCommit:
             """A working connection whose commit fails, as a contended database does."""
 
-            def __init__(self, conn: Any) -> None:  # noqa: ANN401
+            def __init__(self, conn: Any) -> None:
                 object.__setattr__(self, "_conn", conn)
 
-            def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+            def __getattr__(self, name: str) -> Any:
                 return getattr(self._conn, name)
 
-            def __setattr__(self, name: str, value: Any) -> None:  # noqa: ANN401
+            def __setattr__(self, name: str, value: Any) -> None:
                 setattr(self._conn, name, value)
 
             def commit(self) -> None:
@@ -1002,7 +1002,7 @@ class TestIndex:
         rec, _mid, _final = _pipeline(store)
         art = _publish(rec, 3)
 
-        def unopenable(*_a: Any, **_k: Any) -> Any:  # noqa: ANN401
+        def unopenable(*_a: Any, **_k: Any) -> Any:
             msg = "unable to open database file"
             raise sqlite3.OperationalError(msg)
 
@@ -1074,10 +1074,7 @@ class TestContinueVerb:
         ]
         rec.freeze()
         Path(final).write_text(
-            "".join(
-                json.dumps({"audio_filepath": f"/tmp/{index}.wav"}) + "\n"
-                for index in range(20)
-            ),
+            "".join(json.dumps({"audio_filepath": f"/tmp/{index}.wav"}) + "\n" for index in range(20)),
             encoding="utf-8",
         )
         _publish(
@@ -1148,8 +1145,7 @@ class TestContinueVerb:
         ]
         rec.freeze()
         Path(final).write_text(
-            '{"audio_filepath": "/tmp/a.wav"}\n'
-            '{"audio_filepath": "/tmp/b.wav"}\n',
+            '{"audio_filepath": "/tmp/a.wav"}\n{"audio_filepath": "/tmp/b.wav"}\n',
             encoding="utf-8",
         )
         _publish(rec, 3, dataset_key=key)
@@ -1202,15 +1198,13 @@ class TestContinueVerb:
 
         seen: dict[str, object] = {}
 
-        def _capture(recipe, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        def _capture(recipe, **kwargs):
             seen["recipe"] = recipe
             seen["confirm"] = kwargs.get("confirm")
             return {"status": "completed", "run_id": "captured"}
 
         monkeypatch.setattr(verbs, "run", _capture)
-        result = aa.plan_continuation(
-            rec.to_dict(), data=src, execute=True, choice="extend", confirm=rec.config_hash
-        )
+        result = aa.plan_continuation(rec.to_dict(), data=src, execute=True, choice="extend", confirm=rec.config_hash)
 
         assert result.get("status") == "completed", result
         # Re-anchored: the derived recipe carries its own hash into run()'s integrity check.
@@ -1227,7 +1221,7 @@ class TestContinueVerb:
         rec, _mid, _final = _pipeline(store, source=src)
         _publish(rec, 1, dataset_key=key)
 
-        def _must_not_run(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        def _must_not_run(*_args, **_kwargs):
             raise AssertionError("a mismatched confirmation reached run()")
 
         monkeypatch.setattr(verbs, "run", _must_not_run)
@@ -1254,7 +1248,7 @@ class TestContinueVerb:
         env = SimpleNamespace(
             has_gpu=False,
             gpu_count=0,
-            to_dict=lambda: {},
+            to_dict=dict,
         )
         resource_plan = SimpleNamespace(
             feasible=True,
@@ -1279,7 +1273,7 @@ class TestContinueVerb:
             captured["executed_source"] = stages[0].physical_source
             return [object()], "batch"
 
-        def fake_report(**kwargs: Any) -> Any:  # noqa: ANN401
+        def fake_report(**kwargs: Any) -> Any:
             outputs = list(kwargs.get("output_paths") or [])
             return SimpleNamespace(
                 accepted=1,
@@ -1364,7 +1358,7 @@ class TestContinueVerb:
             reuse_step_key=artifact_a.step_key,
         )
 
-        def must_not_execute(*_args: Any, **_kwargs: Any) -> Any:  # noqa: ANN401
+        def must_not_execute(*_args: Any, **_kwargs: Any) -> Any:
             msg = "a rejected continuation identity reached execution"
             raise AssertionError(msg)
 
@@ -1400,7 +1394,7 @@ class TestContinueVerb:
     def test_run_no_longer_accepts_independent_identity_overrides(
         self,
         name: str,
-        value: Any,  # noqa: ANN401 - exercises rejected legacy keyword shapes
+        value: Any,
     ) -> None:
         with pytest.raises(TypeError, match=name):
             verbs.run(
@@ -1440,10 +1434,7 @@ class TestContinueVerb:
             elapsed_sec=42.0,
             # Exactly what ``run`` derives for a continuation: the logical recipe's step tuples
             # from the reused stage onward (``_verify_continuation_context`` -> step_identity).
-            step_identity=[
-                (p.step_key, p.input_key, p.index)
-                for p in artifacts.plan_steps(rec, key)[1:]
-            ],
+            step_identity=[(p.step_key, p.input_key, p.index) for p in artifacts.plan_steps(rec, key)[1:]],
         )
         assert [p["uri"] for p in published] == [final]
         result = reuse.scan(rec, dataset_key=key)
@@ -1849,7 +1840,9 @@ class TestReuseHonorsTheRequestedPath:
         stored.write_text('{"duration": 1.0}\n', encoding="utf-8")
         blocker = tmp_path / "blocker.jsonl"  # a FILE where the destination needs a directory
         blocker.write_text("", encoding="utf-8")
-        rec = _frozen([_READER, {"ref": "ManifestWriterStage", "params": {"output_path": str(blocker / "want.jsonl")}}])
+        rec = _frozen(
+            [_READER, {"ref": "ManifestWriterStage", "params": {"output_path": str(blocker / "want.jsonl")}}]
+        )
 
         out = verbs._serve_as_is(rec, {"reuse_point": {"uri": str(stored), "rows": 1}}, parent=None, lineage={})
 
@@ -1858,7 +1851,9 @@ class TestReuseHonorsTheRequestedPath:
 
     def test_a_missing_source_is_refused_before_any_copy_is_attempted(self, tmp_path: Path) -> None:
         stored = tmp_path / "gone.jsonl"  # never created
-        rec = _frozen([_READER, {"ref": "ManifestWriterStage", "params": {"output_path": str(tmp_path / "want.jsonl")}}])
+        rec = _frozen(
+            [_READER, {"ref": "ManifestWriterStage", "params": {"output_path": str(tmp_path / "want.jsonl")}}]
+        )
 
         out = verbs._serve_as_is(rec, {"reuse_point": {"uri": str(stored), "rows": 1}}, parent=None, lineage={})
 
@@ -1965,12 +1960,10 @@ class TestUnsavedPriorPrefixIsDisclosed:
     }
 
     def _phase3(self, source: str | None = None) -> Recipe:
-        reader = (
-            {"ref": "ManifestReader", "params": {"manifest_path": source}}
-            if source is not None
-            else _READER
+        reader = {"ref": "ManifestReader", "params": {"manifest_path": source}} if source is not None else _READER
+        return _frozen(
+            [reader, _DUR, self._FILTER, {"ref": "ManifestWriterStage", "params": {"output_path": "kept.jsonl"}}]
         )
-        return _frozen([reader, _DUR, self._FILTER, {"ref": "ManifestWriterStage", "params": {"output_path": "kept.jsonl"}}])
 
     def test_the_shared_prefix_is_named_rather_than_called_new(self, store: Path) -> None:
         self._record_prior_run(_frozen(list(self._PHASE1)))
@@ -2002,7 +1995,9 @@ class TestUnsavedPriorPrefixIsDisclosed:
         simulated rather than read off the end of the prefix. See ``test_checkpoint.py``."""
         prior = _frozen([_READER, _ASR, _WRITER])
         self._record_prior_run(prior)
-        later = _frozen([_READER, _ASR, self._FILTER, {"ref": "ManifestWriterStage", "params": {"output_path": "k.jsonl"}}])
+        later = _frozen(
+            [_READER, _ASR, self._FILTER, {"ref": "ManifestWriterStage", "params": {"output_path": "k.jsonl"}}]
+        )
         offer = reuse.scan(later, dataset_key=_KEY)["offer"]
         assert offer["action"] == "add_checkpoint"
         assert offer["after_stage"] == "ASRStage"
@@ -2026,7 +2021,10 @@ class TestUnsavedPriorPrefixIsDisclosed:
         # The keys a real run never writes. Matching these would mean the lookup is guessing.
         self._record_prior_run(
             _frozen(list(self._PHASE1)),
-            per_stage={"ManifestReader": {"process_time": {"sum": 0.5}}, "GetAudioDuration": {"process_time": {"sum": 3.7}}},
+            per_stage={
+                "ManifestReader": {"process_time": {"sum": 0.5}},
+                "GetAudioDuration": {"process_time": {"sum": 3.7}},
+            },
         )
         assert reuse.scan(self._phase3(), dataset_key=_KEY)["prior_unsaved"]["recompute_sec"] is None
 
@@ -2034,7 +2032,10 @@ class TestUnsavedPriorPrefixIsDisclosed:
         # One reading convention, shared with the publish-time cost, so the two cannot disagree.
         self._record_prior_run(
             _frozen(list(self._PHASE1)),
-            per_stage={"manifest_reader": {"stage_time": {"sum": 1.0}}, "GetAudioDurationStage": {"process_time": {"sum": 2.0}}},
+            per_stage={
+                "manifest_reader": {"stage_time": {"sum": 1.0}},
+                "GetAudioDurationStage": {"process_time": {"sum": 2.0}},
+            },
         )
         assert reuse.scan(self._phase3(), dataset_key=_KEY)["prior_unsaved"]["recompute_sec"] == 3.0
 
@@ -2056,7 +2057,10 @@ class TestUnsavedPriorPrefixIsDisclosed:
         rec = _frozen(list(self._PHASE1))
         run_store.save(
             RunRecord(
-                run_id="crashed", recipe=rec.to_dict(), dataset_key=_KEY, status="failed",
+                run_id="crashed",
+                recipe=rec.to_dict(),
+                dataset_key=_KEY,
+                status="failed",
                 steps=artifacts.step_keys(rec, _KEY),
             )
         )
@@ -2102,7 +2106,15 @@ class TestUnsavedPriorPrefixIsDisclosed:
         # advising a writer after the writer, are both assertions the code cannot support.
         prior = _frozen([_READER, _DUR, _WRITER])
         self._record_prior_run(prior)
-        extended = _frozen([_READER, _DUR, _WRITER, self._FILTER, {"ref": "ManifestWriterStage", "params": {"output_path": "k.jsonl"}}])
+        extended = _frozen(
+            [
+                _READER,
+                _DUR,
+                _WRITER,
+                self._FILTER,
+                {"ref": "ManifestWriterStage", "params": {"output_path": "k.jsonl"}},
+            ]
+        )
         scan = reuse.scan(extended, dataset_key=_KEY)
         unsaved = scan["prior_unsaved"]
         assert unsaved["count"] == 3
@@ -2145,18 +2157,33 @@ class TestBothReuseEnginesClearTheSameBar:
         rec = _frozen([reader, _DUR, {"ref": "ManifestWriterStage", "params": {"output_path": out}}])
         _publish(rec, 2, dataset_key=key)
         run_store.save(
-            RunRecord(run_id="parent", recipe=rec.to_dict(), dataset_key=key, status="completed",
-                      steps=artifacts.step_keys(rec, key), output_paths=[out], input_count=1, accepted=1)
+            RunRecord(
+                run_id="parent",
+                recipe=rec.to_dict(),
+                dataset_key=key,
+                status="completed",
+                steps=artifacts.step_keys(rec, key),
+                output_paths=[out],
+                input_count=1,
+                accepted=1,
+            )
         )
         return rec, out
 
     def _extended(self, out: str, tmp_path: Path, source: str) -> Recipe:
         reader = {"ref": "ManifestReader", "params": {"manifest_path": source}}
-        return _frozen([
-            reader, _DUR, {"ref": "ManifestWriterStage", "params": {"output_path": out}},
-            {"ref": "PreserveByValueStage", "params": {"input_value_key": "duration", "target_value": 5.0, "operator": "ge"}},
-            {"ref": "ManifestWriterStage", "params": {"output_path": str(tmp_path / "kept.jsonl")}},
-        ])
+        return _frozen(
+            [
+                reader,
+                _DUR,
+                {"ref": "ManifestWriterStage", "params": {"output_path": out}},
+                {
+                    "ref": "PreserveByValueStage",
+                    "params": {"input_value_key": "duration", "target_value": 5.0, "operator": "ge"},
+                },
+                {"ref": "ManifestWriterStage", "params": {"output_path": str(tmp_path / "kept.jsonl")}},
+            ]
+        )
 
     def test_the_parent_diff_plan_carries_a_validated_resume_point(self, store: Path, tmp_path: Path) -> None:
         data, key = self._corpus(tmp_path)
@@ -2185,8 +2212,14 @@ class TestBothReuseEnginesClearTheSameBar:
         reader = {"ref": "ManifestReader", "params": {"manifest_path": data}}
         rec = _frozen([reader, _DUR, {"ref": "ManifestWriterStage", "params": {"output_path": out}}])
         run_store.save(  # a completed run, but nothing was ever published for it
-            RunRecord(run_id="unbacked", recipe=rec.to_dict(), dataset_key=key, status="completed",
-                      steps=artifacts.step_keys(rec, key), output_paths=[out])
+            RunRecord(
+                run_id="unbacked",
+                recipe=rec.to_dict(),
+                dataset_key=key,
+                status="completed",
+                steps=artifacts.step_keys(rec, key),
+                output_paths=[out],
+            )
         )
         plan = verbs.plan_continuation(self._extended(out, tmp_path, data), "unbacked", data=data)
         assert plan.get("reuse_point_unavailable")
@@ -2207,13 +2240,23 @@ class TestBothReuseEnginesClearTheSameBar:
         deep = _frozen([reader, {"ref": "ManifestWriterStage", "params": {"output_path": mid}}, _DUR])
         _publish(deep, 1, dataset_key=key)
         run_store.save(
-            RunRecord(run_id="deep", recipe=deep.to_dict(), dataset_key=key, status="completed",
-                      steps=artifacts.step_keys(deep, key), output_paths=[mid])
+            RunRecord(
+                run_id="deep",
+                recipe=deep.to_dict(),
+                dataset_key=key,
+                status="completed",
+                steps=artifacts.step_keys(deep, key),
+                output_paths=[mid],
+            )
         )
-        extended = _frozen([
-            reader, {"ref": "ManifestWriterStage", "params": {"output_path": mid}}, _DUR,
-            {"ref": "ManifestWriterStage", "params": {"output_path": str(tmp_path / "end.jsonl")}},
-        ])
+        extended = _frozen(
+            [
+                reader,
+                {"ref": "ManifestWriterStage", "params": {"output_path": mid}},
+                _DUR,
+                {"ref": "ManifestWriterStage", "params": {"output_path": str(tmp_path / "end.jsonl")}},
+            ]
+        )
         plan = verbs.plan_continuation(extended, "deep", data=data)
         assert plan["reuse_point"]["uri"] == mid
         assert plan["source"] == "artifact_scan"
@@ -2232,11 +2275,18 @@ class TestAContinuedRunRecordsWhatWasAskedFor:
     def _recipes(self, tmp_path: Path) -> tuple[Recipe, Recipe]:
         """What the user asked for, and the rewritten recipe that actually runs."""
         mid = str(tmp_path / "mid.jsonl")
-        asked = _frozen([
-            _READER, _DUR, {"ref": "ManifestWriterStage", "params": {"output_path": mid}},
-            {"ref": "PreserveByValueStage", "params": {"input_value_key": "duration", "target_value": 5.0, "operator": "ge"}},
-            {"ref": "ManifestWriterStage", "params": {"output_path": str(tmp_path / "final.jsonl")}},
-        ])
+        asked = _frozen(
+            [
+                _READER,
+                _DUR,
+                {"ref": "ManifestWriterStage", "params": {"output_path": mid}},
+                {
+                    "ref": "PreserveByValueStage",
+                    "params": {"input_value_key": "duration", "target_value": 5.0, "operator": "ge"},
+                },
+                {"ref": "ManifestWriterStage", "params": {"output_path": str(tmp_path / "final.jsonl")}},
+            ]
+        )
         materialized, err = continuation.materialize(asked, uri=mid, kind="manifest", prefix=3)
         assert materialized is not None, err
         return asked, materialized
@@ -2253,12 +2303,23 @@ class TestAContinuedRunRecordsWhatWasAskedFor:
 
         asked, materialized = self._recipes(tmp_path)
         report = SimpleNamespace(
-            accepted=1, input_count=1, output_paths=[str(tmp_path / "final.jsonl")], per_stage_metrics={},
-            stages=[], failures=[], rows=1,
+            accepted=1,
+            input_count=1,
+            output_paths=[str(tmp_path / "final.jsonl")],
+            per_stage_metrics={},
+            stages=[],
+            failures=[],
+            rows=1,
         )
         run_id = verbs._record_run(
-            materialized, run_id="continued", data=None, data_fp=None, dataset_key=_KEY,
-            fingerprint_tier="stat", report=report, failed=False,
+            materialized,
+            run_id="continued",
+            data=None,
+            data_fp=None,
+            dataset_key=_KEY,
+            fingerprint_tier="stat",
+            report=report,
+            failed=False,
             # What ``run`` hands over for a continuation: the logical recipe's own chain
             # (``_verify_continuation_context`` -> logical_steps), not the rewrite's.
             logical_steps=artifacts.step_keys(asked, _KEY),
@@ -2273,10 +2334,18 @@ class TestAContinuedRunRecordsWhatWasAskedFor:
         from nemo_curator.audio_agent import run_store
 
         asked, _materialized = self._recipes(tmp_path)
-        report = SimpleNamespace(accepted=1, input_count=1, output_paths=[], per_stage_metrics={}, stages=[], failures=[], rows=1)
+        report = SimpleNamespace(
+            accepted=1, input_count=1, output_paths=[], per_stage_metrics={}, stages=[], failures=[], rows=1
+        )
         run_id = verbs._record_run(
-            asked, run_id="plain", data=None, data_fp=None, dataset_key=_KEY,
-            fingerprint_tier="stat", report=report, failed=False,
+            asked,
+            run_id="plain",
+            data=None,
+            data_fp=None,
+            dataset_key=_KEY,
+            fingerprint_tier="stat",
+            report=report,
+            failed=False,
         )
         assert list(run_store.load(run_id).steps or []) == artifacts.step_keys(asked, _KEY)
 
@@ -2287,13 +2356,20 @@ class TestAContinuedRunRecordsWhatWasAskedFor:
 
         asked, _materialized = self._recipes(tmp_path)
         run_store.save(
-            RunRecord(run_id="continued", recipe=asked.to_dict(), dataset_key=_KEY, status="completed",
-                      steps=artifacts.step_keys(asked, _KEY))
+            RunRecord(
+                run_id="continued",
+                recipe=asked.to_dict(),
+                dataset_key=_KEY,
+                status="completed",
+                steps=artifacts.step_keys(asked, _KEY),
+            )
         )
-        later = _frozen([
-            *[{"ref": s.ref, "params": dict(s.params)} for s in asked.stages],
-            {"ref": "GetAudioDurationStage", "params": {"input_residency": "waveform"}},
-        ])
+        later = _frozen(
+            [
+                *[{"ref": s.ref, "params": dict(s.params)} for s in asked.stages],
+                {"ref": "GetAudioDurationStage", "params": {"input_residency": "waveform"}},
+            ]
+        )
         unsaved = reuse.scan(later, dataset_key=_KEY)["prior_unsaved"]
         assert unsaved["count"] == 5
         assert unsaved["run_id"] == "continued"
@@ -2314,8 +2390,16 @@ class TestServingAnExistingOutputIsEarned:
         from nemo_curator.audio_agent.contracts import RunRecord
 
         run_store.save(
-            RunRecord(run_id=run_id, recipe=rec.to_dict(), dataset_key=key, status=status,
-                      steps=artifacts.step_keys(rec, key), output_paths=[out], input_count=1, accepted=1)
+            RunRecord(
+                run_id=run_id,
+                recipe=rec.to_dict(),
+                dataset_key=key,
+                status=status,
+                steps=artifacts.step_keys(rec, key),
+                output_paths=[out],
+                input_count=1,
+                accepted=1,
+            )
         )
 
     def test_a_path_that_was_never_written_is_refused(self, store: Path, tmp_path: Path) -> None:
@@ -2335,7 +2419,10 @@ class TestServingAnExistingOutputIsEarned:
         reader = {"ref": "ManifestReader", "params": {"manifest_path": data}}
         rec = _frozen([reader, _DUR, {"ref": "ManifestWriterStage", "params": {"output_path": str(empty)}}])
         self._record(rec, key, str(empty))
-        assert verbs.plan_continuation(rec, "p", data=data, execute=True, choice="as_is", confirm=False)["status"] == "refused"
+        assert (
+            verbs.plan_continuation(rec, "p", data=data, execute=True, choice="as_is", confirm=False)["status"]
+            == "refused"
+        )
 
     def test_output_of_a_run_that_did_not_finish_is_refused(self, store: Path, tmp_path: Path) -> None:
         data, key = self._corpus(tmp_path)
@@ -2376,9 +2463,7 @@ class TestServingAnExistingOutputIsEarned:
         monkeypatch.setattr(
             verbs,
             "_has_content",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                AssertionError("outside legacy output was read")
-            ),
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("outside legacy output was read")),
         )
 
         result = verbs.plan_continuation(
@@ -2463,10 +2548,13 @@ class TestTheRecommendationIsActedOn:
         manifest.write_text(json.dumps({"audio_filepath": "clip.wav", "duration": 7.0}) + "\n")
         key = profiler.profile_data(str(manifest)).dataset_key()
         out = str(tmp_path / "done.jsonl")
-        rec = _frozen([
-            {"ref": "ManifestReader", "params": {"manifest_path": str(manifest)}}, _DUR,
-            {"ref": "ManifestWriterStage", "params": {"output_path": out}},
-        ])
+        rec = _frozen(
+            [
+                {"ref": "ManifestReader", "params": {"manifest_path": str(manifest)}},
+                _DUR,
+                {"ref": "ManifestWriterStage", "params": {"output_path": out}},
+            ]
+        )
         _publish(rec, 2, dataset_key=key, fingerprint_tier="shape")
         result = verbs.plan_continuation(rec, data=str(manifest), execute=True, confirm=False)
         assert result["status"] != "reused"
@@ -2543,7 +2631,9 @@ class TestUnmeasuredWorkIsNotAssumedCheap:
         # The writer took 2 s and the transcription before it was never timed, so the saving
         # reads as 2 s -- comfortably under the threshold meant for milliseconds. Taking that
         # silently is how an hour of ASR came back as yesterday's answer with no question asked.
-        rec = _frozen([_READER, _ASR, {"ref": "ManifestWriterStage", "params": {"output_path": str(store / "t.jsonl")}}])
+        rec = _frozen(
+            [_READER, _ASR, {"ref": "ManifestWriterStage", "params": {"output_path": str(store / "t.jsonl")}}]
+        )
         _publish(rec, 2, duration_sec=2.0)
         result = reuse.scan(rec, dataset_key=_KEY)
         assert result["estimated_saving_sec"] == 2.0
@@ -2562,7 +2652,9 @@ class TestUnmeasuredWorkIsNotAssumedCheap:
     def test_a_recorded_cumulative_prices_the_stages_that_persisted_nothing(self, store: Path) -> None:
         # cumulative_sec covers the whole prefix including the model stage, so nothing is unknown
         # and a genuinely quick run is taken at its word.
-        rec = _frozen([_READER, _ASR, {"ref": "ManifestWriterStage", "params": {"output_path": str(store / "t.jsonl")}}])
+        rec = _frozen(
+            [_READER, _ASR, {"ref": "ManifestWriterStage", "params": {"output_path": str(store / "t.jsonl")}}]
+        )
         _publish(rec, 2, duration_sec=2.0, cumulative_sec=5.0)
         result = reuse.scan(rec, dataset_key=_KEY)
         assert result["unpriced_stages"] == []
@@ -2572,7 +2664,9 @@ class TestUnmeasuredWorkIsNotAssumedCheap:
         # Without this the approval card reads "saves 2 s" beside a question and looks broken.
         src, key = _real_source(store)
         reader = {"ref": "ManifestReader", "params": {"manifest_path": src}}
-        rec = _frozen([reader, _ASR, {"ref": "ManifestWriterStage", "params": {"output_path": str(store / "t.jsonl")}}])
+        rec = _frozen(
+            [reader, _ASR, {"ref": "ManifestWriterStage", "params": {"output_path": str(store / "t.jsonl")}}]
+        )
         _publish(rec, 2, dataset_key=key, duration_sec=2.0)
         plan = verbs.plan_continuation(rec, data=src)
         assert plan["unpriced_stages"] == ["ASRStage"]
@@ -2746,8 +2840,10 @@ class TestEveryWritingStageIsReusable:
             gates = None
             with contextlib.suppress(Exception):  # contract shape is another test's business
                 gates = static_contract(stage_cls).gates
-            if gates is not None and getattr(gates, "writes_to_disk", False) and not (
-                self._param_names(stage_cls) & set(artifacts._URI_PREFERENCE)
+            if (
+                gates is not None
+                and getattr(gates, "writes_to_disk", False)
+                and not (self._param_names(stage_cls) & set(artifacts._URI_PREFERENCE))
             ):
                 undeclared.append(name)
         assert not undeclared, (

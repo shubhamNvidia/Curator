@@ -8,7 +8,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# ruff: noqa: INP001
 
 from __future__ import annotations
 
@@ -653,10 +652,7 @@ def test_completed_checkpoint_validates_and_continues_but_full_run_cannot_overwr
         executor=lambda *_args, **_kwargs: pytest.fail("occupied checkpoint must refuse before execution"),
     )
 
-    assert not any(
-        issue["code"] == "checkpoint_output_occupied"
-        for issue in verdict["issues"]
-    )
+    assert not any(issue["code"] == "checkpoint_output_occupied" for issue in verdict["issues"])
     assert scan["decision"] == "incremental"
     assert continued["mode"] == "incremental"
     assert direct["status"] == "refused"
@@ -823,9 +819,7 @@ def test_segment_checkpoint_accepts_file_metadata_and_refuses_nested_waveforms(
     tmp_path: Path,
 ) -> None:
     file_result = aa.plan_checkpoint(_utmos_segment_recipe(tmp_path))
-    tensor_result = aa.plan_checkpoint(
-        _utmos_segment_recipe(tmp_path, live_segment_waveforms=True)
-    )
+    tensor_result = aa.plan_checkpoint(_utmos_segment_recipe(tmp_path, live_segment_waveforms=True))
 
     assert file_result["status"] == "candidates"
     assert tensor_result["status"] == "no_candidate"
@@ -1141,10 +1135,7 @@ def test_compound_feedback_keeps_checkpoint_prefix_reusable(tmp_path: Path) -> N
         )["candidates"][0]["recipe"]
     ).freeze()
     checkpoint_path.write_text(
-        (
-            '{"row_noise":4.5,"row_ovrl":4.0,"sigmos_sig":4.1,'
-            '"row_reverb":4.2}\n'
-        ),
+        ('{"row_noise":4.5,"row_ovrl":4.0,"sigmos_sig":4.1,"row_reverb":4.2}\n'),
         encoding="utf-8",
     )
     step = artifacts.plan_steps(initial, "stat:sigmos-data")[2]
@@ -1221,16 +1212,12 @@ def test_model_checkpoint_preserves_first_run_verdicts(
         )
 
     baseline = baseline_selector.process_batch(rows)
-    checkpoint = ManifestCheckpointStage(
-        output_path=str(tmp_path / f"{selector_kind}.jsonl")
-    )
+    checkpoint = ManifestCheckpointStage(output_path=str(tmp_path / f"{selector_kind}.jsonl"))
     checkpoint.setup()
     checkpointed = [checkpoint.process(row) for row in rows]
     candidate = candidate_selector.process_batch(checkpointed)
 
-    assert [row.data["id"] for row in candidate] == [
-        row.data["id"] for row in baseline
-    ]
+    assert [row.data["id"] for row in candidate] == [row.data["id"] for row in baseline]
 
 
 def test_changed_dataset_is_routed_to_existing_delta_flow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1263,9 +1250,7 @@ def test_checkpoint_artifact_uses_cumulative_prefix_trust(tmp_path: Path, monkey
     recipe = _duration_recipe(tmp_path, checkpoint=True)
     checkpoint = tmp_path / "checkpoint.jsonl"
     checkpoint.write_text('{"audio_filepath":"x.wav","duration":7.0}\n', encoding="utf-8")
-    stages, issues = __import__(
-        "nemo_curator.audio_agent.recipe", fromlist=["build_stages"]
-    ).build_stages(recipe)
+    stages, issues = __import__("nemo_curator.audio_agent.recipe", fromlist=["build_stages"]).build_stages(recipe)
     assert stages is not None, issues
 
     real_stage_trust = artifacts.stage_trust
@@ -1322,10 +1307,7 @@ def test_checkpoint_worker_override_fails_build_and_validation(tmp_path: Path) -
 
     assert stages is None
     assert any(issue["code"] == "checkpoint_single_worker_required" for issue in issues)
-    assert any(
-        issue["code"] == "checkpoint_single_worker_required"
-        for issue in verdict["issues"]
-    )
+    assert any(issue["code"] == "checkpoint_single_worker_required" for issue in verdict["issues"])
 
 
 def test_configured_checkpoint_still_runs_boundary_simulation(tmp_path: Path) -> None:
@@ -1469,12 +1451,8 @@ def test_cli_decision_parser_rejects_non_scalar_or_non_finite_values(raw: str) -
 
 
 def test_cli_condition_parser_accepts_complete_list_or_mapping() -> None:
-    assert cli._parse_conditions('{"sigmos_noise": 4.1}') == {
-        "sigmos_noise": 4.1
-    }
-    assert cli._parse_conditions(
-        '[{"input_value_key":"sigmos_noise","target_value":4.1,"operator":"ge"}]'
-    ) == [
+    assert cli._parse_conditions('{"sigmos_noise": 4.1}') == {"sigmos_noise": 4.1}
+    assert cli._parse_conditions('[{"input_value_key":"sigmos_noise","target_value":4.1,"operator":"ge"}]') == [
         {
             "input_value_key": "sigmos_noise",
             "target_value": 4.1,

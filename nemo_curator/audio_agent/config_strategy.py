@@ -74,8 +74,12 @@ def resolve(
             out["params"][param] = value
             out["strategy"].append(
                 ConfigStrategyEntry(
-                    param=param, value=value, kind="absolute", mode="knowledge_driven",
-                    source={"from": "user_explicit"}, recompute_on="none",
+                    param=param,
+                    value=value,
+                    kind="absolute",
+                    mode="knowledge_driven",
+                    source={"from": "user_explicit"},
+                    recompute_on="none",
                     rationale="explicit user value",
                 ).to_dict()
             )
@@ -90,8 +94,12 @@ def resolve(
             out["params"][param] = value
             out["strategy"].append(
                 ConfigStrategyEntry(
-                    param=param, value=value, kind="absolute", mode="knowledge_driven",
-                    source={"from": "card_preset", "ref": use_case}, recompute_on="none",
+                    param=param,
+                    value=value,
+                    kind="absolute",
+                    mode="knowledge_driven",
+                    source={"from": "card_preset", "ref": use_case},
+                    recompute_on="none",
                     rationale=f"card preset {use_case!r}",
                 ).to_dict()
             )
@@ -123,9 +131,14 @@ def _resolve_label(stage_id: str, label: str, metrics: dict[str, Any], out: dict
                 out["params"][tparam] = value
                 out["strategy"].append(
                     ConfigStrategyEntry(
-                        param=tparam, value=value, metric=metric_key, kind="absolute",
-                        mode="knowledge_driven", source={"from": "card_anchor", "ref": label},
-                        recompute_on="none", rationale=f"label {label!r} -> {metric_key}={value}",
+                        param=tparam,
+                        value=value,
+                        metric=metric_key,
+                        kind="absolute",
+                        mode="knowledge_driven",
+                        source={"from": "card_anchor", "ref": label},
+                        recompute_on="none",
+                        rationale=f"label {label!r} -> {metric_key}={value}",
                     ).to_dict()
                 )
             else:  # annotator: emit a PreserveByValueStage filter, operator from direction
@@ -136,15 +149,21 @@ def _resolve_label(stage_id: str, label: str, metrics: dict[str, Any], out: dict
                 }
                 out["strategy"].append(
                     ConfigStrategyEntry(
-                        param="target_value", value=value, metric=metric_key, kind="absolute",
-                        mode="knowledge_driven", source={"from": "card_anchor", "ref": label},
+                        param="target_value",
+                        value=value,
+                        metric=metric_key,
+                        kind="absolute",
+                        mode="knowledge_driven",
+                        source={"from": "card_anchor", "ref": label},
                         recompute_on="none",
                         rationale=f"label {label!r} -> filter {metric_key} {op} {value} (PreserveByValueStage)",
                     ).to_dict()
                 )
             return
 
-    known = sorted({str(lbl) for m in metrics.values() if isinstance(m, dict) for lbl in (m.get("anchors") or {}).values()})
+    known = sorted(
+        {str(lbl) for m in metrics.values() if isinstance(m, dict) for lbl in (m.get("anchors") or {}).values()}
+    )
     out["asks"].append(
         f"no anchor for label {label!r} on {stage_id}; known outcome labels: {known or '(none — this stage has no metric anchors)'}"
     )
@@ -234,7 +253,10 @@ def _bind_observed_sample_rate(
     out["params"]["output_sample_rate"] = value
     out["strategy"].append(
         ConfigStrategyEntry(
-            param="output_sample_rate", value=value, kind="relative", mode="data_informed",
+            param="output_sample_rate",
+            value=value,
+            kind="relative",
+            mode="data_informed",
             source={"from": "observed_sample_rates", "ref": "data_profile"},
             recompute_on="data_change",
             rationale=(

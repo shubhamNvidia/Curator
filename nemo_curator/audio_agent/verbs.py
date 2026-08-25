@@ -74,21 +74,14 @@ _EVIDENCE_ROWS = 2000
 # grows to cover it, redirecting it would be wrong -- for a dataset source it is execution
 # INPUT as well as an acquisition destination, and smoke refuses generated sources outright
 # instead (``_bound_recipe``), keeping pre-staged roots read-only.
-_SMOKE_FILE_OUTPUT_PARAMS = frozenset(
-    {"output_path", "output_manifest", "output_audio_tar_path"}
-)
-_SMOKE_DIR_OUTPUT_PARAMS = frozenset(
-    OUTPUT_LOCATION_PARAMS
-    - _SMOKE_FILE_OUTPUT_PARAMS
-    - {"raw_data_dir"}
-)
-
+_SMOKE_FILE_OUTPUT_PARAMS = frozenset({"output_path", "output_manifest", "output_audio_tar_path"})
+_SMOKE_DIR_OUTPUT_PARAMS = frozenset(OUTPUT_LOCATION_PARAMS - _SMOKE_FILE_OUTPUT_PARAMS - {"raw_data_dir"})
 
 
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
-def _ray_address_is_local(address: str | None) -> bool:
+def _ray_address_is_local(address: str | None) -> bool:  # noqa: PLR0911
     """Whether a configured Ray address names this machine.
 
     An unset address plus Ray's ``auto`` and ``local`` modes retain local checks. A head
@@ -106,7 +99,7 @@ def _ray_address_is_local(address: str | None) -> bool:
 
         if _ray.owns_cluster(value):
             return True
-    except Exception:  # noqa: BLE001 - ownership is best-effort; fall through to host checks
+    except Exception:  # noqa: BLE001, S110 - ownership is best-effort; fall through to host checks
         pass
     if value.casefold().rstrip(".") in {"localhost", "::1", "[::1]"}:
         return True
@@ -222,15 +215,10 @@ def _binding_issue(binding: Any, data: str | None) -> Issue | None:  # noqa: ANN
         stage=binding.source_ref,
         fix={
             "missing": "configure an existing source in the first supported source stage",
-            "mismatch": (
-                "make --data and Recipe.inputs agree with the first stage's configured source"
-            ),
-            "unsupported": (
-                "use a supported first source stage/path form or add an explicit source adapter"
-            ),
+            "mismatch": ("make --data and Recipe.inputs agree with the first stage's configured source"),
+            "unsupported": ("use a supported first source stage/path form or add an explicit source adapter"),
             "ambiguous": (
-                "remove the extra source, or omit singular --data for an authored "
-                "multi-manifest reader"
+                "remove the extra source, or omit singular --data for an authored multi-manifest reader"
                 if blocking
                 else "omit singular --data or use one manifest selector if reusable identity is required"
             ),
@@ -325,13 +313,10 @@ def _pretrain_finalizer(
             "SnippetManifestWriterStage, and PretrainMetricsAggregatorStage "
             f"in one recipe; missing {missing}"
         )
-    duplicates = sorted(
-        name for name, matches in wanted.items() if len(matches) != 1
-    )
+    duplicates = sorted(name for name, matches in wanted.items() if len(matches) != 1)
     if duplicates:
         return None, (
-            "ALM pretrain finalization requires exactly one of each shard stage; "
-            f"ambiguous stage(s): {duplicates}"
+            f"ALM pretrain finalization requires exactly one of each shard stage; ambiguous stage(s): {duplicates}"
         )
 
     extraction = wanted["SnippetExtractionStage"][0]
@@ -350,18 +335,13 @@ def _pretrain_finalizer(
         if not isinstance(value, str) or not value
     )
     if missing_paths:
-        return None, (
-            "ALM pretrain finalization is missing required output path(s): "
-            f"{missing_paths}"
-        )
+        return None, (f"ALM pretrain finalization is missing required output path(s): {missing_paths}")
     return (
         _PretrainFinalizer(
             manifest_path=str(manifest_path),
             metrics_path=str(metrics_path),
             audio_tar_path=str(audio_tar_path),
-            audio_filepath_key=str(
-                getattr(extraction, "audio_filepath_key", "audio_filepath")
-            ),
+            audio_filepath_key=str(getattr(extraction, "audio_filepath_key", "audio_filepath")),
         ),
         "",
     )
@@ -391,7 +371,7 @@ def _continuation_context_from_plan(
     )
 
 
-def _verify_continuation_context(  # noqa: PLR0911 - each refusal names one broken proof
+def _verify_continuation_context(  # noqa: PLR0911, C901, PLR0912 - each refusal names one broken proof
     physical_recipe: Recipe,
     physical_binding: Any,  # noqa: ANN401 - DatasetBinding without eager import
     context: _ContinuationRunContext | None,
@@ -488,10 +468,7 @@ def _verify_continuation_context(  # noqa: PLR0911 - each refusal names one brok
         "dataset_key": dataset_key,
         "fingerprint_tier": str(getattr(artifact, "fingerprint_tier", "") or ""),
         "data_source": logical_binding.primary_path,
-        "step_identity": [
-            (plan.step_key, plan.input_key, plan.index)
-            for plan in logical_plans[reused_plan.index :]
-        ],
+        "step_identity": [(plan.step_key, plan.input_key, plan.index) for plan in logical_plans[reused_plan.index :]],
         "logical_steps": [plan.step_key for plan in logical_plans],
     }, ""
 
@@ -509,7 +486,7 @@ def _derive_initial(data_profile: dict[str, Any] | None) -> tuple[set[str], set[
 
 
 # --------------------------------------------------------------------------- #
-# discovery + routing (L0/L1/L2)
+# discovery + routing (L0/L1/L2)  # noqa: ERA001
 # --------------------------------------------------------------------------- #
 def discover() -> dict[str, Any]:
     """List every agent-ready audio stage with its category + one-liner.
@@ -870,9 +847,7 @@ def resolve(
     """
     from nemo_curator.audio_agent import config_strategy
 
-    result = config_strategy.resolve(
-        stage, label=label, use_case=use_case, explicit=explicit
-    )
+    result = config_strategy.resolve(stage, label=label, use_case=use_case, explicit=explicit)
     if not data:
         return result
     # Held to the same workspace lock as every other verb that is handed a dataset path.
@@ -892,9 +867,7 @@ def resolve(
     # Path B what is already decided, rather than merging over it afterwards, keeps the
     # ``strategy`` trail honest -- it used to record the data-informed value and its rationale
     # for a param the merge then discarded.
-    derived = config_strategy.resolve_from_data(
-        stage, profile, already_set=set(result["params"])
-    )
+    derived = config_strategy.resolve_from_data(stage, profile, already_set=set(result["params"]))
     result["params"] = {**derived["params"], **result["params"]}
     result["strategy"] = list(result["strategy"]) + list(derived["strategy"])
     asks = list(result["asks"]) + list(derived["asks"])
@@ -906,7 +879,7 @@ def resolve(
     return result
 
 
-def diagnose(
+def diagnose(  # noqa: PLR0913
     error: str,
     *,
     recipe: Recipe | dict[str, Any] | None = None,
@@ -951,7 +924,7 @@ def diagnose(
 # --------------------------------------------------------------------------- #
 # validate (mechanical composition + card facts + preflight)
 # --------------------------------------------------------------------------- #
-def validate(
+def validate(  # noqa: C901, PLR0912, PLR0913, PLR0915
     recipe: Recipe | dict[str, Any],
     *,
     data: str | None = None,
@@ -1027,11 +1000,7 @@ def validate(
                 fix="repair or replace the manifest before validation or execution",
             )
         )
-    reusable_dataset_key = (
-        dp_obj.dataset_key()
-        if dp_obj is not None and not _profile_error(dp_obj)
-        else None
-    )
+    reusable_dataset_key = dp_obj.dataset_key() if dp_obj is not None and not _profile_error(dp_obj) else None
     for reason in _checkpoint_output_refusals(
         rec,
         reusable_dataset_key=reusable_dataset_key,
@@ -1053,10 +1022,7 @@ def validate(
         from nemo_curator.audio_agent.diagnostics import diagnose_failure
 
         verdict.diagnosis = diagnose_failure(
-            "; ".join(
-                str(issue.get("message") or issue.get("code") or "")
-                for issue in build_issues
-            ),
+            "; ".join(str(issue.get("message") or issue.get("code") or "") for issue in build_issues),
             env=env,
             operation="validate",
             phase="stage_construction",
@@ -1083,10 +1049,7 @@ def validate(
                     "the criteria passed to validate differ from the recipe's "
                     "acceptance_criteria, so a later smoke/run would not be bound "
                     "to the success contract that was validated",
-                    fix=(
-                        "copy the complete acceptance_criteria list into recipe.yaml "
-                        "and validate that same recipe"
-                    ),
+                    fix=("copy the complete acceptance_criteria list into recipe.yaml and validate that same recipe"),
                 )
             )
     expected = set(expected_outputs or []) | set(expected_roles_from_criteria(criteria))
@@ -1142,9 +1105,7 @@ def validate(
             "contract_issues": [
                 {
                     "code": "semantic_review_context_unavailable",
-                    "message": _safety.redact_secret_text(
-                        f"{type(exc).__name__}: {exc}"
-                    ),
+                    "message": _safety.redact_secret_text(f"{type(exc).__name__}: {exc}"),
                 }
             ],
             "checklist": [
@@ -1172,11 +1133,7 @@ def validate(
     )
     verdict.environment_decision = environment_decision
     for env_issue in verdict_issues(environment_decision):
-        matches = [
-            issue
-            for issue in verdict.gate_flags
-            if issue.code == env_issue.code
-        ]
+        matches = [issue for issue in verdict.gate_flags if issue.code == env_issue.code]
         if matches:
             # Keep the existing per-stage location, but promote a proven,
             # recipe-relevant execution blocker to the shared safe severity.
@@ -1190,9 +1147,7 @@ def validate(
     # Their advisory builder fails closed: incomplete equivalence evidence means
     # an empty list, never a guessed alternative or a validation error.
     authoring_valid = not any(
-        issue.severity == "error"
-        for pool in (verdict.issues, verdict.card_violations)
-        for issue in pool
+        issue.severity == "error" for pool in (verdict.issues, verdict.card_violations) for issue in pool
     )
     if authoring_valid:
         try:
@@ -1272,11 +1227,7 @@ def _checkpoint_output_refusals(  # noqa: C901 - one branch per checkpoint path 
             if not isinstance(raw, str) or not raw:
                 continue
             parsed = urlsplit(raw)
-            canonical = (
-                os.path.realpath(os.path.expanduser(raw))
-                if not parsed.scheme
-                else raw
-            )
+            canonical = os.path.realpath(os.path.expanduser(raw)) if not parsed.scheme else raw
             outputs.setdefault(canonical, []).append(f"{stage.ref}[{index}].{key}")
             if stage.ref == "ManifestCheckpointStage" and key == "output_path":
                 checkpoint_paths.append((index, raw, canonical))
@@ -1284,9 +1235,7 @@ def _checkpoint_output_refusals(  # noqa: C901 - one branch per checkpoint path 
     for index, raw, canonical in checkpoint_paths:
         parsed = urlsplit(raw)
         if parsed.scheme:
-            reasons.append(
-                f"{raw!r}: dedicated checkpoint reuse requires a plain local path, not a URI"
-            )
+            reasons.append(f"{raw!r}: dedicated checkpoint reuse requires a plain local path, not a URI")
             continue
         users = outputs.get(canonical, [])
         if len(users) > 1:
@@ -1392,11 +1341,7 @@ def _automatic_retry_reset_hook(
     extra_reset: Callable[[], Any] | None = None,
 ) -> Callable[[], None] | None:
     """Compose stage-owned reset hooks with existing pipeline finalizer cleanup."""
-    stage_resets = [
-        reset
-        for stage in stages
-        if callable(reset := getattr(stage, "reset_for_retry", None))
-    ]
+    stage_resets = [reset for stage in stages if callable(reset := getattr(stage, "reset_for_retry", None))]
     if not stage_resets and extra_reset is None:
         return None
 
@@ -1417,9 +1362,13 @@ def _release_retry_reservations(stages: list[Any]) -> None:
             release()
 
 
-def _run_pipeline_autofallback(
-    stages: list[Any], mode: str, caller_executor: Any, *,  # noqa: ANN401
-    checkpoint_path: str | None = None, note: Any = None,  # noqa: ANN401
+def _run_pipeline_autofallback(  # noqa: PLR0913
+    stages: list[Any],
+    mode: str,
+    caller_executor: Any,  # noqa: ANN401
+    *,
+    checkpoint_path: str | None = None,
+    note: Any = None,  # noqa: ANN401
     before_retry: Any = None,  # noqa: ANN401
 ) -> tuple[list[Any] | None, str]:
     """Run in the planned mode; on a runtime streaming-infeasibility error (e.g. a
@@ -1430,8 +1379,8 @@ def _run_pipeline_autofallback(
     try:
         results = _run_pipeline(stages, executor, checkpoint_path=checkpoint_path)
         _release_retry_reservations(stages)
-        return results, mode
-    except Exception as e:  # noqa: BLE001
+        return results, mode  # noqa: TRY300
+    except Exception as e:
         if caller_executor is None and mode != "batch" and _is_streaming_infeasible(e):
             if callable(note):
                 note("streaming infeasible at runtime -> retried in batch")
@@ -1489,7 +1438,7 @@ def _stops_a_head_it_started(fn: Callable[..., Any]) -> Callable[..., Any]:
 
 
 @_stops_a_head_it_started
-def smoke(
+def smoke(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
     recipe: Recipe | dict[str, Any],
     *,
     sample: int = 10,
@@ -1532,17 +1481,14 @@ def smoke(
         return _safety.redact(_profile_refusal(binding, dp_obj))
     preflight_stages, preflight_build_issues = build_stages(rec)
     execution_target = (
-        "custom_executor"
-        if executor is not None
-        else _ray_execution_target(os.environ.get("RAY_ADDRESS"))
+        "custom_executor" if executor is not None else _ray_execution_target(os.environ.get("RAY_ADDRESS"))
     )
     preflight_env = probe_env()
     if preflight_stages is None:
         from nemo_curator.audio_agent.diagnostics import diagnose_failure
 
         build_error = "; ".join(
-            str(issue.get("message") or issue.get("code") or "")
-            for issue in preflight_build_issues
+            str(issue.get("message") or issue.get("code") or "") for issue in preflight_build_issues
         )
         return _safety.redact(
             {
@@ -1621,10 +1567,7 @@ def smoke(
     try:
         write_issues = _smoke_write_issues(stages, bound.output_root)
     except Exception as exc:  # noqa: BLE001 - output proof must fail closed
-        write_issues = [
-            "disk-write contracts could not be fully inspected "
-            f"({type(exc).__name__}: {exc})"
-        ]
+        write_issues = [f"disk-write contracts could not be fully inspected ({type(exc).__name__}: {exc})"]
     if write_issues:
         _cleanup(tmp_paths)
         return _safety.redact(
@@ -1661,11 +1604,7 @@ def smoke(
     )
     caller_executor = executor
     owned_ray_address: str | None = None
-    ray_address = (
-        os.environ.get("RAY_ADDRESS")
-        if caller_executor is None
-        else None
-    )
+    ray_address = os.environ.get("RAY_ADDRESS") if caller_executor is None else None
     if bootstrap_ray and caller_executor is None:
         try:
             from nemo_curator.audio_agent._ray import owns_cluster
@@ -1683,10 +1622,7 @@ def smoke(
             return _safety.redact(
                 {
                     "status": "error",
-                    "reason": (
-                        "Ray bootstrap failed before resource planning: "
-                        + error_text
-                    ),
+                    "reason": ("Ray bootstrap failed before resource planning: " + error_text),
                     "diagnosis": diagnose_failure(
                         error_text,
                         stages=stages,
@@ -1726,10 +1662,7 @@ def smoke(
         return _safety.redact(
             {
                 "status": "error",
-                "reason": (
-                    "smoke resource planning failed: "
-                    + error_text
-                ),
+                "reason": ("smoke resource planning failed: " + error_text),
                 "diagnosis": diagnose_failure(
                     error_text,
                     stages=stages,
@@ -1741,11 +1674,7 @@ def smoke(
                 "sample": sample,
                 "config_hash": rec.config_hash,
                 "data_binding": binding.to_dict(),
-                **(
-                    {"ray_bootstrap_cleanup": ray_cleanup}
-                    if ray_cleanup is not None
-                    else {}
-                ),
+                **({"ray_bootstrap_cleanup": ray_cleanup} if ray_cleanup is not None else {}),
             }
         )
     rpt.notes.append(f"resource_plan_mode={rplan.mode}")
@@ -1774,11 +1703,7 @@ def smoke(
                     execution_target=execution_target,
                 ),
                 "data_binding": binding.to_dict(),
-                **(
-                    {"ray_bootstrap_cleanup": ray_cleanup}
-                    if ray_cleanup is not None
-                    else {}
-                ),
+                **({"ray_bootstrap_cleanup": ray_cleanup} if ray_cleanup is not None else {}),
             }
         )
     t0 = time.perf_counter()
@@ -1797,11 +1722,7 @@ def smoke(
             note=rpt.notes.append,
             before_retry=_automatic_retry_reset_hook(
                 stages,
-                extra_reset=(
-                    pretrain_finalizer.prepare
-                    if pretrain_finalizer is not None
-                    else None
-                ),
+                extra_reset=(pretrain_finalizer.prepare if pretrain_finalizer is not None else None),
             ),
         )
         rpt.ran = True
@@ -1813,11 +1734,7 @@ def smoke(
         # ALM returns one origin stub when every snippet was filtered.  Only its
         # manifest is a serialized output, so count that instead of return
         # carriers or a zero-output smoke could receive a success token.
-        rpt.retained = (
-            pretrain_output_rows
-            if pretrain_output_rows is not None
-            else _row_count(results)
-        )
+        rpt.retained = pretrain_output_rows if pretrain_output_rows is not None else _row_count(results)
         rpt.rejected = max(0, min(sample, rpt.input_count) - rpt.retained)
         rpt.per_stage_metrics = _stage_metrics(results)
         sampled_rows = list(_result_rows(results))
@@ -1829,10 +1746,7 @@ def smoke(
             # with no content (e.g. an ASR that emits blank transcripts).
             # retained>0 alone would wrongly read as success.
             rpt.goals_met = False
-            rpt.notes.append(
-                "required output(s) MISSING or EMPTY in sampled rows: "
-                + ", ".join(incomplete_outputs)
-            )
+            rpt.notes.append("required output(s) MISSING or EMPTY in sampled rows: " + ", ".join(incomplete_outputs))
     except Exception as e:  # noqa: BLE001 - classify any execution failure for the critic
         if pretrain_finalizer is not None and pretrain_prepared:
             # Deliberately NOT finalizing here. ``finalize_audio_pretrain_outputs`` merges
@@ -1853,17 +1767,13 @@ def smoke(
             execution_target=execution_target,
         )
         rpt.notes.append(
-            "failure_code="
-            + str((runtime_diagnosis.get("failure") or {}).get("code") or "unknown_failure")
+            "failure_code=" + str((runtime_diagnosis.get("failure") or {}).get("code") or "unknown_failure")
         )
     finally:
         rpt.notes.append(f"elapsed_sec={round(time.perf_counter() - t0, 3)}")
         ray_cleanup = _shutdown_owned_ray(owned_ray_address)
         if ray_cleanup is not None:
-            rpt.notes.append(
-                "ray_bootstrap_cleanup="
-                + ("completed" if ray_cleanup else "failed")
-            )
+            rpt.notes.append("ray_bootstrap_cleanup=" + ("completed" if ray_cleanup else "failed"))
         _cleanup(tmp_paths)
     out = rpt.to_dict()
     out["status"] = "completed" if rpt.ran and not rpt.errors else "error"
@@ -1901,14 +1811,12 @@ def smoke(
     if rpt.ran and rpt.goals_met is True and not rpt.errors:
         redacted["smoke_token"] = _safety.smoke_token(rec.config_hash)
     else:
-        redacted["smoke_token_status"] = (
-            "not_issued: smoke must run without errors and meet sampled goals"
-        )
+        redacted["smoke_token_status"] = "not_issued: smoke must run without errors and meet sampled goals"  # noqa: S105
     return redacted
 
 
 @_stops_a_head_it_started
-def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat on purpose)
+def run(  # noqa: PLR0913, C901, PLR0911, PLR0912, PLR0915 - one verb, one keyword per execution knob (kept flat on purpose)
     recipe: Recipe | dict[str, Any],
     *,
     confirm: bool | str = False,
@@ -1954,16 +1862,11 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
     if goal is not None and not isinstance(goal, dict):
         return {
             "status": "refused",
-            "reason": (
-                "goal must be a JSON object/mapping, "
-                f"got {type(goal).__name__}"
-            ),
+            "reason": (f"goal must be a JSON object/mapping, got {type(goal).__name__}"),
             "recipe_id": rec.recipe_id,
             "config_hash": rec.config_hash,
         }
-    pviol = _safety.path_violations(
-        [data, output_dir, checkpoint_path, *_safety.recipe_path_params(rec)]
-    )
+    pviol = _safety.path_violations([data, output_dir, checkpoint_path, *_safety.recipe_path_params(rec)])
     if pviol:
         return {
             "status": "refused",
@@ -2004,8 +1907,7 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
         return {
             "status": "refused",
             "reason": (
-                "checkpoint-planned recipes require exact-hash approval; "
-                "bare confirm=True is not authoritative"
+                "checkpoint-planned recipes require exact-hash approval; bare confirm=True is not authoritative"
             ),
             "recipe_id": rec.recipe_id,
             "config_hash": rec.config_hash,
@@ -2021,9 +1923,9 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
             "data_binding": binding.to_dict(),
         }
 
-    if (
-        authoritative_checkpoint_plan or _safety.require_smoke()
-    ) and not _safety.verify_smoke_token(smoke_token, rec.config_hash):
+    if (authoritative_checkpoint_plan or _safety.require_smoke()) and not _safety.verify_smoke_token(
+        smoke_token, rec.config_hash
+    ):
         return {
             "status": "refused",
             "reason": (
@@ -2064,29 +1966,18 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
         }
     data_fp = None if logical_identity else (dp_obj.fingerprint() if dp_obj else None)
     dataset_key = (
-        str(logical_identity["dataset_key"])
-        if logical_identity
-        else (dp_obj.dataset_key() if dp_obj else "")
+        str(logical_identity["dataset_key"]) if logical_identity else (dp_obj.dataset_key() if dp_obj else "")
     )
     fingerprint_tier = (
-        str(logical_identity["fingerprint_tier"])
-        if logical_identity
-        else (dp_obj.fingerprint_tier if dp_obj else "")
+        str(logical_identity["fingerprint_tier"]) if logical_identity else (dp_obj.fingerprint_tier if dp_obj else "")
     )
-    recorded_data = (
-        logical_identity.get("data_source")
-        if logical_identity
-        else (binding.primary_path or data)
-    )
+    recorded_data = logical_identity.get("data_source") if logical_identity else (binding.primary_path or data)
 
     stages, issues = build_stages(rec)
     if stages is None:
         from nemo_curator.audio_agent.diagnostics import diagnose_failure
 
-        build_error = "; ".join(
-            str(issue.get("message") or issue.get("code") or "")
-            for issue in issues
-        )
+        build_error = "; ".join(str(issue.get("message") or issue.get("code") or "") for issue in issues)
         return _safety.redact(
             {
                 "status": "error",
@@ -2114,9 +2005,7 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
 
     caller_executor = executor
     execution_target = (
-        "custom_executor"
-        if caller_executor is not None
-        else _ray_execution_target(os.environ.get("RAY_ADDRESS"))
+        "custom_executor" if caller_executor is not None else _ray_execution_target(os.environ.get("RAY_ADDRESS"))
     )
     preflight_env = probe_env()
     from nemo_curator.audio_agent.diagnostics import environment_preflight
@@ -2140,11 +2029,7 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
             }
         )
     owned_ray_address: str | None = None
-    ray_address = (
-        os.environ.get("RAY_ADDRESS")
-        if caller_executor is None
-        else None
-    )
+    ray_address = os.environ.get("RAY_ADDRESS") if caller_executor is None else None
     if bootstrap_ray and caller_executor is None:
         try:
             from nemo_curator.audio_agent._ray import owns_cluster
@@ -2160,10 +2045,7 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
             return _safety.redact(
                 {
                     "status": "error",
-                    "reason": (
-                        "Ray bootstrap failed before resource planning: "
-                        + error_text
-                    ),
+                    "reason": ("Ray bootstrap failed before resource planning: " + error_text),
                     "diagnosis": diagnose_failure(
                         error_text,
                         stages=stages,
@@ -2206,10 +2088,7 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
         return _safety.redact(
             {
                 "status": "error",
-                "reason": (
-                    "resource planning failed: "
-                    + error_text
-                ),
+                "reason": ("resource planning failed: " + error_text),
                 "diagnosis": diagnose_failure(
                     error_text,
                     stages=stages,
@@ -2221,11 +2100,7 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
                 "recipe_id": rec.recipe_id,
                 "config_hash": rec.config_hash,
                 "data_binding": binding.to_dict(),
-                **(
-                    {"ray_bootstrap_cleanup": ray_cleanup}
-                    if ray_cleanup is not None
-                    else {}
-                ),
+                **({"ray_bootstrap_cleanup": ray_cleanup} if ray_cleanup is not None else {}),
             }
         )
     rec.with_machine_plan(rplan.to_dict(), machine_fingerprint=rplan.machine_fingerprint)
@@ -2251,11 +2126,7 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
                     execution_target=execution_target,
                 ),
                 "data_binding": binding.to_dict(),
-                **(
-                    {"ray_bootstrap_cleanup": ray_cleanup}
-                    if ray_cleanup is not None
-                    else {}
-                ),
+                **({"ray_bootstrap_cleanup": ray_cleanup} if ray_cleanup is not None else {}),
             }
         )
 
@@ -2263,14 +2134,12 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
     runtime_diagnosis: dict[str, Any] | None = None
     results: list[Any] | None = None
     used_mode: str | None = None
-    pretrain_prepared = False
     pretrain_output_rows: int | None = None
     started_at = _utc_now()
     t0 = time.perf_counter()
     try:
         if pretrain_finalizer is not None:
             pretrain_finalizer.prepare()
-            pretrain_prepared = True
         results, used_mode = _run_pipeline_autofallback(
             stages,
             rplan.mode,
@@ -2278,11 +2147,7 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
             checkpoint_path=checkpoint_path,
             before_retry=_automatic_retry_reset_hook(
                 stages,
-                extra_reset=(
-                    pretrain_finalizer.prepare
-                    if pretrain_finalizer is not None
-                    else None
-                ),
+                extra_reset=(pretrain_finalizer.prepare if pretrain_finalizer is not None else None),
             ),
         )
         if pretrain_finalizer is not None:
@@ -2309,9 +2174,7 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
         actual_plan = rplan.to_dict()
         actual_plan["planned_mode"] = rplan.mode
         actual_plan["mode"] = used_mode
-        actual_plan.setdefault("notes", []).append(
-            f"executor fell back from {rplan.mode} to {used_mode}"
-        )
+        actual_plan.setdefault("notes", []).append(f"executor fell back from {rplan.mode} to {used_mode}")
         rec.with_machine_plan(
             actual_plan,
             machine_fingerprint=rplan.machine_fingerprint,
@@ -2365,11 +2228,7 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
     report_obj.output_rows_written = rows_written_in(output_scan)
     report_obj.sparse_fields = sparse_fields_in(output_scan)
     report_obj.cardinality_proven = cardinality_proven
-    report_obj.rejected = (
-        max(0, report_obj.source_items - report_obj.output_rows)
-        if cardinality_proven
-        else None
-    )
+    report_obj.rejected = max(0, report_obj.source_items - report_obj.output_rows) if cardinality_proven else None
 
     from nemo_curator.audio_agent import run_store
 
@@ -2412,11 +2271,7 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
             started_at=started_at,
             ended_at=ended_at,
             elapsed_sec=elapsed,
-            step_identity=(
-                list(logical_identity["step_identity"])
-                if logical_identity
-                else None
-            ),
+            step_identity=(list(logical_identity["step_identity"]) if logical_identity else None),
             persistence_warnings=persistence_warnings,
         )
     provenance["artifacts_published"] = len(published)
@@ -2437,11 +2292,7 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
         produced_keys=keys,
         acceptance_result=acceptance_result,
         reuse=lineage,
-        logical_steps=(
-            list(logical_identity["logical_steps"])
-            if logical_identity
-            else None
-        ),
+        logical_steps=(list(logical_identity["logical_steps"]) if logical_identity else None),
         persistence_status=provenance,
     )
     result = {
@@ -2470,8 +2321,7 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
     warnings = list(persistence_warnings)
     if output_dir:
         warnings.append(
-            "output_dir is a legacy no-op and was not reported as an output; "
-            "configure output paths on recipe stages."
+            "output_dir is a legacy no-op and was not reported as an output; configure output paths on recipe stages."
         )
     if warnings:
         result["warnings"] = warnings
@@ -2479,9 +2329,7 @@ def run(  # noqa: PLR0913 - one verb, one keyword per execution knob (kept flat 
     if ray_cleanup is not None:
         result["ray_bootstrap_cleanup"] = ray_cleanup
         if not ray_cleanup:
-            result.setdefault("warnings", []).append(
-                "the locally bootstrapped Ray head could not be stopped safely"
-            )
+            result.setdefault("warnings", []).append("the locally bootstrapped Ray head could not be stopped safely")
     return _safety.redact(result)
 
 
@@ -2560,7 +2408,7 @@ def _consumed_inventory(rec: Recipe, dp: Any) -> dict[str, str] | None:  # noqa:
     return {rel: token for rel, token in dp.inventory.items() if rel in wanted}
 
 
-def _publish_artifacts(  # noqa: PLR0913 - publishing gathers the run's whole context
+def _publish_artifacts(  # noqa: PLR0913, C901, PLR0912, PLR0915 - publishing gathers the run's whole context
     rec: Recipe,
     stages: list[Any],
     *,
@@ -2591,9 +2439,7 @@ def _publish_artifacts(  # noqa: PLR0913 - publishing gathers the run's whole co
     # profiled.
     if not dataset_key:
         if persistence_warnings is not None:
-            persistence_warnings.append(
-                "artifacts were not published because source data identity is unavailable"
-            )
+            persistence_warnings.append("artifacts were not published because source data identity is unavailable")
         return []
 
     try:
@@ -2602,10 +2448,7 @@ def _publish_artifacts(  # noqa: PLR0913 - publishing gathers the run's whole co
         from nemo_curator.stages.audio._agent._conformance import produced_roles as _roles_of
     except Exception as exc:  # noqa: BLE001
         if persistence_warnings is not None:
-            persistence_warnings.append(
-                "artifact registry could not be loaded: "
-                f"{type(exc).__name__}: {exc}"
-            )
+            persistence_warnings.append(f"artifact registry could not be loaded: {type(exc).__name__}: {exc}")
         return []
 
     out: list[dict[str, Any]] = []
@@ -2613,10 +2456,7 @@ def _publish_artifacts(  # noqa: PLR0913 - publishing gathers the run's whole co
         plans = art_mod.plan_steps(rec, dataset_key)
     except Exception as exc:  # noqa: BLE001
         if persistence_warnings is not None:
-            persistence_warnings.append(
-                "artifact publication plan could not be built: "
-                f"{type(exc).__name__}: {exc}"
-            )
+            persistence_warnings.append(f"artifact publication plan could not be built: {type(exc).__name__}: {exc}")
         return []
 
     # Provenance, resolved once per run rather than per artifact. Both degrade to "" and are
@@ -2649,8 +2489,7 @@ def _publish_artifacts(  # noqa: PLR0913 - publishing gathers the run's whole co
         if "://" in plan.uri and not plan.uri.startswith("file://"):
             if persistence_warnings is not None:
                 persistence_warnings.append(
-                    "artifact publication/reuse is unsupported for non-local "
-                    f"output backend {plan.uri!r}"
+                    f"artifact publication/reuse is unsupported for non-local output backend {plan.uri!r}"
                 )
             continue
         if not os.path.exists(os.path.expanduser(plan.uri)):
@@ -2664,7 +2503,8 @@ def _publish_artifacts(  # noqa: PLR0913 - publishing gathers the run's whole co
         # not the sum of stage timers (which misses setup, scheduling and teardown).
         through_here = max(cumulative, elapsed_sec) if plan.index == len(plans) - 1 else cumulative
         step_key, input_key, stage_index = (
-            step_identity[i] if step_identity and i < len(step_identity)
+            step_identity[i]
+            if step_identity and i < len(step_identity)
             else (plan.step_key, plan.input_key, plan.index)
         )
         is_checkpoint = plan.stage_ref == "ManifestCheckpointStage"
@@ -2737,8 +2577,7 @@ def _publish_artifacts(  # noqa: PLR0913 - publishing gathers the run's whole co
         except Exception as exc:  # noqa: BLE001 - compute completion stays separate
             if persistence_warnings is not None:
                 persistence_warnings.append(
-                    f"artifact publication failed for {plan.uri!r}: "
-                    f"{type(exc).__name__}: {exc}"
+                    f"artifact publication failed for {plan.uri!r}: {type(exc).__name__}: {exc}"
                 )
             continue
         rows_in = art.rows_out or rows_in
@@ -2809,7 +2648,9 @@ def _record_run(  # noqa: PLR0913 - a provenance record intentionally gathers ma
         output_paths=list(getattr(report, "output_paths", []) or []),
         elapsed_sec=round(elapsed, 3),
         per_stage_metrics=dict(getattr(report, "per_stage_metrics", {}) or {}),
-        env_summary={k: env.get(k) for k in ("has_gpu", "gpu_count", "gpu_names", "python_version", "cuda_runtime_version")},
+        env_summary={
+            k: env.get(k) for k in ("has_gpu", "gpu_count", "gpu_names", "python_version", "cuda_runtime_version")
+        },
         curator_version=str(env.get("curator_version") or ""),
         knowledge_version=rec.knowledge_version,
         # The chain of the pipeline the USER asked for. After a continuation ``rec`` is the
@@ -2826,8 +2667,7 @@ def _record_run(  # noqa: PLR0913 - a provenance record intentionally gathers ma
         if persistence_status is not None:
             persistence_status["run_record_persisted"] = False
             persistence_status.setdefault("warnings", []).append(
-                "run record persistence failed: "
-                f"{type(exc).__name__}: {exc}"
+                f"run record persistence failed: {type(exc).__name__}: {exc}"
             )
         return record.run_id
     # Keep what actually ran, when the record above could not. Only a recipe whose params were
@@ -2851,7 +2691,7 @@ def _step_keys(rec: Recipe, dataset_key: str) -> list[str]:
         return []
 
 
-def _acceptance_result(
+def _acceptance_result(  # noqa: PLR0913
     rec: Recipe,
     report: Any,  # noqa: ANN401
     produced_roles: list[str] | None,
@@ -2888,11 +2728,7 @@ def _acceptance_result(
             output_scan = {}
         elif not _scan_covers(output_scan, evidence_outputs):
             per_item, output_scan = _scan_terminal_output(evidence_outputs, limit=0)
-        expected_output_rows = (
-            int(getattr(report, "accepted", 0))
-            if cardinality_proven
-            else None
-        )
+        expected_output_rows = int(getattr(report, "accepted", 0)) if cardinality_proven else None
         return verify(
             list(rec.acceptance_criteria),
             {
@@ -2968,9 +2804,7 @@ def _terminal_evidence_outputs(
         if not isinstance(output, str) or not output:
             continue
         cardinality_proven = (
-            short_ref
-            in {"DocumentBatchJsonlWriterStage", "ManifestWriterStage"}
-            and index == len(rec.stages) - 1
+            short_ref in {"DocumentBatchJsonlWriterStage", "ManifestWriterStage"} and index == len(rec.stages) - 1
         )
         return [output], cardinality_proven
 
@@ -2990,7 +2824,7 @@ def _same_output_target(left: str, right: str) -> bool:
         return False
 
 
-def report(output: str, *, recipe: Recipe | dict[str, Any] | None = None, data: str | None = None) -> dict[str, Any]:
+def report(output: str, *, recipe: Recipe | dict[str, Any] | None = None, data: str | None = None) -> dict[str, Any]:  # noqa: C901, PLR0911, PLR0912
     """Post-hoc report from an output manifest/dir (counts rows vs input scale).
 
     Without ``recipe``, ``data`` is profiled directly for the input count. With
@@ -2999,9 +2833,7 @@ def report(output: str, *, recipe: Recipe | dict[str, Any] | None = None, data: 
     and carries its frozen identity/acceptance contract into the report.
     """
     rec = _as_recipe(recipe).freeze() if recipe is not None else None
-    pviol = _safety.path_violations(
-        [output, data, *(_safety.recipe_path_params(rec) if rec is not None else [])]
-    )
+    pviol = _safety.path_violations([output, data, *(_safety.recipe_path_params(rec) if rec is not None else [])])
     if pviol:
         return {"status": "refused", "reason": "path(s) resolve outside the allowed workspace", "violations": pviol}
     binding = _dataset_binding(rec, data) if rec is not None else None
@@ -3027,10 +2859,7 @@ def report(output: str, *, recipe: Recipe | dict[str, Any] | None = None, data: 
             return _safety.redact(
                 {
                     "status": "refused",
-                    "reason": (
-                        "the recipe declares no terminal output that can be "
-                        "bound to this post-hoc report"
-                    ),
+                    "reason": ("the recipe declares no terminal output that can be bound to this post-hoc report"),
                     "recipe_id": rec.recipe_id,
                     "config_hash": rec.config_hash,
                     "data_binding": binding.to_dict() if binding is not None else None,
@@ -3040,10 +2869,7 @@ def report(output: str, *, recipe: Recipe | dict[str, Any] | None = None, data: 
             return _safety.redact(
                 {
                     "status": "refused",
-                    "reason": (
-                        "reported output does not match the recipe's declared "
-                        "terminal output"
-                    ),
+                    "reason": ("reported output does not match the recipe's declared terminal output"),
                     "output": output,
                     "declared_terminal_outputs": terminal_outputs,
                     "recipe_id": rec.recipe_id,
@@ -3057,11 +2883,7 @@ def report(output: str, *, recipe: Recipe | dict[str, Any] | None = None, data: 
     if locate_status == "no_manifest":
         inventory = _scan_output_inventory(output)
         if inventory.get("status") in {"complete", "empty"}:
-            source_items = (
-                int((data_profile or {}).get("num_files", 0))
-                if data_profile is not None
-                else None
-            )
+            source_items = int((data_profile or {}).get("num_files", 0)) if data_profile is not None else None
             rpt = build_run_report(
                 recipe=rec or Recipe(),
                 result_tasks=[],
@@ -3069,10 +2891,7 @@ def report(output: str, *, recipe: Recipe | dict[str, Any] | None = None, data: 
                 env_profile=probe_env().to_dict(),
                 output_paths=[output],
                 examples=[],
-                next_action=(
-                    "review the output inventory; row-level fields are unavailable "
-                    "for this output type"
-                ),
+                next_action=("review the output inventory; row-level fields are unavailable for this output type"),
             )
             d = rpt.to_dict()
             d.update(
@@ -3118,11 +2937,7 @@ def report(output: str, *, recipe: Recipe | dict[str, Any] | None = None, data: 
         )
 
     accepted = int(output_scan.get("valid_rows") or 0)
-    input_count = (
-        int((data_profile or {}).get("num_files", 0))
-        if data_profile is not None
-        else None
-    )
+    input_count = int((data_profile or {}).get("num_files", 0)) if data_profile is not None else None
     corrupt = bool(
         int(output_scan.get("read_errors") or 0)
         or int(output_scan.get("malformed_rows") or 0)
@@ -3161,11 +2976,7 @@ def report(output: str, *, recipe: Recipe | dict[str, Any] | None = None, data: 
     # Output-row cardinality is not generally the same as source-item
     # cardinality (split/fan-out stages are common).  Only a proven 1:1
     # terminal serializer supports subtraction as a rejection count.
-    d["rejected"] = (
-        max(0, input_count - accepted)
-        if input_count is not None and cardinality_proven
-        else None
-    )
+    d["rejected"] = max(0, input_count - accepted) if input_count is not None and cardinality_proven else None
     d["output_scan"] = output_scan
     if rec is not None and rec.acceptance_criteria:
         d["acceptance"] = verify(
@@ -3215,9 +3026,7 @@ def verify(
         frozen = parse_criteria(_as_recipe(recipe).acceptance_criteria)
         if frozen_criteria is not None:
             explicit_frozen = parse_criteria(frozen_criteria)
-            if [criterion.to_dict() for criterion in explicit_frozen] != [
-                criterion.to_dict() for criterion in frozen
-            ]:
+            if [criterion.to_dict() for criterion in explicit_frozen] != [criterion.to_dict() for criterion in frozen]:
                 msg = (
                     "frozen_criteria conflicts with recipe.acceptance_criteria; "
                     "provide one honesty source or make them identical"
@@ -3233,7 +3042,7 @@ def verify(
     return _safety.redact(report_obj.to_dict())
 
 
-def runs(
+def runs(  # noqa: PLR0913
     run_id: str | None = None,
     *,
     data: str | None = None,
@@ -3511,11 +3320,7 @@ def reuse_scan(recipe: Recipe | dict[str, Any], *, data: str | None = None, limi
     binding = _dataset_binding(rec, data)
     dp = _profile_binding(binding)
     profile_error = _profile_error(dp) if dp is not None else ""
-    dataset_key = (
-        dp.dataset_key()
-        if dp and not profile_error and not _binding_blocks_execution(binding, data)
-        else ""
-    )
+    dataset_key = dp.dataset_key() if dp and not profile_error and not _binding_blocks_execution(binding, data) else ""
     result = _reuse.scan(rec, dataset_key=dataset_key, limit=limit)
     result["data_binding"] = binding.to_dict()
     if profile_error:
@@ -3602,8 +3407,7 @@ def _attach_delta(result: dict[str, Any], rec: Recipe, dp: Any) -> None:  # noqa
     result["delta"] = decision.to_dict()
     if decision.status != "ready":
         result["rationale"] = (
-            f"{result.get('rationale', '')}; running only the changed file(s) is not available "
-            f"here: {decision.reason}"
+            f"{result.get('rationale', '')}; running only the changed file(s) is not available here: {decision.reason}"
         ).lstrip("; ")
         return
     change = decision.change
@@ -3695,14 +3499,16 @@ def add_checkpoint(
     checkpointed, err = _checkpoint.insert(rec, index=spot.index, output_path=chosen_path)
     if checkpointed is None:
         return {"status": "error", "reason": err, "advice": advice}
-    return _safety.redact({
-        "status": "ok",
-        "advice": advice,
-        "path_source": path_source,
-        "output_path": chosen_path,
-        "recipe": checkpointed.to_dict(),
-        "next": "save this recipe, then validate -> smoke -> run it as usual",
-    })
+    return _safety.redact(
+        {
+            "status": "ok",
+            "advice": advice,
+            "path_source": path_source,
+            "output_path": chosen_path,
+            "recipe": checkpointed.to_dict(),
+            "next": "save this recipe, then validate -> smoke -> run it as usual",
+        }
+    )
 
 
 def _derived_checkpoint_path(rec: Recipe, index: int, dataset_key: str) -> str:
@@ -3846,10 +3652,7 @@ def plan_checkpoint(  # noqa: C901, PLR0911, PLR0912, PLR0913 - one refusal per 
         if not isinstance(decision_value, (bool, int, float, str)):
             return {
                 "status": "refused",
-                "reason": (
-                    "decision_value must be a JSON scalar "
-                    "(boolean, number, or string); null means no change"
-                ),
+                "reason": ("decision_value must be a JSON scalar (boolean, number, or string); null means no change"),
             }
         if isinstance(decision_value, float) and not math.isfinite(decision_value):
             return {
@@ -3927,7 +3730,7 @@ def plan_checkpoint(  # noqa: C901, PLR0911, PLR0912, PLR0913 - one refusal per 
     return _safety.redact(result)
 
 
-def delta_run(  # noqa: PLR0913 - the same execution knobs as run(), which it delegates to
+def delta_run(  # noqa: PLR0913, PLR0911 - the same execution knobs as run(), which it delegates to
     recipe: Recipe | dict[str, Any] | None = None,
     *,
     from_run: str | None = None,
@@ -4013,10 +3816,7 @@ def delta_run(  # noqa: PLR0913 - the same execution knobs as run(), which it de
     if confirm is not True and not (isinstance(confirm, str) and confirm == rec.config_hash):
         card.update(
             status="refused",
-            reason=(
-                "a delta run rewrites the prior manifests in place after merging; "
-                "confirm it like any other run"
-            ),
+            reason=("a delta run rewrites the prior manifests in place after merging; confirm it like any other run"),
             confirm_with=f"pass confirm={rec.config_hash!r} (or confirm=True) to proceed",
         )
         return _safety.redact(card)
@@ -4065,20 +3865,28 @@ def _delta_recipe(
     handed over is how a run comes to execute stages nobody chose.
     """
     if recipe is not None and from_run:
-        return Recipe(), None, {
-            "status": "refused",
-            "reason": (
-                "from_run adopts that run's own recipe, so a second one cannot also apply; "
-                "pass a recipe or from_run, not both"
-            ),
-        }
+        return (
+            Recipe(),
+            None,
+            {
+                "status": "refused",
+                "reason": (
+                    "from_run adopts that run's own recipe, so a second one cannot also apply; "
+                    "pass a recipe or from_run, not both"
+                ),
+            },
+        )
     if from_run:
         return _adopt_recipe(from_run)
     if recipe is None:
-        return Recipe(), None, {
-            "status": "refused",
-            "reason": "a delta needs a recipe: pass one, or from_run to adopt a prior run's",
-        }
+        return (
+            Recipe(),
+            None,
+            {
+                "status": "refused",
+                "reason": "a delta needs a recipe: pass one, or from_run to adopt a prior run's",
+            },
+        )
     return _as_recipe(recipe).freeze(), None, None
 
 
@@ -4099,39 +3907,53 @@ def _adopt_recipe(run_id: str) -> tuple[Recipe, dict[str, Any] | None, dict[str,
     if record is None:
         return Recipe(), None, {"status": "refused", "reason": f"no run record {run_id!r}"}
     if record.status != "completed":
-        return Recipe(), None, {
-            "status": "refused",
-            "reason": (
-                f"run {run_id!r} has status {record.status!r}; only a completed run has a result "
-                "for a delta to extend"
-            ),
-        }
+        return (
+            Recipe(),
+            None,
+            {
+                "status": "refused",
+                "reason": (
+                    f"run {run_id!r} has status {record.status!r}; only a completed run has a result "
+                    "for a delta to extend"
+                ),
+            },
+        )
     raw = run_store.load_exact_recipe(run_id) or record.recipe
     if not isinstance(raw, dict) or not raw.get("stages"):
-        return Recipe(), None, {
-            "status": "refused",
-            "reason": f"run {run_id!r} recorded no recipe to adopt",
-        }
+        return (
+            Recipe(),
+            None,
+            {
+                "status": "refused",
+                "reason": f"run {run_id!r} recorded no recipe to adopt",
+            },
+        )
     try:
         rec = Recipe.from_dict(raw).freeze()
     except ValueError as exc:
-        return Recipe(), None, {
-            "status": "refused",
-            "reason": f"run {run_id!r}'s recorded recipe cannot be loaded by this build: {exc}",
-        }
+        return (
+            Recipe(),
+            None,
+            {
+                "status": "refused",
+                "reason": f"run {run_id!r}'s recorded recipe cannot be loaded by this build: {exc}",
+            },
+        )
     reproduced = not record.semantic_hash or rec.semantic_hash == record.semantic_hash
-    masked = [
-        f"{s.ref}.{param}" for s in rec.stages for param in s.params if is_secret_key(param)
-    ]
+    masked = [f"{s.ref}.{param}" for s in rec.stages for param in s.params if is_secret_key(param)]
     if not reproduced and masked:
-        return Recipe(), None, {
-            "status": "refused",
-            "reason": (
-                f"run {run_id!r} cannot be adopted: its {', '.join(masked)} was masked in history, "
-                "and a pipeline missing that value matches none of that run's own results"
-            ),
-            "next": "pass the recipe with the credential supplied, and the delta works as usual",
-        }
+        return (
+            Recipe(),
+            None,
+            {
+                "status": "refused",
+                "reason": (
+                    f"run {run_id!r} cannot be adopted: its {', '.join(masked)} was masked in history, "
+                    "and a pipeline missing that value matches none of that run's own results"
+                ),
+                "next": "pass the recipe with the credential supplied, and the delta works as usual",
+            },
+        )
     adopted: dict[str, Any] = {
         "run_id": record.run_id,
         "created_at": record.created_at,
@@ -4179,13 +4001,19 @@ def _carry_approval(
     if confirm is not True and not isinstance(confirm, str):
         return confirm, smoke_token, ""
     if isinstance(confirm, str) and confirm != approved.config_hash:
-        return confirm, smoke_token, (
-            "plan-execution integrity check failed: confirmed hash does not match the recipe"
+        return (
+            confirm,
+            smoke_token,
+            ("plan-execution integrity check failed: confirmed hash does not match the recipe"),
         )
     if _safety.require_smoke() and not _safety.verify_smoke_token(smoke_token, approved.config_hash):
-        return confirm, smoke_token, (
-            "run requires smoke evidence (AUDIO_AGENT_REQUIRE_SMOKE is set): run smoke on this "
-            "recipe and pass its 'smoke_token'"
+        return (
+            confirm,
+            smoke_token,
+            (
+                "run requires smoke evidence (AUDIO_AGENT_REQUIRE_SMOKE is set): run smoke on this "
+                "recipe and pass its 'smoke_token'"
+            ),
         )
     carried = derived.config_hash if isinstance(confirm, str) else confirm
     return carried, _safety.smoke_token(derived.config_hash), ""
@@ -4400,9 +4228,7 @@ def plan_continuation(  # noqa: PLR0913 - one verb covering plan + the three-way
     from nemo_curator.audio_agent import reuse as _reuse
 
     rec = _as_recipe(recipe).freeze()
-    pviol = _safety.path_violations(
-        [data, output_dir, checkpoint_path, *_safety.recipe_path_params(rec)]
-    )
+    pviol = _safety.path_violations([data, output_dir, checkpoint_path, *_safety.recipe_path_params(rec)])
     if pviol:
         return {
             "status": "refused",
@@ -4473,12 +4299,18 @@ def _parent_plan(rec: Recipe, parent_run_id: str | None, *, dp: Any, dataset_key
     from nemo_curator.audio_agent import continuation, run_store
 
     if not parent_run_id:
-        return {"mode": "full_rerun", "reason": "no parent run given; reuse comes from the artifact scan alone",
-                "run_stages": [s.ref for s in rec.stages]}
+        return {
+            "mode": "full_rerun",
+            "reason": "no parent run given; reuse comes from the artifact scan alone",
+            "run_stages": [s.ref for s in rec.stages],
+        }
     parent = run_store.load(parent_run_id)
     if parent is None:
-        return {"mode": "full_rerun", "reason": f"no parent run record {parent_run_id!r}; run fresh",
-                "run_stages": [s.ref for s in rec.stages]}
+        return {
+            "mode": "full_rerun",
+            "reason": f"no parent run record {parent_run_id!r}; run fresh",
+            "run_stages": [s.ref for s in rec.stages],
+        }
     if dp is None or not dataset_key:
         return {
             "mode": "full_rerun",
@@ -4560,7 +4392,7 @@ def _chosen_by_default(plan: dict[str, Any]) -> str:
     return _default_choice(plan["mode"])
 
 
-def _execute_plan(  # noqa: PLR0913 - executing a plan needs the plan's whole context
+def _execute_plan(  # noqa: PLR0913, PLR0911 - executing a plan needs the plan's whole context
     rec: Recipe,
     plan: dict[str, Any],
     *,
@@ -4625,9 +4457,7 @@ def _execute_plan(  # noqa: PLR0913 - executing a plan needs the plan's whole co
             },
             redact_transcripts=False,
         )
-    inner_confirm, inner_token, refusal = _carry_approval(
-        rec, materialized, confirm=confirm, smoke_token=smoke_token
-    )
+    inner_confirm, inner_token, refusal = _carry_approval(rec, materialized, confirm=confirm, smoke_token=smoke_token)
     if refusal:
         return _safety.redact(
             {
@@ -4648,7 +4478,8 @@ def _execute_plan(  # noqa: PLR0913 - executing a plan needs the plan's whole co
         bootstrap_ray=bootstrap_ray,
         smoke_token=inner_token,
         calibration=calibration,
-        goal=goal, reuse={**lineage, "reused": plan.get("reuse_stages", []), "reused_from": point.get("uri")},
+        goal=goal,
+        reuse={**lineage, "reused": plan.get("reuse_stages", []), "reused_from": point.get("uri")},
         _continuation_context=_continuation_context_from_plan(rec, plan),
     )
     # An unconfirmed call is still refused by ``run`` (unchanged), but its advice names the
@@ -4741,15 +4572,13 @@ def _as_is_evidence(
         return "", reasons or ["the recorded artifact is no longer reusable"], None
     status = str(getattr(parent, "status", "") or "")
     if status and status != "completed":
-        return "", [
-            f"the run that produced it ended {status!r}, so its output is not a complete result"
-        ], None
+        return "", [f"the run that produced it ended {status!r}, so its output is not a complete result"], None
     if not _has_content(uri):
         return "", [f"{uri!r} does not exist or is empty, so there is nothing to serve"], None
     return "run_record", [], None
 
 
-def _serve_as_is(rec: Recipe, plan: dict[str, Any], *, parent: Any, lineage: dict[str, Any]) -> dict[str, Any]:  # noqa: ANN401
+def _serve_as_is(rec: Recipe, plan: dict[str, Any], *, parent: Any, lineage: dict[str, Any]) -> dict[str, Any]:  # noqa: ANN401, C901
     """Serve an existing output — and RE-VERIFY it against the criteria asked for now.
 
     Reused data is still judged by today's bar: a stricter contract must be re-checked, never
@@ -4789,27 +4618,17 @@ def _serve_as_is(rec: Recipe, plan: dict[str, Any], *, parent: Any, lineage: dic
             ),
             "plan": plan,
         }
-    per_item, output_scan = (
-        _scan_terminal_output([uri], limit=0)
-        if _needs_terminal_evidence(rec)
-        else ([], {})
-    )
+    per_item, output_scan = _scan_terminal_output([uri], limit=0) if _needs_terminal_evidence(rec) else ([], {})
     source_run = parent
     source_run_id = getattr(source_run, "run_id", None)
     if source_run is None:
-        source_run_id = point.get("run_id") or (
-            (plan.get("candidates") or [{}])[0].get("run_id")
-        )
+        source_run_id = point.get("run_id") or ((plan.get("candidates") or [{}])[0].get("run_id"))
         if source_run_id:
             from nemo_curator.audio_agent import run_store
 
             source_run = run_store.load(str(source_run_id))
     source_input_count = getattr(source_run, "input_count", None)
-    if (
-        not isinstance(source_input_count, int)
-        or isinstance(source_input_count, bool)
-        or source_input_count < 0
-    ):
+    if not isinstance(source_input_count, int) or isinstance(source_input_count, bool) or source_input_count < 0:
         source_input_count = None
     acceptance = verify(
         list(rec.acceptance_criteria),
@@ -4834,7 +4653,11 @@ def _serve_as_is(rec: Recipe, plan: dict[str, Any], *, parent: Any, lineage: dic
     )
     checked = len(rec.acceptance_criteria)
     note = "served from a previously completed run; no compute was done. "
-    note += f"The {checked} success criterion(a) were re-checked." if checked else "No success criteria were supplied, so nothing was re-checked."
+    note += (
+        f"The {checked} success criterion(a) were re-checked."
+        if checked
+        else "No success criteria were supplied, so nothing was re-checked."
+    )
     if delivered_to:
         note += f" The reused output was copied to the path the recipe asked for ({uri})."
     if trust == "run_record":
@@ -4901,11 +4724,7 @@ def calibrate(smoke_report: dict[str, Any]) -> dict[str, Any]:
         ),
         "calibration": _cal.from_smoke(
             smoke_report,
-            machine_fingerprint=(
-                machine_fingerprint
-                if isinstance(machine_fingerprint, str)
-                else None
-            ),
+            machine_fingerprint=(machine_fingerprint if isinstance(machine_fingerprint, str) else None),
         ),
     }
 
@@ -4938,11 +4757,7 @@ def available_skills() -> list[str]:
     root = skills_dir()
     if not os.path.isdir(root):
         return []
-    return sorted(
-        name
-        for name in os.listdir(root)
-        if os.path.isfile(os.path.join(root, name, "SKILL.md"))
-    )
+    return sorted(name for name in os.listdir(root) if os.path.isfile(os.path.join(root, name, "SKILL.md")))
 
 
 def _trees_match(source: str, target: str) -> bool:
@@ -5011,8 +4826,7 @@ def _is_dead_shim(target: str, source: str) -> bool:
     if os.path.isdir(target) and not os.path.islink(target):
         entries = os.listdir(source)
         return bool(entries) and all(
-            _names_its_own_target(os.path.join(target, entry), os.path.join(source, entry))
-            for entry in entries
+            _names_its_own_target(os.path.join(target, entry), os.path.join(source, entry)) for entry in entries
         )
     return _names_its_own_target(target, source)
 
@@ -5081,16 +4895,13 @@ def _lay_out_skill(source: str, target: str, *, mode: str) -> None:
         )
 
 
-def _install_one_skill(
-    source: str, target: str, *, mode: str, force: bool, dry_run: bool
-) -> dict[str, Any]:
+def _install_one_skill(source: str, target: str, *, mode: str, force: bool, dry_run: bool) -> dict[str, Any]:
     """Place one skill at ``target``, refusing to destroy anything that is not ours."""
     action = _install_action(source, target, mode=mode, force=force)
     entry: dict[str, Any] = {"target": target, "mode": mode, "action": action}
     if action == "conflict":
         entry["reason"] = (
-            "already exists with different content; pass force to replace it, "
-            "or install under a different scope"
+            "already exists with different content; pass force to replace it, or install under a different scope"
         )
         return entry
     if action == "unchanged" or dry_run:
@@ -5272,14 +5083,10 @@ def _adapt_resource_plan_for_target(
     escalations = list(getattr(plan, "escalations", []) or [])
     if execution_target == "custom_executor":
         if escalations:
-            plan.notes.append(
-                "custom_executor_unverified_capacity=" + "; ".join(escalations)
-            )
+            plan.notes.append("custom_executor_unverified_capacity=" + "; ".join(escalations))
         plan.escalations = []
         plan.feasible = True
-        plan.notes.append(
-            "custom executor owns scheduling; capacity is verified by its bounded execution"
-        )
+        plan.notes.append("custom executor owns scheduling; capacity is verified by its bounded execution")
         return
     # Dormant by design, not by oversight: the planner currently reports unknown VRAM as a
     # NOTE and never escalates on it ("VRAM is intentionally NOT escalated here" --
@@ -5287,21 +5094,14 @@ def _adapt_resource_plan_for_target(
     # the rule it encodes outlives that choice: a bounded smoke is how VRAM gets MEASURED on a
     # remote cluster, so refusing the smoke for want of the measurement would close the only
     # door to it. A run is a different matter and still escalates.
-    unknown_vram = [
-        item
-        for item in escalations
-        if item.startswith("GPU VRAM capacity is unknown;")
-    ]
+    unknown_vram = [item for item in escalations if item.startswith("GPU VRAM capacity is unknown;")]
     if (
         execution_target == "external_ray"
         and operation == "smoke"
         and escalations
         and len(unknown_vram) == len(escalations)
     ):
-        plan.notes.extend(
-            "bounded_remote_smoke=" + item
-            for item in unknown_vram
-        )
+        plan.notes.extend("bounded_remote_smoke=" + item for item in unknown_vram)
         plan.escalations = []
         plan.feasible = True
 
@@ -5314,27 +5114,25 @@ def _apply_ray_cluster_capacity(env: Any, address: str | None) -> Any:  # noqa: 
         from nemo_curator.audio_agent._ray import cluster_resources
 
         resources = cluster_resources(address)
-    except Exception as exc:  # noqa: BLE001 - an unprobed executor must fail closed
-        raise RuntimeError(
+    except Exception as exc:
+        msg = (
             "Ray cluster capacity could not be verified; refusing to substitute "
             f"driver resources ({type(exc).__name__}: {exc})"
-        ) from exc
+        )
+        raise RuntimeError(msg) from exc
 
     cpus = float(resources.get("CPU", 0.0) or 0.0)
     gpus = float(resources.get("GPU", 0.0) or 0.0)
     memory = float(resources.get("memory", 0.0) or 0.0)
     if not math.isfinite(cpus) or cpus <= 0:
-        raise RuntimeError(
-            f"Ray cluster at {address!r} reported no positive finite CPU capacity"
-        )
+        msg = f"Ray cluster at {address!r} reported no positive finite CPU capacity"
+        raise RuntimeError(msg)
     if not math.isfinite(gpus) or gpus < 0:
-        raise RuntimeError(
-            f"Ray cluster at {address!r} reported invalid GPU capacity {gpus!r}"
-        )
+        msg = f"Ray cluster at {address!r} reported invalid GPU capacity {gpus!r}"
+        raise RuntimeError(msg)
     if not math.isfinite(memory) or memory < 0:
-        raise RuntimeError(
-            f"Ray cluster at {address!r} reported invalid memory capacity {memory!r}"
-        )
+        msg = f"Ray cluster at {address!r} reported invalid memory capacity {memory!r}"
+        raise RuntimeError(msg)
     env.total_cpus = cpus
     env.gpu_count = max(0, int(gpus))
     env.has_gpu = env.gpu_count > 0
@@ -5346,10 +5144,7 @@ def _apply_ray_cluster_capacity(env: Any, address: str | None) -> Any:  # noqa: 
         # must not be projected onto a remote or unresolved cluster.
         env.gpu_mem_gb = 0.0
         env.gpu_names = []
-    env.notes.append(
-        "resource planning bound to Ray cluster capacity at "
-        f"{address}: CPU={cpus:g}, GPU={gpus:g}"
-    )
+    env.notes.append(f"resource planning bound to Ray cluster capacity at {address}: CPU={cpus:g}, GPU={gpus:g}")
     return env
 
 
@@ -5387,12 +5182,17 @@ def _calibration_for_run(
     measured_at = stored.get("created_at")
     return stored, (
         "calibration: none passed; using the per-stage measurements a prior smoke of this "
-        + f"exact recipe stored{f' at {measured_at}' if measured_at else ''} "
-        + "(pass --calibration to override)"
+        f"exact recipe stored{f' at {measured_at}' if measured_at else ''} "
+        "(pass --calibration to override)"
     )
 
 
-def _plan_resources(stages: list[Any], env_obj: Any, data_profile: dict[str, Any] | None, calibration: dict[str, Any] | None = None):  # noqa: ANN401
+def _plan_resources(  # noqa: ANN202
+    stages: list[Any],
+    env_obj: Any,  # noqa: ANN401
+    data_profile: dict[str, Any] | None,
+    calibration: dict[str, Any] | None = None,
+):
     """Run the deterministic resource planner over the built stages (1C.1 + 1C.2 calibration)."""
     from nemo_curator.audio_agent import planner
     from nemo_curator.stages.audio import agent as foundation
@@ -5423,7 +5223,7 @@ def _make_executor(mode: str) -> Any:  # noqa: ANN401
         return None
 
 
-def _bound_recipe(
+def _bound_recipe(  # noqa: C901, PLR0911
     recipe: Recipe,
     sample: int,
     rpt: SmokeReport,
@@ -5453,9 +5253,7 @@ def _bound_recipe(
         tmp, count, error = _write_bounded_manifest(manifests, sample)
         if error:
             return _SmokeBound(None, error=error)
-        execution_knobs = {
-            key: value for key, value in src.params.items() if key in EXECUTION_KNOB_PARAMS
-        }
+        execution_knobs = {key: value for key, value in src.params.items() if key in EXECUTION_KNOB_PARAMS}
         src.params = {
             "manifest_path": tmp,
             "files_per_partition": 1,
@@ -5464,10 +5262,7 @@ def _bound_recipe(
             "storage_options": None,
             **execution_knobs,
         }
-        rpt.notes.append(
-            f"bounded via {len(manifests)} resolved local manifest file(s) "
-            f"({count}/{sample} rows)"
-        )
+        rpt.notes.append(f"bounded via {len(manifests)} resolved local manifest file(s) ({count}/{sample} rows)")
         return _SmokeBound(bounded, (tmp,), count)
 
     if src.ref == "ReadLongFormManifestStage":
@@ -5493,9 +5288,7 @@ def _bound_recipe(
         tmp, count, error = _write_bounded_fleurs_manifest(src, binding, sample)
         if error:
             return _SmokeBound(None, error=error)
-        execution_knobs = {
-            key: value for key, value in src.params.items() if key in EXECUTION_KNOB_PARAMS
-        }
+        execution_knobs = {key: value for key, value in src.params.items() if key in EXECUTION_KNOB_PARAMS}
         src.ref = "ManifestReader"
         src.params = {"manifest_path": tmp, **execution_knobs}
         rpt.notes.append(f"bounded pre-staged FLEURS via temporary manifest ({count}/{sample} rows)")
@@ -5524,7 +5317,7 @@ def _bound_recipe(
     )
 
 
-def _isolate_smoke_outputs(bound: _SmokeBound, rpt: SmokeReport) -> _SmokeBound:
+def _isolate_smoke_outputs(bound: _SmokeBound, rpt: SmokeReport) -> _SmokeBound:  # noqa: C901
     """Redirect every reviewed output mutation into one disposable local tree."""
     if bound.recipe is None:
         return bound
@@ -5573,9 +5366,7 @@ def _isolate_smoke_outputs(bound: _SmokeBound, rpt: SmokeReport) -> _SmokeBound:
                 True,
             ):
                 stage.params["write_rttm"] = False
-                rpt.notes.append(
-                    "disabled source-adjacent PyAnnote RTTM side output for smoke"
-                )
+                rpt.notes.append("disabled source-adjacent PyAnnote RTTM side output for smoke")
 
             if stage.ref in {"SplitLongAudioStage", "SplitASRAlignJoinStage"}:
                 stage.params["output_dir"] = _smoke_output_path(
@@ -5610,7 +5401,7 @@ def _isolate_smoke_outputs(bound: _SmokeBound, rpt: SmokeReport) -> _SmokeBound:
     )
 
 
-def _smoke_output_path(
+def _smoke_output_path(  # noqa: PLR0913
     root: str,
     stage_index: int,
     stage_ref: str,
@@ -5634,7 +5425,7 @@ def _smoke_output_path(
     return target
 
 
-def _smoke_write_issues(
+def _smoke_write_issues(  # noqa: C901
     stages: list[Any],
     output_root: str | None,
 ) -> list[str]:
@@ -5654,10 +5445,7 @@ def _smoke_write_issues(
         try:
             contract = foundation.build_contract(stage)
         except Exception as exc:  # noqa: BLE001 - inability to inspect must fail closed
-            issues.append(
-                f"{name}: disk-write contract could not be inspected "
-                f"({type(exc).__name__}: {exc})"
-            )
+            issues.append(f"{name}: disk-write contract could not be inspected ({type(exc).__name__}: {exc})")
             continue
         if not contract.gates.writes_to_disk:
             continue
@@ -5674,9 +5462,7 @@ def _smoke_write_issues(
             continue
         if name == "CreateInitialManifestReadSpeechStage":
             if getattr(stage, "auto_download", True):
-                issues.append(
-                    f"{name}: auto_download must be disabled for a pre-staged smoke"
-                )
+                issues.append(f"{name}: auto_download must be disabled for a pre-staged smoke")
             continue
         if not adapter:
             # ``[]`` positively claims "I write through no redirectable parameter", true and
@@ -5695,9 +5481,7 @@ def _smoke_write_issues(
                 value,
                 output_root,
             ):
-                issues.append(
-                    f"{name}.{param}: output is not inside temporary smoke storage"
-                )
+                issues.append(f"{name}.{param}: output is not inside temporary smoke storage")
     return issues
 
 
@@ -5714,9 +5498,7 @@ def _walk_smoke_stages(stages: list[Any]):  # noqa: ANN202 - private generator
 def _inside_smoke_root(path: str, root: str) -> bool:
     resolved_path = os.path.realpath(path)
     resolved_root = os.path.realpath(root)
-    return resolved_path == resolved_root or resolved_path.startswith(
-        resolved_root + os.sep
-    )
+    return resolved_path == resolved_root or resolved_path.startswith(resolved_root + os.sep)
 
 
 def _write_bounded_manifest(
@@ -5783,13 +5565,16 @@ def _write_bounded_fleurs_manifest(
     fd, tmp = tempfile.mkstemp(suffix=".jsonl", prefix="audio_agent_smoke_fleurs_")
     count = 0
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as out, open(
-            transcript,
-            encoding="utf-8",
-        ) as src:
+        with (
+            os.fdopen(fd, "w", encoding="utf-8") as out,
+            open(
+                transcript,
+                encoding="utf-8",
+            ) as src,
+        ):
             for line in src:
                 parts = line.strip().split("\t")
-                if len(parts) < 3:
+                if len(parts) < 3:  # noqa: PLR2004
                     continue
                 row = {
                     filepath_key: os.path.abspath(os.path.join(audio_root, parts[1])),
@@ -5894,10 +5679,7 @@ def _examples_from_rows(
     *,
     limit: int,
 ) -> list[dict[str, Any]]:
-    return [
-        {k: v for k, v in row.items() if _jsonable(v)}
-        for row in rows[:limit]
-    ]
+    return [{k: v for k, v in row.items() if _jsonable(v)} for row in rows[:limit]]
 
 
 def _examples(results: list[Any] | None, *, limit: int) -> list[dict[str, Any]]:
@@ -5921,7 +5703,7 @@ def _is_value_empty(v: Any) -> bool:  # noqa: ANN401
     # DataFrame rows use NaN for a column absent from one record. Treat that as
     # missing evidence without importing pandas/numpy into this module.
     try:
-        return bool(v != v)
+        return bool(v != v)  # noqa: PLR0124
     except (TypeError, ValueError):
         return False
 
@@ -6059,7 +5841,7 @@ def _count_output_rows(output: str) -> int:
         try:
             with fs.open(path, "rt", encoding="utf-8") as fh:
                 total += sum(1 for line in fh if line.strip())
-        except Exception:  # noqa: BLE001 - output inventory is best-effort
+        except Exception:  # noqa: BLE001, S112 - output inventory is best-effort
             continue
     return total
 

@@ -342,9 +342,7 @@ class UTMOSFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             logger.exception(f"[{task.task_id}] UTMOS prediction error: {e}")
             return None
         if not math.isfinite(mos):
-            logger.warning(
-                f"[{task.task_id}] UTMOS returned non-finite MOS; treating item as unscorable"
-            )
+            logger.warning(f"[{task.task_id}] UTMOS returned non-finite MOS; treating item as unscorable")
             return None
 
         logger.debug(f"[{task.task_id}] UTMOS MOS={mos:.3f}")

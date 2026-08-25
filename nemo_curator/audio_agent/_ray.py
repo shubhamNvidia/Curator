@@ -70,7 +70,7 @@ def _temp_root_candidates() -> list[str]:
     sized volume in a container) before falling back to the platform temp dir.
     """
     roots: list[str] = []
-    for candidate in (os.environ.get("RAY_TMPDIR"), os.environ.get("TMPDIR"), tempfile.gettempdir(), "/tmp"):
+    for candidate in (os.environ.get("RAY_TMPDIR"), os.environ.get("TMPDIR"), tempfile.gettempdir(), "/tmp"):  # noqa: S108
         if not candidate:
             continue
         resolved = os.path.realpath(os.path.expanduser(candidate))
@@ -154,7 +154,7 @@ def _connected_address(ray_module: Any) -> str | None:  # noqa: ANN401
             connection = getattr(worker, "_conn_str", None)
             if connection:
                 return f"ray://{connection}"
-    except Exception:  # noqa: BLE001 - regular Ray need not expose Client internals
+    except Exception:  # noqa: BLE001, S110 - regular Ray need not expose Client internals
         pass
     try:
         address = ray_module.get_runtime_context().gcs_address
@@ -225,7 +225,7 @@ def _interpreter_ray_on_path() -> Iterator[None]:
             os.environ["PATH"] = previous
 
 
-def ensure_cluster(
+def ensure_cluster(  # noqa: C901, PLR0915
     *,
     # ``None`` lets Ray take the host's cores, matching ``RayClient`` and every tutorial. This
     # used to cap at ``min(os.cpu_count(), 8)`` with no recorded reason, which cost more than
@@ -265,9 +265,7 @@ def ensure_cluster(
         )
         raise RuntimeError(msg)
     owned_by_this_process = (
-        bool(owned_address)
-        and _STARTED.get("owned") is True
-        and _STARTED.get("owner_pid") == os.getpid()
+        bool(owned_address) and _STARTED.get("owned") is True and _STARTED.get("owner_pid") == os.getpid()
     )
 
     # 1. Reuse a healthy head this process started. Its exported environment
@@ -365,9 +363,7 @@ def ensure_cluster(
             with contextlib.suppress(Exception):
                 client.stop()
         shutil.rmtree(temp_dir, ignore_errors=True)
-        _restore_owned_environment(
-            {"previous_address": previous_address, "previous_api_limit": previous_api_limit}
-        )
+        _restore_owned_environment({"previous_address": previous_address, "previous_api_limit": previous_api_limit})
         raise
 
     _STARTED.update(
@@ -425,18 +421,11 @@ def cluster_resources(address: str) -> dict[str, float]:
         if not _addresses_match(address, connected):
             ray.shutdown()
             opened_connection = False
-            msg = (
-                f"Ray connected at {connected!r}; refusing to read resources for "
-                f"mismatched address {address!r}"
-            )
+            msg = f"Ray connected at {connected!r}; refusing to read resources for mismatched address {address!r}"
             raise RuntimeError(msg)
     try:
         resources = ray.cluster_resources()
-        return {
-            str(key): float(value)
-            for key, value in resources.items()
-            if isinstance(value, (int, float))
-        }
+        return {str(key): float(value) for key, value in resources.items() if isinstance(value, (int, float))}
     finally:
         if opened_connection:
             ray.shutdown()
@@ -469,10 +458,7 @@ def _restore_owned_environment(state: dict[str, Any]) -> None:
             os.environ.pop("RAY_ADDRESS", None)
         else:
             os.environ["RAY_ADDRESS"] = previous_address
-    if (
-        state.get("previous_api_limit") is None
-        and os.environ.get("RAY_MAX_LIMIT_FROM_API_SERVER") == _API_LIMIT
-    ):
+    if state.get("previous_api_limit") is None and os.environ.get("RAY_MAX_LIMIT_FROM_API_SERVER") == _API_LIMIT:
         os.environ.pop("RAY_MAX_LIMIT_FROM_API_SERVER", None)
 
 

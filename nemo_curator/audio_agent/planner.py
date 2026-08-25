@@ -151,10 +151,10 @@ def _fixed_num_workers(stage: Any) -> int | None:  # noqa: ANN401
 
 def _stage_need(
     index: int,
-    stage: Any,
-    contract: Any,
+    stage: Any,  # noqa: ANN401
+    contract: Any,  # noqa: ANN401
     card: dict[str, Any] | None,
-    calib: dict[str, Any] | None = None,  # noqa: ANN401
+    calib: dict[str, Any] | None = None,
 ) -> StageNeed:
     """Derive a stage's needs from scheduling truth and conservative estimates.
 
@@ -221,7 +221,10 @@ def _stage_need(
 
 
 def _execution_needs(
-    stages: list[Any], contracts: list[Any], idx: Any, calib_for: Any  # noqa: ANN401
+    stages: list[Any],
+    contracts: list[Any],
+    idx: Any,  # noqa: ANN401
+    calib_for: Any,  # noqa: ANN401
 ) -> list[StageNeed]:
     """Flatten composite stages into the stages the backend runs, and price those.
 
@@ -261,7 +264,7 @@ def _execution_needs(
 
 def _calibration_mapping(
     calibration: dict[str, Any] | None,
-) -> tuple[Mapping[str, Any], Any]:  # noqa: ANN401
+) -> tuple[Mapping[str, Any], Any]:
     """Return bare stage entries and an optional wrapper-level fingerprint.
 
     ``calibrate`` returns ``{"calibration": {stage: facts}}`` while the SDK has
@@ -330,7 +333,7 @@ def cpu_fallback(stages: list[Any], env: Any, *, index: Any = None) -> list[str]
     return notes
 
 
-def plan(
+def plan(  # noqa: C901, PLR0912, PLR0913, PLR0915
     stages: list[Any],
     contracts: list[Any],
     env: EnvProfile,
@@ -377,9 +380,7 @@ def plan(
         explicit_fingerprint = raw.get("machine_fingerprint", wrapper_fingerprint)
         if explicit_fingerprint is not None:
             if not isinstance(explicit_fingerprint, str) or not explicit_fingerprint:
-                _calibration_note(
-                    f"ignored calibration for {stage_name}: machine_fingerprint is invalid"
-                )
+                _calibration_note(f"ignored calibration for {stage_name}: machine_fingerprint is invalid")
                 return None
             if explicit_fingerprint != machine_fingerprint:
                 _calibration_note(
@@ -393,8 +394,7 @@ def plan(
                 continue
             if not _valid_calibration_number(raw[key]):
                 _calibration_note(
-                    f"ignored invalid calibration value for {stage_name}.{key}: "
-                    "expected a finite non-negative number"
+                    f"ignored invalid calibration value for {stage_name}.{key}: expected a finite non-negative number"
                 )
                 continue
             clean[key] = float(raw[key])
@@ -413,10 +413,7 @@ def plan(
     exec_needs = _execution_needs(stages, contracts, idx, _calib_for)
     measured_count = sum(1 for n in exec_needs if n.source == "measured")
     if measured_count:
-        rp_note = (
-            f"using measured calibration for {measured_count} stage(s) "
-            "(counted after composite expansion)"
-        )
+        rp_note = f"using measured calibration for {measured_count} stage(s) (counted after composite expansion)"
     else:
         rp_note = ""
 
@@ -458,19 +455,14 @@ def plan(
     # A GPU-optional stage with no Ray GPU reservation is executing in CPU mode;
     # its card's possible GPU footprint is not a demand on this plan. GPU-only
     # stages remain a memory demand even if their reservation was misconfigured.
-    gpu_memory_needs = [
-        n
-        for n in exec_needs
-        if n.gpu_mem_gb > 0 and (n.gpu_reservation > 0 or not n.gpu_optional)
-    ]
+    gpu_memory_needs = [n for n in exec_needs if n.gpu_mem_gb > 0 and (n.gpu_reservation > 0 or not n.gpu_optional)]
     sum_gpu_mem = sum(n.gpu_mem_gb * _worker_count(n) for n in gpu_memory_needs)
     max_gpu_mem = max(
         (n.gpu_mem_gb * _worker_count(n) for n in gpu_memory_needs),
         default=0.0,
     )
     sum_gpu_fraction = sum(
-        _gpu_fraction(n.gpu_mem_gb, machine_gpu_mem) * _worker_count(n)
-        for n in gpu_memory_needs
+        _gpu_fraction(n.gpu_mem_gb, machine_gpu_mem) * _worker_count(n) for n in gpu_memory_needs
     )  # informational
 
     rp = ResourcePlan(machine_fingerprint=machine_fingerprint)
@@ -523,9 +515,10 @@ def plan(
                 f"a single stage reserves {max_cpu_reservation} Ray CPU(s) > Xenna allocatable "
                 f"{allocatable_cpus} of machine {total_cpus}"
             )
-        if num_gpus == 0 and gpu_masked and (
-            max_reservation > 0
-            or any(n.gpu_mem_gb > 0 and not n.gpu_optional for n in exec_needs)
+        if (
+            num_gpus == 0
+            and gpu_masked
+            and (max_reservation > 0 or any(n.gpu_mem_gb > 0 and not n.gpu_optional for n in exec_needs))
         ):
             # Masked, not absent: defer to smoke/run with full device access rather
             # than refuse. A genuinely GPU-less run surfaces at smoke (the oracle).
@@ -535,12 +528,8 @@ def plan(
             )
         elif num_gpus == 0 and max_reservation > 0:
             rp.feasible = False
-            rp.escalations.append(
-                f"a stage reserves {max_reservation} Ray GPU(s) but no GPU is available"
-            )
-        elif num_gpus == 0 and any(
-            n.gpu_mem_gb > 0 and not n.gpu_optional for n in exec_needs
-        ):
+            rp.escalations.append(f"a stage reserves {max_reservation} Ray GPU(s) but no GPU is available")
+        elif num_gpus == 0 and any(n.gpu_mem_gb > 0 and not n.gpu_optional for n in exec_needs):
             rp.feasible = False
             rp.escalations.append("a GPU-only stage requires a GPU but none is available")
         if num_gpus > 0 and max_reservation > num_gpus:

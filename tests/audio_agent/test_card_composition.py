@@ -57,8 +57,10 @@ class TestCompositionEdges:
                 "incompatible_upstream": {"PrepareModuleSegmentsStage": "crashes"},
             }
         }
-        assert any("both typical_upstream and incompatible_upstream" in v
-                   for v in _composition_violations("ALMDataBuilderStage", card))
+        assert any(
+            "both typical_upstream and incompatible_upstream" in v
+            for v in _composition_violations("ALMDataBuilderStage", card)
+        )
 
     def test_forbidding_a_stage_requires_saying_why(self) -> None:
         # "don't use X" without a reason is a rule the next reader discounts.
@@ -97,9 +99,12 @@ class TestBlueprintConformance:
         assert any("utmos_mos_threshold" in v for v in violations)
 
     def test_a_real_parameter_passes(self) -> None:
-        assert _blueprint_violations(
-            "bp", {"stages": [{"ref": "UTMOSFilterStage"}], "presets": {"tts": {"mos_threshold": 4.0}}}
-        ) == []
+        assert (
+            _blueprint_violations(
+                "bp", {"stages": [{"ref": "UTMOSFilterStage"}], "presets": {"tts": {"mos_threshold": 4.0}}}
+            )
+            == []
+        )
 
     def test_an_unknown_stage_ref_is_caught(self) -> None:
         violations = _blueprint_violations("bp", {"stages": [{"ref": "NoSuchStage"}], "presets": {}})

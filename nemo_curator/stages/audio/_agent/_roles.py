@@ -184,9 +184,7 @@ def field_has_declared_role(field_name: str, stage_cls: type | None = None) -> b
         return True
     if stage_cls is None:
         return False
-    return field_name in role_overrides_for(stage_cls) or field_name in internal_key_fields_for(
-        stage_cls
-    )
+    return field_name in role_overrides_for(stage_cls) or field_name in internal_key_fields_for(stage_cls)
 
 
 def internal_key_fields_for(stage_cls: type) -> frozenset[str]:

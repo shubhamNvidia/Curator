@@ -301,7 +301,7 @@ def _local_source_exists(path: str) -> bool:
     return os.path.exists(path)
 
 
-def _local_manifest_records(
+def _local_manifest_records(  # noqa: PLR0913
     path: str,
     *,
     label: str,
@@ -318,10 +318,7 @@ def _local_manifest_records(
     """
     from nemo_curator.utils.file_utils import get_all_file_paths_and_size_under
 
-    no_selection_reason = (
-        f"{label} selects no local files with configured "
-        f"file_extensions={file_extensions!r}: {path}"
-    )
+    no_selection_reason = f"{label} selects no local files with configured file_extensions={file_extensions!r}: {path}"
     try:
         selected = get_all_file_paths_and_size_under(
             path,
@@ -379,7 +376,7 @@ def _assert_cli_data(
     return replace(binding, status="mismatch", issues=(reason,), reason=reason)
 
 
-def _resolve_manifest_reader(recipe: Recipe, stage: StageRef, data: str | None) -> DatasetBinding:
+def _resolve_manifest_reader(recipe: Recipe, stage: StageRef, data: str | None) -> DatasetBinding:  # noqa: C901
     configured_manifest_path = stage.params.get("manifest_path")
     paths, issue = _canonical_many(configured_manifest_path, "ManifestReader.manifest_path")
     if issue:
@@ -629,7 +626,7 @@ def _resolve_readspeech(recipe: Recipe, stage: StageRef, data: str | None) -> Da
     return replace(binding, status="missing", issues=(reason,), reason=reason)
 
 
-def _resolve_long_form(  # noqa: PLR0911 - each status is an intentional fail-closed outcome
+def _resolve_long_form(
     recipe: Recipe,
     stage: StageRef,
     data: str | None,

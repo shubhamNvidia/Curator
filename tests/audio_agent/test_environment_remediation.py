@@ -70,14 +70,7 @@ def _cuda_mismatch() -> EnvProfile:
 
 def _build(*refs: tuple[str, dict]) -> list[object]:
     stages, issues = build_stages(
-        Recipe.from_dict(
-            {
-                "stages": [
-                    {"ref": ref, "params": params}
-                    for ref, params in refs
-                ]
-            }
-        )
+        Recipe.from_dict({"stages": [{"ref": ref, "params": params} for ref, params in refs]})
     )
     assert issues == []
     assert stages is not None
@@ -120,9 +113,7 @@ def test_non_jit_gpu_recipe_warns_and_offers_bounded_smoke_before_host_change() 
 
     assert decision["status"] == "degraded"
     assert decision["can_execute"] is True
-    assert [issue["code"] for issue in decision["issues"]].count(
-        "cuda_driver_toolkit_mismatch"
-    ) == 1
+    assert [issue["code"] for issue in decision["issues"]].count("cuda_driver_toolkit_mismatch") == 1
     assert decision["recommended"] == "verify_gpu_stage_with_bounded_smoke"
     cpu = _choice(decision, "use_cpu_recipe_variant")
     assert cpu["availability"] == "conditional"
@@ -147,13 +138,8 @@ def test_tdt_gpu_recipe_blocks_on_cuda_mismatch() -> None:
 
     assert decision["status"] == "action_required"
     assert decision["can_execute"] is False
-    assert [issue["code"] for issue in decision["issues"]].count(
-        "cuda_driver_toolkit"
-    ) == 1
-    assert all(
-        choice["id"] != "use_ctc_alignment_variant"
-        for choice in decision["choices"]
-    )
+    assert [issue["code"] for issue in decision["issues"]].count("cuda_driver_toolkit") == 1
+    assert all(choice["id"] != "use_ctc_alignment_variant" for choice in decision["choices"])
 
 
 def test_mixed_pipeline_never_claims_cpu_when_one_leaf_is_gpu_only() -> None:
@@ -181,14 +167,8 @@ def test_external_ray_does_not_treat_local_cuda_mismatch_as_worker_fact() -> Non
     )
 
     assert decision["can_execute"] is True
-    assert "cuda_driver_toolkit" not in {
-        issue["code"]
-        for issue in decision["issues"]
-    }
-    assert "remote_worker_environment_unverified" in {
-        issue["code"]
-        for issue in decision["issues"]
-    }
+    assert "cuda_driver_toolkit" not in {issue["code"] for issue in decision["issues"]}
+    assert "remote_worker_environment_unverified" in {issue["code"] for issue in decision["issues"]}
 
 
 def test_external_ray_does_not_treat_other_driver_facts_as_worker_facts(
@@ -214,9 +194,7 @@ def test_external_ray_does_not_treat_other_driver_facts_as_worker_facts(
     )
 
     assert decision["can_execute"] is True
-    assert {issue["code"] for issue in decision["issues"]} == {
-        "remote_worker_environment_unverified"
-    }
+    assert {issue["code"] for issue in decision["issues"]} == {"remote_worker_environment_unverified"}
 
 
 def test_a_genuinely_missing_package_is_caught_earlier_than_preflight() -> None:
@@ -255,7 +233,7 @@ print("RESULT" + json.dumps({
     proc = subprocess.run(  # noqa: S603 - fixed argv, this interpreter, no shell
         [sys.executable, "-c", script], capture_output=True, text=True, check=False
     )
-    payload = next(line[len("RESULT"):] for line in proc.stdout.splitlines() if line.startswith("RESULT"))
+    payload = next(line[len("RESULT") :] for line in proc.stdout.splitlines() if line.startswith("RESULT"))
     result = json.loads(payload)
 
     assert "unknown_stage" in result["codes"], "the stage is not registered when its package is absent"
@@ -292,9 +270,7 @@ def test_external_ray_does_not_project_driver_missing_package_to_workers() -> No
     )
 
     assert decision["can_execute"] is True
-    assert {issue["code"] for issue in decision["issues"]} == {
-        "remote_worker_environment_unverified"
-    }
+    assert {issue["code"] for issue in decision["issues"]} == {"remote_worker_environment_unverified"}
 
 
 def test_ambiguous_uv_dependencies_stay_unverified_not_healthy(
@@ -312,10 +288,7 @@ def test_ambiguous_uv_dependencies_stay_unverified_not_healthy(
     )
 
     assert decision["can_execute"] is True
-    assert "worker_env_unverified" in {
-        issue["code"]
-        for issue in decision["issues"]
-    }
+    assert "worker_env_unverified" in {issue["code"] for issue in decision["issues"]}
 
 
 def test_ffmpeg_and_secret_block_only_relevant_selected_stages(tmp_path: Path) -> None:
@@ -338,11 +311,7 @@ def test_ffmpeg_and_secret_block_only_relevant_selected_stages(tmp_path: Path) -
     assert "ffmpeg_missing" not in {issue["code"] for issue in duration["issues"]}
     assert "ffmpeg_missing" in {issue["code"] for issue in resample["issues"]}
     assert "missing_secret" in {issue["code"] for issue in pyannote["issues"]}
-    secret = next(
-        choice
-        for choice in pyannote["choices"]
-        if choice["kind"] == "credential"
-    )
+    secret = next(choice for choice in pyannote["choices"] if choice["kind"] == "credential")
     assert "outside the chat" in secret["label"]
 
 
@@ -416,16 +385,12 @@ def test_runtime_diagnosis_never_recommends_a_partial_multi_blocker_fix() -> Non
 
     assert diagnosis["recommended"] is None
     assert all("remaining_blockers" in choice for choice in diagnosis["choices"])
-    assert all(
-        not choice["recommended"] or not choice["remaining_blockers"]
-        for choice in diagnosis["choices"]
-    )
-    assert _choice(diagnosis, "upgrade_nvidia_driver")["remaining_blockers"] == [
-        "missing_secret:HF_TOKEN"
-    ]
-    assert set(
-        _choice(diagnosis, "recover_disk_full")["remaining_blockers"]
-    ) == {"cuda_driver_toolkit", "missing_secret:HF_TOKEN"}
+    assert all(not choice["recommended"] or not choice["remaining_blockers"] for choice in diagnosis["choices"])
+    assert _choice(diagnosis, "upgrade_nvidia_driver")["remaining_blockers"] == ["missing_secret:HF_TOKEN"]
+    assert set(_choice(diagnosis, "recover_disk_full")["remaining_blockers"]) == {
+        "cuda_driver_toolkit",
+        "missing_secret:HF_TOKEN",
+    }
 
 
 def test_validate_projects_recipe_environment_blocker_without_touching_defaults(
@@ -473,9 +438,7 @@ def test_validate_keeps_non_jit_gpu_recipe_runnable_for_bounded_evidence(
 
     assert result["runnable"] is True
     assert result["environment_decision"]["status"] == "degraded"
-    assert result["environment_decision"]["recommended"] == (
-        "verify_gpu_stage_with_bounded_smoke"
-    )
+    assert result["environment_decision"]["recommended"] == ("verify_gpu_stage_with_bounded_smoke")
 
 
 def test_validate_respects_external_ray_instead_of_local_machine_gates(
@@ -503,10 +466,7 @@ def test_validate_respects_external_ray_instead_of_local_machine_gates(
 
     assert result["runnable"] is True
     assert result["environment_decision"]["execution_target"] == "external_ray"
-    assert "ffmpeg_missing" not in {
-        item["code"]
-        for item in result["gate_flags"]
-    }
+    assert "ffmpeg_missing" not in {item["code"] for item in result["gate_flags"]}
 
 
 @pytest.mark.parametrize(
@@ -541,10 +501,7 @@ def test_validate_keeps_local_gates_for_ray_discovery_and_loopback(
 
     assert result["runnable"] is False
     assert result["environment_decision"]["execution_target"] == "local"
-    assert "ffmpeg_missing" in {
-        item["code"]
-        for item in result["gate_flags"]
-    }
+    assert "ffmpeg_missing" in {item["code"] for item in result["gate_flags"]}
 
 
 def test_hard_gpu_leaf_checks_cuda_even_if_recipe_reservation_is_zero() -> None:
@@ -562,10 +519,7 @@ def test_hard_gpu_leaf_checks_cuda_even_if_recipe_reservation_is_zero() -> None:
     decision = environment_preflight(stages, _cuda_mismatch())
 
     assert decision["can_execute"] is False
-    assert "cuda_driver_toolkit" in {
-        issue["code"]
-        for issue in decision["issues"]
-    }
+    assert "cuda_driver_toolkit" in {issue["code"] for issue in decision["issues"]}
 
 
 @pytest.mark.parametrize("verb", ["smoke", "run"])
@@ -632,17 +586,10 @@ def test_unknown_failure_stays_unknown_and_redacts_secret() -> None:
 
 def test_diagnosis_evidence_redacts_transport_credentials() -> None:
     basic = "dXNlcjpwYXNzd29yZA=="
-    jwt = (
-        "eyJhbGciOiJIUzI1NiJ9."
-        "eyJzdWIiOiIxMjM0NTY3ODkwIn0."
-        "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
-    )
+    jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
 
     diagnosis = diagnose_failure(
-        "TransportError "
-        f"Authorization: Basic {basic} "
-        "url=https://alice:correct-horse@example.test/v2 "
-        f"assertion={jwt}",
+        f"TransportError Authorization: Basic {basic} url=https://alice:correct-horse@example.test/v2 assertion={jwt}",
         env=_healthy_env(),
     )
 
@@ -753,11 +700,7 @@ def test_known_ptx_failure_is_classified_and_does_not_repeat_attempted_action() 
     )
 
     assert diagnosis["failure"]["code"] == "cuda_runtime_jit_failure"
-    attempted = next(
-        choice
-        for choice in diagnosis["choices"]
-        if choice["id"] == "recover_cuda_runtime_jit_failure"
-    )
+    attempted = next(choice for choice in diagnosis["choices"] if choice["id"] == "recover_cuda_runtime_jit_failure")
     assert attempted["availability"] == "unavailable"
     assert attempted["recommended"] is False
 
@@ -781,10 +724,7 @@ def test_ptx_diagnosis_never_offers_ctc_for_pure_tdt_transcription() -> None:
     )
 
     assert diagnosis["failure"]["code"] == "asr_decoder_cuda_graph"
-    assert all(
-        choice["id"] != "use_ctc_alignment_variant"
-        for choice in diagnosis["choices"]
-    )
+    assert all(choice["id"] != "use_ctc_alignment_variant" for choice in diagnosis["choices"])
 
 
 def test_ptx_diagnosis_for_non_asr_stage_removes_asr_workarounds() -> None:
@@ -800,15 +740,9 @@ def test_ptx_diagnosis_for_non_asr_stage_removes_asr_workarounds() -> None:
 
     assert diagnosis["failure"]["code"] == "cuda_runtime_jit_failure"
     assert all(
-        choice["id"]
-        not in {"inspect_asr_cuda_stack", "use_ctc_alignment_variant"}
-        for choice in diagnosis["choices"]
+        choice["id"] not in {"inspect_asr_cuda_stack", "use_ctc_alignment_variant"} for choice in diagnosis["choices"]
     )
-    assert "CTC" not in " ".join(
-        step
-        for choice in diagnosis["choices"]
-        for step in choice["steps"]
-    )
+    assert "CTC" not in " ".join(step for choice in diagnosis["choices"] for step in choice["steps"])
 
 
 def test_gpu_probe_explains_masked_device_instead_of_saying_no_hardware() -> None:

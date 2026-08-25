@@ -103,9 +103,7 @@ class TestSpeakerSeparationStage:
 
     @patch("nemo_curator.stages.audio.segmentation.speaker_separation.SpeakerSeparationStage._initialize_separator")
     def test_write_to_disk_persists_and_sets_path(self, mock_init: MagicMock, tmp_path) -> None:
-        stage = SpeakerSeparationStage(
-            min_duration=0.5, write_to_disk=True, separated_audio_dir=str(tmp_path / "sep")
-        )
+        stage = SpeakerSeparationStage(min_duration=0.5, write_to_disk=True, separated_audio_dir=str(tmp_path / "sep"))
         separator = MagicMock()
         separator.get_speaker_audio_data.return_value = {
             "spk_0": SpeakerResult(_make_audio_segment(3000), 3.0, [(0.0, 3.0)]),

@@ -272,7 +272,9 @@ class TestTheLocationIsDerived:
     the answer.
     """
 
-    def test_data_addresses_the_checkpoint_by_its_step_key(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_data_addresses_the_checkpoint_by_its_step_key(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         from nemo_curator.audio_agent import artifacts, run_store
 
         _managed_runs(monkeypatch, tmp_path)
@@ -285,7 +287,9 @@ class TestTheLocationIsDerived:
         step_key = artifacts.plan_steps(materialized, _KEY)[index].step_key
         assert out["output_path"] == run_store.checkpoint_path(step_key)
 
-    def test_the_address_survives_a_downstream_threshold_change(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_the_address_survives_a_downstream_threshold_change(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         """The whole point: retuning a threshold below the checkpoint must still find it.
 
         A path named after the recipe hash cannot do this -- inserting the writer changes that

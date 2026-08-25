@@ -255,7 +255,7 @@ class ChannelCountStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             return
         if isinstance(target, bool) or not isinstance(target, int):
             msg = f"target_channels must be a whole number of channels, got {target!r} ({type(target).__name__})"
-            raise ValueError(msg)
+            raise ValueError(msg)  # noqa: TRY004
         if target < 1:
             msg = f"target_channels must be at least 1, got {target}"
             raise ValueError(msg)

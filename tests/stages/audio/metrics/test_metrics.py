@@ -99,7 +99,9 @@ class TestSquimResidency:
     def test_waveform_and_auto_residency(self) -> None:
         wf_stage = TorchSquimQualityMetricsStage(input_residency="waveform")
         assert {a for s in wf_stage.describe().reads_one_of for a in s.accepts} == {"waveform"}
-        assert wf_stage.validate_input(AudioTask(data={"waveform": torch.randn(1, 16000), "sample_rate": 16000})) is True
+        assert (
+            wf_stage.validate_input(AudioTask(data={"waveform": torch.randn(1, 16000), "sample_rate": 16000})) is True
+        )
         assert wf_stage.validate_input(AudioTask(data={"resampled_audio_filepath": "/a.wav"})) is False
         auto = TorchSquimQualityMetricsStage(input_residency="auto")
         assert {a for s in auto.describe().reads_one_of for a in s.accepts} == {"file", "waveform"}

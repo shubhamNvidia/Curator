@@ -299,14 +299,14 @@ class TestStagesDeclareTheirOwnAgentFacts:
 
         names = {f.name for f in fields(cls) if f.init}
         kwargs = {
-            f.name: ("/tmp/x" if ("path" in f.name or "dir" in f.name) else "x")  # noqa: S108
+            f.name: ("/tmp/x" if ("path" in f.name or "dir" in f.name) else "x")
             for f in fields(cls)
             if f.init and f.default is MISSING and f.default_factory is MISSING
         }
         if "write_to_disk" in names:
             kwargs["write_to_disk"] = True
         for name in self._REQUIRED_DIRS & names:
-            kwargs.setdefault(name, "/tmp/x")  # noqa: S108
+            kwargs.setdefault(name, "/tmp/x")
         return cls(**kwargs)
 
     def test_every_writer_declares_exactly_the_params_the_table_used_to_hold(self) -> None:
@@ -424,7 +424,7 @@ class TestEveryStageSaysWhetherItsRowsStandAlone:
         def placeholder(name: str) -> object:
             if name == "conditions":
                 return [{"input_value_key": "score", "target_value": 0.0, "operator": "ge"}]
-            return "/tmp/x" if ("dir" in name or "path" in name) else "x"  # noqa: S108
+            return "/tmp/x" if ("dir" in name or "path" in name) else "x"
 
         if is_dataclass(stage_cls):
             # An empty-string default is how these stages spell "required": the field exists so

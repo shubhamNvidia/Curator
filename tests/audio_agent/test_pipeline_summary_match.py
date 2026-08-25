@@ -47,7 +47,7 @@ def _folder(tmp_path: Path, names: list[str]) -> str:
     return str(d)
 
 
-def _profile(folder: str):  # noqa: ANN202
+def _profile(folder: str):
     return profiler.profile_data(folder, folder_extensions=[".wav"], recursive=True)
 
 
@@ -61,7 +61,7 @@ def _convert_recipe(folder: str, out: str) -> Recipe:
                     "params": {
                         "target_sample_rate": 16000,
                         "target_nchannels": 1,
-                        "resampled_audio_dir": "/tmp/rs_convert",  # noqa: S108
+                        "resampled_audio_dir": "/tmp/rs_convert",
                     },
                 },
                 {"ref": "ManifestWriterStage", "params": {"output_path": out}},
@@ -82,7 +82,7 @@ def _quality_recipe(folder: str, out: str, *, mos: float = 3.0) -> Recipe:
                     "params": {
                         "target_sample_rate": 16000,
                         "target_nchannels": 1,
-                        "resampled_audio_dir": "/tmp/rs_quality",  # noqa: S108
+                        "resampled_audio_dir": "/tmp/rs_quality",
                     },
                 },
                 {"ref": "ManifestWriterStage", "params": {"output_path": out}},
@@ -110,7 +110,7 @@ def _long_recipe(folder: str, out: str, *, mos: float = 3.0) -> Recipe:
                     "params": {
                         "target_sample_rate": 16000,
                         "target_nchannels": 1,
-                        "resampled_audio_dir": "/tmp/rs_long",  # noqa: S108
+                        "resampled_audio_dir": "/tmp/rs_long",
                     },
                 },
                 {
@@ -133,7 +133,7 @@ def _long_recipe(folder: str, out: str, *, mos: float = 3.0) -> Recipe:
     ).freeze()
 
 
-def _save_run(
+def _save_run(  # noqa: PLR0913 - a run record simply has this many fields
     folder: str,
     recipe: Recipe,
     *,

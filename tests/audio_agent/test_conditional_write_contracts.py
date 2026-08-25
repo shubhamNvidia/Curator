@@ -151,11 +151,7 @@ def test_semantic_review_labels_auto_scope_writes_as_conditional() -> None:
         [UTMOSFilterStage(mode="auto", action="annotate", score_key="quality")],
         initial_keys=["audio_filepath", "segments"],
     )
-    quality_writes = [
-        write
-        for write in packet["stages"][0]["writes"]
-        if write["key"] == "quality"
-    ]
+    quality_writes = [write for write in packet["stages"][0]["writes"] if write["key"] == "quality"]
 
     assert {(write["scope"], write["certainty"]) for write in quality_writes} == {
         ("task", "conditional"),
@@ -163,9 +159,7 @@ def test_semantic_review_labels_auto_scope_writes_as_conditional() -> None:
     }
     assert all(write["legacy_mechanical_write"] is True for write in quality_writes)
     assert all(
-        condition["value_origin"] == "stage_generated"
-        for write in quality_writes
-        for condition in write["conditions"]
+        condition["value_origin"] == "stage_generated" for write in quality_writes for condition in write["conditions"]
     )
 
 
@@ -178,15 +172,9 @@ def test_timestamp_passthrough_keeps_original_producer_lineage() -> None:
         ],
         initial_keys=["audio_filepath"],
     )
-    mapper_write = next(
-        write
-        for write in packet["stages"][1]["writes"]
-        if write["key"] == "quality"
-    )
+    mapper_write = next(write for write in packet["stages"][1]["writes"] if write["key"] == "quality")
     filter_edge = next(
-        edge
-        for edge in packet["lineage"]
-        if edge["consumer"]["stage_index"] == 2 and edge["read"]["key"] == "quality"
+        edge for edge in packet["lineage"] if edge["consumer"]["stage_index"] == 2 and edge["read"]["key"] == "quality"
     )
     producer = filter_edge["latest_upstream_producer"]
 
@@ -213,19 +201,16 @@ def test_mapping_augmentation_keeps_same_key_upstream_evidence() -> None:
         initial_keys=["audio_filepath", "duration"],
     )
     filter_edge = next(
-        edge
-        for edge in packet["lineage"]
-        if edge["consumer"]["stage_index"] == 2 and edge["read"]["key"] == "metrics"
+        edge for edge in packet["lineage"] if edge["consumer"]["stage_index"] == 2 and edge["read"]["key"] == "metrics"
     )
     producer = filter_edge["latest_upstream_producer"]
 
     assert producer["stage"] == "BandwidthEstimationStage"
     assert producer["write"]["certainty"] == "conditional"
     assert producer["same_key_upstream"]["producer"]["stage"] == "TorchSquimQualityMetricsStage"
-    assert {
-        item["value_origin"]
-        for item in producer["same_key_upstream"]["relationships"]
-    } == {"augments_upstream_same_key"}
+    assert {item["value_origin"] for item in producer["same_key_upstream"]["relationships"]} == {
+        "augments_upstream_same_key"
+    }
 
 
 def test_conditional_metadata_write_keeps_upstream_fallback_across_data_rebuild() -> None:
@@ -272,7 +257,4 @@ def test_conditional_metadata_write_keeps_upstream_fallback_across_data_rebuild(
     assert producer["stage"] == "_ConditionalMetadataRewriter"
     assert producer["write"]["certainty"] == "conditional"
     assert producer["write"]["scope"] == "metadata"
-    assert (
-        producer["when_condition_not_met"]["producer"]["stage"]
-        == "SegmentConcatenationStage"
-    )
+    assert producer["when_condition_not_met"]["producer"]["stage"] == "SegmentConcatenationStage"

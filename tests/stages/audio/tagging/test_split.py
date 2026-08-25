@@ -17,8 +17,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
-import soundfile as sf
 import pytest
+import soundfile as sf
 
 from nemo_curator.stages.audio.tagging.split import (
     JoinSplitAudioMetadataStage,

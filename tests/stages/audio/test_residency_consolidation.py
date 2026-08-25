@@ -63,7 +63,7 @@ def test_utmos_waveform_stereo_tensor_to_mono():
 
 def test_utmos_waveform_numpy_1d_to_mono():
     out = _load_waveform_tensor({"waveform": np.ones(1600, dtype="float32"), "sample_rate": _SR}, "t")
-    t, sr = out
+    t, _ = out
     assert torch.is_tensor(t) and t.shape == (1, 1600)
 
 
@@ -109,9 +109,7 @@ def test_sigmos_file_path_loads_1d_numpy(tmp_path: Path):
 
 def test_sigmos_waveform_present_no_sr_falls_back_to_file(tmp_path: Path):
     # sigmos requires BOTH wf+sr for the in-memory branch; otherwise tries the file.
-    out = _get_audio_numpy_sr(
-        {"waveform": torch.ones(1, 1600), "audio_filepath": _wav(tmp_path / "s2.wav")}, "t"
-    )
+    out = _get_audio_numpy_sr({"waveform": torch.ones(1, 1600), "audio_filepath": _wav(tmp_path / "s2.wav")}, "t")
     assert out is not None and out[0].ndim == 1
 
 

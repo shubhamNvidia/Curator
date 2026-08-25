@@ -41,8 +41,8 @@ from nemo_curator.audio_agent.recipe import Recipe
 
 # Output-location params of the prior recipe. Never written -- the recipe is recorded, not run --
 # and excluded from reuse identity, so their exact value is irrelevant to what these tests assert.
-_PRIOR_RESAMPLE_DIR = "/tmp/rs_prior"  # noqa: S108
-_PRIOR_OUT = "/tmp/prior_out.jsonl"  # noqa: S108
+_PRIOR_RESAMPLE_DIR = "/tmp/rs_prior"
+_PRIOR_OUT = "/tmp/prior_out.jsonl"
 
 
 @pytest.fixture
@@ -61,13 +61,23 @@ def _folder(tmp_path: Path, names: list[str]) -> str:
     return str(d)
 
 
-def _profile(folder: str):  # noqa: ANN202 - DataProfile
+def _profile(folder: str):
     return profiler.profile_data(folder, folder_extensions=[".wav"], recursive=True)
 
 
 def _prior_recipe(folder: str, *, source: str, mono: bool, mos: float) -> Recipe:
-    stages: list[dict] = [{"ref": source, "params": {"data_dir": folder} if source.endswith("AudioFolderStage") else {"raw_data_dir": folder}}]
-    stages.append({"ref": "ResampleAudioStage", "params": {"target_sample_rate": 16000, "target_nchannels": 1, "resampled_audio_dir": _PRIOR_RESAMPLE_DIR}})
+    stages: list[dict] = [
+        {
+            "ref": source,
+            "params": {"data_dir": folder} if source.endswith("AudioFolderStage") else {"raw_data_dir": folder},
+        }
+    ]
+    stages.append(
+        {
+            "ref": "ResampleAudioStage",
+            "params": {"target_sample_rate": 16000, "target_nchannels": 1, "resampled_audio_dir": _PRIOR_RESAMPLE_DIR},
+        }
+    )
     if mono:
         stages.append({"ref": "MonoConversionStage", "params": {}})
     stages.append({"ref": "VADSegmentationStage", "params": {}})
@@ -80,7 +90,7 @@ def _save_prior_run(
     folder: str,
     recipe: Recipe,
     *,
-    prior_profile,  # noqa: ANN001
+    prior_profile,
     created_at: str = "2026-08-17T07:19:19Z",
 ) -> str:
     """Persist a completed run of ``recipe`` on the folder as ``prior_profile`` saw it."""
@@ -233,13 +243,15 @@ class TestASecretParamNeverLeaksThroughTheDiff:
         prior = _prior_recipe(folder, source="PyAnnoteDiarizationStage", mono=False, mos=3.4)
         # Give the prior run a diarizer carrying a token, and a different one this time.
         prior_dict = prior.to_dict()
-        prior_dict["stages"].insert(1, {"ref": "PyAnnoteDiarizationStage", "params": {"hf_token": "SECRET-PRIOR-TOKEN"}})
+        prior_dict["stages"].insert(
+            1, {"ref": "PyAnnoteDiarizationStage", "params": {"hf_token": "SECRET-PRIOR-TOKEN"}}
+        )
         prior = Recipe.from_dict(prior_dict).freeze()
         _save_prior_run(folder, prior, prior_profile=_profile(folder))
         (Path(folder) / "d.wav").write_bytes(b"RIFF" + b"\x09" * 5000)
 
         cur = prior.to_dict()
-        cur["stages"][1]["params"]["hf_token"] = "SECRET-CURRENT-TOKEN"  # noqa: S105
+        cur["stages"][1]["params"]["hf_token"] = "SECRET-CURRENT-TOKEN"
         result = verbs.reuse_scan(cur, data=folder)
 
         blob = repr(result)
@@ -253,7 +265,11 @@ class TestTheRecipeDiffIsStructural:
             {"stages": [{"ref": "GetAudioDurationStage", "params": {"audio_filepath_key": "audio_filepath"}}]}
         ).freeze()
         current = Recipe.from_dict(
-            {"stages": [{"ref": "GetAudioDurationStage", "params": {"audio_filepath_key": "path", "duration_key": "dur"}}]}
+            {
+                "stages": [
+                    {"ref": "GetAudioDurationStage", "params": {"audio_filepath_key": "path", "duration_key": "dur"}}
+                ]
+            }
         ).freeze()
 
         diff = reuse._recipe_diff(prior, current)

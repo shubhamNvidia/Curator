@@ -84,9 +84,8 @@ SUMMARIZE_DIRECTIVE = (
 _HOST_DIRECTIVE_FOLDER_RUNS = (
     "Before inventing a recipe, compare the user's current request to each prior's "
     "prompt (recorded goal) and pipeline_summary. Prefer a prior whose capabilities "
-    "cover the full request over one that only covers a subset. Show the top 2–3 with "
-    "stats; on pick use delta-run --from-run <run_id>. Do not invent a competing recipe first. "
-    + SUMMARIZE_DIRECTIVE
+    "cover the full request over one that only covers a subset. Show the top 2–3 with "  # noqa: RUF001
+    "stats; on pick use delta-run --from-run <run_id>. Do not invent a competing recipe first. " + SUMMARIZE_DIRECTIVE
 )
 
 
@@ -579,10 +578,7 @@ def prior_on_path(
     # A stable sort on closeness over a list that arrives newest-first leaves recency as the
     # tiebreak, without a mixed-direction sort key.
     ranked.sort(key=_closeness)
-    matches = [
-        _prior_on_path_card(match, current_inventory=current_inventory)
-        for match in ranked[:_MAX_PRIOR_CARDS]
-    ]
+    matches = [_prior_on_path_card(match, current_inventory=current_inventory) for match in ranked[:_MAX_PRIOR_CARDS]]
     best = matches[0]
     return {
         **best,
@@ -767,7 +763,7 @@ def _is_location_param(key: str, value: Any) -> bool:  # noqa: ANN401
         return True
     if any(key_l.endswith(suffix) for suffix in _SUMMARY_PATH_SUFFIXES):
         return True
-    return isinstance(value, str) and (value.startswith("/") or value.startswith("~"))
+    return isinstance(value, str) and (value.startswith(("/", "~")))
 
 
 def _match_aliases(key: str, value: Any) -> list[str]:  # noqa: ANN401
@@ -778,7 +774,7 @@ def _match_aliases(key: str, value: Any) -> list[str]:  # noqa: ANN401
     matching does not push machine spellings like ``16000/16kHz`` in front of the reader.
     """
     key_l = key.lower()
-    if "sample_rate" in key_l and isinstance(value, (int, float)) and value >= 1000:
+    if "sample_rate" in key_l and isinstance(value, (int, float)) and value >= 1000:  # noqa: PLR2004
         rate = int(value)
         khz = rate // 1000
         return [str(rate), str(khz), f"{khz}k", f"{khz}khz"]
@@ -1075,7 +1071,9 @@ def _param_changes(before: dict[str, Any], after: dict[str, Any]) -> list[tuple[
         if b == a:
             continue
         if is_secret_key(key):
-            out.append((key, "<redacted-secret>" if b is not None else None, "<redacted-secret>" if a is not None else None))
+            out.append(
+                (key, "<redacted-secret>" if b is not None else None, "<redacted-secret>" if a is not None else None)
+            )
         else:
             out.append((key, b, a))
     return out
@@ -1352,7 +1350,9 @@ def _objective(run: Any) -> str:  # noqa: ANN401
 
 def _key_params(params: dict[str, Any]) -> dict[str, Any]:
     """The few params that most identify a run, preferring thresholds and model choices."""
-    interesting = [k for k in params if any(t in k for t in ("model", "threshold", "min_", "max_", "target", "rate", "type"))]
+    interesting = [
+        k for k in params if any(t in k for t in ("model", "threshold", "min_", "max_", "target", "rate", "type"))
+    ]
     chosen = (interesting or list(params))[:_CARD_PARAMS]
     return {k: params[k] for k in chosen}
 

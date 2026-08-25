@@ -225,7 +225,10 @@ class SplitLongAudioStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             split_durations.append(remaining_frames / sr)
             actual_splits.append(split_start / sr)
 
-        audio_item_id, split_filepaths_before = data_entry.get(self.audio_item_id_key, "unknown"), bool(split_filepaths)
+        audio_item_id, split_filepaths_before = (
+            data_entry.get(self.audio_item_id_key, "unknown"),
+            bool(split_filepaths),
+        )
 
         if not split_filepaths:
             logger.warning(

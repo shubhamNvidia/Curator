@@ -88,6 +88,8 @@ def _dependency_profile_steps(extra: str) -> list[str]:
         f"reinstall the published package with the `{extra}` extra",
         f"use the exact current command from {_AUDIO_SETUP_DOC}",
     ]
+
+
 _LOW_DISK_GB = 5.0  # below this, model downloads and intermediates start failing mid-run
 
 
@@ -193,11 +195,7 @@ class EnvHealthReport:
                 # Machine-wide doctor cannot know whether a warning applies to a
                 # future recipe. Recipe preflight narrows it before execution.
                 "state": (
-                    "action_required"
-                    if self.status == "fail"
-                    else "review"
-                    if self.status == "warn"
-                    else "ready"
+                    "action_required" if self.status == "fail" else "review" if self.status == "warn" else "ready"
                 ),
                 "prompt_user": self.status == "fail",
                 "recommended": recommended[0] if recommended else None,
@@ -222,12 +220,14 @@ def _check(fn: Callable[[EnvProfile], HealthCheck]) -> Callable[[EnvProfile], He
 
 # --------------------------------------------------------------------------- checks
 
+
 @_check
 def _python(env: EnvProfile) -> HealthCheck:
     if env.python_supported:
         return HealthCheck("python", "ok", f"Python {env.python_version} satisfies the project's requires-python")
     return HealthCheck(
-        "python", "warn",
+        "python",
+        "warn",
         f"Python {env.python_version} is outside the project's supported range",
         impact="imports or heavy model stages may misbehave on an untested interpreter",
         fix=["create the venv with a supported interpreter (see the project's requires-python)"],
@@ -250,7 +250,7 @@ def _python(env: EnvProfile) -> HealthCheck:
 
 
 @_check
-def _gpu(env: EnvProfile) -> HealthCheck:  # noqa: C901, PLR0912 - failure modes need distinct remedies
+def _gpu(env: EnvProfile) -> HealthCheck:
     if env.has_gpu:
         names = ", ".join(env.gpu_names) or "GPU"
         return HealthCheck("gpu", "ok", f"{env.gpu_count}x {names} ({env.gpu_mem_gb} GB/GPU)")
@@ -304,11 +304,7 @@ def _gpu(env: EnvProfile) -> HealthCheck:  # noqa: C901, PLR0912 - failure modes
             ]
         )
     elif visibility in {"cpu_only_torch", "torch_unavailable"}:
-        hardware_visible = (
-            env.nvidia_smi_status == "ok"
-            or env.nvidia_smi_gpu_count > 0
-            or env.nvidia_device_nodes > 0
-        )
+        hardware_visible = env.nvidia_smi_status == "ok" or env.nvidia_smi_gpu_count > 0 or env.nvidia_device_nodes > 0
         if not hardware_visible:
             options.append(
                 _option(
@@ -393,7 +389,9 @@ def _gpu(env: EnvProfile) -> HealthCheck:  # noqa: C901, PLR0912 - failure modes
             "hardware/driver fault; re-verify with full device access before concluding no GPU"
         )
     return HealthCheck(
-        "gpu", "warn", f"{finding} (visibility={visibility})",
+        "gpu",
+        "warn",
+        f"{finding} (visibility={visibility})",
         impact="GPU model stages (ASR, diarization, quality metrics) are very slow or unusable",
         fix=[
             "inspect the layered GPU evidence below (torch build, driver, device exposure, CUDA_VISIBLE_DEVICES)",
@@ -410,7 +408,8 @@ def _cuda_driver_toolkit(env: EnvProfile) -> HealthCheck:
         return HealthCheck("cuda_driver_toolkit", "ok", "no GPU; CUDA driver/toolkit check not applicable")
     if not env.cuda_runtime_version or not env.cuda_driver_max_version:
         return HealthCheck(
-            "cuda_driver_toolkit", "warn",
+            "cuda_driver_toolkit",
+            "warn",
             f"could not determine CUDA versions (torch={env.cuda_runtime_version or '?'}, "
             f"driver_max={env.cuda_driver_max_version or '?'})",
             impact="cannot confirm the driver can run the CUDA toolkit torch was built with",
@@ -433,11 +432,13 @@ def _cuda_driver_toolkit(env: EnvProfile) -> HealthCheck:
         )
     if env.cuda_compatible:
         return HealthCheck(
-            "cuda_driver_toolkit", "ok",
+            "cuda_driver_toolkit",
+            "ok",
             f"GPU driver supports CUDA {env.cuda_driver_max_version} >= torch's CUDA {env.cuda_runtime_version}",
         )
     return HealthCheck(
-        "cuda_driver_toolkit", "fail",
+        "cuda_driver_toolkit",
+        "fail",
         (
             f"driver supports only CUDA {env.cuda_driver_max_version} "
             f"but torch is built for CUDA {env.cuda_runtime_version}"
@@ -472,10 +473,7 @@ def _cuda_driver_toolkit(env: EnvProfile) -> HealthCheck:
                 "use_driver_compatible_torch",
                 "environment_change",
                 "Use a driver-compatible PyTorch build",
-                (
-                    f"Use a supported project environment whose PyTorch CUDA is <= "
-                    f"{env.cuda_driver_max_version}."
-                ),
+                (f"Use a supported project environment whose PyTorch CUDA is <= {env.cuda_driver_max_version}."),
                 steps=[
                     "confirm the repository supports that CUDA/PyTorch variant",
                     "resolve and sync a separate compatible environment",
@@ -516,7 +514,9 @@ def _ffmpeg(env: EnvProfile) -> HealthCheck:
     if env.has_ffmpeg:
         return HealthCheck("ffmpeg", "ok", "ffmpeg is on PATH")
     return HealthCheck(
-        "ffmpeg", "warn", "ffmpeg not found on PATH",
+        "ffmpeg",
+        "warn",
+        "ffmpeg not found on PATH",
         impact="resample/convert and compressed-format (mp3/opus/...) decode stages will fail",
         fix=[
             "install ffmpeg (e.g. `apt-get install ffmpeg`, "
@@ -556,7 +556,9 @@ def _audio_extras(env: EnvProfile) -> HealthCheck:
         return HealthCheck("audio_extras", "ok", "audio dependency modules are discoverable")
     missing = ", ".join(env.missing_packages)
     return HealthCheck(
-        "audio_extras", "warn", f"audio packages not discoverable: {missing}",
+        "audio_extras",
+        "warn",
+        f"audio packages not discoverable: {missing}",
         impact="selected stages that depend on these may fail to import or initialize",
         fix=[
             "install an audio dependency profile: `audio_cuda12` (GPU) or `audio_cpu` (CPU)",
@@ -643,7 +645,8 @@ def _worker_env(_env: EnvProfile) -> HealthCheck:
             ],
         )
     return HealthCheck(
-        "worker_env", "fail",
+        "worker_env",
+        "fail",
         "launched via `uv run` without an audio extra, so Ray workers will rebuild the env WITHOUT it",
         impact=(
             "the driver imports the audio stack fine but every worker fails with "
@@ -696,11 +699,7 @@ def _uv_audio_dependency_state(
     ambiguous = False
     for index, argument in enumerate(launcher):
         flag, separator, inline_value = argument.partition("=")
-        value = inline_value if separator else (
-            launcher[index + 1]
-            if index + 1 < len(launcher)
-            else ""
-        )
+        value = inline_value if separator else (launcher[index + 1] if index + 1 < len(launcher) else "")
         if flag == "--all-extras":
             return "present"
         if flag == "--extra":
@@ -768,7 +767,9 @@ def _disk(env: EnvProfile) -> HealthCheck:
     if free >= _LOW_DISK_GB:
         return HealthCheck("disk", "ok", f"{free} GB free")
     return HealthCheck(
-        "disk", "warn", f"low free disk ({free} GB)",
+        "disk",
+        "warn",
+        f"low free disk ({free} GB)",
         impact="model downloads (hundreds of MB to several GB) and intermediate WAVs may fail",
         fix=["free up disk, or set a cache/output dir on a larger volume"],
         capabilities=["disk_write", "model_download"],
@@ -796,6 +797,7 @@ def _disk(env: EnvProfile) -> HealthCheck:
 
 
 # --------------------------------------------------------------------------- aggregate + render
+
 
 def _normalize_env(env: Any) -> EnvProfile:  # noqa: ANN401
     """Coerce partial test/adapter profiles to the full additive contract."""
@@ -878,8 +880,7 @@ def render_doctor(report: dict[str, Any]) -> str:
                 marker = " (recommended)" if option.get("recommended") else ""
                 availability = option.get("availability", "available")
                 lines.append(
-                    f"        option: {option.get('id')} [{availability}]{marker} "
-                    f"- {option.get('label', '')}"
+                    f"        option: {option.get('id')} [{availability}]{marker} - {option.get('label', '')}"
                 )
     lines.append("")
     lines.append(f"(details: {_DOCS})")

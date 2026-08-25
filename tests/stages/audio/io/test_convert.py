@@ -15,8 +15,8 @@
 import json
 
 import pandas as pd
-import torch
 import pytest
+import torch
 
 from nemo_curator.stages.audio.io.convert import AudioToDocumentStage
 from nemo_curator.tasks import AudioTask, DocumentBatch
@@ -113,4 +113,3 @@ class TestAudioToDocumentSerializationBoundary:
         seg_row = kept.to_pandas().iloc[0].to_dict()
         assert "waveform" not in seg_row, "the tensor stays stripped even when segments are kept"
         assert seg_row["segments"][0]["text"] == "hello"
-

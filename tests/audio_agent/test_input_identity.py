@@ -14,8 +14,6 @@
 
 """Dataset identity is derived from source-stage execution truth, never guessed."""
 
-# ruff: noqa: INP001
-
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -185,9 +183,7 @@ class TestManifestReader:
         present.write_text("", encoding="utf-8")
         missing = tmp_path / "missing.jsonl"
 
-        binding = resolve_dataset_binding(
-            _recipe("ManifestReader", {"manifest_path": [str(present), str(missing)]})
-        )
+        binding = resolve_dataset_binding(_recipe("ManifestReader", {"manifest_path": [str(present), str(missing)]}))
 
         assert binding.status == "missing"
         assert binding.selected_manifest_files == ()
@@ -266,12 +262,8 @@ class TestManifestReader:
         wrong_extension = tmp_path / "manifest.txt"
         wrong_extension.write_text("", encoding="utf-8")
 
-        wrong = resolve_dataset_binding(
-            _recipe("ManifestReader", {"manifest_path": str(wrong_extension)})
-        )
-        no_match = resolve_dataset_binding(
-            _recipe("ManifestReader", {"manifest_path": str(tmp_path / "*.jsonl")})
-        )
+        wrong = resolve_dataset_binding(_recipe("ManifestReader", {"manifest_path": str(wrong_extension)}))
+        no_match = resolve_dataset_binding(_recipe("ManifestReader", {"manifest_path": str(tmp_path / "*.jsonl")}))
 
         assert wrong.status == no_match.status == "missing"
         assert "file_extensions" in wrong.reason
@@ -321,9 +313,7 @@ class TestManifestReader:
             raise AssertionError("smoke attempted to bound a missing manifest selector")
 
         monkeypatch.setattr(verbs, "_bound_recipe", must_not_bound)
-        result = verbs.smoke(
-            _recipe("ManifestReader", {"manifest_path": str(tmp_path / "*.jsonl")})
-        )
+        result = verbs.smoke(_recipe("ManifestReader", {"manifest_path": str(tmp_path / "*.jsonl")}))
 
         assert result["status"] == "refused"
         assert result["data_binding"]["status"] == "missing"
@@ -396,9 +386,7 @@ class TestFolderAndGeneratedSources:
         literal.mkdir(parents=True)
         monkeypatch.chdir(tmp_path)
 
-        binding = resolve_dataset_binding(
-            _recipe("CreateInitialManifestAudioFolderStage", {"data_dir": "~/audio"})
-        )
+        binding = resolve_dataset_binding(_recipe("CreateInitialManifestAudioFolderStage", {"data_dir": "~/audio"}))
 
         assert binding.status == "resolved"
         assert binding.primary_path == str(literal)

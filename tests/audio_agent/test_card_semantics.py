@@ -20,7 +20,6 @@ it to user intent.
 """
 
 # Existing historical regression names intentionally repeat later in this module.
-# ruff: noqa: INP001
 
 from copy import deepcopy
 
@@ -54,11 +53,7 @@ _VALID_DECISION = {
 
 def test_shipped_decisions_are_valid_and_limited_to_proven_producers() -> None:
     cards = get_index().all_cards()
-    decision_cards = {
-        stage_id: card
-        for stage_id, card in cards.items()
-        if "decision" in card
-    }
+    decision_cards = {stage_id: card for stage_id, card in cards.items() if "decision" in card}
 
     assert set(decision_cards) == {
         "GetPairwiseWerStage",
@@ -93,10 +88,7 @@ def test_decision_rejects_malformed_producer_contracts(
     decision = deepcopy(_VALID_DECISION)
     decision.update(updates)
 
-    assert any(
-        message in violation
-        for violation in _decision_violations("GetPairwiseWerStage", decision)
-    )
+    assert any(message in violation for violation in _decision_violations("GetPairwiseWerStage", decision))
 
 
 @pytest.mark.parametrize(
@@ -118,10 +110,7 @@ def test_decision_rejects_malformed_selector_contracts(
     decision = deepcopy(_VALID_DECISION)
     decision["selector"].update(updates)
 
-    assert any(
-        message in violation
-        for violation in _decision_violations("GetPairwiseWerStage", decision)
-    )
+    assert any(message in violation for violation in _decision_violations("GetPairwiseWerStage", decision))
 
 
 def test_decision_requires_mechanical_verification() -> None:
@@ -189,11 +178,7 @@ def test_model_condition_selectors_explicitly_require_and(
     declaration = (
         decision
         if decision["scope"] == scope
-        else next(
-            variant
-            for variant in decision["variants"]
-            if variant["scope"] == scope
-        )
+        else next(variant for variant in decision["variants"] if variant["scope"] == scope)
     )
     selector = declaration["selector"]
 
@@ -202,10 +187,7 @@ def test_model_condition_selectors_explicitly_require_and(
 
     selector["required_condition_logic"] = "or"
     violations = _decision_violations(stage_id, decision)
-    assert any(
-        "required_condition_logic must be 'and'" in violation
-        for violation in violations
-    )
+    assert any("required_condition_logic must be 'and'" in violation for violation in violations)
 
 
 @pytest.mark.parametrize("stage_id", ["UTMOSFilterStage", "SIGMOSFilterStage"])
@@ -432,7 +414,7 @@ def test_a_card_must_date_itself_so_a_stale_guess_is_distinguishable_from_a_fres
     assert any("missing required field 'provenance'" in item for item in violations)
 
 
-def test_a_stage_shipping_without_a_card_fails_the_gate_unless_waived(monkeypatch) -> None:  # noqa: ANN001
+def test_a_stage_shipping_without_a_card_fails_the_gate_unless_waived(monkeypatch) -> None:
     """An uncarded stage was reported and never failed, so a stage could ship plannable with no
     card semantics behind it: ``discover`` lists it, the planner may pick it, and the host critic
     gets no meaning, scope or counterexample to reason from. ``--allow-uncarded`` stays as the

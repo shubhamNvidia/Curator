@@ -388,15 +388,9 @@ class Verdict:
                 "card/gate problems); semantic intent review is still required"
             )
         if errs:
-            heading = (
-                f"mechanical validation failed with {len(errs)} error(s) and "
-                f"{len(warns)} warning(s):"
-            )
+            heading = f"mechanical validation failed with {len(errs)} error(s) and {len(warns)} warning(s):"
         else:
-            heading = (
-                f"mechanically runnable with {len(warns)} warning(s); "
-                "semantic intent review is still required:"
-            )
+            heading = f"mechanically runnable with {len(warns)} warning(s); semantic intent review is still required:"
         lines = [heading]
         for i in all_issues:
             loc = f" [{i.stage}]" if i.stage else ""
@@ -498,11 +492,7 @@ _CRITERION_FIELDS = frozenset(
 
 def _is_criterion_number(value: Any) -> bool:  # noqa: ANN401
     """True only for finite JSON-style numbers (booleans are not thresholds)."""
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(float(value))
-    )
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
 
 
 def _invalid_criterion(message: str) -> NoReturn:
@@ -527,9 +517,7 @@ def _validated_acceptance_mapping(raw: Any) -> dict[str, Any]:  # noqa: ANN401, 
     if not isinstance(criterion_id, str) or not criterion_id.strip():
         _invalid_criterion("acceptance criterion id must be a non-empty string")
     if criterion_id != criterion_id.strip():
-        _invalid_criterion(
-            f"acceptance criterion id {criterion_id!r} must not have surrounding whitespace"
-        )
+        _invalid_criterion(f"acceptance criterion id {criterion_id!r} must not have surrounding whitespace")
 
     criterion_type = data.get("type")
     if criterion_type not in _CRITERION_TYPES:
@@ -540,9 +528,7 @@ def _validated_acceptance_mapping(raw: Any) -> dict[str, Any]:  # noqa: ANN401, 
 
     description = data.get("description", "")
     if not isinstance(description, str):
-        _invalid_criterion(
-            f"acceptance criterion {criterion_id!r} description must be a string"
-        )
+        _invalid_criterion(f"acceptance criterion {criterion_id!r} description must be a string")
 
     kind = data.get("kind")
     if kind is not None and kind not in _CRITERION_KINDS:
@@ -567,9 +553,7 @@ def _validated_acceptance_mapping(raw: Any) -> dict[str, Any]:  # noqa: ANN401, 
 
     compiles_to = data.get("compiles_to")
     if compiles_to is not None and (
-        not isinstance(compiles_to, str)
-        or not compiles_to.strip()
-        or compiles_to != compiles_to.strip()
+        not isinstance(compiles_to, str) or not compiles_to.strip() or compiles_to != compiles_to.strip()
     ):
         _invalid_criterion(
             f"acceptance criterion {criterion_id!r} compiles_to must be a non-empty string "
@@ -580,29 +564,21 @@ def _validated_acceptance_mapping(raw: Any) -> dict[str, Any]:  # noqa: ANN401, 
     if source is None:
         source = {}
     elif not isinstance(source, Mapping):
-        _invalid_criterion(
-            f"acceptance criterion {criterion_id!r} source must be a mapping"
-        )
+        _invalid_criterion(f"acceptance criterion {criterion_id!r} source must be a mapping")
 
     check = data.get("check", {})
     if check is None:
         check = {}
     elif not isinstance(check, Mapping):
-        _invalid_criterion(
-            f"acceptance criterion {criterion_id!r} check must be a mapping"
-        )
+        _invalid_criterion(f"acceptance criterion {criterion_id!r} check must be a mapping")
     check = dict(check)
     unknown_check = sorted((key for key in check if key not in _CHECK_FIELDS), key=repr)
     if unknown_check:
-        _invalid_criterion(
-            f"acceptance criterion {criterion_id!r} has unknown check field(s): {unknown_check}"
-        )
+        _invalid_criterion(f"acceptance criterion {criterion_id!r} has unknown check field(s): {unknown_check}")
 
     field_name = check.get("field")
     if field_name is not None and (
-        not isinstance(field_name, str)
-        or not field_name.strip()
-        or field_name != field_name.strip()
+        not isinstance(field_name, str) or not field_name.strip() or field_name != field_name.strip()
     ):
         _invalid_criterion(
             f"acceptance criterion {criterion_id!r} check.field must be a non-empty string "
@@ -639,9 +615,7 @@ def _validated_acceptance_mapping(raw: Any) -> dict[str, Any]:  # noqa: ANN401, 
     if "tolerance" in check:
         tolerance = check["tolerance"]
         if not _is_criterion_number(tolerance) or tolerance < 0:
-            _invalid_criterion(
-                f"acceptance criterion {criterion_id!r} check.tolerance must be a non-negative number"
-            )
+            _invalid_criterion(f"acceptance criterion {criterion_id!r} check.tolerance must be a non-negative number")
         if op != "~=":
             _invalid_criterion(
                 f"acceptance criterion {criterion_id!r} check.tolerance is only valid with check.op='~='"
@@ -656,8 +630,7 @@ def _validated_acceptance_mapping(raw: Any) -> dict[str, Any]:  # noqa: ANN401, 
             )
         if op is not None and op != "non_empty":
             _invalid_criterion(
-                f"acceptance criterion {criterion_id!r} output_completeness only supports "
-                "check.op='non_empty'"
+                f"acceptance criterion {criterion_id!r} output_completeness only supports check.op='non_empty'"
             )
         unsupported = sorted(set(check) - {"field", "op", "scope"})
         if unsupported:
@@ -673,26 +646,16 @@ def _validated_acceptance_mapping(raw: Any) -> dict[str, Any]:  # noqa: ANN401, 
     elif criterion_type in {"quality_standard", "distribution"}:
         if method != "reviewer_judgment":
             if not field_name:
-                _invalid_criterion(
-                    f"acceptance criterion {criterion_id!r} needs check.field"
-                )
+                _invalid_criterion(f"acceptance criterion {criterion_id!r} needs check.field")
             if op is None or op == "non_empty":
-                _invalid_criterion(
-                    f"acceptance criterion {criterion_id!r} needs a numeric check operator"
-                )
+                _invalid_criterion(f"acceptance criterion {criterion_id!r} needs a numeric check operator")
             if "value" not in check:
-                _invalid_criterion(
-                    f"acceptance criterion {criterion_id!r} needs check.value"
-                )
+                _invalid_criterion(f"acceptance criterion {criterion_id!r} needs check.value")
             if not _is_criterion_number(check["value"]):
-                _invalid_criterion(
-                    f"acceptance criterion {criterion_id!r} check.value must be numeric"
-                )
+                _invalid_criterion(f"acceptance criterion {criterion_id!r} check.value must be numeric")
     elif criterion_type == "yield":
         if compiles_to is not None:
-            _invalid_criterion(
-                f"acceptance criterion {criterion_id!r} yield does not support compiles_to"
-            )
+            _invalid_criterion(f"acceptance criterion {criterion_id!r} yield does not support compiles_to")
         if field_name is not None and field_name != "retained":
             _invalid_criterion(
                 f"acceptance criterion {criterion_id!r} yield check.field must be 'retained' when supplied"
@@ -703,17 +666,11 @@ def _validated_acceptance_mapping(raw: Any) -> dict[str, Any]:  # noqa: ANN401, 
                 f"acceptance criterion {criterion_id!r} yield does not support check field(s): {unsupported}"
             )
         if op is None or op == "non_empty":
-            _invalid_criterion(
-                f"acceptance criterion {criterion_id!r} needs a numeric check operator"
-            )
+            _invalid_criterion(f"acceptance criterion {criterion_id!r} needs a numeric check operator")
         if "value" not in check:
-            _invalid_criterion(
-                f"acceptance criterion {criterion_id!r} needs check.value"
-            )
+            _invalid_criterion(f"acceptance criterion {criterion_id!r} needs check.value")
         if not _is_criterion_number(check["value"]):
-            _invalid_criterion(
-                f"acceptance criterion {criterion_id!r} check.value must be numeric"
-            )
+            _invalid_criterion(f"acceptance criterion {criterion_id!r} check.value must be numeric")
     elif criterion_type in {"semantic_fit", "honesty"}:
         if compiles_to is not None:
             _invalid_criterion(

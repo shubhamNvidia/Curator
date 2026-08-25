@@ -70,7 +70,7 @@ def residency_read_specs(
     return specs
 
 
-def scoped_audio_io_specs(
+def scoped_audio_io_specs(  # noqa: PLR0913
     input_residency: str,
     *,
     mode: Literal["task", "segments", "auto"],
@@ -151,10 +151,7 @@ def scoped_audio_conditional_writes(
         branch = (
             "segments mode is configured and an individual segment exists"
             if mode == "segments"
-            else (
-                f"'{segments_key}' is present, so the per-segment branch runs, "
-                "and an individual segment exists"
-            )
+            else (f"'{segments_key}' is present, so the per-segment branch runs, and an individual segment exists")
         )
         conditional.append(
             ConditionalWrite(

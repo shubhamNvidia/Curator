@@ -263,17 +263,10 @@ def test_profiled_initial_keys_survive_an_opaque_source_with_uncertainty() -> No
     assert packet["composites"][0]["expansion_status"] == "complete"
     assert origin["kind"] == "initial_input"
     assert origin["basis"] == "declared_post_source_initial_key"
-    assert (
-        origin["visibility_uncertainty"]["reason"]
-        == "profiled_source_key_without_declared_semantic_schema"
-    )
+    assert origin["visibility_uncertainty"]["reason"] == "profiled_source_key_without_declared_semantic_schema"
     assert edge["semantic_provenance"]["status"] == "unresolved_source_schema"
-    assert packet["semantic_evidence_gaps"][0]["code"] == (
-        "initial_key_semantics_unresolved"
-    )
-    assert {
-        gap["reason"] for gap in packet["missing_card_semantics"]
-    } == {"card_absent", "semantic_facts_absent"}
+    assert packet["semantic_evidence_gaps"][0]["code"] == ("initial_key_semantics_unresolved")
+    assert {gap["reason"] for gap in packet["missing_card_semantics"]} == {"card_absent", "semantic_facts_absent"}
 
 
 def test_a_nested_composite_is_reported_as_unsupported_not_expanded(
@@ -307,16 +300,12 @@ def test_a_nested_composite_is_reported_as_unsupported_not_expanded(
     packet = build_semantic_review(
         [_OuterComposite(duration_key="clip_seconds")],
         recipe={
-            "stages": [
-                {"ref": "_OuterComposite", "params": {"duration_key": "clip_seconds"}}
-            ],
+            "stages": [{"ref": "_OuterComposite", "params": {"duration_key": "clip_seconds"}}],
             "rationale": "keep clips of at least one second",
         },
     )
 
-    nested = [
-        i for i in packet["contract_issues"] if i["code"] == "nested_composite_unsupported"
-    ]
+    nested = [i for i in packet["contract_issues"] if i["code"] == "nested_composite_unsupported"]
     assert nested, "the inner composite the executor would reject must be reported"
     assert nested[0]["execution_path"] == [0], "and located at the offending child"
 
@@ -352,9 +341,7 @@ def test_recipe_and_profile_context_is_bounded_and_redacted() -> None:
     recipe, stages = _build([{"ref": "GetAudioDurationStage", "params": {}}])
     recipe.rationale = "token=do-not-leak"
     recipe.preset = "quality"
-    recipe.acceptance_criteria = [
-        {"id": "duration", "type": "output_completeness", "field": "duration"}
-    ]
+    recipe.acceptance_criteria = [{"id": "duration", "type": "output_completeness", "field": "duration"}]
     recipe.config_strategy = [{"stage": "GetAudioDurationStage", "reason": "goal"}]
 
     packet = build_semantic_review(
@@ -426,9 +413,7 @@ def test_review_packet_is_bound_to_canonical_recipe_hash_without_mutating_recipe
         "type": "string",
         "source": "semantic_review.recipe.config_hash",
         "required": True,
-        "rule": (
-            "Copy exactly; a different recipe requires another validation and critique."
-        ),
+        "rule": ("Copy exactly; a different recipe requires another validation and critique."),
     }
 
 

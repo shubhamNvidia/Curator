@@ -65,7 +65,7 @@ def _contract(*, requires_gpu: bool = False) -> SimpleNamespace:
 
 
 def _plan(
-    stage: Any,  # noqa: ANN401
+    stage: Any,
     env: EnvProfile,
     *,
     card: dict[str, Any] | None = None,
@@ -194,9 +194,7 @@ def test_ray_cluster_probe_failure_does_not_fall_back_to_driver_capacity(
     monkeypatch.setattr(
         _ray,
         "cluster_resources",
-        lambda _address: (_ for _ in ()).throw(
-            RuntimeError("remote cluster unavailable")
-        ),
+        lambda _address: (_ for _ in ()).throw(RuntimeError("remote cluster unavailable")),
     )
 
     with pytest.raises(RuntimeError, match="refusing to substitute driver resources"):
@@ -924,9 +922,7 @@ class TestTheMeasurementStoreIsHardened:
 
         assert calibration_store.save("cfg-1", {"stage-a": {"host_mem_gb": 9.0}}) is None
 
-    def test_a_read_only_filesystem_is_reported_rather_than_raised(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_a_read_only_filesystem_is_reported_rather_than_raised(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # The permission test above cannot run as root, and this path must hold everywhere:
         # storing telemetry is never worth failing the smoke that produced it.
         def _refuse(*_args: Any, **_kwargs: Any) -> None:

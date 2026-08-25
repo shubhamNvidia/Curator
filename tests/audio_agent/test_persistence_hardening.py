@@ -20,7 +20,7 @@ import contextlib
 import json
 import os
 import sqlite3
-from typing import Iterator
+from collections.abc import Iterator
 
 import pytest
 
@@ -176,8 +176,15 @@ def test_partial_index_reconciles_against_json_truth(
         RunRecord(run_id="run-a", dataset_key="stat:d", status="completed", created_at="2026-08-01T00:00:00Z")
     )
     artifacts.save(
-        Artifact(step_key="step-a", stage_ref="ManifestWriterStage", dataset_key="stat:d",
-                 uri="/out/a.jsonl", kind="manifest", run_id="run-a", created_at="2026-08-01T00:01:00Z")
+        Artifact(
+            step_key="step-a",
+            stage_ref="ManifestWriterStage",
+            dataset_key="stat:d",
+            uri="/out/a.jsonl",
+            kind="manifest",
+            run_id="run-a",
+            created_at="2026-08-01T00:01:00Z",
+        )
     )
 
     # Record + artifact B: their index writes are DROPPED, so they exist in JSON but not
@@ -188,8 +195,15 @@ def test_partial_index_reconciles_against_json_truth(
         RunRecord(run_id="run-b", dataset_key="stat:d", status="completed", created_at="2026-08-02T00:00:00Z")
     )
     artifacts.save(
-        Artifact(step_key="step-b", stage_ref="ManifestWriterStage", dataset_key="stat:d",
-                 uri="/out/b.jsonl", kind="manifest", run_id="run-b", created_at="2026-08-02T00:01:00Z")
+        Artifact(
+            step_key="step-b",
+            stage_ref="ManifestWriterStage",
+            dataset_key="stat:d",
+            uri="/out/b.jsonl",
+            kind="manifest",
+            run_id="run-b",
+            created_at="2026-08-02T00:01:00Z",
+        )
     )
 
     # The partial cache alone would return only {A}; reconciliation forces the JSON scan.

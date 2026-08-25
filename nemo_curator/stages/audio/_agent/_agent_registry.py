@@ -84,7 +84,7 @@ def _scalar_name(tp: type) -> str:
     return {int: "int", float: "float", str: "str", bool: "bool"}.get(tp, getattr(tp, "__name__", str(tp)))
 
 
-def _render_type(hint: Any) -> str:  # noqa: ANN401
+def _render_type(hint: Any) -> str:  # noqa: ANN401, C901, PLR0911
     if hint is None or hint is inspect.Parameter.empty:
         return "Any"
     if isinstance(hint, str):
@@ -435,11 +435,7 @@ def _describe_cardinalities(cls: type) -> list[str] | None:
     for node in ast.walk(tree):
         if not isinstance(node, ast.keyword) or node.arg != "cardinality":
             continue
-        branches = (
-            [node.value.body, node.value.orelse]
-            if isinstance(node.value, ast.IfExp)
-            else [node.value]
-        )
+        branches = [node.value.body, node.value.orelse] if isinstance(node.value, ast.IfExp) else [node.value]
         for branch in branches:
             if isinstance(branch, ast.Constant) and isinstance(branch.value, str):
                 found.append(branch.value)
@@ -554,9 +550,7 @@ def static_contract(cls: type) -> StageContract:
     """
     hints: StaticHints = getattr(cls, "AGENT_STATIC", None) or StaticHints()
     accepts_tt, produces_tt = _task_types(cls)
-    cardinality, cardinality_options = _derived_cardinality(
-        "1:1", list(hints.cardinality_options), cls
-    )
+    cardinality, cardinality_options = _derived_cardinality("1:1", list(hints.cardinality_options), cls)
     return StageContract(
         contract_resolution="static_params_and_hints",
         cardinality=cardinality,

@@ -24,7 +24,12 @@ from nemo.collections.asr.models import SortformerEncLabelModel
 
 from nemo_curator.backends.utils import RayStageSpecKeys
 from nemo_curator.stages.audio._agent._agent_ready import AgentReady, Gates, IOSpec, StageContract
-from nemo_curator.stages.audio._agent._residency import InputResidency, cleanup_temp_files, residency_read_specs, resolve_audio_path
+from nemo_curator.stages.audio._agent._residency import (
+    InputResidency,
+    cleanup_temp_files,
+    residency_read_specs,
+    resolve_audio_path,
+)
 from nemo_curator.stages.base import ProcessingStage
 
 if TYPE_CHECKING:
@@ -277,7 +282,9 @@ class InferenceSortformerStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
                 # different folders write the same ``utt1.rttm``. Drop the directory and the whole
                 # stage is safe to run over a subset.
                 per_row_independent=self.rttm_out_dir is None,
-                requires_internet_first_run=self.model_path is None, output_path_params=["rttm_out_dir"]),
+                requires_internet_first_run=self.model_path is None,
+                output_path_params=["rttm_out_dir"],
+            ),
         )
 
     def ray_stage_spec(self) -> dict[str, Any]:
@@ -299,8 +306,8 @@ class InferenceSortformerStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
         end = float(segment.get("end", start))
         child[self.start_key] = start
         child[self.end_key] = end
-        child[self.start_ms_key] = int(round(start * 1000))
-        child[self.end_ms_key] = int(round(end * 1000))
+        child[self.start_ms_key] = round(start * 1000)
+        child[self.end_ms_key] = round(end * 1000)
         child[self.duration_key] = max(0.0, end - start)
         child[self.segment_num_key] = segment_num
         if "speaker" in segment:

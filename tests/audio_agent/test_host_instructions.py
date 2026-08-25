@@ -74,11 +74,7 @@ def cli_verbs() -> set[str]:
     from nemo_curator.audio_agent.cli import build_parser
 
     parser = build_parser()
-    return {
-        name
-        for action in parser._subparsers._group_actions
-        for name in getattr(action, "choices", {})
-    }
+    return {name for action in parser._subparsers._group_actions for name in getattr(action, "choices", {})}
 
 
 @pytest.fixture
@@ -153,20 +149,13 @@ def test_every_skill_description_survives_the_strictest_host(skill: str) -> None
     assert len(description) <= _MAX_DESCRIPTION, (
         f"{skill}: description is {len(description)} chars, over the {_MAX_DESCRIPTION} limit"
     )
-    assert "use " in description.lower(), (
-        f"{skill}: description must name its trigger conditions, not only what it is"
-    )
+    assert "use " in description.lower(), f"{skill}: description must name its trigger conditions, not only what it is"
 
 
 def test_curation_mode_question_is_plain_once_per_new_workflow_guidance() -> None:
     skill = (_SKILLS / "audio-curation/SKILL.md").read_text(encoding="utf-8")
-    agents = (_REPO / "nemo_curator/audio_agent/AGENTS.md").read_text(
-        encoding="utf-8"
-    )
-    exact_question = (
-        "How should I optimize this curation? This only guides choices between "
-        "equally correct pipelines."
-    )
+    agents = (_REPO / "nemo_curator/audio_agent/AGENTS.md").read_text(encoding="utf-8")
+    exact_question = "How should I optimize this curation? This only guides choices between equally correct pipelines."
 
     for text in (skill, agents):
         normalized = " ".join(text.lower().split())
@@ -180,9 +169,7 @@ def test_curation_mode_question_is_plain_once_per_new_workflow_guidance() -> Non
         assert "explicit continuation" in normalized
         assert "inherit" in normalized
         assert "stored" in normalized
-    assert skill.index("Choose one soft curation mode") < skill.index(
-        "### 1. Interpret"
-    )
+    assert skill.index("Choose one soft curation mode") < skill.index("### 1. Interpret")
     assert "Do **not** repeat the question during validation" in skill
     assert '"fast" or "as\nquickly as possible" means `fast_first`' in skill
     assert '"I\'ll tune/refine thresholds" or "reuse\nlater" means `refine_later`' in skill
@@ -190,9 +177,7 @@ def test_curation_mode_question_is_plain_once_per_new_workflow_guidance() -> Non
 
 def test_curation_modes_remain_soft_and_disclose_the_tradeoffs() -> None:
     skill = (_SKILLS / "audio-curation/SKILL.md").read_text(encoding="utf-8")
-    routing = (
-        _SKILLS / "audio-curation/references/routing.md"
-    ).read_text(encoding="utf-8")
+    routing = (_SKILLS / "audio-curation/references/routing.md").read_text(encoding="utf-8")
     combined = skill + routing
 
     assert "only a soft tie-breaker" in skill
@@ -213,7 +198,10 @@ def test_curation_modes_remain_soft_and_disclose_the_tradeoffs() -> None:
     assert "supports generic\n`condition_logic='or'` pipelines" in routing
     assert "always sets `condition_logic='and'`" in routing
     assert "never suggest OR as a native-filter\nequivalent" in routing
-    assert "Prefer explicit `mode=task` or\n`mode=segments` over `mode=auto` only when scope is mechanically proven" in routing
+    assert (
+        "Prefer explicit `mode=task` or\n`mode=segments` over `mode=auto` only when scope is mechanically proven"
+        in routing
+    )
     assert "bypass the existing `plan-checkpoint` decision\ngate" in routing
     assert "planning_advisories" in routing
     assert "must insert a checkpoint" not in combined.lower()
@@ -225,16 +213,11 @@ def test_component_replacement_mid_chat_requires_the_full_ordered_reset(
     mid_workflow_component_replacement_scenario: dict[str, object],
 ) -> None:
     skill = (_SKILLS / "audio-curation/SKILL.md").read_text(encoding="utf-8")
-    reset = skill.split("## Mid-workflow recipe branch reset (mandatory)", 1)[1].split(
-        "## The loop", 1
-    )[0]
+    reset = skill.split("## Mid-workflow recipe branch reset (mandatory)", 1)[1].split("## The loop", 1)[0]
     milestones = mid_workflow_component_replacement_scenario["ordered_milestones"]
     assert isinstance(milestones, list)
     normalized_reset = " ".join(reset.split())
-    positions = [
-        normalized_reset.index(" ".join(str(milestone).split()))
-        for milestone in milestones
-    ]
+    positions = [normalized_reset.index(" ".join(str(milestone).split())) for milestone in milestones]
     assert positions == sorted(positions), "the branch reset must preserve gate order"
 
     normalized = normalized_reset.lower()
@@ -257,18 +240,10 @@ def test_component_replacement_mid_chat_requires_the_full_ordered_reset(
 
 def test_branch_reset_is_repeated_at_each_host_decision_boundary() -> None:
     skill = (_SKILLS / "audio-curation/SKILL.md").read_text(encoding="utf-8")
-    agents = (_REPO / "nemo_curator/audio_agent/AGENTS.md").read_text(
-        encoding="utf-8"
-    )
-    smoke = (
-        _SKILLS / "audio-curation/references/smoke-and-run.md"
-    ).read_text(encoding="utf-8")
-    reuse = (
-        _SKILLS / "audio-curation/references/reuse.md"
-    ).read_text(encoding="utf-8")
-    checkpoint = (_SKILLS / "checkpoint-placement/SKILL.md").read_text(
-        encoding="utf-8"
-    )
+    agents = (_REPO / "nemo_curator/audio_agent/AGENTS.md").read_text(encoding="utf-8")
+    smoke = (_SKILLS / "audio-curation/references/smoke-and-run.md").read_text(encoding="utf-8")
+    reuse = (_SKILLS / "audio-curation/references/reuse.md").read_text(encoding="utf-8")
+    checkpoint = (_SKILLS / "checkpoint-placement/SKILL.md").read_text(encoding="utf-8")
 
     for text in (skill, agents, smoke, reuse, checkpoint):
         normalized = " ".join(text.lower().split())
@@ -284,15 +259,9 @@ def test_branch_reset_is_repeated_at_each_host_decision_boundary() -> None:
 
 def test_checkpoint_choices_are_never_made_for_the_user() -> None:
     skill = (_SKILLS / "audio-curation/SKILL.md").read_text(encoding="utf-8")
-    agents = (_REPO / "nemo_curator/audio_agent/AGENTS.md").read_text(
-        encoding="utf-8"
-    )
-    checkpoint = (_SKILLS / "checkpoint-placement/SKILL.md").read_text(
-        encoding="utf-8"
-    )
-    reuse = (
-        _SKILLS / "audio-curation/references/reuse.md"
-    ).read_text(encoding="utf-8")
+    agents = (_REPO / "nemo_curator/audio_agent/AGENTS.md").read_text(encoding="utf-8")
+    checkpoint = (_SKILLS / "checkpoint-placement/SKILL.md").read_text(encoding="utf-8")
+    reuse = (_SKILLS / "audio-curation/references/reuse.md").read_text(encoding="utf-8")
 
     for text in (skill, agents, checkpoint, reuse):
         normalized = " ".join(text.split())
@@ -306,19 +275,13 @@ def test_checkpoint_choices_are_never_made_for_the_user() -> None:
     assert "Never place more than one new checkpoint" in checkpoint
     assert "at most one checkpoint may be added" in reuse
     assert "planning-mode answer is not checkpoint consent" in " ".join(reuse.split())
-    assert "soft curation-mode choice is not this recipe-specific" in " ".join(
-        checkpoint.split()
-    )
+    assert "soft curation-mode choice is not this recipe-specific" in " ".join(checkpoint.split())
 
 
 def test_semantic_packet_and_integrity_tokens_are_not_mistaken_for_host_consent() -> None:
     skill = (_SKILLS / "audio-curation/SKILL.md").read_text(encoding="utf-8")
-    agents = (_REPO / "nemo_curator/audio_agent/AGENTS.md").read_text(
-        encoding="utf-8"
-    )
-    smoke = (
-        _SKILLS / "audio-curation/references/smoke-and-run.md"
-    ).read_text(encoding="utf-8")
+    agents = (_REPO / "nemo_curator/audio_agent/AGENTS.md").read_text(encoding="utf-8")
+    smoke = (_SKILLS / "audio-curation/references/smoke-and-run.md").read_text(encoding="utf-8")
     normalized = " ".join((skill + agents + smoke).split())
 
     for field in (
@@ -341,18 +304,10 @@ def test_semantic_packet_and_integrity_tokens_are_not_mistaken_for_host_consent(
 
 def test_execution_gate_warns_only_for_grounded_occupied_overwrites() -> None:
     skill = (_SKILLS / "audio-curation/SKILL.md").read_text(encoding="utf-8")
-    smoke = (
-        _SKILLS / "audio-curation/references/smoke-and-run.md"
-    ).read_text(encoding="utf-8")
-    reuse = (
-        _SKILLS / "audio-curation/references/reuse.md"
-    ).read_text(encoding="utf-8")
-    checkpoint = (_SKILLS / "checkpoint-placement/SKILL.md").read_text(
-        encoding="utf-8"
-    )
-    agents = (_REPO / "nemo_curator/audio_agent/AGENTS.md").read_text(
-        encoding="utf-8"
-    )
+    smoke = (_SKILLS / "audio-curation/references/smoke-and-run.md").read_text(encoding="utf-8")
+    reuse = (_SKILLS / "audio-curation/references/reuse.md").read_text(encoding="utf-8")
+    checkpoint = (_SKILLS / "checkpoint-placement/SKILL.md").read_text(encoding="utf-8")
+    agents = (_REPO / "nemo_curator/audio_agent/AGENTS.md").read_text(encoding="utf-8")
     normalized = " ".join((skill + smoke + reuse + checkpoint + agents).split())
 
     for required in (
@@ -381,18 +336,10 @@ def test_execution_gate_warns_only_for_grounded_occupied_overwrites() -> None:
 
 def test_success_responses_inventory_only_proven_durable_paths() -> None:
     skill = (_SKILLS / "audio-curation/SKILL.md").read_text(encoding="utf-8")
-    smoke = (
-        _SKILLS / "audio-curation/references/smoke-and-run.md"
-    ).read_text(encoding="utf-8")
-    reuse = (
-        _SKILLS / "audio-curation/references/reuse.md"
-    ).read_text(encoding="utf-8")
-    checkpoint = (_SKILLS / "checkpoint-placement/SKILL.md").read_text(
-        encoding="utf-8"
-    )
-    agents = (_REPO / "nemo_curator/audio_agent/AGENTS.md").read_text(
-        encoding="utf-8"
-    )
+    smoke = (_SKILLS / "audio-curation/references/smoke-and-run.md").read_text(encoding="utf-8")
+    reuse = (_SKILLS / "audio-curation/references/reuse.md").read_text(encoding="utf-8")
+    checkpoint = (_SKILLS / "checkpoint-placement/SKILL.md").read_text(encoding="utf-8")
+    agents = (_REPO / "nemo_curator/audio_agent/AGENTS.md").read_text(encoding="utf-8")
     normalized = " ".join((skill + smoke + reuse + checkpoint + agents).split())
 
     for result in (
@@ -484,9 +431,7 @@ def test_every_verb_the_instructions_mention_exists(cli_verbs: set[str]) -> None
     An agent following a document that names a verb the CLI dropped gets a usage error at
     the step it was told to run, which reads as a broken tool rather than a stale document.
     """
-    invocation = re.compile(
-        r"(?:-m nemo_curator\.audio_agent|nemo-curator-audio)\s+(?:\.\.\.\s+)?([a-z][a-z-]+)"
-    )
+    invocation = re.compile(r"(?:-m nemo_curator\.audio_agent|nemo-curator-audio)\s+(?:\.\.\.\s+)?([a-z][a-z-]+)")
     docs = [
         *sorted(_SKILLS.rglob("*.md")),
         _REPO / "nemo_curator/audio_agent/AGENTS.md",
@@ -501,9 +446,7 @@ def test_every_verb_the_instructions_mention_exists(cli_verbs: set[str]) -> None
     assert not stale, f"instructions name verbs the CLI does not have: {stale}"
 
 
-@pytest.mark.parametrize(
-    "directory", ["nemo_curator/audio_agent", "nemo_curator/stages/audio"]
-)
+@pytest.mark.parametrize("directory", ["nemo_curator/audio_agent", "nemo_curator/stages/audio"])
 def test_every_claude_md_is_an_import_of_its_sibling_agents_md(directory: str) -> None:
     """The pair used to be two hand-maintained copies differing only in the word "Claude".
 
@@ -513,9 +456,7 @@ def test_every_claude_md_is_an_import_of_its_sibling_agents_md(directory: str) -
     base = _REPO / directory
     assert (base / "AGENTS.md").is_file(), f"{directory}: no AGENTS.md to import"
     lines = [ln.strip() for ln in (base / "CLAUDE.md").read_text(encoding="utf-8").splitlines() if ln.strip()]
-    assert lines == ["@AGENTS.md"], (
-        f"{directory}/CLAUDE.md must be exactly '@AGENTS.md'; found {lines!r}"
-    )
+    assert lines == ["@AGENTS.md"], f"{directory}/CLAUDE.md must be exactly '@AGENTS.md'; found {lines!r}"
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs git to read the ignore rules")
@@ -560,9 +501,7 @@ def test_the_audio_rules_stay_out_of_the_shared_cursor_directory() -> None:
     rules = {p.name for p in (_REPO / ".cursor/rules").glob("*.mdc")}
     assert not {"audio-agent.mdc", "use-audio-agent.mdc", "no-repo-edits-for-use-cases.mdc"} & rules
     audio_specific = sorted(
-        p.name
-        for p in (_REPO / ".cursor/rules").glob("*.mdc")
-        if "audio_agent" in p.read_text(encoding="utf-8")
+        p.name for p in (_REPO / ".cursor/rules").glob("*.mdc") if "audio_agent" in p.read_text(encoding="utf-8")
     )
     assert not audio_specific, (
         f"audio-agent guidance belongs in nemo_curator/audio_agent/AGENTS.md, not in {audio_specific}"

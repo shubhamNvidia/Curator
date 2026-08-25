@@ -33,18 +33,18 @@ import argparse
 import json
 import math
 import sys
+from pathlib import Path
 from typing import Any
 
 _RECIPE_DATA_HELP = (
-    "optional assertion that must canonically match the recipe's first source "
-    "stage; never overrides stage parameters"
+    "optional assertion that must canonically match the recipe's first source stage; never overrides stage parameters"
 )
 
 
 def _load_recipe(path: str) -> dict[str, Any]:
     import yaml
 
-    text = sys.stdin.read() if path == "-" else open(path, encoding="utf-8").read()
+    text = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
     return yaml.safe_load(text)
 
 
@@ -54,7 +54,7 @@ def _load_doc(path: str | None) -> Any:  # noqa: ANN401
         return None
     import yaml
 
-    text = sys.stdin.read() if path == "-" else open(path, encoding="utf-8").read()
+    text = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
     return yaml.safe_load(text)
 
 
@@ -89,7 +89,7 @@ def _criteria_list(doc: Any) -> list[dict[str, Any]] | None:  # noqa: ANN401
             raise ValueError(msg)
         if not isinstance(crit, list):
             msg = f"'acceptance_criteria' must be a list of criterion mappings, got {type(crit).__name__}"
-            raise ValueError(msg)
+            raise ValueError(msg)  # noqa: TRY004
         return crit
     msg = f"acceptance criteria must be a list or a mapping with 'acceptance_criteria', got {type(doc).__name__}"
     raise ValueError(msg)
@@ -104,7 +104,7 @@ def _emit(obj: Any) -> None:  # noqa: ANN401
     print(json.dumps(obj, indent=2, ensure_ascii=False, default=str))
 
 
-def _result_exit_code(cmd: str, obj: Any) -> int:  # noqa: ANN401
+def _result_exit_code(cmd: str, obj: Any) -> int:  # noqa: ANN401, PLR0911
     """Stable shell semantics for structured verb outcomes.
 
     ``validate`` intentionally returns zero even for a non-runnable verdict:
@@ -115,11 +115,7 @@ def _result_exit_code(cmd: str, obj: Any) -> int:  # noqa: ANN401
     if not isinstance(obj, dict):
         return 0
     acceptance = obj.get("acceptance")
-    if (
-        isinstance(acceptance, dict)
-        and acceptance.get("overall") is not None
-        and acceptance.get("overall") != "met"
-    ):
+    if isinstance(acceptance, dict) and acceptance.get("overall") is not None and acceptance.get("overall") != "met":
         return 1
     if cmd == "validate":
         return 0
@@ -156,11 +152,8 @@ def _parse_goal(raw: str | None) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {"task": raw}
     if not isinstance(goal, dict):
-        msg = (
-            "goal JSON must be an object mapping; pass unquoted free text "
-            "or a JSON object"
-        )
-        raise ValueError(msg)
+        msg = "goal JSON must be an object mapping; pass unquoted free text or a JSON object"
+        raise ValueError(msg)  # noqa: TRY004
     return goal
 
 
@@ -175,7 +168,7 @@ def _parse_params(raw: str | None) -> dict[str, Any] | None:
     params = json.loads(raw)
     if not isinstance(params, dict):
         msg = f"--params must be a JSON object mapping param names to values, got {type(params).__name__}"
-        raise ValueError(msg)
+        raise ValueError(msg)  # noqa: TRY004
     return params
 
 
@@ -188,10 +181,7 @@ def _parse_scalar(raw: str | None) -> Any:  # noqa: ANN401 - JSON scalar or plai
     except json.JSONDecodeError:
         return raw
     if value is None or isinstance(value, (list, dict)):
-        msg = (
-            "--decision-value must be a JSON scalar "
-            "(boolean, number, or string); omit it for no change"
-        )
+        msg = "--decision-value must be a JSON scalar (boolean, number, or string); omit it for no change"
         raise ValueError(msg)
     if isinstance(value, float) and not math.isfinite(value):
         msg = "--decision-value must be a finite JSON number"
@@ -257,7 +247,9 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block
     )
     v.add_argument("--recipe", required=True, help="path to a recipe YAML/JSON (or - for stdin)")
     v.add_argument("--data", help=_RECIPE_DATA_HELP)
-    v.add_argument("--expected-outputs", nargs="*", help="semantic output roles the user asked for (output-completeness)")
+    v.add_argument(
+        "--expected-outputs", nargs="*", help="semantic output roles the user asked for (output-completeness)"
+    )
     v.add_argument(
         "--acceptance-criteria",
         help=(
@@ -283,20 +275,27 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block
 
     r = sub.add_parser("run", help="confirm-gated full run (0 silent runs)")
     r.add_argument("--recipe", required=True)
-    r.add_argument("--confirm", nargs="?", const=True, default=False,
-                   help="pass the recipe config_hash (integrity) or bare --confirm")
+    r.add_argument(
+        "--confirm",
+        nargs="?",
+        const=True,
+        default=False,
+        help="pass the recipe config_hash (integrity) or bare --confirm",
+    )
     r.add_argument("--data", help=_RECIPE_DATA_HELP)
     r.add_argument(
         "--output-dir",
-        help=(
-            "legacy no-op retained for compatibility; configure output paths "
-            "on recipe stages"
-        ),
+        help=("legacy no-op retained for compatibility; configure output paths on recipe stages"),
     )
     r.add_argument("--checkpoint-path")
     r.add_argument("--bootstrap-ray", action="store_true", help="auto-start a local Ray head if none is reachable")
-    r.add_argument("--smoke-token", help="smoke-evidence token from a prior smoke (required if AUDIO_AGENT_REQUIRE_SMOKE is set)")
-    r.add_argument("--calibration", help="path to a calibration JSON from a prior smoke; omit to apply the measurements the last smoke of this recipe stored")
+    r.add_argument(
+        "--smoke-token", help="smoke-evidence token from a prior smoke (required if AUDIO_AGENT_REQUIRE_SMOKE is set)"
+    )
+    r.add_argument(
+        "--calibration",
+        help="path to a calibration JSON from a prior smoke; omit to apply the measurements the last smoke of this recipe stored",
+    )
     r.add_argument("--goal", help="what this run is FOR (JSON or free text); recorded so prior work stays legible")
 
     rp = sub.add_parser("report", help="post-hoc report from an output manifest/dir")
@@ -311,10 +310,16 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block
     )
 
     vf = sub.add_parser("verify", help="verify acceptance criteria against evidence -> AcceptanceReport")
-    vf.add_argument("--criteria", required=True, help="acceptance criteria YAML/JSON (list or {acceptance_criteria: [...]}; - for stdin)")
+    vf.add_argument(
+        "--criteria",
+        required=True,
+        help="acceptance criteria YAML/JSON (list or {acceptance_criteria: [...]}; - for stdin)",
+    )
     vf.add_argument("--evidence", help="evidence YAML/JSON (produced_roles/metrics/retained/...); - for stdin")
     vf.add_argument("--frozen-criteria", help="the confirmed contract, for the honesty guard (YAML/JSON)")
-    vf.add_argument("--recipe", dest="verify_recipe", help="recipe carrying acceptance_criteria (alt source for the honesty guard)")
+    vf.add_argument(
+        "--recipe", dest="verify_recipe", help="recipe carrying acceptance_criteria (alt source for the honesty guard)"
+    )
 
     rs = sub.add_parser("resolve", help="resolve an outcome (label/use_case/explicit) to concrete stage config (1A.2)")
     rs.add_argument("--stage", required=True)
@@ -367,10 +372,17 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block
         ),
     )
     dr.add_argument("--data", help=_RECIPE_DATA_HELP)
-    dr.add_argument("--confirm", nargs="?", const=True, default=False,
-                    help="pass the recipe config_hash (integrity) or bare --confirm; omit to see the card")
+    dr.add_argument(
+        "--confirm",
+        nargs="?",
+        const=True,
+        default=False,
+        help="pass the recipe config_hash (integrity) or bare --confirm; omit to see the card",
+    )
     dr.add_argument("--bootstrap-ray", action="store_true", help="auto-start a local Ray head if none is reachable")
-    dr.add_argument("--smoke-token", help="smoke-evidence token from a prior smoke (required if AUDIO_AGENT_REQUIRE_SMOKE is set)")
+    dr.add_argument(
+        "--smoke-token", help="smoke-evidence token from a prior smoke (required if AUDIO_AGENT_REQUIRE_SMOKE is set)"
+    )
     dr.add_argument("--calibration", help="path to a calibration JSON from a prior smoke")
     dr.add_argument("--goal", help="what this run is FOR (JSON or free text); recorded so prior work stays legible")
 
@@ -403,8 +415,7 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block
     decision.add_argument(
         "--decision-conditions",
         help=(
-            "complete JSON list/object of card-declared compound ge conditions; "
-            "replaces the selector condition set"
+            "complete JSON list/object of card-declared compound ge conditions; replaces the selector condition set"
         ),
     )
     pc.add_argument(
@@ -426,23 +437,34 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block
 
     cont = sub.add_parser("continue", help="plan (and optionally execute) a follow-up run that reuses prior work")
     cont.add_argument("--recipe", required=True, help="the follow-up recipe (or - for stdin)")
-    cont.add_argument("--parent-run-id", help="a prior run to diff against (optional; the artifact scan works without one)")
+    cont.add_argument(
+        "--parent-run-id", help="a prior run to diff against (optional; the artifact scan works without one)"
+    )
     cont.add_argument("--data", help=_RECIPE_DATA_HELP)
     cont.add_argument("--execute", action="store_true", help="carry the plan out instead of only printing it")
-    cont.add_argument("--choice", choices=["as_is", "extend", "fresh"], help="which option to take (default: what the plan concluded)")
-    cont.add_argument("--confirm", nargs="?", const=True, default=False,
-                      help="config_hash of the recipe that will run (integrity), or bare --confirm")
+    cont.add_argument(
+        "--choice",
+        choices=["as_is", "extend", "fresh"],
+        help="which option to take (default: what the plan concluded)",
+    )
+    cont.add_argument(
+        "--confirm",
+        nargs="?",
+        const=True,
+        default=False,
+        help="config_hash of the recipe that will run (integrity), or bare --confirm",
+    )
     cont.add_argument(
         "--output-dir",
-        help=(
-            "legacy no-op retained for compatibility; configure output paths "
-            "on recipe stages"
-        ),
+        help=("legacy no-op retained for compatibility; configure output paths on recipe stages"),
     )
     cont.add_argument("--checkpoint-path")
     cont.add_argument("--bootstrap-ray", action="store_true", help="auto-start a local Ray head if none is reachable")
     cont.add_argument("--smoke-token", help="smoke token for the exact recipe branch that will execute")
-    cont.add_argument("--calibration", help="path to a calibration JSON from a prior smoke; omit to apply the measurements the last smoke of this recipe stored")
+    cont.add_argument(
+        "--calibration",
+        help="path to a calibration JSON from a prior smoke; omit to apply the measurements the last smoke of this recipe stored",
+    )
     cont.add_argument("--goal", help="what this run is FOR (JSON or free text)")
 
     cal = sub.add_parser("calibrate", help="extract measured per-stage resources from a smoke report (1C.2)")
@@ -452,25 +474,44 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block
     dr.add_argument("--json", action="store_true", help="emit the JSON report instead of human-readable text")
 
     ins = sub.add_parser("install-skill", help="install the packaged skills where Codex/Cursor/Claude Code find them")
-    ins.add_argument("--scope", choices=["project", "user"], default="project",
-                     help="project: the current directory; user: the home-directory equivalents (default: project)")
-    ins.add_argument("--host", choices=["all", "claude", "codex", "cursor"], default="all",
-                     help="which host's discovery directory to write (default: all)")
-    ins.add_argument("--skill", dest="skills", nargs="*",
-                     help="install only these packaged skills (default: all of them)")
+    ins.add_argument(
+        "--scope",
+        choices=["project", "user"],
+        default="project",
+        help="project: the current directory; user: the home-directory equivalents (default: project)",
+    )
+    ins.add_argument(
+        "--host",
+        choices=["all", "claude", "codex", "cursor"],
+        default="all",
+        help="which host's discovery directory to write (default: all)",
+    )
+    ins.add_argument(
+        "--skill", dest="skills", nargs="*", help="install only these packaged skills (default: all of them)"
+    )
     ins.add_argument("--dest", help="project-scope root to install into instead of the current directory")
     mode = ins.add_mutually_exclusive_group()
-    mode.add_argument("--copy", dest="mode", action="store_const", const="copy",
-                      help="copy the files (default; works without symlink support)")
-    mode.add_argument("--symlink", dest="mode", action="store_const", const="symlink",
-                      help="link to the installed package so the skill tracks upgrades")
+    mode.add_argument(
+        "--copy",
+        dest="mode",
+        action="store_const",
+        const="copy",
+        help="copy the files (default; works without symlink support)",
+    )
+    mode.add_argument(
+        "--symlink",
+        dest="mode",
+        action="store_const",
+        const="symlink",
+        help="link to the installed package so the skill tracks upgrades",
+    )
     ins.set_defaults(mode="copy")
     ins.add_argument("--force", action="store_true", help="replace a target whose content differs")
     ins.add_argument("--dry-run", action="store_true", help="report what would be written, and write nothing")
     return p
 
 
-def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0912 - a flat verb dispatch table
+def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0912, PLR0911 - a flat verb dispatch table
     from nemo_curator import audio_agent as aa
 
     args = build_parser().parse_args(argv)
@@ -513,9 +554,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0912 - a flat 
                     _load_recipe(args.recipe),
                     data=args.data,
                     expected_outputs=args.expected_outputs,
-                    acceptance_criteria=_criteria_list(
-                        _load_doc(args.acceptance_criteria)
-                    ),
+                    acceptance_criteria=_criteria_list(_load_doc(args.acceptance_criteria)),
                     request_type=args.request_type,
                 ),
             )

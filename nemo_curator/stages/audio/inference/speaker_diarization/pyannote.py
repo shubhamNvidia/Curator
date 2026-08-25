@@ -36,7 +36,12 @@ from pyannote.core import Segment
 from nemo_curator.backends.base import NodeInfo, WorkerMetadata
 from nemo_curator.backends.utils import RayStageSpecKeys
 from nemo_curator.stages.audio._agent._agent_ready import AgentReady, Gates, IOSpec, StageContract
-from nemo_curator.stages.audio._agent._residency import InputResidency, cleanup_temp_files, residency_read_specs, resolve_audio_path
+from nemo_curator.stages.audio._agent._residency import (
+    InputResidency,
+    cleanup_temp_files,
+    residency_read_specs,
+    resolve_audio_path,
+)
 from nemo_curator.stages.audio.common import get_audio_duration
 from nemo_curator.stages.audio.inference.vad.whisperx_vad import WhisperXVADModel
 from nemo_curator.stages.audio.tagging.utils import add_non_speaker_segments
@@ -206,11 +211,7 @@ class PyAnnoteDiarizationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
         segment: dict[str, Any],
         segment_num: int,
     ) -> dict[str, Any]:
-        child = {
-            k: v
-            for k, v in item.items()
-            if k not in {self.segments_key, self.overlap_segments_key}
-        }
+        child = {k: v for k, v in item.items() if k not in {self.segments_key, self.overlap_segments_key}}
         child.update({k: v for k, v in segment.items() if k not in {"start", "end", "speaker"}})
         start = float(segment.get("start", 0.0))
         end = float(segment.get("end", start))
@@ -455,11 +456,7 @@ class PyAnnoteDiarizationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
 
         # Distinct speakers across turns AND overlap-only turns; "no-speaker" is a
         # silence/VAD placeholder, not a real speaker.
-        speakers = {
-            seg["speaker"]
-            for seg in (*segments, *overlap_segments)
-            if seg.get("speaker") != "no-speaker"
-        }
+        speakers = {seg["speaker"] for seg in (*segments, *overlap_segments) if seg.get("speaker") != "no-speaker"}
         data_entry[self.num_speakers_key] = len(speakers)
         self._log_metrics(
             {

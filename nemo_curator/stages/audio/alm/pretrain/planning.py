@@ -96,9 +96,7 @@ def find_overlapping_indices(segments: list[dict], min_overlap_sec: float) -> se
     if n < _MIN_SEGMENTS_FOR_OVERLAP:
         return set()
     # Sort indirectly so we can return indices into the caller's list.
-    order = sorted(
-        range(n), key=lambda i: (segments[i]["start"], segments[i]["end"])
-    )
+    order = sorted(range(n), key=lambda i: (segments[i]["start"], segments[i]["end"]))
     bad: set[int] = set()
     # Active interval heap, keyed by end time so the smallest-end interval
     # (the next to fall out of the active window) is always at the root.
@@ -204,9 +202,7 @@ def plan_snippets(
     return snippets, drop_counts
 
 
-def relativize_segments(
-    segments: list[dict], snippet_start: float, snippet_end: float
-) -> list[dict]:
+def relativize_segments(segments: list[dict], snippet_start: float, snippet_end: float) -> list[dict]:
     """Return shallow-copied segments with timestamps shifted to snippet-relative.
 
     Each segment-level and word-level ``start``/``end`` is shifted by
@@ -258,9 +254,7 @@ def _count_ngrams(token_ids: list[int], n: int) -> Counter[tuple[int, ...]]:
     return Counter(tuple(token_ids[i : i + n]) for i in range(len(token_ids) - n + 1))
 
 
-def _find_offending_ngrams(
-    counts: Counter[tuple[int, ...]], max_count: int
-) -> set[tuple[int, ...]]:
+def _find_offending_ngrams(counts: Counter[tuple[int, ...]], max_count: int) -> set[tuple[int, ...]]:
     """Return n-grams whose frequency strictly exceeds ``max_count``."""
     return {ng for ng, c in counts.items() if c > max_count}
 
@@ -374,9 +368,7 @@ class OverlapFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         # also a span, including inter-segment silences) so the input/output
         # totals can be diffed meaningfully. min/max instead of [-1].end /
         # [0].start because the input JSONL is not guaranteed to be sorted.
-        original_duration = (
-            max(s["end"] for s in segments) - min(s["start"] for s in segments) if segments else 0.0
-        )
+        original_duration = max(s["end"] for s in segments) - min(s["start"] for s in segments) if segments else 0.0
 
         kept_after_empty, dropped_empty = filter_empty_segments(segments)
         kept_after_empty.sort(key=lambda s: (s["start"], s["end"]))
@@ -656,9 +648,7 @@ class SnippetRepetitionFilterStage(AgentReady, ProcessingStage[AudioTask, AudioT
         """
         if not text:
             return False
-        encoding = self._tokenizer(
-            text, add_special_tokens=False, return_offsets_mapping=True
-        )
+        encoding = self._tokenizer(text, add_special_tokens=False, return_offsets_mapping=True)
         token_ids: list[int] = list(encoding["input_ids"])
         offsets: list[tuple[int, int]] = [tuple(o) for o in encoding["offset_mapping"]]
         if len(token_ids) < self.ngram_n:
@@ -667,9 +657,7 @@ class SnippetRepetitionFilterStage(AgentReady, ProcessingStage[AudioTask, AudioT
         offending = _find_offending_ngrams(counts, self.ngram_max_count)
         if not offending:
             return False
-        ranges = _merge_char_ranges(
-            _locate_ngram_char_ranges(token_ids, offsets, offending, self.ngram_n)
-        )
+        ranges = _merge_char_ranges(_locate_ngram_char_ranges(token_ids, offsets, offending, self.ngram_n))
         colorized = _format_red(text, ranges)
         worst_count = max(counts[ng] for ng in offending)
         logger.opt(colors=True).warning(

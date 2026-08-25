@@ -50,8 +50,7 @@ def _keys_the_recipe_writes(recipe: dict) -> set[str]:
     # Placeholders are passed through as the strings they are. Stripping them instead removes
     # the arguments a stage requires, and the template stops being constructible at all.
     instances = [
-        resolve_stage_class(str(spec["ref"]))(**(spec.get("params") or {}))
-        for spec in (recipe.get("stages") or [])
+        resolve_stage_class(str(spec["ref"]))(**(spec.get("params") or {})) for spec in (recipe.get("stages") or [])
     ]
     written: set[str] = set()
     for leaf in expand_composites(instances).stages:

@@ -181,9 +181,7 @@ def insert(recipe: Recipe, *, index: int, output_path: str) -> tuple[Recipe | No
         knowledge_version=recipe.knowledge_version,
         parent_run_id=recipe.parent_run_id,
         planning_preference=(
-            dict(recipe.planning_preference)
-            if isinstance(recipe.planning_preference, dict)
-            else None
+            dict(recipe.planning_preference) if isinstance(recipe.planning_preference, dict) else None
         ),
     )
     return checkpointed.freeze(), ""

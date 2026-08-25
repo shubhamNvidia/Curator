@@ -55,9 +55,7 @@ REUSABLE_CHECKPOINT_PROVENANCE = "reusable_pipeline_v1"
 _REUSABLE_CHECKPOINT_REF = "ManifestCheckpointStage"
 PLANNING_PREFERENCE_SCHEMA_VERSION = 1
 CURATION_MODES = frozenset({"refine_later", "fast_first"})
-PLANNING_PREFERENCE_SOURCES = frozenset(
-    {"explicit_user_choice", "inferred_from_request"}
-)
+PLANNING_PREFERENCE_SOURCES = frozenset({"explicit_user_choice", "inferred_from_request"})
 
 # Params that name WHERE a stage writes, not WHAT it computes. Changing one moves the
 # bytes; it does not change them. Excluded from ``semantic_hash`` (so a re-run into a new
@@ -139,10 +137,7 @@ def parse_planning_preference(raw: Any) -> dict[str, Any] | None:  # noqa: ANN40
     if raw is None:
         return None
     if not isinstance(raw, Mapping):
-        msg = (
-            "planning_preference must be a mapping with schema_version, "
-            "curation_mode, and source"
-        )
+        msg = "planning_preference must be a mapping with schema_version, curation_mode, and source"
         raise ValueError(msg)  # noqa: TRY004 - one public recipe schema error type
     value = dict(raw)
     expected = {"schema_version", "curation_mode", "source"}
@@ -163,23 +158,16 @@ def parse_planning_preference(raw: Any) -> dict[str, Any] | None:  # noqa: ANN40
         or schema_version != PLANNING_PREFERENCE_SCHEMA_VERSION
     ):
         msg = (
-            "planning_preference.schema_version must be "
-            f"{PLANNING_PREFERENCE_SCHEMA_VERSION}, got {schema_version!r}"
+            f"planning_preference.schema_version must be {PLANNING_PREFERENCE_SCHEMA_VERSION}, got {schema_version!r}"
         )
         raise ValueError(msg)
     mode = value["curation_mode"]
     if not isinstance(mode, str) or mode not in CURATION_MODES:
-        msg = (
-            f"planning_preference.curation_mode must be one of {sorted(CURATION_MODES)}, "
-            f"got {mode!r}"
-        )
+        msg = f"planning_preference.curation_mode must be one of {sorted(CURATION_MODES)}, got {mode!r}"
         raise ValueError(msg)
     source = value["source"]
     if not isinstance(source, str) or source not in PLANNING_PREFERENCE_SOURCES:
-        msg = (
-            "planning_preference.source must be one of "
-            f"{sorted(PLANNING_PREFERENCE_SOURCES)}, got {source!r}"
-        )
+        msg = f"planning_preference.source must be one of {sorted(PLANNING_PREFERENCE_SOURCES)}, got {source!r}"
         raise ValueError(msg)
     return {
         "schema_version": PLANNING_PREFERENCE_SCHEMA_VERSION,
@@ -221,10 +209,7 @@ class StageRef:
             # has length 1", or a TypeError the rest of this parser never raises. ``validate``
             # should hand back something the host can act on. Conversion is unchanged: anything
             # that parsed before, including a list of key/value pairs, still parses.
-            msg = (
-                f"stage {str(d['ref'])!r}: 'params' must be a mapping of parameter name to "
-                f"value, got {raw_params!r}"
-            )
+            msg = f"stage {str(d['ref'])!r}: 'params' must be a mapping of parameter name to value, got {raw_params!r}"
             raise ValueError(msg) from exc
         return cls(ref=str(d["ref"]), params=params)
 
@@ -272,11 +257,9 @@ class Recipe:
     def from_dict(cls, d: dict[str, Any]) -> Recipe:
         if not isinstance(d, dict):
             msg = f"recipe must be a dict, got {type(d).__name__}"
-            raise ValueError(msg)
+            raise ValueError(msg)  # noqa: TRY004
         acceptance_typos = sorted(
-            str(key)
-            for key in d
-            if str(key).startswith("acceptance_") and key != "acceptance_criteria"
+            str(key) for key in d if str(key).startswith("acceptance_") and key != "acceptance_criteria"
         )
         if acceptance_typos:
             msg = (
@@ -312,9 +295,7 @@ class Recipe:
             knowledge_version=d.get("knowledge_version"),
             parent_run_id=d.get("parent_run_id"),
             checkpoint_decision=d.get("checkpoint_decision"),
-            planning_preference=parse_planning_preference(
-                d.get("planning_preference")
-            ),
+            planning_preference=parse_planning_preference(d.get("planning_preference")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -417,14 +398,19 @@ class Recipe:
         self.config_strategy = list(entries)
         return self
 
-    def stale_layers(self, *, machine_fingerprint: str | None = None, data_fingerprint: str | None = None) -> list[str]:
+    def stale_layers(
+        self, *, machine_fingerprint: str | None = None, data_fingerprint: str | None = None
+    ) -> list[str]:
         """Recomputable layers that must be (re)built for the given machine/data.
 
         A layer is stale when it is absent or was stamped for a different
         fingerprint, so a re-run recomputes it instead of reusing stale numbers.
         """
         stale: list[str] = []
-        if machine_fingerprint is not None and (self.machine_plan or {}).get("machine_fingerprint") != machine_fingerprint:
+        if (
+            machine_fingerprint is not None
+            and (self.machine_plan or {}).get("machine_fingerprint") != machine_fingerprint
+        ):
             stale.append("machine_plan")
         if data_fingerprint is not None and (self.data_derived or {}).get("data_fingerprint") != data_fingerprint:
             stale.append("data_derived")
@@ -451,11 +437,7 @@ def _accepted_params(cls: type) -> list[str]:
         sig = inspect.signature(cls.__init__)
     except (TypeError, ValueError):
         return []
-    return [
-        n
-        for n, p in sig.parameters.items()
-        if n != "self" and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)
-    ]
+    return [n for n, p in sig.parameters.items() if n != "self" and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)]
 
 
 def build_stages(recipe: Recipe) -> tuple[list[ProcessingStage] | None, list[dict[str, Any]]]:
@@ -474,9 +456,7 @@ def build_stages(recipe: Recipe) -> tuple[list[ProcessingStage] | None, list[dic
     for idx, s in enumerate(recipe.stages):
         requested_workers = s.params.get("num_workers", 1)
         if s.ref == _REUSABLE_CHECKPOINT_REF and (
-            isinstance(requested_workers, bool)
-            or not isinstance(requested_workers, int)
-            or requested_workers != 1
+            isinstance(requested_workers, bool) or not isinstance(requested_workers, int) or requested_workers != 1
         ):
             issues.append(
                 {
@@ -527,7 +507,11 @@ def build_stages(recipe: Recipe) -> tuple[list[ProcessingStage] | None, list[dic
                 inst = _apply_with(inst, with_kwargs)
         except TypeError as e:
             accepted = _accepted_params(cls)
-            fix = f"accepted params for {s.ref}: {accepted}" if accepted else "check required/allowed params via describe() or cards()"
+            fix = (
+                f"accepted params for {s.ref}: {accepted}"
+                if accepted
+                else "check required/allowed params via describe() or cards()"
+            )
             issues.append(
                 {
                     "code": "bad_params",

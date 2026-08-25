@@ -32,6 +32,7 @@ from dataclasses import dataclass
 import soundfile
 from fsspec.core import url_to_fs
 
+from nemo_curator.backends.base import NodeInfo, WorkerMetadata
 from nemo_curator.stages.audio._agent._agent_ready import AgentReady, Gates, IOSpec, StageContract
 from nemo_curator.stages.audio._agent._residency import (
     InputResidency,
@@ -40,7 +41,6 @@ from nemo_curator.stages.audio._agent._residency import (
     residency_read_specs,
     resolve_audio_path,
 )
-from nemo_curator.backends.base import NodeInfo, WorkerMetadata
 from nemo_curator.stages.audio.common import get_audio_duration, load_audio_file
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.tasks import AudioTask
@@ -138,7 +138,7 @@ class ResampleAudioStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     def _audio_digest(self, local_audio_path: str) -> str:
         """A short digest of this audio and the settings about to be applied to it."""
         digest = hashlib.sha256()
-        with open(local_audio_path, "rb") as handle:  # noqa: PTH123 - a local temp file, not a URI
+        with open(local_audio_path, "rb") as handle:
             for chunk in iter(lambda: handle.read(1 << 20), b""):
                 digest.update(chunk)
         digest.update(f"|{self.target_sample_rate}|{self.target_nchannels}|{self.target_format}".encode())
@@ -177,7 +177,7 @@ class ResampleAudioStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             return False
         return info.samplerate == self.target_sample_rate and info.channels == self.target_nchannels
 
-    def process(self, task: AudioTask) -> AudioTask:
+    def process(self, task: AudioTask) -> AudioTask:  # noqa: C901, PLR0912, PLR0915
         """
         Process a single task by resampling the audio file.
 
@@ -290,7 +290,7 @@ class ResampleAudioStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         duration = get_audio_duration(output_audio_path)
         data_entry[self.duration_key] = duration
         if not self.write_to_disk:
-            try:
+            try:  # noqa: SIM105
                 os.remove(output_audio_path)
             except OSError:
                 pass

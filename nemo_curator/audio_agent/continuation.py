@@ -45,9 +45,7 @@ _SOURCE_FOR_KIND: dict[str, tuple[str, str]] = {
     "manifest": ("ManifestReader", "manifest_path"),
     "audio_dir": ("CreateInitialManifestAudioFolderStage", "data_dir"),
 }
-_SOURCE_ASSERTION_KEYS = frozenset(
-    {"manifest_path", "input_manifest", "audio_dir", "raw_data_dir", "data_dir"}
-)
+_SOURCE_ASSERTION_KEYS = frozenset({"manifest_path", "input_manifest", "audio_dir", "raw_data_dir", "data_dir"})
 
 
 def _stage_dicts(recipe: Recipe) -> list[dict[str, Any]]:
@@ -81,11 +79,7 @@ def materialize(new_recipe: Recipe, *, uri: str, kind: str, prefix: int) -> tupl
     # corpus assertion unchanged would make its own metadata contradict its
     # source stage. Keep unrelated/output metadata and bind the physical input;
     # the original corpus identity travels separately as verified lineage.
-    execution_inputs = {
-        key: value
-        for key, value in new_recipe.inputs.items()
-        if key not in _SOURCE_ASSERTION_KEYS
-    }
+    execution_inputs = {key: value for key, value in new_recipe.inputs.items() if key not in _SOURCE_ASSERTION_KEYS}
     execution_inputs[param] = uri
     materialized = Recipe(
         stages=[StageRef(ref=ref, params={param: uri}), *suffix],
@@ -97,9 +91,7 @@ def materialize(new_recipe: Recipe, *, uri: str, kind: str, prefix: int) -> tupl
         knowledge_version=new_recipe.knowledge_version,
         parent_run_id=new_recipe.parent_run_id,
         planning_preference=(
-            dict(new_recipe.planning_preference)
-            if isinstance(new_recipe.planning_preference, dict)
-            else None
+            dict(new_recipe.planning_preference) if isinstance(new_recipe.planning_preference, dict) else None
         ),
     )
     return materialized.freeze(), ""
@@ -184,8 +176,7 @@ def _resume_breaks_on_disk_boundary(new_recipe: Recipe, prefix: int) -> str | No
         if task_id_consumers:
             reasons.append(
                 "stable framework task.task_id does not survive a metadata manifest "
-                "and is required for durable output identity by "
-                + ", ".join(task_id_consumers)
+                "and is required for durable output identity by " + ", ".join(task_id_consumers)
             )
         return "; ".join(reasons) or None
     except Exception:  # noqa: BLE001 - resume-safety is best-effort; never block reuse on a guard error
@@ -270,8 +261,7 @@ def plan_continuation(
             "reuse_stages": parent_refs,
             "run_stages": [],
             "rationale": (
-                "identical recipe with a matching dataset identity; "
-                "reuse the parent output as-is (nothing to run)"
+                "identical recipe with a matching dataset identity; reuse the parent output as-is (nothing to run)"
             ),
         }
 

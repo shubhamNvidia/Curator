@@ -70,8 +70,6 @@ def _make_mock_model(scores: dict) -> MagicMock:
     return model
 
 
-
-
 class TestSIGMOSAnnotateThenSelect:
     """Annotating with SIGMOS then selecting matches what native filtering keeps."""
 
@@ -159,18 +157,11 @@ class TestSIGMOSAnnotateThenSelect:
                 native._model = _make_mock_model(scores)
                 annotate._model = _make_mock_model(scores)
 
-            native_result = native.process(
-                AudioTask(data=dict(source.data), dataset_name=source.dataset_name)
-            )
-            annotated = annotate.process(
-                AudioTask(data=dict(source.data), dataset_name=source.dataset_name)
-            )
+            native_result = native.process(AudioTask(data=dict(source.data), dataset_name=source.dataset_name))
+            annotated = annotate.process(AudioTask(data=dict(source.data), dataset_name=source.dataset_name))
             assert isinstance(annotated, AudioTask)
             if "dimension" in case_id:
-                assert not any(
-                    key.startswith(("quality_", "sigmos_"))
-                    for key in annotated.data
-                )
+                assert not any(key.startswith(("quality_", "sigmos_")) for key in annotated.data)
             selected = PreserveByValueConditionsStage(
                 conditions=[
                     {
@@ -281,15 +272,8 @@ class TestSIGMOSAnnotateThenSelect:
         annotated = annotate.process(make_parent())
         assert isinstance(native_result, AudioTask)
         assert isinstance(annotated, AudioTask)
-        invalid = {
-            item["id"]: item
-            for item in annotated.data["clips"]
-            if item["id"] in {"nan", "inf"}
-        }
-        assert all(
-            not any(key.startswith(("quality_", "sigmos_")) for key in item)
-            for item in invalid.values()
-        )
+        invalid = {item["id"]: item for item in annotated.data["clips"] if item["id"] in {"nan", "inf"}}
+        assert all(not any(key.startswith(("quality_", "sigmos_")) for key in item) for item in invalid.values())
         selected = PreserveByValueConditionsStage(
             conditions=[
                 {"input_value_key": "quality_noise", "target_value": 4.0, "operator": "ge"},
@@ -318,8 +302,6 @@ def _utmos_mock_model(score: float) -> MagicMock:
     model.return_value = torch.tensor([score])
     model.parameters = lambda: iter([torch.tensor([0.0])])
     return model
-
-
 
 
 class TestUTMOSAnnotateThenSelect:
@@ -360,12 +342,8 @@ class TestUTMOSAnnotateThenSelect:
                 native._model = _utmos_mock_model(score)
                 annotate._model = _utmos_mock_model(score)
 
-            native_result = native.process(
-                AudioTask(data=dict(source.data), dataset_name=source.dataset_name)
-            )
-            annotated = annotate.process(
-                AudioTask(data=dict(source.data), dataset_name=source.dataset_name)
-            )
+            native_result = native.process(AudioTask(data=dict(source.data), dataset_name=source.dataset_name))
+            annotated = annotate.process(AudioTask(data=dict(source.data), dataset_name=source.dataset_name))
             assert isinstance(annotated, AudioTask)
             if case_id in {"nan", "positive_inf", "negative_inf"}:
                 assert "custom_utmos" not in annotated.data
@@ -446,11 +424,7 @@ class TestUTMOSAnnotateThenSelect:
         annotated = annotate.process(make_parent())
         assert isinstance(native_result, AudioTask)
         assert isinstance(annotated, AudioTask)
-        invalid = {
-            item["id"]: item
-            for item in annotated.data["clips"]
-            if item["id"] in {"nan", "inf"}
-        }
+        invalid = {item["id"]: item for item in annotated.data["clips"] if item["id"] in {"nan", "inf"}}
         assert all("quality" not in item for item in invalid.values())
         selected = PreserveByValueConditionsStage(
             [{"input_value_key": "quality", "target_value": threshold, "operator": "ge"}],
@@ -477,14 +451,10 @@ class TestUTMOSAnnotateThenSelect:
         native_all_fail._model = _utmos_mock_model(2.0)
         annotate_all_fail._model = _utmos_mock_model(2.0)
         native_empty = native_all_fail.process(
-            AudioTask(
-                data={"clips": [{"waveform": torch.randn(1, sample_rate), "sample_rate": sample_rate}]}
-            )
+            AudioTask(data={"clips": [{"waveform": torch.randn(1, sample_rate), "sample_rate": sample_rate}]})
         )
         annotated_empty = annotate_all_fail.process(
-            AudioTask(
-                data={"clips": [{"waveform": torch.randn(1, sample_rate), "sample_rate": sample_rate}]}
-            )
+            AudioTask(data={"clips": [{"waveform": torch.randn(1, sample_rate), "sample_rate": sample_rate}]})
         )
         selected_empty = PreserveByValueConditionsStage(
             [{"input_value_key": "utmos_mos", "target_value": threshold, "operator": "ge"}],

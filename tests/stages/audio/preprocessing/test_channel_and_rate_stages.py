@@ -39,11 +39,7 @@ if TYPE_CHECKING:
 
 def _wav(tmp_path: Path, channels: int = 1, rate: int = 16000, name: str = "a.wav") -> str:
     path = tmp_path / name
-    data = (
-        np.zeros(rate, dtype="float32")
-        if channels == 1
-        else np.zeros((rate, channels), dtype="float32")
-    )
+    data = np.zeros(rate, dtype="float32") if channels == 1 else np.zeros((rate, channels), dtype="float32")
     sf.write(str(path), data, rate)
     return str(path)
 
@@ -61,7 +57,9 @@ class TestConvertingTheChannelCount:
         ("source", "target"),
         [(1, 1), (2, 1), (6, 1), (2, 2), (6, 6)],
     )
-    def test_downmix_and_passthrough_produce_the_requested_count(self, tmp_path: Path, source: int, target: int) -> None:
+    def test_downmix_and_passthrough_produce_the_requested_count(
+        self, tmp_path: Path, source: int, target: int
+    ) -> None:
         result = _convert(target_channels=target).process(
             _task(_wav(tmp_path, channels=source, name=f"{source}to{target}.wav"))
         )
@@ -102,7 +100,9 @@ class TestConvertingTheChannelCount:
         assert result.data["num_channels"] == 1
 
     @pytest.mark.parametrize(("source", "target"), [(6, 2), (4, 3), (6, 5)])
-    def test_a_surround_downmix_is_refused_rather_than_approximated(self, tmp_path: Path, source: int, target: int) -> None:
+    def test_a_surround_downmix_is_refused_rather_than_approximated(
+        self, tmp_path: Path, source: int, target: int
+    ) -> None:
         """Correct downmix to >1 channel needs BS.775 coefficients AND the file's channel
         order, and a (channels, samples) tensor carries neither -- the WAV channel mask is
         gone by then. Averaging 5.1 into two channels sounds plausible and is wrong, so the
@@ -114,9 +114,7 @@ class TestConvertingTheChannelCount:
 
     def test_the_sample_rate_is_never_changed(self, tmp_path: Path) -> None:
         """This stage converts channels only; rate policy belongs to another stage."""
-        result = _convert(target_channels=1).process(
-            _task(_wav(tmp_path, channels=2, rate=44100))
-        )
+        result = _convert(target_channels=1).process(_task(_wav(tmp_path, channels=2, rate=44100)))
         assert result != []
         assert result.data["sample_rate"] == 44100
 
@@ -156,6 +154,7 @@ class TestRecordingTheChannelCount:
     def test_it_reads_the_header_and_never_decodes(self, tmp_path: Path) -> None:
         """The count sits in the first bytes of the file, so putting this in front of a
         decoding stage costs almost nothing. A decode here would forfeit exactly that."""
+
         def explode(*_args: object, **_kwargs: object) -> None:
             msg = "decoded the audio to read a header value"
             raise AssertionError(msg)
@@ -334,7 +333,9 @@ class TestSampleRateFilter:
             ({}, True),
         ],
     )
-    def test_a_list_and_a_range_are_separate_constraints(self, tmp_path: Path, kwargs: dict[str, object], keeps: bool) -> None:
+    def test_a_list_and_a_range_are_separate_constraints(
+        self, tmp_path: Path, kwargs: dict[str, object], keeps: bool
+    ) -> None:
         """Separate parameters on purpose: ``[16000, 48000]`` as a single knob is ambiguous
         between "these two rates" and "this range", and the readings filter very different
         corpora. Every constraint that IS set must be satisfied."""
@@ -368,7 +369,8 @@ class TestSampleRateFilter:
         so it is reused and the file is never opened."""
         stage = SampleRateFilterStage(allowed_sample_rates=[16000])
         task = AudioTask(
-            task_id="t", dataset_name="d",
+            task_id="t",
+            dataset_name="d",
             data={
                 "audio_filepath": "/nonexistent/never-opened.wav",
                 "sample_rate": 16000,
@@ -381,23 +383,23 @@ class TestSampleRateFilter:
         assert result != []
         assert result.data["sample_rate"] == 16000
 
-    def test_a_manifest_rate_with_no_resident_audio_is_verified_against_the_file(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_manifest_rate_with_no_resident_audio_is_verified_against_the_file(self, tmp_path: Path) -> None:
         """``sample_rate`` is a standard manifest column, and a stale one used to decide the
         filter outright: a genuinely 48 kHz file labelled 16000 was KEPT for a 16 kHz-only
         corpus and then re-stamped with the wrong rate, so the model downstream silently got
         pitch-shifted audio. With nothing resident to back the number, the header wins."""
         path = _wav(tmp_path, rate=48000, name="mislabelled.wav")
         task = AudioTask(
-            task_id="t", dataset_name="d",
+            task_id="t",
+            dataset_name="d",
             data={"audio_filepath": path, "sample_rate": 16000},
         )
 
         assert SampleRateFilterStage(allowed_sample_rates=[16000]).process(task) == []
 
         task = AudioTask(
-            task_id="t", dataset_name="d",
+            task_id="t",
+            dataset_name="d",
             data={"audio_filepath": path, "sample_rate": 16000},
         )
         kept = SampleRateFilterStage(allowed_sample_rates=[48000]).process(task)

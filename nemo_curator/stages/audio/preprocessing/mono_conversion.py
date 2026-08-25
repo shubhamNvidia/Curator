@@ -209,9 +209,7 @@ class MonoConversionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
 
             if self.strict_sample_rate and sample_rate != self.output_sample_rate:
                 audio_source = task.data.get(self.audio_filepath_key, self.waveform_key)
-                logger.warning(
-                    f"Sample rate {sample_rate}Hz != expected {self.output_sample_rate}Hz: {audio_source}"
-                )
+                logger.warning(f"Sample rate {sample_rate}Hz != expected {self.output_sample_rate}Hz: {audio_source}")
                 return []
 
             if num_channels > 1:

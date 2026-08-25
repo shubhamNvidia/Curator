@@ -352,7 +352,7 @@ def list_runs() -> list[dict[str, Any]]:
     for fn in sorted(os.listdir(directory), reverse=True):
         if not fn.endswith(".json"):
             continue
-        rec = load(fn[:-len(".json")])
+        rec = load(fn[: -len(".json")])
         if rec is None:
             continue
         out.append(

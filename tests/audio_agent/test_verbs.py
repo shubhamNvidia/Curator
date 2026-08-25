@@ -22,7 +22,7 @@ from types import SimpleNamespace
 import yaml
 
 from nemo_curator import audio_agent as aa
-from nemo_curator.audio_agent import _safety, cli, run_store, verbs
+from nemo_curator.audio_agent import cli, run_store, verbs
 from nemo_curator.audio_agent.recipe import Recipe
 from nemo_curator.audio_agent.report import _row_count
 
@@ -59,9 +59,7 @@ class TestRunWorkspaceLock:
         assert r["status"] == "refused"
         assert "workspace" in r["reason"].lower()
 
-    def test_unconfirmed_run_does_not_profile_an_outside_source(
-        self, monkeypatch, tmp_path
-    ) -> None:
+    def test_unconfirmed_run_does_not_profile_an_outside_source(self, monkeypatch, tmp_path) -> None:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         source = tmp_path / "outside.jsonl"
@@ -75,9 +73,7 @@ class TestRunWorkspaceLock:
         monkeypatch.setattr(
             verbs,
             "_dataset_binding",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                AssertionError("outside source was inspected")
-            ),
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("outside source was inspected")),
         )
 
         result = aa.run(recipe, confirm=False)
@@ -99,9 +95,7 @@ class TestRunWorkspaceLock:
         monkeypatch.setattr(
             verbs,
             "_dataset_binding",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                AssertionError("outside source was inspected")
-            ),
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("outside source was inspected")),
         )
 
         result = aa.validate(recipe)
@@ -109,9 +103,7 @@ class TestRunWorkspaceLock:
         assert result["runnable"] is False
         assert result["issues"][0]["code"] == "path_outside_workspace"
 
-    def test_semantic_path_fields_do_not_trip_the_workspace_lock(
-        self, monkeypatch, tmp_path
-    ) -> None:
+    def test_semantic_path_fields_do_not_trip_the_workspace_lock(self, monkeypatch, tmp_path) -> None:
         audio_dir = tmp_path / "audio"
         audio_dir.mkdir()
         manifest = tmp_path / "long.jsonl"
@@ -136,9 +128,7 @@ class TestRunWorkspaceLock:
 
         result = aa.validate(recipe)
 
-        assert not any(
-            issue["code"] == "path_outside_workspace" for issue in result["issues"]
-        )
+        assert not any(issue["code"] == "path_outside_workspace" for issue in result["issues"])
 
 
 class TestVerbInputBinding:
@@ -257,10 +247,7 @@ class TestMalformedSourceBinding:
         report = aa.report(str(output), recipe=recipe)
 
         assert verdict["runnable"] is False
-        assert any(
-            issue["code"] == "data_source_unreadable"
-            for issue in verdict["issues"]
-        )
+        assert any(issue["code"] == "data_source_unreadable" for issue in verdict["issues"])
         assert smoke["status"] == "refused"
         assert run["status"] == "refused"
         assert scan["decision"] == "fresh"
@@ -376,8 +363,7 @@ class TestPostHocReportIntegrity:
         )
         output = tmp_path / "out.jsonl"
         output.write_text(
-            '{"audio_filepath":"a.wav","utmos_mos":3.0}\n'
-            '{"audio_filepath":"b.wav","utmos_mos":5.0}\n',
+            '{"audio_filepath":"a.wav","utmos_mos":3.0}\n{"audio_filepath":"b.wav","utmos_mos":5.0}\n',
             encoding="utf-8",
         )
         monkeypatch.setattr(
@@ -580,9 +566,7 @@ class TestContinuationExecutionEvidence:
         assert result["status"] == "completed"
         assert captured["checkpoint_path"] == "/tmp/checkpoint"
         assert captured["smoke_token"] == "proof"
-        assert captured["calibration"] == {
-            "Stage": {"source": "measured"}
-        }
+        assert captured["calibration"] == {"Stage": {"source": "measured"}}
 
 
 class TestRunRequireSmoke:
@@ -713,8 +697,12 @@ class TestCatalogDisclosure:
         monkeypatch.setattr(
             _catalog,
             "_SKIPPED",
-            [{"module": "nemo_curator.stages.audio.inference.asr.stage",
-              "error": "ModuleNotFoundError: No module named 'nemo'"}],
+            [
+                {
+                    "module": "nemo_curator.stages.audio.inference.asr.stage",
+                    "error": "ModuleNotFoundError: No module named 'nemo'",
+                }
+            ],
         )
         result = aa.discover()
         assert result["unavailable"][0]["module"].endswith("asr.stage")
@@ -732,6 +720,7 @@ class TestDataInformedConfig:
     def _manifest(self, tmp_path, name, row, rate=16000):
         import numpy as np
         import soundfile as sf
+
         wav = tmp_path / "a.wav"
         sf.write(str(wav), np.zeros(rate, dtype="float32"), rate)
         row = {k: (str(wav) if v == "@wav" else v) for k, v in row.items()}
@@ -751,6 +740,7 @@ class TestDataInformedConfig:
         """The agent creates the manifest for a folder, so the schema is known by construction."""
         import numpy as np
         import soundfile as sf
+
         sf.write(str(tmp_path / "a.wav"), np.zeros(16000, dtype="float32"), 16000)
         result = aa.resolve("MonoConversionStage", data=str(tmp_path))
         assert result["params"]["output_sample_rate"] == 16000
@@ -758,9 +748,7 @@ class TestDataInformedConfig:
 
     def test_an_explicit_value_outranks_the_inferred_one(self, tmp_path) -> None:
         manifest = self._manifest(tmp_path, "nemo.jsonl", {"audio_filepath": "@wav", "text": "hi"})
-        result = aa.resolve(
-            "MonoConversionStage", explicit={"output_sample_rate": 48000}, data=manifest
-        )
+        result = aa.resolve("MonoConversionStage", explicit={"output_sample_rate": 48000}, data=manifest)
         assert result["params"]["output_sample_rate"] == 48000
 
     def test_an_overridden_inference_leaves_no_trace_claiming_it_applied(self, tmp_path) -> None:
@@ -770,9 +758,7 @@ class TestDataInformedConfig:
         strict gate, that reads as the agent having quietly widened it to fit the data.
         """
         manifest = self._manifest(tmp_path, "nemo.jsonl", {"audio_filepath": "@wav", "text": "hi"})
-        result = aa.resolve(
-            "MonoConversionStage", explicit={"output_sample_rate": 48000}, data=manifest
-        )
+        result = aa.resolve("MonoConversionStage", explicit={"output_sample_rate": 48000}, data=manifest)
         rate_entries = [e for e in result["strategy"] if e["param"] == "output_sample_rate"]
         assert [e["value"] for e in rate_entries] == [48000]
 
@@ -780,7 +766,8 @@ class TestDataInformedConfig:
         """A data-derived value must be stamped so a different dataset recomputes it."""
         manifest = self._manifest(tmp_path, "nemo.jsonl", {"audio_filepath": "@wav", "text": "hi"})
         entry = next(
-            e for e in aa.resolve("MonoConversionStage", data=manifest)["strategy"]
+            e
+            for e in aa.resolve("MonoConversionStage", data=manifest)["strategy"]
             if e["param"] == "output_sample_rate"
         )
         assert entry["mode"] == "data_informed"
@@ -789,9 +776,7 @@ class TestDataInformedConfig:
     def test_path_a_alone_is_unchanged(self) -> None:
         assert aa.resolve("UTMOSFilterStage", label="studio")["params"] == {"mos_threshold": 4.0}
 
-    def test_a_dataset_outside_the_workspace_is_refused_like_every_other_verb(
-        self, monkeypatch, tmp_path
-    ) -> None:
+    def test_a_dataset_outside_the_workspace_is_refused_like_every_other_verb(self, monkeypatch, tmp_path) -> None:
         """``resolve`` profiles ``data`` off the filesystem, so it owes the same lock the
         other data-taking verbs enforce. It was the one verb without the check -- harmless
         only while no adapter could pass ``data``, and a hole the moment one could."""

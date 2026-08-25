@@ -193,12 +193,10 @@ ADDITIVE_STAGE_NAMES = (
 # not part of this hash. No constructor default, param, read, write, gate or dispatch changed.
 # This needed no cardinality field on StaticHints and no stage-module change: the value is
 # derived from the literals describe() already returns.
-EXPECTED_LEGACY_COMPATIBILITY_SHA256 = (
-    "4dd5963290c825aafe3905b11203bccfde1fb229ca0c2852d7aae5930facc441"
-)
+EXPECTED_LEGACY_COMPATIBILITY_SHA256 = "4dd5963290c825aafe3905b11203bccfde1fb229ca0c2852d7aae5930facc441"
 
 
-def _normalize(value: Any) -> Any:  # noqa: ANN401
+def _normalize(value: Any) -> Any:
     """Remove machine-specific roots while preserving semantic defaults."""
     if is_dataclass(value) and not isinstance(value, type):
         return _normalize(asdict(value))
@@ -240,11 +238,7 @@ def _constructor_defaults(cls: type) -> dict[str, Any]:
     for name, parameter in inspect.signature(cls).parameters.items():
         if name.startswith("_"):
             continue
-        value = (
-            "<required>"
-            if parameter.default is inspect.Parameter.empty
-            else parameter.default
-        )
+        value = "<required>" if parameter.default is inspect.Parameter.empty else parameter.default
         defaults[name] = _normalize(value)
     return defaults
 
@@ -257,10 +251,7 @@ def _compatibility_payload() -> list[dict[str, Any]]:
         cls = get_agent_ready_stage_class(name)
         contract = static_contract(cls).to_dict()
         params = [
-            {
-                key: parameter.get(key)
-                for key in ("name", "type", "default", "required", "choices", "role")
-            }
+            {key: parameter.get(key) for key in ("name", "type", "default", "required", "choices", "role")}
             for parameter in contract["params"]
         ]
         payload.append(
@@ -383,16 +374,8 @@ def test_compound_value_selector_is_explicitly_additive() -> None:
 def test_compound_value_selector_catalog_exposes_condition_logic() -> None:
     from nemo_curator.stages.audio._agent._catalog import audio_stage_catalog
 
-    entry = next(
-        item
-        for item in audio_stage_catalog()
-        if item["name"] == "PreserveByValueConditionsStage"
-    )
-    parameter = next(
-        item
-        for item in entry["contract"]["params"]
-        if item["name"] == "condition_logic"
-    )
+    entry = next(item for item in audio_stage_catalog() if item["name"] == "PreserveByValueConditionsStage")
+    parameter = next(item for item in entry["contract"]["params"] if item["name"] == "condition_logic")
     schema = entry["params_schema"]["properties"]["condition_logic"]
 
     assert parameter["default"] == "and"
@@ -412,18 +395,10 @@ def test_intentional_legacy_contract_corrections_are_explicit() -> None:
 
 def test_the_static_view_no_longer_calls_a_fan_out_stage_1_to_1() -> None:
     """A planner reading a param-less describe used to believe row counts never changed."""
-    assert static_contract(get_agent_ready_stage_class("SnippetExtractionStage")).cardinality == (
-        "1:N fan-out"
-    )
-    assert static_contract(get_agent_ready_stage_class("ManifestReader")).cardinality == (
-        "1:N fan-out"
-    )
-    assert static_contract(get_agent_ready_stage_class("PreserveByValueStage")).cardinality == (
-        "filter"
-    )
-    assert static_contract(get_agent_ready_stage_class("SegmentConcatenationStage")).cardinality == (
-        "N:1"
-    )
+    assert static_contract(get_agent_ready_stage_class("SnippetExtractionStage")).cardinality == ("1:N fan-out")
+    assert static_contract(get_agent_ready_stage_class("ManifestReader")).cardinality == ("1:N fan-out")
+    assert static_contract(get_agent_ready_stage_class("PreserveByValueStage")).cardinality == ("filter")
+    assert static_contract(get_agent_ready_stage_class("SegmentConcatenationStage")).cardinality == ("N:1")
 
 
 def test_a_param_dependent_cardinality_is_offered_as_options_not_guessed() -> None:

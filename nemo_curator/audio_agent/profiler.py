@@ -94,7 +94,7 @@ def _split_entry(entry: str) -> tuple[str, str]:
 # --------------------------------------------------------------------------- #
 # Data profiling
 # --------------------------------------------------------------------------- #
-def profile_data(
+def profile_data(  # noqa: PLR0913
     source: str,
     *,
     audio_filepath_key: str = "audio_filepath",
@@ -166,7 +166,7 @@ def profile_data(
     return prof
 
 
-def _list_audio_files(
+def _list_audio_files(  # noqa: C901, PLR0913
     folder: str,
     prof: DataProfile | None = None,
     *,
@@ -178,10 +178,7 @@ def _list_audio_files(
     """Audio files under ``folder``, excluding files a prior stage wrote back into it."""
     raw_extensions = _AUDIO_EXTS if extensions is None else extensions
     try:
-        normalized = tuple(
-            extension if extension.startswith(".") else f".{extension}"
-            for extension in raw_extensions
-        )
+        normalized = tuple(extension if extension.startswith(".") else f".{extension}" for extension in raw_extensions)
     except (AttributeError, TypeError):
         if prof is not None:
             prof.notes.append(f"could not interpret folder extensions {raw_extensions!r}")
@@ -195,11 +192,7 @@ def _list_audio_files(
         directories = os.walk(folder)
     else:
         try:
-            files = [
-                name
-                for name in os.listdir(folder)
-                if os.path.isfile(os.path.join(folder, name))
-            ]
+            files = [name for name in os.listdir(folder) if os.path.isfile(os.path.join(folder, name))]
         except OSError:
             files = []
         directories = [(folder, [], files)]
@@ -215,7 +208,9 @@ def _list_audio_files(
             out.append(os.path.join(root, f))
     if prof is not None and skipped:
         prof.excluded_intermediates = skipped
-        prof.notes.append(f"excluded {skipped} stage-written intermediate file(s) (e.g. split chunks) from the source scan")
+        prof.notes.append(
+            f"excluded {skipped} stage-written intermediate file(s) (e.g. split chunks) from the source scan"
+        )
     return sorted(out)
 
 
@@ -227,7 +222,9 @@ def _stat_folder(paths: list[str], *, root: str, prof: DataProfile) -> None:
             identity.update(os.path.relpath(p, root).encode("utf-8"))
             identity.update(b"\n")
         prof.identity_digest = identity.hexdigest()[:16]
-        prof.notes.append(f"{len(paths)} files exceeds the stat cap ({_MAX_STAT}); dataset key falls back to the shape tier")
+        prof.notes.append(
+            f"{len(paths)} files exceeds the stat cap ({_MAX_STAT}); dataset key falls back to the shape tier"
+        )
         return
     h = hashlib.sha256()
     failures = 0
@@ -244,9 +241,7 @@ def _stat_folder(paths: list[str], *, root: str, prof: DataProfile) -> None:
     digest = h.hexdigest()[:16]
     if failures:
         prof.identity_digest = digest
-        prof.notes.append(
-            f"could not stat {failures} source file(s); dataset key falls back to the shape tier"
-        )
+        prof.notes.append(f"could not stat {failures} source file(s); dataset key falls back to the shape tier")
     else:
         prof.stat_digest = digest
         _keep_inventory(prof, inventory, root=root)
@@ -276,7 +271,7 @@ def _keep_inventory(prof: DataProfile, inventory: dict[str, str], *, root: str, 
     prof.inventory_key = key
 
 
-def _profile_manifest(
+def _profile_manifest(  # noqa: C901, PLR0912, PLR0913, PLR0915
     path: str,
     prof: DataProfile,
     *,
@@ -307,7 +302,7 @@ def _profile_manifest(
     try:
         with open(path, encoding="utf-8") as f:
             for line in f:
-                line = line.strip()
+                line = line.strip()  # noqa: PLW2901
                 if not line:
                     continue
                 count += 1
@@ -321,18 +316,14 @@ def _profile_manifest(
                     prof.source_errors.append(f"{location}: invalid JSON ({exc.msg})")
                     continue
                 if not isinstance(row, dict):
-                    prof.source_errors.append(
-                        f"{path}:line{count}: manifest row must be a JSON object"
-                    )
+                    prof.source_errors.append(f"{path}:line{count}: manifest row must be a JSON object")
                     continue
                 keys.update(row.keys())
                 # A transcript COLUMN existing isn't enough -- an all-empty "text" field
                 # would falsely imply transcripts (and e.g. that WER is computable). Require
                 # at least one row to carry a non-empty transcript value.
                 if not has_transcript_value:
-                    has_transcript_value = any(
-                        str(row.get(k) or "").strip() for k in _TRANSCRIPT_KEYS
-                    )
+                    has_transcript_value = any(str(row.get(k) or "").strip() for k in _TRANSCRIPT_KEYS)
                 ap = row.get(audio_filepath_key)
                 if ap:
                     expanded_ap = os.path.expanduser(str(ap))
@@ -348,23 +339,19 @@ def _profile_manifest(
                         # profiler non-throwing, but never manufacture a trusted
                         # identity for a path interpretation execution will reject.
                         relative_refs += 1
-                        audio_stats.update(
-                            f"invalid_resolution|{audio_path_resolution}|{expanded_ap}".encode(
-                                "utf-8"
-                            )
-                        )
+                        audio_stats.update(f"invalid_resolution|{audio_path_resolution}|{expanded_ap}".encode())
                         continue
                     if "://" in expanded_ap:
                         # A URI cannot be statted or probed with the local filesystem APIs.
                         # Its spelling is still folded into the low-trust source identity.
                         remote_refs += 1
-                        audio_stats.update(f"remote|{expanded_ap}".encode("utf-8"))
+                        audio_stats.update(f"remote|{expanded_ap}".encode())
                     elif not os.path.isabs(expanded_ap):
                         # ManifestReader consumes relative paths as authored (cwd-relative).
                         # Preserve that probing behavior, but never claim cwd-dependent
                         # metadata as a portable, high-trust stat identity.
                         relative_refs += 1
-                        audio_stats.update(f"relative|{expanded_ap}".encode("utf-8"))
+                        audio_stats.update(f"relative|{expanded_ap}".encode())
                         if len(audio_paths) < max_probe:
                             audio_paths.append(expanded_ap)
                     else:
@@ -391,15 +378,15 @@ def _profile_manifest(
     prof.num_files = count
     prof.manifest_keys = sorted(keys)
     prof.has_transcripts = has_transcript_value
-    digest = hashlib.sha256(
-        content.hexdigest().encode("utf-8") + audio_stats.hexdigest().encode("utf-8")
-    ).hexdigest()[:16]
-    incomplete = bool(
-        prof.source_errors or stat_failures or relative_refs or remote_refs
-    )
+    digest = hashlib.sha256(content.hexdigest().encode("utf-8") + audio_stats.hexdigest().encode("utf-8")).hexdigest()[
+        :16
+    ]
+    incomplete = bool(prof.source_errors or stat_failures or relative_refs or remote_refs)
     if statted >= _MAX_STAT:
         incomplete = True
-        prof.notes.append(f"referenced files exceed the stat cap ({_MAX_STAT}); dataset key falls back to the shape tier")
+        prof.notes.append(
+            f"referenced files exceed the stat cap ({_MAX_STAT}); dataset key falls back to the shape tier"
+        )
     if stat_failures or relative_refs or remote_refs:
         reasons = []
         if stat_failures:
@@ -409,8 +396,7 @@ def _profile_manifest(
         if remote_refs:
             reasons.append(f"{remote_refs} remote reference(s)")
         prof.notes.append(
-            f"incomplete referenced-file metadata ({', '.join(reasons)}); "
-            "dataset key falls back to the shape tier"
+            f"incomplete referenced-file metadata ({', '.join(reasons)}); dataset key falls back to the shape tier"
         )
     if incomplete:
         prof.identity_digest = digest
@@ -445,14 +431,14 @@ def _fold_identity_files(prof: DataProfile, paths: list[str] | tuple[str, ...]) 
     """
     h = hashlib.sha256()
     base = prof.stat_digest or prof.identity_digest or prof.fingerprint()
-    h.update(f"base|{base}".encode("utf-8"))
+    h.update(f"base|{base}".encode())
     h.update(b"\n")
     complete = bool(prof.stat_digest)
     failures = 0
     for index, raw in enumerate(paths):
         path = os.path.expanduser(str(raw))
         if "://" in path and not path.startswith("file://"):
-            h.update(f"{index}|remote|{path}".encode("utf-8"))
+            h.update(f"{index}|remote|{path}".encode())
             h.update(b"\n")
             complete = False
             failures += 1
@@ -466,10 +452,10 @@ def _fold_identity_files(prof: DataProfile, paths: list[str] | tuple[str, ...]) 
             with open(path, "rb") as source:
                 while chunk := source.read(1024 * 1024):
                     content.update(chunk)
-            h.update(f"{index}|{os.path.basename(path)}|{content.hexdigest()}".encode("utf-8"))
+            h.update(f"{index}|{os.path.basename(path)}|{content.hexdigest()}".encode())
             h.update(b"\n")
         except OSError:
-            h.update(f"{index}|{os.path.basename(path)}|?".encode("utf-8"))
+            h.update(f"{index}|{os.path.basename(path)}|?".encode())
             h.update(b"\n")
             complete = False
             failures += 1
@@ -587,7 +573,7 @@ def _probe_python(env: EnvProfile) -> None:
         )
 
 
-def _probe_gpu(env: EnvProfile) -> None:  # noqa: C901, PLR0912 - layered probe retains distinct failure modes
+def _probe_gpu(env: EnvProfile) -> None:  # noqa: C901, PLR0912, PLR0915 - layered probe retains distinct failure modes
     """Probe the GPU stack in layers instead of collapsing every failure to "no GPU".
 
     A user can have physical NVIDIA hardware while this process sees no device
@@ -606,11 +592,7 @@ def _probe_gpu(env: EnvProfile) -> None:  # noqa: C901, PLR0912 - layered probe 
         env.cuda_visible_devices = "set"
 
     try:
-        env.nvidia_device_nodes = sum(
-            1
-            for name in os.listdir("/dev")
-            if re.fullmatch(r"nvidia\d+", name)
-        )
+        env.nvidia_device_nodes = sum(1 for name in os.listdir("/dev") if re.fullmatch(r"nvidia\d+", name))
     except OSError:
         env.nvidia_device_nodes = 0
 
@@ -628,10 +610,7 @@ def _probe_gpu(env: EnvProfile) -> None:  # noqa: C901, PLR0912 - layered probe 
             )
             if proc.returncode == 0:
                 env.nvidia_smi_status = "ok"
-                env.nvidia_smi_gpu_count = sum(
-                    line.lstrip().startswith("GPU ")
-                    for line in proc.stdout.splitlines()
-                )
+                env.nvidia_smi_gpu_count = sum(line.lstrip().startswith("GPU ") for line in proc.stdout.splitlines())
             else:
                 env.nvidia_smi_status = "driver_or_visibility_error"
         except subprocess.TimeoutExpired:
@@ -813,9 +792,9 @@ def _probe_resources(env: EnvProfile) -> None:
                     if line.startswith("MemTotal:"):
                         env.total_ram_gb = round(int(line.split()[1]) / (1024**2), 1)  # kB -> GB
                         break
-        except Exception:  # noqa: BLE001 - /proc unavailable (non-Linux)
+        except Exception:  # noqa: BLE001, S110 - /proc unavailable (non-Linux)
             pass
-    try:
+    try:  # noqa: SIM105
         env.free_disk_gb = round(shutil.disk_usage(os.getcwd()).free / (1024**3), 1)
-    except Exception:  # noqa: BLE001 - disk_usage can fail on odd mounts
+    except Exception:  # noqa: BLE001, S110 - disk_usage can fail on odd mounts
         pass

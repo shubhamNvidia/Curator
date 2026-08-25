@@ -107,9 +107,7 @@ def test_renamed_producer_key_dangles_but_role_still_ok() -> None:
 def test_seeded_initial_keys_satisfy_the_literal_check() -> None:
     # The same consumer read is fine when the input manifest actually carries the key.
     consumer = GetAudioDurationStage(audio_filepath_key="somewhere_else")
-    report = validate_pipeline(
-        [consumer], initial_roles={"audio_filepath"}, initial_keys={"somewhere_else"}
-    )
+    report = validate_pipeline([consumer], initial_roles={"audio_filepath"}, initial_keys={"somewhere_else"})
     assert report.ok, report.summary()
     assert report.keys_ok, report.summary()
 
@@ -159,7 +157,7 @@ class TestAmbiguousDefaultKey:
             merge,
         ]
 
-    def _report(self, merge: MergeAlignmentDiarizationStage):  # noqa: ANN202
+    def _report(self, merge: MergeAlignmentDiarizationStage):
         return validate_pipeline(
             self._pipeline(merge),
             initial_keys={"audio_filepath", "alignment"},

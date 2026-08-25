@@ -175,7 +175,7 @@ class TestSIGMOSFilterStage:
         stage = SIGMOSFilterStage(noise_threshold=4.0, ovrl_threshold=3.5)
         call_count = {"n": 0}
 
-        def fake_run(audio: object, sr: int) -> dict:  # noqa: ARG001
+        def fake_run(audio: object, sr: int) -> dict:
             call_count["n"] += 1
             if call_count["n"] % 2 == 1:
                 return _GOOD_SCORES

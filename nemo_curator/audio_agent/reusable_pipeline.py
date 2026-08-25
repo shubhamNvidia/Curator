@@ -205,9 +205,7 @@ def plan(  # noqa: C901, PLR0912, PLR0913, PLR0915 - explicit mechanical refusal
                     configured,
                     refreshed,
                     checkpoint_index=existing,
-                    decision_changed=(
-                        decision_value is not None or decision_conditions is not None
-                    ),
+                    decision_changed=(decision_value is not None or decision_conditions is not None),
                 )
             )
             continue
@@ -280,9 +278,7 @@ def plan(  # noqa: C901, PLR0912, PLR0913, PLR0915 - explicit mechanical refusal
                 path_source=path_source,
                 # An explicit path IS the acceptance; a derived one still needs the user's yes.
                 accepted=path_source == "explicit" or accept,
-                decision_changed=(
-                    decision_value is not None or decision_conditions is not None
-                ),
+                decision_changed=(decision_value is not None or decision_conditions is not None),
                 prior_target=(
                     [dict(condition) for condition in pair.conditions]
                     if decision_conditions is not None
@@ -291,9 +287,7 @@ def plan(  # noqa: C901, PLR0912, PLR0913, PLR0915 - explicit mechanical refusal
             )
         )
     decision_required = any(
-        candidate.get("status") in _UNDECIDED
-        and candidate.get("recommended") is True
-        for candidate in candidates
+        candidate.get("status") in _UNDECIDED and candidate.get("recommended") is True for candidate in candidates
     )
     return {
         "status": "candidates" if candidates else "no_candidate",
@@ -318,18 +312,15 @@ def recommended_candidate_ids(result: dict[str, Any]) -> list[str]:
     return sorted(
         str(candidate["id"])
         for candidate in result.get("candidates", [])
-        if candidate.get("status") in _UNDECIDED
-        and candidate.get("recommended") is True
-        and candidate.get("id")
+        if candidate.get("status") in _UNDECIDED and candidate.get("recommended") is True and candidate.get("id")
     )
 
 
 def with_declined_checkpoint(recipe: Recipe, candidate_ids: list[str]) -> Recipe:
     """Bind an explicit baseline choice to this exact recipe and option set."""
-    rec = _copy_recipe(recipe.freeze(), [
-        StageRef(ref=stage.ref, params=dict(stage.params))
-        for stage in recipe.stages
-    ]).freeze()
+    rec = _copy_recipe(
+        recipe.freeze(), [StageRef(ref=stage.ref, params=dict(stage.params)) for stage in recipe.stages]
+    ).freeze()
     rec.checkpoint_decision = {
         "status": _DECLINED,
         "recipe_config_hash": rec.config_hash,
@@ -352,8 +343,7 @@ def checkpoint_decision_requirement(recipe: Recipe) -> dict[str, Any] | None:
         and decision.get("status") == _DECLINED
         and decision.get("recipe_config_hash") == rec.config_hash
         and decision.get("planner") == REUSABLE_CHECKPOINT_PROVENANCE
-        and sorted(str(value) for value in decision.get("candidate_ids", []))
-        == candidate_ids
+        and sorted(str(value) for value in decision.get("candidate_ids", [])) == candidate_ids
     ):
         return None
     options = [
@@ -683,8 +673,7 @@ def _compound_pair_for_producer(  # noqa: C901, PLR0911, PLR0912, PLR0913
                 score_keys=score_keys,
                 operator="and",
                 target_value={
-                    condition["input_value_key"]: condition["target_value"]
-                    for condition in expected_conditions
+                    condition["input_value_key"]: condition["target_value"] for condition in expected_conditions
                 },
                 conditions=tuple(expected_conditions),
                 value_type=value_type,
@@ -833,10 +822,7 @@ def _nested_pair_for_producer(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
                 target_value=(
                     expected_conditions[0]["target_value"]
                     if kind == "scalar"
-                    else {
-                        condition["input_value_key"]: condition["target_value"]
-                        for condition in expected_conditions
-                    }
+                    else {condition["input_value_key"]: condition["target_value"] for condition in expected_conditions}
                 ),
                 conditions=tuple(expected_conditions),
                 value_type=value_type,
@@ -903,10 +889,7 @@ def _selector_policy_reason(  # noqa: PLR0913 - producer binding is required onl
         ref.params.get(missing_param),
     )
     if actual_missing != expected_missing:
-        return (
-            f"selector {missing_param} must be exactly {expected_missing!r}, "
-            f"got {actual_missing!r}"
-        )
+        return f"selector {missing_param} must be exactly {expected_missing!r}, got {actual_missing!r}"
     if decision.get("scope") == "segments":
         items_param = str(selector.get("items_key_param") or "items_key")
         source_param = str(selector.get("items_key_source_param") or "segments_key")
@@ -929,10 +912,7 @@ def _selector_policy_reason(  # noqa: PLR0913 - producer binding is required onl
             ref.params.get(empty_param),
         )
         if actual_empty is not expected_empty:
-            return (
-                f"selector {empty_param} must be exactly {expected_empty!r}, "
-                f"got {actual_empty!r}"
-            )
+            return f"selector {empty_param} must be exactly {expected_empty!r}, got {actual_empty!r}"
     return ""
 
 
@@ -968,11 +948,7 @@ def _score_lineage_reason(
         for conditional in contract.conditional_writes:
             writes.update(conditional.writes.data_keys)
             writes.update(conditional.writes.segment_data_keys)
-        if (
-            contract.cardinality != "1:1"
-            or not contract.preserves_upstream_keys
-            or set(score_keys) & writes
-        ):
+        if contract.cardinality != "1:1" or not contract.preserves_upstream_keys or set(score_keys) & writes:
             return (
                 f"{_CHECKPOINT_REF} at index {index} does not mechanically prove "
                 f"1:1 preservation of {list(score_keys)!r}"
@@ -987,10 +963,7 @@ def _decision_value_reason(  # noqa: PLR0911 - one refusal per scalar contract
     value_type: str,
 ) -> str:
     if not isinstance(value, (type(None), bool, int, float, str)):
-        return (
-            "selector target_value must be a JSON scalar "
-            "(null, boolean, number, or string)"
-        )
+        return "selector target_value must be a JSON scalar (null, boolean, number, or string)"
     if isinstance(value, float) and not math.isfinite(value):
         return "selector target_value must be a finite JSON number"
     if value_type == "number":
@@ -1022,10 +995,7 @@ def _normalize_decision_conditions(  # noqa: C901, PLR0911, PLR0912 - fail close
     selector = pair.decision.get("selector") or {}
     required_operator = str(selector.get("required_operator") or "")
     if required_operator != "ge":
-        return (), (
-            "decision_conditions requires a card-declared compound decision "
-            "with exact ge operators"
-        )
+        return (), ("decision_conditions requires a card-declared compound decision with exact ge operators")
 
     entries: list[Mapping[str, Any]] = []
     if isinstance(raw, Mapping):
@@ -1033,10 +1003,7 @@ def _normalize_decision_conditions(  # noqa: C901, PLR0911, PLR0912 - fail close
             if isinstance(value, Mapping):
                 unknown = set(value) - {"target_value", "operator"}
                 if unknown:
-                    return (), (
-                        f"decision_conditions[{key!r}] has unknown field(s) "
-                        f"{sorted(unknown, key=repr)!r}"
-                    )
+                    return (), (f"decision_conditions[{key!r}] has unknown field(s) {sorted(unknown, key=repr)!r}")
                 if "target_value" not in value:
                     return (), f"decision_conditions[{key!r}] must define target_value"
                 entries.append(
@@ -1092,8 +1059,7 @@ def _normalize_decision_conditions(  # noqa: C901, PLR0911, PLR0912 - fail close
         operator = condition.get("operator")
         if operator != required_operator:
             return (), (
-                f"decision_conditions[{index}].operator must be exactly "
-                f"{required_operator!r}, got {operator!r}"
+                f"decision_conditions[{index}].operator must be exactly {required_operator!r}, got {operator!r}"
             )
         target = condition.get("target_value")
         value_reason = _decision_value_reason(
@@ -1140,11 +1106,7 @@ def _declared_compound_score_keys(  # noqa: PLR0911 - fail closed per declaratio
         declared[score_key] = dict(dimension)
 
     contract = foundation.build_contract(producer)
-    available = (
-        set(contract.writes.segment_data_keys)
-        if pair.scope == "segments"
-        else set(contract.writes.data_keys)
-    )
+    available = set(contract.writes.segment_data_keys) if pair.scope == "segments" else set(contract.writes.data_keys)
     missing = set(declared) - available
     if missing:
         return {}, (
@@ -1163,9 +1125,7 @@ def _with_decision_conditions(
     selector = pair.decision["selector"]
     conditions_param = str(selector.get("conditions_param") or "conditions")
     stages = [StageRef(ref=s.ref, params=dict(s.params)) for s in recipe.stages]
-    stages[pair.selector_index].params[conditions_param] = [
-        dict(condition) for condition in conditions
-    ]
+    stages[pair.selector_index].params[conditions_param] = [dict(condition) for condition in conditions]
     candidate = _copy_recipe(recipe, stages)
     candidate.checkpoint_decision = None
     return candidate.freeze()
@@ -1226,10 +1186,7 @@ def _refresh_compound_pair(
             score_key=None,
             score_keys=score_keys,
             operator="and",
-            target_value={
-                condition["input_value_key"]: condition["target_value"]
-                for condition in conditions
-            },
+            target_value={condition["input_value_key"]: condition["target_value"] for condition in conditions},
             conditions=conditions,
             value_type=original.value_type,
             decision=dict(original.decision),
@@ -1275,11 +1232,7 @@ def _checkpoint_condition_evidence_reason(  # noqa: C901, PLR0911, PLR0912 - fai
         if present:
             for key in requested:
                 value = item[key]
-                if (
-                    isinstance(value, bool)
-                    or not isinstance(value, (int, float))
-                    or not math.isfinite(float(value))
-                ):
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
                     return f"{location}.{key} is not a finite numeric annotation score"
             saw_scored_item = True
         return ""
@@ -1295,10 +1248,7 @@ def _checkpoint_condition_evidence_reason(  # noqa: C901, PLR0911, PLR0912 - fai
                         return f"checkpoint row {line_number} is not a mapping"
                     items = row.get(pair.items_key)
                     if not isinstance(items, list):
-                        return (
-                            f"checkpoint row {line_number} does not contain nested list "
-                            f"{pair.items_key!r}"
-                        )
+                        return f"checkpoint row {line_number} does not contain nested list {pair.items_key!r}"
                     for item_index, item in enumerate(items):
                         reason = _item_reason(
                             item,
@@ -1311,10 +1261,7 @@ def _checkpoint_condition_evidence_reason(  # noqa: C901, PLR0911, PLR0912 - fai
                     if reason:
                         return reason
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        return (
-            "compound feedback checkpoint could not be read as complete JSONL: "
-            f"{type(exc).__name__}: {exc}"
-        )
+        return f"compound feedback checkpoint could not be read as complete JSONL: {type(exc).__name__}: {exc}"
     if not saw_scored_item:
         return (
             "compound feedback checkpoint contains no row or nested child with "
@@ -1332,9 +1279,7 @@ def _with_decision_value(recipe: Recipe, pair: DecisionPair, value: Any) -> Reci
             {
                 **condition,
                 "target_value": (
-                    value
-                    if condition["input_value_key"] == pair.score_key
-                    else condition["target_value"]
+                    value if condition["input_value_key"] == pair.score_key else condition["target_value"]
                 ),
             }
             for condition in pair.conditions
@@ -1354,11 +1299,7 @@ def _refresh_pair(recipe: Recipe, original: DecisionPair) -> DecisionPair | None
 
 def _checkpoint_between(recipe: Recipe, producer_index: int, selector_index: int) -> int | None:
     return next(
-        (
-            index
-            for index in range(producer_index + 1, selector_index)
-            if recipe.stages[index].ref == _CHECKPOINT_REF
-        ),
+        (index for index in range(producer_index + 1, selector_index) if recipe.stages[index].ref == _CHECKPOINT_REF),
         None,
     )
 
@@ -1420,14 +1361,10 @@ def _copy_recipe(recipe: Recipe, stages: list[StageRef]) -> Recipe:
         knowledge_version=recipe.knowledge_version,
         parent_run_id=recipe.parent_run_id,
         checkpoint_decision=(
-            dict(recipe.checkpoint_decision)
-            if isinstance(recipe.checkpoint_decision, dict)
-            else None
+            dict(recipe.checkpoint_decision) if isinstance(recipe.checkpoint_decision, dict) else None
         ),
         planning_preference=(
-            dict(recipe.planning_preference)
-            if isinstance(recipe.planning_preference, dict)
-            else None
+            dict(recipe.planning_preference) if isinstance(recipe.planning_preference, dict) else None
         ),
     )
 
@@ -1539,10 +1476,7 @@ def _configured_checkpoint_path_reason(  # noqa: C901 - one refusal per path inv
     if marker_exists and not output_exists:
         return "a stale completion marker exists without its configured checkpoint"
     if output_exists and not marker_exists:
-        return (
-            "configured checkpoint path exists without a completion marker; "
-            "refusing a partial or unproven artifact"
-        )
+        return "configured checkpoint path exists without a completion marker; refusing a partial or unproven artifact"
     return ""
 
 
@@ -1628,27 +1562,23 @@ def _candidate(  # noqa: PLR0913 - one materialized option gathers its whole des
         "diff": {
             "inserted": [{"index": pair.selector_index, "stage": _CHECKPOINT_REF}],
             "changed": (
-                [{
-                    "stage": pair.selector_stage,
-                    "param": str(
-                        (pair.decision.get("selector") or {}).get(
-                            "conditions_param"
+                [
+                    {
+                        "stage": pair.selector_stage,
+                        "param": str(
+                            (pair.decision.get("selector") or {}).get(
+                                "conditions_param" if pair.decision_kind == "compound" else "value_param"
+                            )
+                            or ("conditions" if pair.decision_kind == "compound" else "target_value")
+                        ),
+                        "from": prior_target,
+                        "to": (
+                            [dict(condition) for condition in pair.conditions]
                             if pair.decision_kind == "compound"
-                            else "value_param"
-                        )
-                        or (
-                            "conditions"
-                            if pair.decision_kind == "compound"
-                            else "target_value"
-                        )
-                    ),
-                    "from": prior_target,
-                    "to": (
-                        [dict(condition) for condition in pair.conditions]
-                        if pair.decision_kind == "compound"
-                        else pair.target_value
-                    ),
-                }]
+                            else pair.target_value
+                        ),
+                    }
+                ]
                 if decision_changed
                 else []
             ),
@@ -1741,8 +1671,7 @@ def _execution_requirements(config_hash: str | None) -> dict[str, Any]:
                 "intent_status": "pass",
             },
             "enforcement": (
-                "host response contract; the core has no semantic-review token "
-                "because intent critique is host-owned"
+                "host response contract; the core has no semantic-review token because intent critique is host-owned"
             ),
         },
         "smoke": {

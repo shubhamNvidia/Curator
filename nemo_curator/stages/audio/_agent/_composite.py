@@ -187,9 +187,6 @@ def expand_composites(stages: list[Any]) -> Expansion:
             )
             continue
         ref = type(stage).__name__
-        out.extend(
-            ExpandedStage(index, child, (child_index,), ref)
-            for child_index, child in enumerate(children)
-        )
+        out.extend(ExpandedStage(index, child, (child_index,), ref) for child_index, child in enumerate(children))
 
     return Expansion(stages=out, opaque=opaque, unrunnable=unrunnable)

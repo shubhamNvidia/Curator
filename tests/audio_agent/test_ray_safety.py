@@ -197,7 +197,6 @@ def test_cluster_probe_disconnects_a_new_connection_that_resolves_elsewhere(
     assert shutdowns == 1
 
 
-
 class _FakeRayClient:
     """Stand-in for the shared ``RayClient``, with the same externally visible contract.
 

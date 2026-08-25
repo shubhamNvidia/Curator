@@ -27,7 +27,7 @@ from __future__ import annotations
 from typing import Any
 
 
-def build_server() -> Any:  # noqa: ANN401, PLR0915 - a flat tool registry: one statement per verb
+def build_server() -> Any:  # noqa: ANN401, PLR0915, C901 - a flat tool registry: one statement per verb
     """Construct and return the FastMCP server (imports ``mcp`` lazily)."""
     from mcp.server.fastmcp import FastMCP
 
@@ -103,12 +103,15 @@ def build_server() -> Any:  # noqa: ANN401, PLR0915 - a flat tool registry: one 
         ``semantic_review`` packet must be interpreted by the host LLM before smoke;
         a mechanical ``pass`` alone is not intent approval."""
         return aa.validate(
-            recipe, data=data, expected_outputs=expected_outputs,
-            acceptance_criteria=acceptance_criteria, request_type=request_type,
+            recipe,
+            data=data,
+            expected_outputs=expected_outputs,
+            acceptance_criteria=acceptance_criteria,
+            request_type=request_type,
         )
 
     @server.tool()
-    def smoke(
+    def smoke(  # noqa: PLR0913
         recipe: dict[str, Any],
         sample: int = 10,
         data: str | None = None,
@@ -123,12 +126,16 @@ def build_server() -> Any:  # noqa: ANN401, PLR0915 - a flat tool registry: one 
         always isolated in an ephemeral sandbox. ``calibration`` accepts either
         the mapping from a smoke or the complete wrapper returned by ``calibrate``."""
         return aa.smoke(
-            recipe, sample=sample, data=data, output_dir=output_dir,
-            bootstrap_ray=bootstrap_ray, calibration=calibration,
+            recipe,
+            sample=sample,
+            data=data,
+            output_dir=output_dir,
+            bootstrap_ray=bootstrap_ray,
+            calibration=calibration,
         )
 
     @server.tool()
-    def run(
+    def run(  # noqa: PLR0913
         recipe: dict[str, Any],
         confirm: bool | str = False,
         data: str | None = None,
@@ -150,9 +157,15 @@ def build_server() -> Any:  # noqa: ANN401, PLR0915 - a flat tool registry: one 
         ``output_dir`` is retained as the verb's legacy no-op; configure output
         paths on recipe stages."""
         return aa.run(
-            recipe, confirm=confirm, data=data, output_dir=output_dir,
-            checkpoint_path=checkpoint_path, bootstrap_ray=bootstrap_ray,
-            smoke_token=smoke_token, calibration=calibration, goal=goal,
+            recipe,
+            confirm=confirm,
+            data=data,
+            output_dir=output_dir,
+            checkpoint_path=checkpoint_path,
+            bootstrap_ray=bootstrap_ray,
+            smoke_token=smoke_token,
+            calibration=calibration,
+            goal=goal,
         )
 
     @server.tool()
@@ -199,7 +212,7 @@ def build_server() -> Any:  # noqa: ANN401, PLR0915 - a flat tool registry: one 
         return aa.resolve(stage, label=label, use_case=use_case, explicit=explicit, data=data)
 
     @server.tool()
-    def runs(
+    def runs(  # noqa: PLR0913
         run_id: str | None = None,
         data: str | None = None,
         stage: str | None = None,
@@ -226,7 +239,7 @@ def build_server() -> Any:  # noqa: ANN401, PLR0915 - a flat tool registry: one 
         return aa.reuse_scan(recipe, data=data, limit=limit)
 
     @server.tool()
-    def delta_run(
+    def delta_run(  # noqa: PLR0913
         recipe: dict[str, Any] | None = None,
         from_run: str | None = None,
         data: str | None = None,
@@ -326,7 +339,7 @@ def build_server() -> Any:  # noqa: ANN401, PLR0915 - a flat tool registry: one 
         return aa.reindex()
 
     @server.tool()
-    def plan_continuation(
+    def plan_continuation(  # noqa: PLR0913
         recipe: dict[str, Any],
         parent_run_id: str | None = None,
         data: str | None = None,
@@ -372,7 +385,7 @@ def build_server() -> Any:  # noqa: ANN401, PLR0915 - a flat tool registry: one 
         return aa.calibrate(smoke_report)
 
     @server.tool()
-    def diagnose(
+    def diagnose(  # noqa: PLR0913
         error: str,
         recipe: dict[str, Any] | None = None,
         operation: str = "run",
@@ -400,7 +413,7 @@ def build_server() -> Any:  # noqa: ANN401, PLR0915 - a flat tool registry: one 
         return aa.doctor()
 
     @server.tool()
-    def install_skill(
+    def install_skill(  # noqa: PLR0913
         scope: str = "project",
         host: str = "all",
         mode: str = "copy",

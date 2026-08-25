@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 _SEEDED = {"audio_filepath", "duration", "resampled_audio_filepath"}
 
 
-def _codes(report) -> set[str]:  # noqa: ANN001 - PipelineReport
+def _codes(report) -> set[str]:
     return {i.code for i in report.issues}
 
 
@@ -67,9 +67,7 @@ class TestExpansion:
         assert expansion.stages[0].composite_ref is None
         assert expansion.stages[0].label == "InferenceSortformerStage"
 
-    def test_a_composite_that_cannot_decompose_yields_no_invented_leaf(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_a_composite_that_cannot_decompose_yields_no_invented_leaf(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Patched on the instance rather than via a subclass: defining a stage subclass registers
         # it in the global agent-ready registry, which then leaks into every later test.
         stage = SplitASRAlignJoinStage()
@@ -84,9 +82,7 @@ class TestExpansion:
         assert not expansion.fully_resolved
         assert "RuntimeError" in expansion.opaque[0]
 
-    def test_a_single_child_composite_is_an_error_not_a_substitution(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_a_single_child_composite_is_an_error_not_a_substitution(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """``Pipeline._decompose_stages`` only substitutes children when there is more than
         one, so a single-child decomposition leaves the COMPOSITE in the execution list and
         ``CompositeStage.process`` raises on the first task. Substituting the child here would
@@ -163,9 +159,7 @@ class TestInnerRequirementsAreVisible:
         over a remedy hint that was never going to apply to a list anyway.
         """
         composite = ManifestReader(manifest_path="/tmp/m.jsonl")
-        inner = next(
-            child for child in composite.decompose() if hasattr(child, "file_extensions")
-        )
+        inner = next(child for child in composite.decompose() if hasattr(child, "file_extensions"))
         assert isinstance(inner.file_extensions, list), "the shared field really is unhashable"
 
         assert _forwarding_param(inner, composite, {"segments"}) is None

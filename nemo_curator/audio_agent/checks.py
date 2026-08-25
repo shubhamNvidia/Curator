@@ -24,8 +24,9 @@ added here, and the verb surface stays stable.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from nemo_curator.audio_agent.contracts import Issue
 from nemo_curator.audio_agent.index import get_index
@@ -116,7 +117,8 @@ def run_checks(ctx: CheckContext) -> CheckResult:
         except Exception as e:  # noqa: BLE001 - a single check must never crash the verb
             merged.issues.append(
                 Issue(
-                    "check_error", "error",
+                    "check_error",
+                    "error",
                     f"check {name!r} could not run ({type(e).__name__}: {e}); recipe not fully validated",
                     fix="treat as not-runnable; fix the offending card/param, or report a bug",
                 )
@@ -200,8 +202,15 @@ def _check_data_flow(ctx: CheckContext) -> CheckResult:
         available_gpus=None,
     )
     issues = [
-        Issue(pi.code, pi.severity, pi.message, stage_index=pi.stage_index, stage=pi.stage_name,
-              fix=_fix_for(pi.code), escalate_to=_escalate_for(pi.code))
+        Issue(
+            pi.code,
+            pi.severity,
+            pi.message,
+            stage_index=pi.stage_index,
+            stage=pi.stage_name,
+            fix=_fix_for(pi.code),
+            escalate_to=_escalate_for(pi.code),
+        )
         for pi in report.issues
     ]
     return CheckResult(
@@ -238,7 +247,11 @@ def _check_card_constraints(ctx: CheckContext) -> CheckResult:
     data_profile = ctx.data_profile
     # sample-rate keys are strings post-serialization; coerce to int so a matching rate
     # (16000) doesn't false-warn against an int-typed card supported_sample_rates.
-    data_srs = {int(k) for k in (data_profile or {}).get("sample_rates", {}) if str(k).lstrip("-").isdigit()} if data_profile else set()
+    data_srs = (
+        {int(k) for k in (data_profile or {}).get("sample_rates", {}) if str(k).lstrip("-").isdigit()}
+        if data_profile
+        else set()
+    )
     mean_dur = (_to_float((data_profile or {}).get("mean_duration_sec")) or 0.0) if data_profile else 0.0
     # The rate the audio carries AT each point, not the rate the source files had. Comparing a
     # model's supported rates against the source profile warns about 48 kHz input to a 16 kHz
@@ -262,20 +275,28 @@ def _check_card_constraints(ctx: CheckContext) -> CheckResult:
         if isinstance(bs, dict) and "fixed" in bs and s.params.get("batch_size") not in (None, bs["fixed"]):
             out.append(
                 Issue(
-                    "card_batch_size", "error",
+                    "card_batch_size",
+                    "error",
                     f"{s.ref}: batch_size must be {bs['fixed']} ({bs.get('reason', 'model constraint')})",
-                    stage_index=i, stage=s.ref, fix=f"set batch_size={bs['fixed']}",
+                    stage_index=i,
+                    stage=s.ref,
+                    fix=f"set batch_size={bs['fixed']}",
                 )
             )
         supported = cons.get("supported_sample_rates")
         supported_ints = {iv for iv in (_to_int(x) for x in (supported or [])) if iv is not None}
         if supported and srs_here and supported_ints and not srs_here.issubset(supported_ints):
-            reached_via = "" if srs_here == data_srs else f" (after an upstream conversion; source was {sorted(data_srs)})"
+            reached_via = (
+                "" if srs_here == data_srs else f" (after an upstream conversion; source was {sorted(data_srs)})"
+            )
             out.append(
                 Issue(
-                    "card_sample_rate", "warning",
+                    "card_sample_rate",
+                    "warning",
                     f"{s.ref}: input sample rates {sorted(srs_here)} not all in supported {supported}{reached_via}",
-                    stage_index=i, stage=s.ref, fix="insert a resample stage upstream to the supported rate",
+                    stage_index=i,
+                    stage=s.ref,
+                    fix="insert a resample stage upstream to the supported rate",
                 )
             )
         sweet = cons.get("input_duration_sweetspot_sec")
@@ -283,9 +304,12 @@ def _check_card_constraints(ctx: CheckContext) -> CheckResult:
         if sweet_max is not None and mean_dur and mean_dur > sweet_max:
             out.append(
                 Issue(
-                    "card_duration", "warning",
+                    "card_duration",
+                    "warning",
                     f"{s.ref}: mean input duration {mean_dur}s exceeds sweet-spot max {sweet['max']}s",
-                    stage_index=i, stage=s.ref, fix="segment/split long audio upstream",
+                    stage_index=i,
+                    stage=s.ref,
+                    fix="segment/split long audio upstream",
                 )
             )
         for key in _MAX_SPEAKERS_KEYS:
@@ -294,9 +318,12 @@ def _check_card_constraints(ctx: CheckContext) -> CheckResult:
             if mx_int is not None and val_int is not None and val_int > mx_int:
                 out.append(
                     Issue(
-                        "card_max_speakers", "error",
+                        "card_max_speakers",
+                        "error",
                         f"{s.ref}: {key}={s.params[key]} exceeds model max_speakers={mx_int}",
-                        stage_index=i, stage=s.ref, fix=f"set {key}<={mx_int}",
+                        stage_index=i,
+                        stage=s.ref,
+                        fix=f"set {key}<={mx_int}",
                     )
                 )
     return CheckResult(card_violations=out)
@@ -329,10 +356,12 @@ def _check_gpu_reservation(ctx: CheckContext) -> CheckResult:
         if gpus <= 0 and gpu_mem <= 0:
             out.append(
                 Issue(
-                    "gpu_reservation_missing", "warning",
+                    "gpu_reservation_missing",
+                    "warning",
                     f"{s.ref}: card is bound=gpu / not gpu_optional but the stage reserves no GPU "
                     "(resources.gpus=0) -- it will run on CPU (very slow) and may over-parallelize",
-                    stage_index=i, stage=s.ref,
+                    stage_index=i,
+                    stage=s.ref,
                     fix=f"set resources=Resources(gpus=1) (VRAM ~ card gpu_mem_gb={res_card.get('gpu_mem_gb')})",
                 )
             )
@@ -349,29 +378,78 @@ def _check_gates(ctx: CheckContext) -> CheckResult:
     for idx, st in enumerate(ctx.stages):
         try:
             gates = foundation.build_contract(st).gates
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S112
             continue
         name = type(st).__name__
         target_is_local = ctx.execution_target == "local"
         if target_is_local and getattr(gates, "requires_ffmpeg", False) and not env.has_ffmpeg:
-            out.append(Issue("ffmpeg_missing", "error", f"{name} needs ffmpeg but it is not on PATH", stage_index=idx, stage=name, fix="install ffmpeg"))
+            out.append(
+                Issue(
+                    "ffmpeg_missing",
+                    "error",
+                    f"{name} needs ffmpeg but it is not on PATH",
+                    stage_index=idx,
+                    stage=name,
+                    fix="install ffmpeg",
+                )
+            )
         if target_is_local and getattr(gates, "requires_gpu", False) and not env.has_gpu:
             # Mask-aware: a masked/unknown GPU is a re-verify decision, NOT a "no GPU"
             # warning. Only a definitively absent GPU (CPU-only torch build) is a real
             # gap. Codes match environment_preflight so the two paths never disagree.
             gpu_status = getattr(env, "gpu_status", "absent")
             if gpu_status == "possibly_masked":
-                out.append(Issue("gpu_possibly_masked", "info", f"{name} requires a GPU; none is reachable from this process but one is likely PRESENT and masked (sandbox/container) -- re-verify with full device access, do not conclude no GPU", stage_index=idx, stage=name, fix="re-run with full device access (outside the sandbox/container)"))
+                out.append(
+                    Issue(
+                        "gpu_possibly_masked",
+                        "info",
+                        f"{name} requires a GPU; none is reachable from this process but one is likely PRESENT and masked (sandbox/container) -- re-verify with full device access, do not conclude no GPU",
+                        stage_index=idx,
+                        stage=name,
+                        fix="re-run with full device access (outside the sandbox/container)",
+                    )
+                )
             elif gpu_status == "unknown":
-                out.append(Issue("gpu_availability_unknown", "info", f"{name} requires a GPU but this environment supplied no GPU visibility facts -- re-verify with full device access", stage_index=idx, stage=name, fix="re-verify the GPU with full device access"))
+                out.append(
+                    Issue(
+                        "gpu_availability_unknown",
+                        "info",
+                        f"{name} requires a GPU but this environment supplied no GPU visibility facts -- re-verify with full device access",
+                        stage_index=idx,
+                        stage=name,
+                        fix="re-verify the GPU with full device access",
+                    )
+                )
             else:
-                out.append(Issue("gpu_unavailable", "warning", f"{name} declares requires_gpu but this host has no usable GPU (CPU-only torch build)", stage_index=idx, stage=name, fix="install the CUDA torch extra or run on a GPU host"))
+                out.append(
+                    Issue(
+                        "gpu_unavailable",
+                        "warning",
+                        f"{name} declares requires_gpu but this host has no usable GPU (CPU-only torch build)",
+                        stage_index=idx,
+                        stage=name,
+                        fix="install the CUDA torch extra or run on a GPU host",
+                    )
+                )
         if getattr(gates, "requires_internet_first_run", False):
-            out.append(Issue("internet_first_run", "info", f"{name} downloads a model on first run", stage_index=idx, stage=name))
+            out.append(
+                Issue(
+                    "internet_first_run", "info", f"{name} downloads a model on first run", stage_index=idx, stage=name
+                )
+            )
         for secret in getattr(gates, "runtime_secrets", []) or []:
             configured = bool(getattr(st, str(secret).lower(), None))
             if target_is_local and secret not in env.available_secrets and not configured:
-                out.append(Issue("missing_secret", "warning", f"{name} needs secret {secret!r} which is not set", stage_index=idx, stage=name, fix=f"export {secret}"))
+                out.append(
+                    Issue(
+                        "missing_secret",
+                        "warning",
+                        f"{name} needs secret {secret!r} which is not set",
+                        stage_index=idx,
+                        stage=name,
+                        fix=f"export {secret}",
+                    )
+                )
     return CheckResult(gate_flags=out)
 
 
@@ -384,7 +462,7 @@ def _check_unproducible(ctx: CheckContext) -> CheckResult:
     for st in ctx.stages:
         try:
             c = foundation.build_contract(st)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S112
             continue
         for key in [*c.reads.data_keys, *c.reads.segment_data_keys]:
             required.add(c.key_roles.get(key, "unknown"))
@@ -409,7 +487,7 @@ def _check_output_completeness(ctx: CheckContext) -> CheckResult:
     for st in ctx.stages:
         try:
             contract = foundation.build_contract(st)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S112
             continue
         available_roles |= produced_roles(contract)
         available_keys |= set(contract.writes.data_keys) | set(contract.writes.segment_data_keys)
@@ -421,7 +499,8 @@ def _check_output_completeness(ctx: CheckContext) -> CheckResult:
         if want not in available_roles and want not in available_keys:
             out.append(
                 Issue(
-                    "missing_output_producer", "error",
+                    "missing_output_producer",
+                    "error",
                     f"requested output {want!r} is not produced by any stage in the recipe (no matching role or key)",
                     fix="add a stage that produces this output (see discover / find_producers), or drop the requirement",
                 )
@@ -447,7 +526,9 @@ def _check_request_type_sanity(ctx: CheckContext) -> CheckResult:
 
     out = [
         Issue(
-            "missing_implied_criterion", "warning", hint,
+            "missing_implied_criterion",
+            "warning",
+            hint,
             fix="add an acceptance criterion of this type to define success for the request",
             escalate_to="user",
         )
@@ -493,9 +574,11 @@ def _check_task_type(ctx: CheckContext) -> CheckResult:
             )
             out.append(
                 Issue(
-                    "task_type_mismatch", "error",
+                    "task_type_mismatch",
+                    "error",
                     f"{up_name} produces {prod} but {dn_name} accepts {acc}",
-                    stage_index=i + 1, stage=dn_name,
+                    stage_index=i + 1,
+                    stage=dn_name,
                     fix=fix,
                 )
             )
@@ -530,7 +613,7 @@ def _is_fragmenter(ref: str, idx: Any) -> bool:  # noqa: ANN401
     return card.get("category") == "segment" and "fanout" in (card.get("tags") or []) and not _is_diarizer(ref, idx)
 
 
-def _is_rejoiner(ref: str, idx: Any) -> bool:  # noqa: ANN401
+def _is_rejoiner(ref: str, idx: Any) -> bool:  # noqa: ANN401, ARG001
     """A stage that stitches segments back into a continuous waveform. Structural: the only
     such stage today is SegmentConcatenationStage, so this is an explicit set kept behind a
     helper for symmetry with the derived diarizer/fragmenter checks (and a future card signal).
@@ -554,15 +637,17 @@ def _check_diarization_continuity(ctx: CheckContext) -> CheckResult:
         if not frags_before:
             continue  # runs on continuous audio (no upstream fragmentation) -> fine
         fi = max(frags_before)  # nearest fragmenter before the diarizer
-        if not any(_is_rejoiner(rr, idx) for rr in refs[fi + 1:di]):
+        if not any(_is_rejoiner(rr, idx) for rr in refs[fi + 1 : di]):
             out.append(
                 Issue(
-                    "diarization_needs_continuous_audio", "error",
+                    "diarization_needs_continuous_audio",
+                    "error",
                     f"{r} runs after {refs[fi]} without re-joining segments; "
                     "diarization/separation needs a continuous waveform",
-                    stage_index=di, stage=r,
+                    stage_index=di,
+                    stage=r,
                     fix="insert SegmentConcatenationStage between the VAD and the diarizer, "
-                        "or diarize/separate on the continuous audio before segmenting",
+                    "or diarize/separate on the continuous audio before segmenting",
                 )
             )
     return CheckResult(issues=out)
@@ -614,7 +699,8 @@ def _check_source_schema(ctx: CheckContext) -> CheckResult:
     return CheckResult(
         issues=[
             Issue(
-                "source_schema_mismatch", "error",
+                "source_schema_mismatch",
+                "error",
                 f"the manifest's columns {sorted(columns)} contain no 'audio_filepath', which is the "
                 "key every audio stage reads; this recipe would validate, run, and yield no rows",
                 fix=(

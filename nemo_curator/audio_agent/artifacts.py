@@ -561,10 +561,7 @@ def publish(artifact: Artifact) -> Artifact:
         content_digest=artifact.content_digest,
     )
     if marker is None:
-        msg = (
-            "artifact publication failed: could not write the completion marker "
-            f"for {artifact.uri!r}"
-        )
+        msg = f"artifact publication failed: could not write the completion marker for {artifact.uri!r}"
         raise OSError(msg)
     save(artifact)
     return artifact
@@ -590,14 +587,14 @@ def content_digest(uri: str) -> str | None:
             for root, dirs, files in os.walk(expanded):
                 dirs.sort()
                 rel_root = os.path.relpath(root, expanded)
-                digest.update(f"dir\0{rel_root}".encode("utf-8"))
+                digest.update(f"dir\0{rel_root}".encode())
                 digest.update(b"\0")
                 for name in sorted(files):
                     if name == _MARKER or name.endswith(f".{_MARKER}"):
                         continue
                     full = os.path.join(root, name)
                     relative = os.path.relpath(full, expanded)
-                    digest.update(f"file\0{relative}".encode("utf-8"))
+                    digest.update(f"file\0{relative}".encode())
                     digest.update(b"\0")
                     _hash_file(full, digest)
         else:
@@ -655,7 +652,7 @@ def _now() -> str:
 
 
 # --------------------------------------------------------------------------- validity
-def invalid_reasons(
+def invalid_reasons(  # noqa: C901, PLR0912
     artifact: Artifact,
     *,
     dataset_key: str | None = None,
@@ -679,9 +676,7 @@ def invalid_reasons(
 
     path_issues = _safety.path_violations([artifact.uri])
     if path_issues:
-        reasons.append(
-            "artifact output is outside the allowed workspace: " + "; ".join(path_issues)
-        )
+        reasons.append("artifact output is outside the allowed workspace: " + "; ".join(path_issues))
     elif not artifact.uri or not os.path.exists(os.path.expanduser(artifact.uri)):
         reasons.append(f"output no longer exists at {artifact.uri!r}")
     else:
@@ -691,13 +686,9 @@ def invalid_reasons(
         elif marker.get("step_key") != artifact.step_key:
             reasons.append("the _COMPLETE marker belongs to a different step; the location was overwritten")
         elif not artifact.content_digest or not marker.get("content_digest"):
-            reasons.append(
-                "artifact predates serialized-content binding; republish it before reuse"
-            )
+            reasons.append("artifact predates serialized-content binding; republish it before reuse")
         elif marker.get("content_digest") != artifact.content_digest:
-            reasons.append(
-                "the _COMPLETE marker and artifact record bind different serialized content"
-            )
+            reasons.append("the _COMPLETE marker and artifact record bind different serialized content")
         else:
             current_digest = content_digest(artifact.uri)
             if current_digest is None:

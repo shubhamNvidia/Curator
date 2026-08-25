@@ -201,7 +201,7 @@ def _install_agent_simulation_stubs() -> None:  # noqa: C901, PLR0915 (complexit
     metrics = types.ModuleType("nemo.collections.asr.metrics")
     wer_mod = types.ModuleType("nemo.collections.asr.metrics.wer")
 
-    def _word_error_rate_detail(hypotheses: list[str], references: list[str], use_cer: bool = False) -> tuple:  # noqa: ARG001 - stub mirrors nemo's word_error_rate_detail signature
+    def _word_error_rate_detail(hypotheses: list[str], references: list[str], use_cer: bool = False) -> tuple:
         return (0.0 if hypotheses == references else 1.0, 1, 0.0, 0.0, 0.0)
 
     wer_mod.word_error_rate_detail = _word_error_rate_detail
@@ -571,7 +571,9 @@ def _run_inline_agent_pipeline(stages: list[Any], tasks: list[Any]) -> list[Any]
 def _patch_common_agent_pipeline_fakes(stages: list[Any]) -> None:  # noqa: C901 (complexity accepted: one fake-attachment branch per heavy stage type)
     """Attach deterministic fake model outputs to heavy stages in a built pipeline."""
 
-    def fake_vad_segments(self: VADSegmentationStage, _waveform: torch.Tensor, _sample_rate: int) -> list[dict[str, float]]:
+    def fake_vad_segments(
+        self: VADSegmentationStage, _waveform: torch.Tensor, _sample_rate: int
+    ) -> list[dict[str, float]]:
         if self.nested:
             return [{"start": 0.0, "end": 0.2}, {"start": 0.2, "end": 0.4}]
         return [{"start": 0.0, "end": 0.1}]
@@ -666,12 +668,20 @@ def _coverage_cases(tmp_path: Path) -> list[StageCase]:
         ),
         StageCase(ManifestReader, lambda: ManifestReader(manifest_path=str(manifest)), "composite"),
         StageCase(ManifestReaderStage, ManifestReaderStage, "ingress_transform"),
-        StageCase(ManifestWriterStage, lambda: ManifestWriterStage(output_path=str(output_dir / "out.jsonl")), "ingress_transform"),
+        StageCase(
+            ManifestWriterStage,
+            lambda: ManifestWriterStage(output_path=str(output_dir / "out.jsonl")),
+            "ingress_transform",
+        ),
         StageCase(MergeAlignmentDiarizationStage, MergeAlignmentDiarizationStage, "speech_tagging"),
         StageCase(MonoConversionStage, MonoConversionStage, "ingress_transform"),
         StageCase(NeMoASRAlignerStage, NeMoASRAlignerStage, "speech_tagging"),
         StageCase(OverlapFilterStage, OverlapFilterStage, "alm_pretrain"),
-        StageCase(PretrainMetricsAggregatorStage, lambda: PretrainMetricsAggregatorStage(str(output_dir / "metrics.json")), "alm_pretrain"),
+        StageCase(
+            PretrainMetricsAggregatorStage,
+            lambda: PretrainMetricsAggregatorStage(str(output_dir / "metrics.json")),
+            "alm_pretrain",
+        ),
         StageCase(PrepareModuleSegmentsStage, PrepareModuleSegmentsStage, "speech_tagging"),
         StageCase(
             PreserveByValueConditionsStage,
@@ -681,16 +691,34 @@ def _coverage_cases(tmp_path: Path) -> list[StageCase]:
             "segmentation_quality",
         ),
         StageCase(PreserveByValueStage, lambda: PreserveByValueStage("keep", True), "segmentation_quality"),
-        StageCase(PyAnnoteDiarizationStage, lambda: PyAnnoteDiarizationStage(hf_token="fake"), "speech_tagging"),  # noqa: S106 - not a real credential
-        StageCase(ReadLongFormManifestStage, lambda: ReadLongFormManifestStage(str(manifest), str(audio_dir)), "alm_pretrain"),
-        StageCase(ResampleAudioStage, lambda: ResampleAudioStage(resampled_audio_dir=str(output_dir)), "ingress_transform"),
+        StageCase(PyAnnoteDiarizationStage, lambda: PyAnnoteDiarizationStage(hf_token="fake"), "speech_tagging"),
+        StageCase(
+            ReadLongFormManifestStage, lambda: ReadLongFormManifestStage(str(manifest), str(audio_dir)), "alm_pretrain"
+        ),
+        StageCase(
+            ResampleAudioStage, lambda: ResampleAudioStage(resampled_audio_dir=str(output_dir)), "ingress_transform"
+        ),
         StageCase(SIGMOSFilterStage, SIGMOSFilterStage, "segmentation_quality"),
         StageCase(SegmentConcatenationStage, SegmentConcatenationStage, "split_join_extract"),
-        StageCase(SegmentExtractionStage, lambda: SegmentExtractionStage(output_dir=str(output_dir)), "split_join_extract"),
+        StageCase(
+            SegmentExtractionStage, lambda: SegmentExtractionStage(output_dir=str(output_dir)), "split_join_extract"
+        ),
         StageCase(SnippetCutPlannerStage, SnippetCutPlannerStage, "alm_pretrain"),
-        StageCase(SnippetExtractionStage, lambda: SnippetExtractionStage(str(output_dir), str(output_dir / "audio.tar"), dry_run=True), "alm_pretrain"),
-        StageCase(SnippetManifestWriterStage, lambda: SnippetManifestWriterStage(str(output_dir / "snippets.jsonl")), "alm_pretrain"),
-        StageCase(SnippetRepetitionFilterStage, lambda: SnippetRepetitionFilterStage(tokenizer_path=str(tmp_path)), "alm_pretrain"),
+        StageCase(
+            SnippetExtractionStage,
+            lambda: SnippetExtractionStage(str(output_dir), str(output_dir / "audio.tar"), dry_run=True),
+            "alm_pretrain",
+        ),
+        StageCase(
+            SnippetManifestWriterStage,
+            lambda: SnippetManifestWriterStage(str(output_dir / "snippets.jsonl")),
+            "alm_pretrain",
+        ),
+        StageCase(
+            SnippetRepetitionFilterStage,
+            lambda: SnippetRepetitionFilterStage(tokenizer_path=str(tmp_path)),
+            "alm_pretrain",
+        ),
         StageCase(SpeakerSeparationStage, SpeakerSeparationStage, "segmentation_quality"),
         StageCase(SplitASRAlignJoinStage, SplitASRAlignJoinStage, "composite"),
         StageCase(SplitLongAudioStage, SplitLongAudioStage, "split_join_extract"),
@@ -944,7 +972,9 @@ def test_agent_segmentation_quality_pipeline_annotate_and_filter(tmp_path: Path)
         input_residency="waveform",
     )
     vad._vad_model = object()
-    vad._get_vad_segments = MethodType(lambda self, waveform, sample_rate: [{"start": 0.0, "end": 0.45}, {"start": 0.45, "end": 0.9}], vad)
+    vad._get_vad_segments = MethodType(
+        lambda self, waveform, sample_rate: [{"start": 0.0, "end": 0.45}, {"start": 0.45, "end": 0.9}], vad
+    )
     task = vad.process(task)
     assert len(task.data["agent_segments"]) == 2
     for segment in task.data["agent_segments"]:
@@ -1373,7 +1403,9 @@ def test_agent_speech_tagging_pipeline_with_fake_inference(tmp_path: Path) -> No
     task = whisperx.process(task)
     assert task.data["agent_vad_segments"] == [{"start": 0.0, "end": 0.4}]
 
-    pyannote = PyAnnoteDiarizationStage(hf_token="fake", write_rttm=False, segments_key="agent_segments", overlap_segments_key="agent_overlaps")  # noqa: S106 - not a real credential
+    pyannote = PyAnnoteDiarizationStage(
+        hf_token="fake", write_rttm=False, segments_key="agent_segments", overlap_segments_key="agent_overlaps"
+    )
     pyannote.process = MethodType(
         lambda self, t: t.data.update(
             {
@@ -1400,7 +1432,9 @@ def test_agent_speech_tagging_pipeline_with_fake_inference(tmp_path: Path) -> No
     task = asr.process_batch([task])[0]
     assert task.data["agent_pred_text"] == "hello world"
 
-    aligner = NeMoASRAlignerStage(text_key="agent_text", words_key="agent_words", alignment_key="agent_alignment", segments_key="agent_segments")
+    aligner = NeMoASRAlignerStage(
+        text_key="agent_text", words_key="agent_words", alignment_key="agent_alignment", segments_key="agent_segments"
+    )
 
     def fake_align(self: NeMoASRAlignerStage, tasks: list[AudioTask]) -> list[AudioTask]:
         for item in tasks:
@@ -1431,7 +1465,9 @@ def test_agent_speech_tagging_pipeline_with_fake_inference(tmp_path: Path) -> No
     assert "agent_text_ITN" in task.data["agent_segments"][0]
     assert "agent_text_simplified" in task.data["agent_segments"][0]
 
-    wer = ComputeWERStage(hypothesis_text_key="agent_text", reference_text_key="text_ref", segments_key="agent_segments")
+    wer = ComputeWERStage(
+        hypothesis_text_key="agent_text", reference_text_key="text_ref", segments_key="agent_segments"
+    )
     wer._normalizer = _FakeNormalizer()
     task.data["agent_segments"][0]["text_ref"] = "hello"
     assert wer.validate_input(task)
@@ -1486,12 +1522,12 @@ def test_agent_optional_fanout_for_vad_and_diarizers_with_custom_keys(tmp_path: 
     assert whisperx_children[0]._metadata == {"source": "agent"}
     assert whisperx_children[0]._stage_perf == ["upstream"]
 
-    default_pyannote = PyAnnoteDiarizationStage(hf_token="fake", write_rttm=False)  # noqa: S106 - not a real credential
+    default_pyannote = PyAnnoteDiarizationStage(hf_token="fake", write_rttm=False)
     assert default_pyannote.describe().cardinality == "1:1"
     assert default_pyannote.ray_stage_spec() == {}
 
     pyannote = PyAnnoteDiarizationStage(
-        hf_token="fake",  # noqa: S106 - not a real credential
+        hf_token="fake",
         write_rttm=False,
         min_length=0.1,
         fanout=True,
@@ -1536,9 +1572,10 @@ def test_agent_optional_fanout_for_vad_and_diarizers_with_custom_keys(tmp_path: 
         segment_num_key="agent_segment_num",
         original_file_key="agent_original_file",
     )
+
     def fake_sortformer_diarize(
-        self: InferenceSortformerStage,  # noqa: ARG001 - bound via MethodType; receiver unused by the fake
-        paths: list[str],  # noqa: ARG001
+        self: InferenceSortformerStage,
+        paths: list[str],
     ) -> list[list[dict[str, Any]]]:
         return [[{"speaker": "spk0", "start": 0.0, "end": 0.25}, {"speaker": "spk1", "start": 0.25, "end": 0.75}]]
 
@@ -1571,7 +1608,17 @@ def test_agent_split_join_timestamp_extract_pipeline(tmp_path: Path) -> None:
             "start_ms": 0,
             "end_ms": 400,
         },
-        _metadata={"segment_mappings": [{"concat_start_ms": 0, "concat_end_ms": 400, "original_file": str(audio_path), "original_start_ms": 0, "original_end_ms": 400}]},
+        _metadata={
+            "segment_mappings": [
+                {
+                    "concat_start_ms": 0,
+                    "concat_end_ms": 400,
+                    "original_file": str(audio_path),
+                    "original_start_ms": 0,
+                    "original_end_ms": 400,
+                }
+            ]
+        },
         _stage_perf=["split-input"],
     )
 
@@ -1886,7 +1933,9 @@ def test_agent_quality_task_mode_annotate_filter_and_missing_input() -> None:
         sample_rate_key="agent_sr",
     )
     pass_filter._model = _FakeUTMOSModel(4.5)
-    assert isinstance(pass_filter.process(AudioTask(data={"agent_waveform": _waveform(), "agent_sr": 16000})), AudioTask)
+    assert isinstance(
+        pass_filter.process(AudioTask(data={"agent_waveform": _waveform(), "agent_sr": 16000})), AudioTask
+    )
 
     fail_filter = UTMOSFilterStage(
         mos_threshold=4.0,
@@ -2005,7 +2054,9 @@ def test_agent_text_and_validation_noop_edges(tmp_path: Path) -> None:
 
     assert not BandwidthEstimationStage(audio_filepath_key="missing_path").validate_input(AudioTask(data={}))
     assert not TorchSquimQualityMetricsStage(audio_filepath_key="missing_path").validate_input(AudioTask(data={}))
-    assert not ComputeWERStage(segments_key="missing_segments").validate_input(AudioTask(data={"agent_audio_path": str(audio_path)}))
+    assert not ComputeWERStage(segments_key="missing_segments").validate_input(
+        AudioTask(data={"agent_audio_path": str(audio_path)})
+    )
 
     preserve = PreserveByValueStage("keep", True)
     kept = preserve.process_batch([AudioTask(data={"id": 1, "keep": True}), AudioTask(data={"id": 2, "keep": False})])
@@ -2191,7 +2242,9 @@ def test_agent_or_shaped_stages_accept_each_declared_input_shape(tmp_path: Path)
     assert not squim.validate_input(AudioTask(data={}))
 
     bandwidth = BandwidthEstimationStage(audio_filepath_key="agent_audio_path")
-    assert bandwidth.validate_input(AudioTask(data={"agent_audio_path": str(audio_path), "segments": [{"start": 0, "end": 1}]}))
+    assert bandwidth.validate_input(
+        AudioTask(data={"agent_audio_path": str(audio_path), "segments": [{"start": 0, "end": 1}]})
+    )
     assert bandwidth.validate_input(AudioTask(data={"agent_audio_path": str(audio_path), "duration": 1.0}))
     assert not bandwidth.validate_input(AudioTask(data={"duration": 1.0}))
 
@@ -2217,6 +2270,4 @@ def test_agent_contract_self_consistency_meta_invariants(tmp_path: Path) -> None
                 f"{name} produces a tensor but declares no write keys"
             )
         for index, option in enumerate(contract.reads_one_of):
-            assert option.data_keys or option.segment_data_keys, (
-                f"{name}.reads_one_of[{index}] is an empty key set"
-            )
+            assert option.data_keys or option.segment_data_keys, f"{name}.reads_one_of[{index}] is an empty key set"

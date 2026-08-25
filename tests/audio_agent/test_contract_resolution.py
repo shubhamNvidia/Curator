@@ -301,7 +301,7 @@ class TestProducersAnswersWhoMakesAKey:
         assert "describe" in candidates["ASRStage"]["confirm_with"]
 
     def test_an_incomplete_search_never_presents_as_a_complete_one(self) -> None:
-        """"Nothing produces this" and "some stages could not be asked" must not look alike."""
+        """ "Nothing produces this" and "some stages could not be asked" must not look alike."""
         out = aa.producers("nothing_writes_this_key")
 
         assert out["producers"] == []
@@ -361,7 +361,7 @@ class TestConstructingAStageTouchesNothing:
     nothing, on the one boundary where tool-supplied data meets ``cls(**params)``.
     """
 
-    def _no_io(self, monkeypatch, seen: list[str]):  # noqa: ANN001, ANN202
+    def _no_io(self, monkeypatch, seen: list[str]):
         """Make every filesystem/network entry point record itself instead of running."""
         import builtins
         import io as _io
@@ -369,11 +369,12 @@ class TestConstructingAStageTouchesNothing:
         import pathlib
         import socket
 
-        def trap(label: str):  # noqa: ANN202
+        def trap(label: str):
             def _boom(*_a: object, **_k: object) -> None:
                 seen.append(label)
                 msg = f"{label} during __init__"
                 raise AssertionError(msg)
+
             return _boom
 
         monkeypatch.setattr(builtins, "open", trap("builtins.open"))
@@ -384,17 +385,6 @@ class TestConstructingAStageTouchesNothing:
         monkeypatch.setattr(pathlib.Path, "write_text", trap("Path.write_text"))
         monkeypatch.setattr(pathlib.Path, "read_text", trap("Path.read_text"))
         monkeypatch.setattr(socket, "socket", trap("socket.socket"))
-
-    # Stages KNOWN to touch disk while being constructed. Listed by name, never by shape, so a
-    # new one fails this test instead of joining them quietly.
-    #
-    # AudioDataFilterStage.__init__ calls load_config(config_path) -- with config_path=None it
-    # reads the packaged default_config.yaml, and with a caller-supplied path it reads that.
-    # Reachable from the ``describe`` MCP tool, and not covered by the workspace lock (describe
-    # performs no path check, and ``config_path`` is a deliberately unlocked shared-dependency
-    # param), so an LLM-supplied path becomes an existence/parseability oracle. No file content
-    # reaches the response. The stage is shared code and out of the audio agent's scope to change.
-    _KNOWN_IO_IN_INIT = frozenset({"AudioDataFilterStage"})
 
     # Stages KNOWN to touch disk while being constructed. Listed by name, never by shape, so a
     # new one fails this test instead of joining them quietly.
@@ -432,8 +422,7 @@ class TestConstructingAStageTouchesNothing:
         assert built, f"nothing was constructible, so this proves nothing (skipped: {skipped})"
         unexpected = [o for o in offenders if o.split(":")[0] not in self._KNOWN_IO_IN_INIT]
         assert not unexpected, (
-            "stage(s) newly performing I/O in __init__, reachable from the describe MCP tool: "
-            + "; ".join(unexpected)
+            "stage(s) newly performing I/O in __init__, reachable from the describe MCP tool: " + "; ".join(unexpected)
         )
         still_offending = {o.split(":")[0] for o in offenders}
         assert still_offending == set(self._KNOWN_IO_IN_INIT), (

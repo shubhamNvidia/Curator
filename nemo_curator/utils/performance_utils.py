@@ -45,7 +45,7 @@ def begin_resource_probe(stage: Any) -> bool:  # noqa: ANN401
         if not torch.cuda.is_available():
             return False
         torch.cuda.reset_peak_memory_stats()
-        return True
+        return True  # noqa: TRY300 - trivial guard, no else needed
     except Exception:  # noqa: BLE001 - metrics are best-effort
         return False
 
@@ -66,16 +66,14 @@ def resource_probe_metrics(
         peak_rss_bytes = peak_rss if sys.platform == "darwin" else peak_rss * 1024
         if peak_rss_bytes >= 0:
             metrics["peak_host_mem_gb"] = peak_rss_bytes / (1024**3)
-    except Exception:  # noqa: BLE001 - unsupported platform/worker
+    except Exception:  # noqa: BLE001, S110 - unsupported platform/worker
         pass
     if gpu_probe_started:
         try:
             import torch
 
-            metrics["peak_vram_gb"] = float(
-                torch.cuda.max_memory_allocated()
-            ) / (1024**3)
-        except Exception:  # noqa: BLE001 - telemetry cannot fail execution
+            metrics["peak_vram_gb"] = float(torch.cuda.max_memory_allocated()) / (1024**3)
+        except Exception:  # noqa: BLE001, S110 - telemetry cannot fail execution
             pass
     if process_time > 0 and num_items >= 0:
         metrics["throughput"] = float(num_items) / process_time

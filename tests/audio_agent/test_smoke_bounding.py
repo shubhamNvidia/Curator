@@ -116,9 +116,7 @@ def test_remote_manifest_selector_refuses_before_execution(
     monkeypatch.setattr(
         verbs,
         "_run_pipeline_autofallback",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("remote selector reached execution")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("remote selector reached execution")),
     )
 
     result = verbs.smoke(
@@ -145,9 +143,7 @@ def test_malformed_multi_manifest_refuses_before_execution(
     monkeypatch.setattr(
         verbs,
         "_run_pipeline_autofallback",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("malformed selector reached execution")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("malformed selector reached execution")),
     )
 
     result = verbs.smoke(
@@ -190,16 +186,11 @@ def test_unstaged_download_sources_refuse_before_execution(
     params: dict[str, Any],
 ) -> None:
     root = tmp_path / "unstaged"
-    authored = {
-        key: str(root) if value == "{root}" else value
-        for key, value in params.items()
-    }
+    authored = {key: str(root) if value == "{root}" else value for key, value in params.items()}
     monkeypatch.setattr(
         verbs,
         "_run_pipeline_autofallback",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("download-capable source reached execution")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("download-capable source reached execution")),
     )
 
     result = verbs.smoke(_source_recipe(ref, authored), sample=2)
@@ -271,10 +262,7 @@ def test_local_folder_sources_receive_an_ephemeral_sample_cap(
     root = tmp_path / "audio"
     root.mkdir()
     (root / "clip.wav").write_bytes(b"RIFF")
-    authored = {
-        key: str(root) if value == "{root}" else value
-        for key, value in params.items()
-    }
+    authored = {key: str(root) if value == "{root}" else value for key, value in params.items()}
     seen: list[int] = []
 
     def inspect_source(source) -> None:
@@ -659,10 +647,7 @@ def test_document_batch_required_output_is_checked_beyond_preview_rows(
 ) -> None:
     source = tmp_path / "source.jsonl"
     source.write_text(
-        "".join(
-            json.dumps({"audio_filepath": f"clip-{i}.wav"}) + "\n"
-            for i in range(4)
-        ),
+        "".join(json.dumps({"audio_filepath": f"clip-{i}.wav"}) + "\n" for i in range(4)),
         encoding="utf-8",
     )
     batch = DocumentBatch(
@@ -814,9 +799,7 @@ def test_streaming_fallback_resets_attempt_outputs_before_batch_retry(
     def execute(_stages, executor, *, checkpoint_path=None):
         calls.append(str(executor))
         if len(calls) == 1:
-            raise RuntimeError(
-                "streaming mode requires batch mode: not enough GPU capacity"
-            )
+            raise RuntimeError("streaming mode requires batch mode: not enough GPU capacity")
         return []
 
     monkeypatch.setattr(verbs, "_make_executor", lambda mode: mode)
@@ -851,9 +834,7 @@ def test_streaming_fallback_resets_owned_partial_checkpoint_before_batch_retry(
         worker_checkpoint.setup()
         worker_checkpoint.process(AudioTask(data={"attempt": attempts}))
         if attempts == 1:
-            raise RuntimeError(
-                "streaming mode requires batch mode: not enough GPU capacity"
-            )
+            raise RuntimeError("streaming mode requires batch mode: not enough GPU capacity")
         return []
 
     monkeypatch.setattr(verbs, "_make_executor", lambda mode: mode)
@@ -891,9 +872,7 @@ def test_resource_planning_failure_is_structured_and_cleans_output_sandbox(
     monkeypatch.setattr(
         verbs,
         "_plan_resources",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            RuntimeError("planner unavailable")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("planner unavailable")),
     )
 
     result = verbs.smoke(

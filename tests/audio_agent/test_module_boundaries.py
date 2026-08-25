@@ -81,9 +81,7 @@ def test_the_symbol_still_exists_where_its_consumers_look_for_it(symbol: str, ho
     ("symbol", "home", "expected"),
     [(s, h, c) for s, (h, c) in _CROSS_MODULE_PRIVATES.items()],
 )
-def test_the_documented_consumer_list_is_the_real_one(
-    symbol: str, home: str, expected: frozenset[str]
-) -> None:
+def test_the_documented_consumer_list_is_the_real_one(symbol: str, home: str, expected: frozenset[str]) -> None:
     """Keeps the docstrings honest. A new consumer that is not recorded means the next person
     reading ``{home}.{symbol}`` is told the blast radius is smaller than it is."""
     actual = _importers_of(symbol) - {home}
@@ -100,6 +98,4 @@ def test_each_one_says_in_its_docstring_that_it_is_not_private(symbol: str, home
     module = importlib.import_module(f"nemo_curator.audio_agent.{home}")
     doc = getattr(module, symbol).__doc__ or ""
 
-    assert "NOT private" in doc, (
-        f"{home}.{symbol} is imported by other modules but its docstring does not say so"
-    )
+    assert "NOT private" in doc, f"{home}.{symbol} is imported by other modules but its docstring does not say so"

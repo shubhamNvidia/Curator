@@ -34,7 +34,12 @@ from whisperx.vads.pyannote import Pyannote, load_vad_model
 from nemo_curator.backends.base import NodeInfo, WorkerMetadata
 from nemo_curator.backends.utils import RayStageSpecKeys
 from nemo_curator.stages.audio._agent._agent_ready import AgentReady, Gates, IOSpec, StageContract
-from nemo_curator.stages.audio._agent._residency import InputResidency, cleanup_temp_files, residency_read_specs, resolve_audio_path
+from nemo_curator.stages.audio._agent._residency import (
+    InputResidency,
+    cleanup_temp_files,
+    residency_read_specs,
+    resolve_audio_path,
+)
 from nemo_curator.stages.audio.common import get_audio_duration
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.stages.resources import Resources

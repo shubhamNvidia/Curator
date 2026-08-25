@@ -98,9 +98,7 @@ def _agent_ready_registry() -> dict[str, type]:
     from nemo_curator.stages.base import _STAGE_REGISTRY
 
     return {
-        name: cls
-        for name, cls in _STAGE_REGISTRY.items()
-        if isinstance(cls, type) and issubclass(cls, AgentReady)
+        name: cls for name, cls in _STAGE_REGISTRY.items() if isinstance(cls, type) and issubclass(cls, AgentReady)
     }
 
 
@@ -169,7 +167,9 @@ def catalog_as_json(*, include_dynamic_defaults: bool = False, indent: int | Non
 # --------------------------------------------------------------------------- #
 def _consumed_roles(contract: StageContract) -> set[str]:
     """Semantic roles a stage requires (primary reads + every reads_one_of option)."""
-    roles = {contract.key_roles.get(k, "unknown") for k in [*contract.reads.data_keys, *contract.reads.segment_data_keys]}
+    roles = {
+        contract.key_roles.get(k, "unknown") for k in [*contract.reads.data_keys, *contract.reads.segment_data_keys]
+    }
     for opt in contract.reads_one_of:
         roles |= {contract.key_roles.get(k, "unknown") for k in [*opt.data_keys, *opt.segment_data_keys]}
     return roles - {"unknown"}
@@ -210,9 +210,7 @@ def _default_contract(cls: type) -> StageContract | None:
     params = stage_params(cls)
     for also_fill_none in (False, True):
         kwargs = {
-            p.name: _dummy_for_param(p.type)
-            for p in params
-            if p.required or (also_fill_none and p.default is None)
+            p.name: _dummy_for_param(p.type) for p in params if p.required or (also_fill_none and p.default is None)
         }
         if not kwargs:
             continue

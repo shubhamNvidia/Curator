@@ -509,7 +509,5 @@ def reindex() -> dict[str, Any]:
         "artifacts_failed": artifacts_failed,
     }
     if status == "error":
-        result["errors"] = [
-            "one or more JSON source records could not be committed to the index"
-        ]
+        result["errors"] = ["one or more JSON source records could not be committed to the index"]
     return result

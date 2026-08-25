@@ -32,19 +32,19 @@ import pytest
 sf = pytest.importorskip("soundfile")
 pytest.importorskip("torch")
 
-from nemo_curator.stages.audio.common import (  # noqa: E402
+from nemo_curator.stages.audio.common import (
     GetAudioDurationStage,
     ManifestReaderStage,
     ManifestWriterStage,
     PreserveByValueStage,
     load_audio_file,
 )
-from nemo_curator.stages.audio.io.convert import AudioToDocumentStage  # noqa: E402
-from nemo_curator.stages.audio.postprocessing.timestamp_mapper import TimestampMapperStage  # noqa: E402
-from nemo_curator.stages.audio.preprocessing.concatenation import SegmentConcatenationStage  # noqa: E402
-from nemo_curator.stages.audio.preprocessing.mono_conversion import MonoConversionStage  # noqa: E402
-from nemo_curator.stages.audio.tagging.resample_audio import ResampleAudioStage  # noqa: E402
-from nemo_curator.tasks import AudioTask, FileGroupTask  # noqa: E402
+from nemo_curator.stages.audio.io.convert import AudioToDocumentStage
+from nemo_curator.stages.audio.postprocessing.timestamp_mapper import TimestampMapperStage
+from nemo_curator.stages.audio.preprocessing.concatenation import SegmentConcatenationStage
+from nemo_curator.stages.audio.preprocessing.mono_conversion import MonoConversionStage
+from nemo_curator.stages.audio.tagging.resample_audio import ResampleAudioStage
+from nemo_curator.tasks import AudioTask, FileGroupTask
 
 
 def _write_stereo_wav(path: Path, *, sample_rate: int = 16000, duration_sec: float = 0.5) -> Path:
@@ -140,10 +140,7 @@ def test_actual_audio_manifest_mono_writer_document_pipeline_custom_keys(tmp_pat
     written_task = writer.process(task)
     assert isinstance(written_task, AudioTask)
 
-    written_rows = [
-        json.loads(line)
-        for line in writer_path.read_text(encoding="utf-8").splitlines()
-    ]
+    written_rows = [json.loads(line) for line in writer_path.read_text(encoding="utf-8").splitlines()]
     assert len(written_rows) == 1
     assert written_rows[0]["agent_audio_path"] == task.data["agent_mono_path"]
     assert written_rows[0]["agent_original_path"] == str(audio_path)
@@ -298,9 +295,7 @@ def test_actual_audio_segment_concat_then_timestamp_mapper_preserves_handoffs(tm
                     "segment_num": 0,
                 },
                 {
-                    "waveform": waveform[
-                        :, 2 * samples_per_segment : 3 * samples_per_segment
-                    ].clone(),
+                    "waveform": waveform[:, 2 * samples_per_segment : 3 * samples_per_segment].clone(),
                     "sample_rate": sample_rate,
                     "original_file": str(audio_path),
                     "start_ms": 200,

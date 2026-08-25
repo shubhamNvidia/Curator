@@ -182,14 +182,15 @@ class SpeakerSeparationStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             gates=Gates(
                 requires_gpu=self.resources.requires_gpu,
                 requires_internet_first_run=True,
-                writes_to_disk=self.write_to_disk, output_path_params=["separated_audio_dir"],
+                writes_to_disk=self.write_to_disk,
+                output_path_params=["separated_audio_dir"],
                 # Diarization runs on one file's audio, and ``num_speakers`` counts the speakers
                 # found in THAT file. Unlike SplitLongAudioStage, a shared output directory is
                 # still safe here: ``write_audio_stable`` names each per-speaker WAV after a
                 # digest of its own samples rather than after the source basename.
-                per_row_independent=True),
+                per_row_independent=True,
+            ),
         )
-
 
     def setup_on_node(self, _node_info: Any = None, _worker_metadata: Any = None) -> None:  # noqa: ANN401
         try:

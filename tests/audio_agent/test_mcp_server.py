@@ -348,9 +348,7 @@ def test_mcp_forwards_run_and_report_arguments_without_reinterpretation(monkeypa
         goal=goal,
     )
 
-    assert tools["report"]("/data/out.jsonl", recipe=recipe, data="/data/input.jsonl") == {
-        "status": "ok"
-    }
+    assert tools["report"]("/data/out.jsonl", recipe=recipe, data="/data/input.jsonl") == {"status": "ok"}
     report_mock.assert_called_once_with(
         "/data/out.jsonl",
         recipe=recipe,
@@ -413,9 +411,7 @@ def test_mcp_forwards_provenance_and_reuse_arguments(monkeypatch) -> None:
         goal="16 kHz mono with a quality filter",
     )
 
-    assert tools["reuse_scan"](recipe, data="/data/input.jsonl", limit=3) == {
-        "decision": "fresh"
-    }
+    assert tools["reuse_scan"](recipe, data="/data/input.jsonl", limit=3) == {"decision": "fresh"}
     scan_mock.assert_called_once_with(recipe, data="/data/input.jsonl", limit=3)
     assert tools["reindex"]() == {"status": "ok"}
     reindex_mock.assert_called_once_with()

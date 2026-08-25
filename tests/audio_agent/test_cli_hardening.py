@@ -168,14 +168,20 @@ def test_nested_unmet_acceptance_returns_nonzero(cmd: str) -> None:
     }
 
     assert cli._result_exit_code(cmd, result) == 1
-    assert cli._result_exit_code(
-        cmd,
-        {"status": "completed", "acceptance": {"overall": "met"}},
-    ) == 0
-    assert cli._result_exit_code(
-        cmd,
-        {"status": "completed", "acceptance": {}},
-    ) == 0
+    assert (
+        cli._result_exit_code(
+            cmd,
+            {"status": "completed", "acceptance": {"overall": "met"}},
+        )
+        == 0
+    )
+    assert (
+        cli._result_exit_code(
+            cmd,
+            {"status": "completed", "acceptance": {}},
+        )
+        == 0
+    )
 
 
 def test_diagnose_cli_forwards_recipe_context_and_signals_action_required(

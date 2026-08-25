@@ -122,22 +122,23 @@ class TestTheConfirmGateAnchor:
         assert easy.to_dict()["planning_preference"] == easy.planning_preference
         assert "planning_preference" not in old.to_dict()
         assert (
-            easy.config_hash,
-            easy.semantic_hash,
-            easy.contract_hash,
-        ) == (
-            fast.config_hash,
-            fast.semantic_hash,
-            fast.contract_hash,
-        ) == (
-            old.config_hash,
-            old.semantic_hash,
-            old.contract_hash,
+            (
+                easy.config_hash,
+                easy.semantic_hash,
+                easy.contract_hash,
+            )
+            == (
+                fast.config_hash,
+                fast.semantic_hash,
+                fast.contract_hash,
+            )
+            == (
+                old.config_hash,
+                old.semantic_hash,
+                old.contract_hash,
+            )
         )
-        assert (
-            Recipe.from_dict(easy.to_dict()).planning_preference
-            == easy.planning_preference
-        )
+        assert Recipe.from_dict(easy.to_dict()).planning_preference == easy.planning_preference
 
     @pytest.mark.parametrize(
         "bad",
@@ -227,5 +228,5 @@ class TestAMalformedStageEntrySaysWhatIsWrong:
             {"stages": [], "acceptance_criteria": [{"nope": 1}]},
         ]
         for payload in malformed:
-            with pytest.raises(ValueError):  # noqa: PT011 - the type IS the assertion here
+            with pytest.raises(ValueError):
                 Recipe.from_dict(payload)

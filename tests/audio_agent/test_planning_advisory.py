@@ -1,5 +1,3 @@
-# ruff: noqa: INP001
-
 # Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,10 +23,7 @@ import pytest
 
 from nemo_curator import audio_agent as aa
 
-_INPUT = (
-    Path(__file__).resolve().parents[1]
-    / "fixtures/audio/alm/sample_input.jsonl"
-)
+_INPUT = Path(__file__).resolve().parents[1] / "fixtures/audio/alm/sample_input.jsonl"
 _REFINE = {
     "schema_version": 1,
     "curation_mode": "refine_later",
@@ -121,9 +116,7 @@ def test_refine_later_native_quality_filters_get_non_blocking_advice(
     assert refined["planning_advisories"][0]["stage"] == stage_ref
     assert "still valid" not in str(refined["issues"]).lower()
     suggestion = refined["planning_advisories"][0]["suggested_shape"]
-    assert suggestion["ordering"] == (
-        "annotate -> metadata checkpoint -> exact selector"
-    )
+    assert suggestion["ordering"] == ("annotate -> metadata checkpoint -> exact selector")
     assert suggestion["producer"]["params"]["mode"] == "task"
     assert suggestion["producer"]["params"]["input_residency"] == "file"
     assert suggestion["selector"]["ref"] == selector_ref
@@ -393,12 +386,7 @@ def test_existing_persisted_transform_can_prove_a_file_backed_boundary(
         "native_filter",
         "live_waveform_residency",
     ]
-    assert (
-        verdict["planning_advisories"][0]["suggested_shape"][
-            "file_backed_boundary"
-        ]
-        is True
-    )
+    assert verdict["planning_advisories"][0]["suggested_shape"]["file_backed_boundary"] is True
 
 
 # --------------------------------------------------------------- row independence
@@ -425,9 +413,7 @@ def _split_recipe(tmp_path: Path, *, output_dir: str | None, preference: dict | 
 
 def _forfeited(result: dict) -> list[dict]:
     return [
-        a
-        for a in (result.get("planning_advisories") or [])
-        if a["code"] == "refine_later_row_independence_forfeited"
+        a for a in (result.get("planning_advisories") or []) if a["code"] == "refine_later_row_independence_forfeited"
     ]
 
 

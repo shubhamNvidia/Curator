@@ -80,7 +80,7 @@ def _load_dir(path: str) -> dict[str, Any]:
             stem = os.path.splitext(fn)[0]
             try:
                 out[stem] = _load_yaml(os.path.join(path, fn))
-            except Exception:  # noqa: BLE001 - a malformed knowledge file must not break discovery
+            except Exception:  # noqa: BLE001, S112 - a malformed knowledge file must not break discovery
                 continue
     return out
 
@@ -143,7 +143,7 @@ class KnowledgeIndex:
             from nemo_curator.audio_agent._resolve import static_contract_for
 
             c = static_contract_for(stage)
-            return c.description or stage
+            return c.description or stage  # noqa: TRY300
         except Exception:  # noqa: BLE001
             return stage
 
@@ -221,7 +221,9 @@ class KnowledgeIndex:
         return self._top_k(self.recipes(), goal, k, fields=("recipe_id", "name", "intent", "rationale"))
 
     @staticmethod
-    def _top_k(items: list[dict[str, Any]], goal: dict[str, Any], k: int, fields: tuple[str, ...]) -> list[dict[str, Any]]:
+    def _top_k(
+        items: list[dict[str, Any]], goal: dict[str, Any], k: int, fields: tuple[str, ...]
+    ) -> list[dict[str, Any]]:
         """Entries whose text overlaps the goal, best first; EMPTY when none overlap.
 
         Returning an arbitrary few on no match was actively misleading: these are presented
@@ -267,7 +269,7 @@ class KnowledgeIndex:
 
 
 def _tokens(text: str) -> set[str]:
-    return {t for t in "".join(c.lower() if c.isalnum() else " " for c in text).split() if len(t) > 2}
+    return {t for t in "".join(c.lower() if c.isalnum() else " " for c in text).split() if len(t) > 2}  # noqa: PLR2004
 
 
 @lru_cache(maxsize=1)

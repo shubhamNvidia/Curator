@@ -154,11 +154,7 @@ class BandFilterStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 assignment_condition=(
                     "audio resolves, the predictor returns 'full_band' or 'narrow_band', "
                     f"'{self.prediction_key}' is assigned"
-                    + (
-                        ", and the item matches the configured band and is retained"
-                        if self.action == "filter"
-                        else ""
-                    )
+                    + (", and the item matches the configured band and is retained" if self.action == "filter" else "")
                 ),
             ),
             cardinality="filter" if self.action == "filter" else "1:1",

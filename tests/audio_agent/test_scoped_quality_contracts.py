@@ -161,18 +161,12 @@ def test_segment_only_annotation_does_not_claim_to_feed_top_level_value_filter(
         recipe=recipe,
     )
     filter_read = next(
-        edge
-        for edge in packet["lineage"]
-        if edge["consumer"]["stage_index"] == 1 and edge["read"]["key"] == "quality"
+        edge for edge in packet["lineage"] if edge["consumer"]["stage_index"] == 1 and edge["read"]["key"] == "quality"
     )
 
     quality_write = next(write for write in packet["stages"][0]["writes"] if write["key"] == "quality")
     assert quality_write["scope"] == "segment"
-    assert all(
-        write["scope"] != "task"
-        for write in packet["stages"][0]["writes"]
-        if write["key"] == "quality"
-    )
+    assert all(write["scope"] != "task" for write in packet["stages"][0]["writes"] if write["key"] == "quality")
     assert filter_read["read"]["scope"] == "task"
     assert filter_read["latest_upstream_producer"]["kind"] == "unresolved"
     assert filter_read in packet["unresolved_lineage"]

@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
-_SMOKE_SECRET_ENV = "AUDIO_AGENT_SMOKE_SECRET"
+_SMOKE_SECRET_ENV = "AUDIO_AGENT_SMOKE_SECRET"  # noqa: S105
 # Same variable ``run_store`` reads; the smoke secret prefers the agent's own state dir
 # so a deployment that already redirects run records keeps its secret beside them.
 _RUNS_DIR_ENV = "AUDIO_AGENT_RUNS_DIR"
@@ -60,8 +60,17 @@ _LOCAL_URI_SCHEMES = frozenset({"file", "local"})
 # run records and compared during reuse, so the corruption outlives the display.
 _SECRET_WORDS = frozenset(
     {
-        "token", "tokens", "secret", "secrets", "password", "passwords", "passwd", "pwd",
-        "apikey", "credential", "credentials",
+        "token",
+        "tokens",
+        "secret",
+        "secrets",
+        "password",
+        "passwords",
+        "passwd",
+        "pwd",
+        "apikey",
+        "credential",
+        "credentials",
     }
 )
 # Secret names that span a separator, so they survive the word split as adjacent pairs
@@ -105,12 +114,8 @@ _SECRET_ASSIGNMENT = re.compile(
 )
 _HF_TOKEN_VALUE = re.compile(r"\bhf_[A-Za-z0-9]{8,}\b")
 _BEARER_VALUE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
-_BASIC_VALUE = re.compile(
-    r"(?i)(?P<prefix>\bbasic\s+)(?P<value>[A-Za-z0-9+/]{4,}={0,2})(?=$|[^A-Za-z0-9+/=])"
-)
-_URL_USERINFO = re.compile(
-    r"(?i)(?P<scheme>\b[a-z][a-z0-9+.-]*://)(?P<userinfo>[^/@\s]+)@"
-)
+_BASIC_VALUE = re.compile(r"(?i)(?P<prefix>\bbasic\s+)(?P<value>[A-Za-z0-9+/]{4,}={0,2})(?=$|[^A-Za-z0-9+/=])")
+_URL_USERINFO = re.compile(r"(?i)(?P<scheme>\b[a-z][a-z0-9+.-]*://)(?P<userinfo>[^/@\s]+)@")
 _JWT_VALUE = re.compile(
     r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
     r"(?![A-Za-z0-9_-])"
@@ -166,7 +171,17 @@ _UNLOCKED_LOCATION_PARAM_NAMES = frozenset({"cache_dir", "config_path"})
 _HUB_OR_PATH_PARAM_NAMES = frozenset({"model_path", "tokenizer_path"})
 # Suffixes that mark a value as a concrete local artifact even when written relatively.
 _LOCAL_ARTIFACT_SUFFIXES = (
-    ".nemo", ".joblib", ".onnx", ".model", ".pt", ".pth", ".ckpt", ".bin", ".yaml", ".yml", ".json",
+    ".nemo",
+    ".joblib",
+    ".onnx",
+    ".model",
+    ".pt",
+    ".pth",
+    ".ckpt",
+    ".bin",
+    ".yaml",
+    ".yml",
+    ".json",
 )
 # A hub id is a bare name (``bert-base-uncased``) or one ``org/name`` pair. A second slash
 # means a directory tree, which no hub id has, so it can only be a path.
@@ -302,9 +317,7 @@ def redact_secret_text(value: str) -> str:
         raw_value = match.group("value")
         quote = (
             raw_value[0]
-            if len(raw_value) >= 2
-            and raw_value[0] in {'"', "'"}
-            and raw_value[-1] == raw_value[0]
+            if len(raw_value) >= 2 and raw_value[0] in {'"', "'"} and raw_value[-1] == raw_value[0]  # noqa: PLR2004
             else ""
         )
         replacement = f"{quote}<redacted-secret>{quote}"
@@ -349,7 +362,7 @@ def is_secret_key(name: Any) -> bool:  # noqa: ANN401 - any key a caller wants t
     return any(pair in _SECRET_WORD_PAIRS for pair in itertools.pairwise(words))
 
 
-def redact(obj: Any, *, redact_transcripts: bool = True) -> Any:  # noqa: ANN401
+def redact(obj: Any, *, redact_transcripts: bool = True) -> Any:  # noqa: ANN401, C901
     """Recursively strip secret-keyed values and (optionally) transcript text.
 
     Applied to verb return values so tokens never leak and transcripts don't enter

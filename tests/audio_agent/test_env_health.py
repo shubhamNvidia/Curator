@@ -159,11 +159,15 @@ class TestWorkerEnv:
 
 class TestVerdict:
     def test_the_worst_check_decides_the_overall_status(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(eh, "_CHECKS", [
-            lambda _e: eh.HealthCheck("a", "ok", "fine"),
-            lambda _e: eh.HealthCheck("b", "warn", "meh"),
-            lambda _e: eh.HealthCheck("c", "fail", "broken"),
-        ])
+        monkeypatch.setattr(
+            eh,
+            "_CHECKS",
+            [
+                lambda _e: eh.HealthCheck("a", "ok", "fine"),
+                lambda _e: eh.HealthCheck("b", "warn", "meh"),
+                lambda _e: eh.HealthCheck("c", "fail", "broken"),
+            ],
+        )
         report = eh.env_report(EnvProfile())
         assert report.status == "fail"
         assert "1 blocking issue" in report.summary
@@ -173,10 +177,14 @@ class TestVerdict:
         assert eh.env_report(EnvProfile()).status == "ok"
 
     def test_rendering_shows_fixes_only_where_something_is_wrong(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(eh, "_CHECKS", [
-            lambda _e: eh.HealthCheck("healthy", "ok", "fine", fix=["not shown"]),
-            lambda _e: eh.HealthCheck("broken", "fail", "bad", impact="things die", fix=["do this"]),
-        ])
+        monkeypatch.setattr(
+            eh,
+            "_CHECKS",
+            [
+                lambda _e: eh.HealthCheck("healthy", "ok", "fine", fix=["not shown"]),
+                lambda _e: eh.HealthCheck("broken", "fail", "bad", impact="things die", fix=["do this"]),
+            ],
+        )
         text = eh.render_doctor(eh.env_report(EnvProfile()).to_dict())
         assert "do this" in text
         assert "not shown" not in text
@@ -219,9 +227,7 @@ class TestGpuDoctorIsMaskAware:
         assert "full device access" in check.options[0].label.lower()
         assert "sandbox" in check.options[0].summary.lower()
         # no other option is recommended -- re-verify is THE action
-        assert not any(
-            o.recommended for o in check.options if o.id != "reverify_full_device_access"
-        )
+        assert not any(o.recommended for o in check.options if o.id != "reverify_full_device_access")
         # the finding no longer reads as a hardware/driver fault
         assert "not reachable" in check.finding.lower()
 

@@ -2,6 +2,7 @@
 """Verify audio modality dependencies are installed."""
 
 import nemo.collections.asr as nemo_asr
+
 from nemo_curator.models.asr.nemo_asr import NeMoASRAdapter
 from nemo_curator.stages.audio.inference.asr.stage import ASRStage
 

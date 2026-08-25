@@ -396,10 +396,7 @@ class PreserveByValueConditionsStage(AgentReady, ProcessingStage[AudioTask, Audi
             raise ValueError(msg)
         items = task.data[items_key]
         if not isinstance(items, list):
-            msg = (
-                f"Task {task!s} nested items_key {items_key!r} must contain "
-                f"a list, got {type(items).__name__}"
-            )
+            msg = f"Task {task!s} nested items_key {items_key!r} must contain a list, got {type(items).__name__}"
             raise TypeError(msg)
         for index, item in enumerate(items):
             if not isinstance(item, Mapping):
@@ -446,9 +443,7 @@ class PreserveByValueConditionsStage(AgentReady, ProcessingStage[AudioTask, Audi
         for task in tasks:
             items = self._nested_items(task, items_key)
             survivors = [
-                item
-                for index, item in enumerate(items)
-                if self._nested_item_passes(task, index, item, items_key)
+                item for index, item in enumerate(items) if self._nested_item_passes(task, index, item, items_key)
             ]
             task.data[items_key] = survivors
             if survivors or not self.drop_parent_if_empty:
@@ -476,11 +471,7 @@ class PreserveByValueConditionsStage(AgentReady, ProcessingStage[AudioTask, Audi
                         )
                         for condition in self._conditions
                     )
-                    keep = (
-                        all(condition_results)
-                        if self.condition_logic == "and"
-                        else any(condition_results)
-                    )
+                    keep = all(condition_results) if self.condition_logic == "and" else any(condition_results)
                     if keep:
                         results.append(task)
         self._log_metrics(
@@ -731,7 +722,9 @@ class CreateInitialManifestAudioFolderStage(AgentReady, ProcessingStage[EmptyTas
             if missing:
                 # Named rather than silently skipped: a caller that asked for specific files and
                 # got fewer would otherwise read the short result as "those files held nothing".
-                logger.warning(f"[{self.name}] include_files named {len(missing)} file(s) not found under {self.data_dir}")
+                logger.warning(
+                    f"[{self.name}] include_files named {len(missing)} file(s) not found under {self.data_dir}"
+                )
         return sorted(found)
 
     def process(self, _: EmptyTask) -> list[AudioTask]:
@@ -897,10 +890,7 @@ class ManifestCheckpointStage(AgentReady, ProcessingStage[AudioTask, AudioTask])
             msg = "owner must be 'user' or 'project'"
             raise ValueError(msg)
         if self.planning_provenance not in {None, self.REUSABLE_PIPELINE_PROVENANCE}:
-            msg = (
-                "planning_provenance must be None or "
-                f"{self.REUSABLE_PIPELINE_PROVENANCE!r}"
-            )
+            msg = f"planning_provenance must be None or {self.REUSABLE_PIPELINE_PROVENANCE!r}"
             raise ValueError(msg)
         self._reservation_owned = False
         self._reservation_identity: tuple[int, int, int] | None = None
@@ -933,9 +923,7 @@ class ManifestCheckpointStage(AgentReady, ProcessingStage[AudioTask, AudioTask])
         owner_path = self._retry_owner_path()
         try:
             with self._fs.open(owner_path, "xb") as owner:
-                owner.write(
-                    json.dumps({"token": self._reservation_token}).encode("utf-8")
-                )
+                owner.write(json.dumps({"token": self._reservation_token}).encode("utf-8"))
         except FileExistsError as exc:
             msg = (
                 "ManifestCheckpointStage refuses to replace an existing retry "
@@ -947,10 +935,7 @@ class ManifestCheckpointStage(AgentReady, ProcessingStage[AudioTask, AudioTask])
                 pass
         except FileExistsError as exc:
             self._remove_retry_owner_if_owned()
-            msg = (
-                "ManifestCheckpointStage refuses to overwrite an existing checkpoint "
-                f"at {self.output_path!r}"
-            )
+            msg = f"ManifestCheckpointStage refuses to overwrite an existing checkpoint at {self.output_path!r}"
             raise FileExistsError(msg) from exc
         except OSError:
             self._remove_retry_owner_if_owned()
@@ -1011,10 +996,7 @@ class ManifestCheckpointStage(AgentReady, ProcessingStage[AudioTask, AudioTask])
             try:
                 stat = os.stat(self._path)
             except OSError as exc:
-                msg = (
-                    "ManifestCheckpointStage could not verify its retry reservation "
-                    f"at {self.output_path!r}"
-                )
+                msg = f"ManifestCheckpointStage could not verify its retry reservation at {self.output_path!r}"
                 raise RuntimeError(msg) from exc
             identity = (stat.st_dev, stat.st_ino, stat.st_ctime_ns)
             recorded_identity = (
@@ -1022,10 +1004,7 @@ class ManifestCheckpointStage(AgentReady, ProcessingStage[AudioTask, AudioTask])
                 owner.get("st_ino"),
                 owner.get("st_ctime_ns"),
             )
-            if (
-                identity != recorded_identity
-                or stat.st_size != owner.get("st_size")
-            ):
+            if identity != recorded_identity or stat.st_size != owner.get("st_size"):
                 msg = (
                     "ManifestCheckpointStage refuses retry reset because the checkpoint "
                     f"at {self.output_path!r} is no longer its exact reservation"

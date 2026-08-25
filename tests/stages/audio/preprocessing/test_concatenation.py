@@ -102,7 +102,7 @@ class TestSegmentConcatenationStage:
     def test_missing_segments_key_raises(self) -> None:
         task = AudioTask(data={"other_key": "value"}, dataset_name="ds")
         stage = SegmentConcatenationStage()
-        with pytest.raises(ValueError):  # noqa: PT011
+        with pytest.raises(ValueError):
             stage.process(task)
 
     def test_empty_segments_returns_empty(self) -> None:
@@ -122,7 +122,10 @@ class TestSegmentConcatenationStage:
     def test_write_to_disk_persists_and_sets_path(self, tmp_path) -> None:
         out_dir = tmp_path / "concat"
         stage = SegmentConcatenationStage(write_to_disk=True, output_dir=str(out_dir))
-        segments = [_make_segment_dict(duration_ms=1000, segment_num=0), _make_segment_dict(duration_ms=1000, segment_num=1)]
+        segments = [
+            _make_segment_dict(duration_ms=1000, segment_num=0),
+            _make_segment_dict(duration_ms=1000, segment_num=1),
+        ]
         result = stage.process(_make_nested_task(segments))
         assert isinstance(result, AudioTask)
         # default keep_waveform_in_task=True -> both the waveform AND a written path
