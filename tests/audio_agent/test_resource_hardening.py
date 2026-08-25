@@ -64,8 +64,8 @@ def _contract(*, requires_gpu: bool = False) -> SimpleNamespace:
     return SimpleNamespace(gates=SimpleNamespace(requires_gpu=requires_gpu))
 
 
-def _plan(
-    stage: Any,
+def _plan(  # noqa: ANN202
+    stage: Any,  # noqa: ANN401
     env: EnvProfile,
     *,
     card: dict[str, Any] | None = None,
@@ -279,19 +279,19 @@ def test_custom_executor_owns_capacity_and_bounded_remote_smoke_can_probe_vram()
 
 def test_smoke_stops_only_the_ray_head_it_bootstrapped(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
+    tmp_path,  # noqa: ANN001
 ) -> None:
     source = tmp_path / "source.jsonl"
     source.write_text('{"audio_filepath":"clip.wav"}\n', encoding="utf-8")
     stopped: list[str] = []
     bootstrapped = False
 
-    def bootstrap():
+    def bootstrap():  # noqa: ANN202
         nonlocal bootstrapped
         bootstrapped = True
         return "127.0.0.1:62000"
 
-    def owns_after_bootstrap(address=None):
+    def owns_after_bootstrap(address=None):  # noqa: ANN001, ANN202
         # Keyed off the bootstrap itself rather than a count of how many times ownership
         # happens to be consulted. The count encoded the call sequence of one version of
         # the verb, so any additional ownership check -- such as the guarantee that a head
@@ -345,7 +345,7 @@ def test_smoke_stops_only_the_ray_head_it_bootstrapped(
 
 def test_an_unexpected_error_after_execution_still_stops_the_head_run_started(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
+    tmp_path,  # noqa: ANN001
 ) -> None:
     """``run`` stops its head on every path it anticipates -- and the tail is not one.
 
@@ -361,12 +361,12 @@ def test_an_unexpected_error_after_execution_still_stops_the_head_run_started(
     stopped: list[str] = []
     bootstrapped = False
 
-    def bootstrap():
+    def bootstrap():  # noqa: ANN202
         nonlocal bootstrapped
         bootstrapped = True
         return "127.0.0.1:62000"
 
-    def exploding_tail(*_args, **_kwargs):
+    def exploding_tail(*_args, **_kwargs):  # noqa: ANN202
         msg = "artifact publishing blew up"
         raise RuntimeError(msg)
 
@@ -376,7 +376,7 @@ def test_an_unexpected_error_after_execution_still_stops_the_head_run_started(
     monkeypatch.setattr(
         _ray, "owns_cluster", lambda address=None: bootstrapped and address in {None, "127.0.0.1:62000"}
     )
-    monkeypatch.setattr(_ray, "shutdown_cluster", lambda address=None: stopped.append("stopped") or True)
+    monkeypatch.setattr(_ray, "shutdown_cluster", lambda address=None: stopped.append("stopped") or True)  # noqa: ARG005
     monkeypatch.setattr(verbs, "_apply_ray_cluster_capacity", lambda env, _address: env)
     monkeypatch.setattr(verbs, "probe_env", lambda: EnvProfile(total_cpus=8, total_ram_gb=32))
     monkeypatch.setattr(verbs, "build_stages", lambda _rec: ([object()], []))
@@ -453,7 +453,7 @@ def test_positive_gpu_reservation_needs_a_gpu_even_when_card_says_optional() -> 
 
 
 def test_composite_uses_configured_child_resources_and_workers() -> None:
-    stage = ManifestReader(manifest_path="/tmp/input.jsonl")
+    stage = ManifestReader(manifest_path="/tmp/input.jsonl")  # noqa: S108
     stage.with_(
         {
             "file_partitioning": {
@@ -784,7 +784,7 @@ def test_env_fingerprint_changes_with_total_ram() -> None:
     assert base.fingerprint() != more_ram.fingerprint()
 
 
-def _pair_plan(env: EnvProfile, calibration_facts: dict[str, Any] | None = None):
+def _pair_plan(env: EnvProfile, calibration_facts: dict[str, Any] | None = None):  # noqa: ANN202
     """Two identical stages whose card declares no host-RAM fact (so the 1 GB floor applies)."""
     stages = [
         _Stage(resources=Resources(cpus=1.0), name="stage-a"),
@@ -809,7 +809,7 @@ class TestMeasurementsReachTheRunThatNeedsThem:
     """
 
     @pytest.fixture(autouse=True)
-    def _isolated_store(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _isolated_store(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN001
         monkeypatch.setenv("AUDIO_AGENT_RUNS_DIR", str(tmp_path / "runs"))
 
     def test_a_run_with_no_flag_plans_from_the_stored_measurements(self) -> None:
@@ -871,10 +871,10 @@ class TestMeasurementsReachTheRunThatNeedsThem:
 
 class TestTheMeasurementStoreIsHardened:
     @pytest.fixture(autouse=True)
-    def _isolated_store(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _isolated_store(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN001
         monkeypatch.setenv("AUDIO_AGENT_RUNS_DIR", str(tmp_path / "runs"))
 
-    def test_it_follows_the_configured_run_directory(self, tmp_path) -> None:
+    def test_it_follows_the_configured_run_directory(self, tmp_path) -> None:  # noqa: ANN001
         assert calibration_store.store_dir() == str(tmp_path / "runs" / "calibration")
 
     def test_a_half_written_record_plans_from_card_facts_rather_than_half_a_measurement(self) -> None:
@@ -925,7 +925,7 @@ class TestTheMeasurementStoreIsHardened:
     def test_a_read_only_filesystem_is_reported_rather_than_raised(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # The permission test above cannot run as root, and this path must hold everywhere:
         # storing telemetry is never worth failing the smoke that produced it.
-        def _refuse(*_args: Any, **_kwargs: Any) -> None:
+        def _refuse(*_args: Any, **_kwargs: Any) -> None:  # noqa: ANN401
             msg = "Read-only file system"
             raise OSError(msg)
 

@@ -20,7 +20,7 @@ import contextlib
 import json
 import os
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator  # noqa: TC003
 
 import pytest
 
@@ -56,7 +56,7 @@ def _unavailable_db(*, write: bool = False) -> Iterator[None]:
 
 
 def test_filtered_queries_fall_back_to_json_records(
-    tmp_path,
+    tmp_path,  # noqa: ANN001
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("AUDIO_AGENT_RUNS_DIR", str(tmp_path))
@@ -110,7 +110,7 @@ def test_filtered_queries_fall_back_to_json_records(
 
 
 def test_reindex_reports_only_successfully_committed_records(
-    tmp_path,
+    tmp_path,  # noqa: ANN001
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("AUDIO_AGENT_RUNS_DIR", str(tmp_path))
@@ -148,7 +148,7 @@ def test_index_writes_report_a_failed_commit(
             return None
 
         def commit(self) -> None:
-            raise sqlite3.OperationalError("database is locked")
+            raise sqlite3.OperationalError("database is locked")  # noqa: EM101
 
     @contextlib.contextmanager
     def locked_db(*, write: bool = False) -> Iterator[CommitFailure]:
@@ -162,7 +162,7 @@ def test_index_writes_report_a_failed_commit(
 
 
 def test_partial_index_reconciles_against_json_truth(
-    tmp_path,
+    tmp_path,  # noqa: ANN001
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # A dropped best-effort index write leaves the cache with FEWER rows than the JSON
@@ -221,7 +221,7 @@ def _null_out_created_at(path: str) -> None:
 
 
 def test_a_record_with_a_null_timestamp_does_not_break_the_json_scan(
-    tmp_path,
+    tmp_path,  # noqa: ANN001
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``RunRecord.created_at`` is annotated ``str`` and defaults to ``""``, but ``from_dict``
@@ -267,7 +267,7 @@ def test_a_record_with_a_null_timestamp_does_not_break_the_json_scan(
 
 
 def test_the_sqlite_index_and_the_json_scan_answer_alike(
-    tmp_path,
+    tmp_path,  # noqa: ANN001
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Two implementations of one query. The index is an advisory cache over the JSON records,

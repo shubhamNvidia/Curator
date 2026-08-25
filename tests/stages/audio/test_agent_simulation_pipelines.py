@@ -50,10 +50,10 @@ def _install_agent_simulation_stubs() -> None:  # noqa: C901, PLR0915 (complexit
     """Install lightweight stand-ins for heavy model/audio dependencies."""
 
     class _IdentityResample:
-        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:  # noqa: ANN401
             pass
 
-        def to(self, _device: Any) -> _IdentityResample:
+        def to(self, _device: Any) -> _IdentityResample:  # noqa: ANN401
             return self
 
         def __call__(self, waveform: torch.Tensor) -> torch.Tensor:
@@ -93,8 +93,8 @@ def _install_agent_simulation_stubs() -> None:  # noqa: C901, PLR0915 (complexit
             sf.read(path, dtype="float32")[0],
             sf.info(path).samplerate if sr is None else sr,
         )
-        librosa.stft = lambda y, n_fft, hop_length, window: np.zeros((n_fft // 2 + 1, 1), dtype=np.complex64)
-        librosa.power_to_db = lambda power, ref, top_db: np.asarray(power, dtype=np.float32)
+        librosa.stft = lambda y, n_fft, hop_length, window: np.zeros((n_fft // 2 + 1, 1), dtype=np.complex64)  # noqa: ARG005
+        librosa.power_to_db = lambda power, ref, top_db: np.asarray(power, dtype=np.float32)  # noqa: ARG005
         sys.modules["librosa"] = librosa
 
     class _FakeAudioSegment:
@@ -132,10 +132,10 @@ def _install_agent_simulation_stubs() -> None:  # noqa: C901, PLR0915 (complexit
 
     class _FakePyAnnotePipeline:
         @classmethod
-        def from_pretrained(cls, *_args: Any, **_kwargs: Any) -> _FakePyAnnotePipeline:
+        def from_pretrained(cls, *_args: Any, **_kwargs: Any) -> _FakePyAnnotePipeline:  # noqa: ANN401
             return cls()
 
-        def to(self, _device: Any) -> None:
+        def to(self, _device: Any) -> None:  # noqa: ANN401
             return None
 
     pyannote_audio = types.ModuleType("pyannote.audio")
@@ -171,14 +171,14 @@ def _install_agent_simulation_stubs() -> None:  # noqa: C901, PLR0915 (complexit
 
     class _FakeASRModel:
         @classmethod
-        def from_pretrained(cls, *_args: Any, **_kwargs: Any) -> _FakeASRModel:
+        def from_pretrained(cls, *_args: Any, **_kwargs: Any) -> _FakeASRModel:  # noqa: ANN401
             return cls()
 
         @classmethod
-        def restore_from(cls, *_args: Any, **_kwargs: Any) -> _FakeASRModel:
+        def restore_from(cls, *_args: Any, **_kwargs: Any) -> _FakeASRModel:  # noqa: ANN401
             return cls()
 
-        def transcribe(self, files: list[str], **_kwargs: Any) -> list[Any]:
+        def transcribe(self, files: list[str], **_kwargs: Any) -> list[Any]:  # noqa: ANN401
             return [SimpleNamespace(text="hello", timestamp={"word": []}, word_confidence=None) for _ in files]
 
     class _FakeSortformerEncLabelModel(_FakeASRModel):
@@ -201,7 +201,7 @@ def _install_agent_simulation_stubs() -> None:  # noqa: C901, PLR0915 (complexit
     metrics = types.ModuleType("nemo.collections.asr.metrics")
     wer_mod = types.ModuleType("nemo.collections.asr.metrics.wer")
 
-    def _word_error_rate_detail(hypotheses: list[str], references: list[str], use_cer: bool = False) -> tuple:
+    def _word_error_rate_detail(hypotheses: list[str], references: list[str], use_cer: bool = False) -> tuple:  # noqa: ARG001
         return (0.0 if hypotheses == references else 1.0, 1, 0.0, 0.0, 0.0)
 
     wer_mod.word_error_rate_detail = _word_error_rate_detail
@@ -272,7 +272,7 @@ class _FakeNormalizer:
     def normalize_list(self, sentences: list[str]) -> list[str]:
         return sentences
 
-    def normalize(self, text: str, **_: Any) -> str:
+    def normalize(self, text: str, **_: Any) -> str:  # noqa: ANN401
         return text
 
 
@@ -283,25 +283,27 @@ class _FakeConverter:
 
 _install_agent_simulation_stubs()
 
-from nemo_curator.backends.utils import RayStageSpecKeys
-from nemo_curator.config.run import create_pipeline_from_yaml
-from nemo_curator.models.asr.base import ASRResult
-from nemo_curator.stages.audio._agent._agent_ready import AgentReady, StageContract
-from nemo_curator.stages.audio.advanced_pipelines.audio_data_filter.audio_data_filter import AudioDataFilterStage
-from nemo_curator.stages.audio.alm.alm_data_builder import ALMDataBuilderStage
-from nemo_curator.stages.audio.alm.alm_data_overlap import ALMDataOverlapStage
-from nemo_curator.stages.audio.alm.pretrain.extraction import SnippetExtractionStage
-from nemo_curator.stages.audio.alm.pretrain.io import (
+from nemo_curator.backends.utils import RayStageSpecKeys  # noqa: E402
+from nemo_curator.config.run import create_pipeline_from_yaml  # noqa: E402
+from nemo_curator.models.asr.base import ASRResult  # noqa: E402
+from nemo_curator.stages.audio._agent._agent_ready import AgentReady, StageContract  # noqa: E402
+from nemo_curator.stages.audio.advanced_pipelines.audio_data_filter.audio_data_filter import (  # noqa: E402
+    AudioDataFilterStage,
+)
+from nemo_curator.stages.audio.alm.alm_data_builder import ALMDataBuilderStage  # noqa: E402
+from nemo_curator.stages.audio.alm.alm_data_overlap import ALMDataOverlapStage  # noqa: E402
+from nemo_curator.stages.audio.alm.pretrain.extraction import SnippetExtractionStage  # noqa: E402
+from nemo_curator.stages.audio.alm.pretrain.io import (  # noqa: E402
     PretrainMetricsAggregatorStage,
     ReadLongFormManifestStage,
     SnippetManifestWriterStage,
 )
-from nemo_curator.stages.audio.alm.pretrain.planning import (
+from nemo_curator.stages.audio.alm.pretrain.planning import (  # noqa: E402
     OverlapFilterStage,
     SnippetCutPlannerStage,
     SnippetRepetitionFilterStage,
 )
-from nemo_curator.stages.audio.common import (
+from nemo_curator.stages.audio.common import (  # noqa: E402
     CreateInitialManifestAudioFolderStage,
     GetAudioDurationStage,
     ManifestCheckpointStage,
@@ -311,44 +313,46 @@ from nemo_curator.stages.audio.common import (
     PreserveByValueConditionsStage,
     PreserveByValueStage,
 )
-from nemo_curator.stages.audio.datasets.fleurs.create_initial_manifest import CreateInitialManifestFleursStage
-from nemo_curator.stages.audio.datasets.readspeech.create_initial_manifest import (
+from nemo_curator.stages.audio.datasets.fleurs.create_initial_manifest import (  # noqa: E402
+    CreateInitialManifestFleursStage,
+)
+from nemo_curator.stages.audio.datasets.readspeech.create_initial_manifest import (  # noqa: E402
     CreateInitialManifestReadSpeechStage,
 )
-from nemo_curator.stages.audio.filtering.band import BandFilterStage
-from nemo_curator.stages.audio.filtering.sigmos import SIGMOSFilterStage
-from nemo_curator.stages.audio.filtering.utmos import UTMOSFilterStage
-from nemo_curator.stages.audio.inference.asr.stage import ASRStage
-from nemo_curator.stages.audio.inference.speaker_diarization.pyannote import PyAnnoteDiarizationStage
-from nemo_curator.stages.audio.inference.speaker_diarization.sortformer import InferenceSortformerStage
-from nemo_curator.stages.audio.inference.vad.whisperx_vad import WhisperXVADStage
-from nemo_curator.stages.audio.io.convert import AudioToDocumentStage, DocumentBatchJsonlWriterStage
-from nemo_curator.stages.audio.io.extract_segments import SegmentExtractionStage
-from nemo_curator.stages.audio.io.group_export import ManifestGroupExportStage
-from nemo_curator.stages.audio.metrics.bandwidth import BandwidthEstimationStage
-from nemo_curator.stages.audio.metrics.squim import TorchSquimQualityMetricsStage
-from nemo_curator.stages.audio.metrics.wer import ComputeWERStage, GetPairwiseWerStage
-from nemo_curator.stages.audio.postprocessing.timestamp_mapper import TimestampMapperStage
-from nemo_curator.stages.audio.preprocessing.concatenation import SegmentConcatenationStage
-from nemo_curator.stages.audio.preprocessing.mono_conversion import MonoConversionStage
-from nemo_curator.stages.audio.segmentation.speaker_separation import SpeakerSeparationStage
-from nemo_curator.stages.audio.segmentation.vad_segmentation import VADSegmentationStage
-from nemo_curator.stages.audio.tagging.inference.nemo_asr_align import (
+from nemo_curator.stages.audio.filtering.band import BandFilterStage  # noqa: E402
+from nemo_curator.stages.audio.filtering.sigmos import SIGMOSFilterStage  # noqa: E402
+from nemo_curator.stages.audio.filtering.utmos import UTMOSFilterStage  # noqa: E402
+from nemo_curator.stages.audio.inference.asr.stage import ASRStage  # noqa: E402
+from nemo_curator.stages.audio.inference.speaker_diarization.pyannote import PyAnnoteDiarizationStage  # noqa: E402
+from nemo_curator.stages.audio.inference.speaker_diarization.sortformer import InferenceSortformerStage  # noqa: E402
+from nemo_curator.stages.audio.inference.vad.whisperx_vad import WhisperXVADStage  # noqa: E402
+from nemo_curator.stages.audio.io.convert import AudioToDocumentStage, DocumentBatchJsonlWriterStage  # noqa: E402
+from nemo_curator.stages.audio.io.extract_segments import SegmentExtractionStage  # noqa: E402
+from nemo_curator.stages.audio.io.group_export import ManifestGroupExportStage  # noqa: E402
+from nemo_curator.stages.audio.metrics.bandwidth import BandwidthEstimationStage  # noqa: E402
+from nemo_curator.stages.audio.metrics.squim import TorchSquimQualityMetricsStage  # noqa: E402
+from nemo_curator.stages.audio.metrics.wer import ComputeWERStage, GetPairwiseWerStage  # noqa: E402
+from nemo_curator.stages.audio.postprocessing.timestamp_mapper import TimestampMapperStage  # noqa: E402
+from nemo_curator.stages.audio.preprocessing.concatenation import SegmentConcatenationStage  # noqa: E402
+from nemo_curator.stages.audio.preprocessing.mono_conversion import MonoConversionStage  # noqa: E402
+from nemo_curator.stages.audio.segmentation.speaker_separation import SpeakerSeparationStage  # noqa: E402
+from nemo_curator.stages.audio.segmentation.vad_segmentation import VADSegmentationStage  # noqa: E402
+from nemo_curator.stages.audio.tagging.inference.nemo_asr_align import (  # noqa: E402
     BaseASRProcessorStage,
     NeMoASRAlignerStage,
 )
-from nemo_curator.stages.audio.tagging.merge_alignment_diarization import MergeAlignmentDiarizationStage
-from nemo_curator.stages.audio.tagging.prepare_module_segments import PrepareModuleSegmentsStage
-from nemo_curator.stages.audio.tagging.resample_audio import ResampleAudioStage
-from nemo_curator.stages.audio.tagging.split import (
+from nemo_curator.stages.audio.tagging.merge_alignment_diarization import MergeAlignmentDiarizationStage  # noqa: E402
+from nemo_curator.stages.audio.tagging.prepare_module_segments import PrepareModuleSegmentsStage  # noqa: E402
+from nemo_curator.stages.audio.tagging.resample_audio import ResampleAudioStage  # noqa: E402
+from nemo_curator.stages.audio.tagging.split import (  # noqa: E402
     JoinSplitAudioMetadataStage,
     SplitASRAlignJoinStage,
     SplitLongAudioStage,
 )
-from nemo_curator.stages.audio.tagging.text.chinese_conversion import ChineseConversionStage
-from nemo_curator.stages.audio.tagging.text.itn import InverseTextNormalizationStage
-from nemo_curator.stages.resources import Resources
-from nemo_curator.tasks import AudioTask, DocumentBatch, EmptyTask, FileGroupTask
+from nemo_curator.stages.audio.tagging.text.chinese_conversion import ChineseConversionStage  # noqa: E402
+from nemo_curator.stages.audio.tagging.text.itn import InverseTextNormalizationStage  # noqa: E402
+from nemo_curator.stages.resources import Resources  # noqa: E402
+from nemo_curator.tasks import AudioTask, DocumentBatch, EmptyTask, FileGroupTask  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -425,7 +429,7 @@ def _base_segments() -> list[dict[str, Any]]:
     ]
 
 
-def _copy_file_for_fake_ffmpeg(cmd: list[str], **_: Any) -> SimpleNamespace:
+def _copy_file_for_fake_ffmpeg(cmd: list[str], **_: Any) -> SimpleNamespace:  # noqa: ANN401
     src = cmd[cmd.index("-i") + 1]
     dst = cmd[-1]
     os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -476,7 +480,7 @@ class _FakeASRAdapter:
         return None
 
 
-def _fake_asr_stage(**kwargs: Any) -> ASRStage:
+def _fake_asr_stage(**kwargs: Any) -> ASRStage:  # noqa: ANN401
     stage = ASRStage(
         adapter_target="nemo_curator.models.asr.nemo_asr.NeMoASRAdapter",
         model_id="nvidia/stt_en_fastconformer_ctc_large",
@@ -508,7 +512,7 @@ class _FakePyAnnoteDiarization:
     def get_overlap(self) -> SimpleNamespace:
         return SimpleNamespace(segments_list_=[])
 
-    def crop(self, _segment: Any) -> _FakePyAnnoteDiarization:
+    def crop(self, _segment: Any) -> _FakePyAnnoteDiarization:  # noqa: ANN401
         return self
 
     def itertracks(self, yield_label: bool = True) -> Iterator[tuple[_FakeTurn, None, str]]:
@@ -525,7 +529,7 @@ class _TinyAudioSegment:
         return [0, 500, -500, 0] * 100
 
 
-def _pipeline_from_agent_yaml(spec: dict[str, Any]) -> Any:
+def _pipeline_from_agent_yaml(spec: dict[str, Any]) -> Any:  # noqa: ANN401
     """Create a Pipeline from agent-authored YAML-like config.
 
     The public config runner expects ``stages`` while the ReadSpeech tutorial
@@ -538,7 +542,7 @@ def _pipeline_from_agent_yaml(spec: dict[str, Any]) -> Any:
     return create_pipeline_from_yaml(OmegaConf.create(normalized), log_config=False)
 
 
-def _flatten_stage_output(result: Any) -> list[Any]:
+def _flatten_stage_output(result: Any) -> list[Any]:  # noqa: ANN401
     if result is None:
         return []
     if isinstance(result, list):
@@ -578,7 +582,7 @@ def _patch_common_agent_pipeline_fakes(stages: list[Any]) -> None:  # noqa: C901
             return [{"start": 0.0, "end": 0.2}, {"start": 0.2, "end": 0.4}]
         return [{"start": 0.0, "end": 0.1}]
 
-    def fake_speaker_audio_data(*_args: Any, **_kwargs: Any) -> dict[str, SimpleNamespace]:
+    def fake_speaker_audio_data(*_args: Any, **_kwargs: Any) -> dict[str, SimpleNamespace]:  # noqa: ANN401
         return {
             "speaker_0": SimpleNamespace(audio=_TinyAudioSegment(), duration=0.4, diar_segments=[[0.0, 0.2]]),
             "speaker_1": SimpleNamespace(audio=_TinyAudioSegment(), duration=0.4, diar_segments=[[0.2, 0.4]]),
@@ -590,7 +594,7 @@ def _patch_common_agent_pipeline_fakes(stages: list[Any]) -> None:  # noqa: C901
             stage._get_vad_segments = MethodType(fake_vad_segments, stage)
         elif isinstance(stage, WhisperXVADStage):
             stage._vad_model = SimpleNamespace(
-                get_vad_segments=lambda _audio, _max_length, sample_rate=16000: [
+                get_vad_segments=lambda _audio, _max_length, sample_rate=16000: [  # noqa: ARG005
                     {"start": 0.0, "end": 0.35, "text": "speech"},
                     {"start": 0.35, "end": 0.7, "text": "speech"},
                 ]
@@ -603,7 +607,7 @@ def _patch_common_agent_pipeline_fakes(stages: list[Any]) -> None:  # noqa: C901
             stage._predictor = _FakeBandPredictor("full_band")
         elif isinstance(stage, TorchSquimQualityMetricsStage):
             stage._compute_metrics_batched = MethodType(
-                lambda self, waveforms: [(3.2, 0.95, 14.0)] * len(waveforms),
+                lambda self, waveforms: [(3.2, 0.95, 14.0)] * len(waveforms),  # noqa: ARG005
                 stage,
             )
         elif isinstance(stage, SpeakerSeparationStage):
@@ -691,7 +695,7 @@ def _coverage_cases(tmp_path: Path) -> list[StageCase]:
             "segmentation_quality",
         ),
         StageCase(PreserveByValueStage, lambda: PreserveByValueStage("keep", True), "segmentation_quality"),
-        StageCase(PyAnnoteDiarizationStage, lambda: PyAnnoteDiarizationStage(hf_token="fake"), "speech_tagging"),
+        StageCase(PyAnnoteDiarizationStage, lambda: PyAnnoteDiarizationStage(hf_token="fake"), "speech_tagging"),  # noqa: S106
         StageCase(
             ReadLongFormManifestStage, lambda: ReadLongFormManifestStage(str(manifest), str(audio_dir)), "alm_pretrain"
         ),
@@ -973,7 +977,8 @@ def test_agent_segmentation_quality_pipeline_annotate_and_filter(tmp_path: Path)
     )
     vad._vad_model = object()
     vad._get_vad_segments = MethodType(
-        lambda self, waveform, sample_rate: [{"start": 0.0, "end": 0.45}, {"start": 0.45, "end": 0.9}], vad
+        lambda self, waveform, sample_rate: [{"start": 0.0, "end": 0.45}, {"start": 0.45, "end": 0.9}],  # noqa: ARG005
+        vad,
     )
     task = vad.process(task)
     assert len(task.data["agent_segments"]) == 2
@@ -1035,7 +1040,7 @@ def test_agent_segmentation_quality_pipeline_annotate_and_filter(tmp_path: Path)
         metrics_key="agent_metrics",
         resources=Resources(gpus=0.0),
     )
-    squim._compute_metrics_batched = MethodType(lambda self, waveforms: [(3.1, 0.9, 12.0)] * len(waveforms), squim)
+    squim._compute_metrics_batched = MethodType(lambda self, waveforms: [(3.1, 0.9, 12.0)] * len(waveforms), squim)  # noqa: ARG005
     task = squim.process_batch([task])[0]
     assert all("pesq_squim" in segment["agent_metrics"] for segment in task.data["agent_segments"])
 
@@ -1404,7 +1409,10 @@ def test_agent_speech_tagging_pipeline_with_fake_inference(tmp_path: Path) -> No
     assert task.data["agent_vad_segments"] == [{"start": 0.0, "end": 0.4}]
 
     pyannote = PyAnnoteDiarizationStage(
-        hf_token="fake", write_rttm=False, segments_key="agent_segments", overlap_segments_key="agent_overlaps"
+        hf_token="fake",  # noqa: S106
+        write_rttm=False,
+        segments_key="agent_segments",
+        overlap_segments_key="agent_overlaps",
     )
     pyannote.process = MethodType(
         lambda self, t: t.data.update(
@@ -1424,7 +1432,7 @@ def test_agent_speech_tagging_pipeline_with_fake_inference(tmp_path: Path) -> No
         diar_segments_key="agent_diar_segments",
         rttm_out_dir=None,
     )
-    sortformer.diarize = MethodType(lambda self, paths: [[{"speaker": "spk0", "start": 0.0, "end": 0.4}]], sortformer)
+    sortformer.diarize = MethodType(lambda self, paths: [[{"speaker": "spk0", "start": 0.0, "end": 0.4}]], sortformer)  # noqa: ARG005
     task = sortformer.process(task)
     assert task.data["agent_diar_segments"][0]["speaker"] == "spk0"
 
@@ -1501,7 +1509,7 @@ def test_agent_optional_fanout_for_vad_and_diarizers_with_custom_keys(tmp_path: 
         original_file_key="agent_original_file",
     )
     whisperx._vad_model = SimpleNamespace(
-        get_vad_segments=lambda _audio, _max_length, sample_rate=16000: [
+        get_vad_segments=lambda _audio, _max_length, sample_rate=16000: [  # noqa: ARG005
             {"start": 0.0, "end": 0.4},
             {"start": 0.4, "end": 0.9},
         ],
@@ -1522,12 +1530,12 @@ def test_agent_optional_fanout_for_vad_and_diarizers_with_custom_keys(tmp_path: 
     assert whisperx_children[0]._metadata == {"source": "agent"}
     assert whisperx_children[0]._stage_perf == ["upstream"]
 
-    default_pyannote = PyAnnoteDiarizationStage(hf_token="fake", write_rttm=False)
+    default_pyannote = PyAnnoteDiarizationStage(hf_token="fake", write_rttm=False)  # noqa: S106
     assert default_pyannote.describe().cardinality == "1:1"
     assert default_pyannote.ray_stage_spec() == {}
 
     pyannote = PyAnnoteDiarizationStage(
-        hf_token="fake",
+        hf_token="fake",  # noqa: S106
         write_rttm=False,
         min_length=0.1,
         fanout=True,
@@ -1540,7 +1548,7 @@ def test_agent_optional_fanout_for_vad_and_diarizers_with_custom_keys(tmp_path: 
         segment_num_key="agent_segment_num",
         original_file_key="agent_original_file",
     )
-    pyannote._pipeline = lambda _payload, hook=None: _FakePyAnnoteDiarization(
+    pyannote._pipeline = lambda _payload, hook=None: _FakePyAnnoteDiarization(  # noqa: ARG005
         [(0.0, 0.5, "SPEAKER_00"), (0.5, 1.0, "SPEAKER_01")]
     )
     pyannote_children = pyannote.process(_audio_task(audio_path))
@@ -1574,8 +1582,8 @@ def test_agent_optional_fanout_for_vad_and_diarizers_with_custom_keys(tmp_path: 
     )
 
     def fake_sortformer_diarize(
-        self: InferenceSortformerStage,
-        paths: list[str],
+        self: InferenceSortformerStage,  # noqa: ARG001
+        paths: list[str],  # noqa: ARG001
     ) -> list[list[dict[str, Any]]]:
         return [[{"speaker": "spk0", "start": 0.0, "end": 0.25}, {"speaker": "spk1", "start": 0.25, "end": 0.75}]]
 
@@ -1709,7 +1717,7 @@ def test_agent_alm_and_pretrain_pipeline(tmp_path: Path) -> None:
     assert pretrain_task.data["_snippet_plan"]
 
     rep_filter = SnippetRepetitionFilterStage(tokenizer_path=str(tmp_path))
-    rep_filter._snippet_is_repetitive = MethodType(lambda self, text, snippet, task_id: False, rep_filter)
+    rep_filter._snippet_is_repetitive = MethodType(lambda self, text, snippet, task_id: False, rep_filter)  # noqa: ARG005
     pretrain_task = rep_filter.process(pretrain_task)
 
     extractor = SnippetExtractionStage(
@@ -1837,7 +1845,7 @@ def test_agent_transform_residency_controls_and_failure_edges(
             write_to_disk=False,
         )
 
-    def write_valid_resample_output(cmd: list[str], **_: Any) -> SimpleNamespace:
+    def write_valid_resample_output(cmd: list[str], **_: Any) -> SimpleNamespace:  # noqa: ANN401
         sf.write(cmd[-1], _waveform(duration_sec=0.4, channels=2).numpy().T, 16000, format="WAV", subtype="PCM_16")
         assert sf.info(cmd[-1]).frames > 0
         return SimpleNamespace(returncode=0)
@@ -1963,7 +1971,7 @@ def test_agent_quality_task_mode_annotate_filter_and_missing_input() -> None:
 
 
 def test_agent_speaker_separation_fanout_feeds_downstream_filter() -> None:
-    def fake_speaker_audio_data(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+    def fake_speaker_audio_data(*_args: Any, **_kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
         return {
             "spk0": SimpleNamespace(audio=_TinyAudioSegment(), duration=0.25, diar_segments=[(0.0, 0.25)]),
             "spk1": SimpleNamespace(audio=_TinyAudioSegment(), duration=0.30, diar_segments=[(0.25, 0.55)]),
@@ -2121,7 +2129,7 @@ def test_agent_metadata_survives_multi_stage_pipeline() -> None:
     )
     vad._vad_model = object()
     vad._get_vad_segments = MethodType(
-        lambda self, waveform, sample_rate: [{"start": 0.0, "end": 0.5}, {"start": 0.5, "end": 1.0}],
+        lambda self, waveform, sample_rate: [{"start": 0.0, "end": 0.5}, {"start": 0.5, "end": 1.0}],  # noqa: ARG005
         vad,
     )
     task = vad.process(task)
@@ -2200,14 +2208,14 @@ def test_agent_vad_empty_and_degenerate_cardinality() -> None:
 
     nested = VADSegmentationStage(nested=True, input_residency="waveform")
     nested._vad_model = object()
-    nested._get_vad_segments = MethodType(lambda self, waveform, sample_rate: [], nested)
+    nested._get_vad_segments = MethodType(lambda self, waveform, sample_rate: [], nested)  # noqa: ARG005
     nested_task = nested.process(AudioTask(dataset_name="agent", data=dict(data)))
     assert isinstance(nested_task, AudioTask)
     assert nested_task.data["segments"] == []
 
     fanout = VADSegmentationStage(nested=False, input_residency="waveform")
     fanout._vad_model = object()
-    fanout._get_vad_segments = MethodType(lambda self, waveform, sample_rate: [], fanout)
+    fanout._get_vad_segments = MethodType(lambda self, waveform, sample_rate: [], fanout)  # noqa: ARG005
     assert fanout.process(AudioTask(dataset_name="agent", data=dict(data))) == []
 
     # A segment-mode filter whose every segment fails drops the whole task.

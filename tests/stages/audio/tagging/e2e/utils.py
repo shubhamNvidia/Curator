@@ -28,7 +28,7 @@ def load_manifest(manifest_file: str, encoding: str | None = None) -> list[dict[
         return [json.loads(line) for line in f if line.strip()]
 
 
-def _approx_value(v: Any) -> Any:
+def _approx_value(v: Any) -> Any:  # noqa: ANN401
     """Wrap a single value with pytest.approx if numeric, recursing into containers."""
     if isinstance(v, dict):
         return {k: _approx_value(val) for k, val in v.items()}

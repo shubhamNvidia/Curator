@@ -31,7 +31,7 @@ follow the same shape but build the fixture + fake model via the stub harness in
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path  # noqa: TC003
 
 import numpy as np
 import soundfile as sf

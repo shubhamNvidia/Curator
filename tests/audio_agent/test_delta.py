@@ -78,7 +78,7 @@ def _publish(
     dataset_key: str,
     rows: list[dict[str, Any]],
     coverage: dict[str, str] | None,
-    **kw: Any,
+    **kw: Any,  # noqa: ANN401
 ) -> artifacts.Artifact:
     """Publish one step of ``rec`` with real output rows and (optionally) its coverage.
 
@@ -224,16 +224,16 @@ class TestNarrowingIsNotInvisible:
         from nemo_curator.stages.audio._agent._conformance import assert_contract_wellformed
         from nemo_curator.stages.audio.common import CreateInitialManifestAudioFolderStage as Folder
 
-        bounded = assert_contract_wellformed(Folder(data_dir="/tmp/x", max_samples=10))
+        bounded = assert_contract_wellformed(Folder(data_dir="/tmp/x", max_samples=10))  # noqa: S108
         assert bounded.gates.per_row_independent is True
-        assert assert_contract_wellformed(Folder(data_dir="/tmp/x")).gates.per_row_independent is True
+        assert assert_contract_wellformed(Folder(data_dir="/tmp/x")).gates.per_row_independent is True  # noqa: S108
 
         rec = Recipe.from_dict(
             {
                 "stages": [
                     {
                         "ref": "CreateInitialManifestAudioFolderStage",
-                        "params": {"data_dir": "/tmp/x", "max_samples": 10},
+                        "params": {"data_dir": "/tmp/x", "max_samples": 10},  # noqa: S108
                     },
                     {"ref": "GetAudioDurationStage", "params": {}},
                 ]
@@ -280,7 +280,7 @@ class TestInventory:
         _corpus(tmp_path / "audio", ("a.wav", "b.wav"))
         real = profiler.os.stat
 
-        def flaky(path: str, *a: Any, **kw: Any) -> Any:
+        def flaky(path: str, *a: Any, **kw: Any) -> Any:  # noqa: ANN401
             if str(path).endswith("b.wav"):
                 msg = "no"
                 raise OSError(msg)

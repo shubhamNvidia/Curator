@@ -186,7 +186,7 @@ def test_cardinality_packet_reports_aggregation_and_nested_collection_genericall
     assert all(seam["semantic_material"]["available"] for seam in packet["cardinality_seams"])
 
 
-def test_optional_semantic_facts_are_copied_without_interpretation(monkeypatch) -> None:
+def test_optional_semantic_facts_are_copied_without_interpretation(monkeypatch) -> None:  # noqa: ANN001
     recipe, stages = _build(
         [
             {"ref": "GetAudioDurationStage", "params": {}},
@@ -237,7 +237,7 @@ def test_every_nonempty_candidate_requires_review_and_has_intent_checklist() -> 
 def test_profiled_initial_keys_survive_an_opaque_source_with_uncertainty() -> None:
     recipe, stages = _build(
         [
-            {"ref": "ManifestReader", "params": {"manifest_path": "/tmp/input.jsonl"}},
+            {"ref": "ManifestReader", "params": {"manifest_path": "/tmp/input.jsonl"}},  # noqa: S108
             {
                 "ref": "PreserveByValueStage",
                 "params": {"input_value_key": "source_label", "target_value": "keep"},
@@ -270,7 +270,7 @@ def test_profiled_initial_keys_survive_an_opaque_source_with_uncertainty() -> No
 
 
 def test_a_nested_composite_is_reported_as_unsupported_not_expanded(
-    monkeypatch,
+    monkeypatch,  # noqa: ANN001
 ) -> None:
     """Semantic review must describe a plan the backend can actually run.
 

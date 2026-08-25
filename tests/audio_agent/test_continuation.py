@@ -20,19 +20,19 @@ from nemo_curator import audio_agent as aa
 from nemo_curator.audio_agent import _safety, continuation
 from nemo_curator.audio_agent.recipe import Recipe
 
-_READER = {"ref": "ManifestReader", "params": {"manifest_path": "/tmp/m.jsonl"}}
-_WRITER = {"ref": "ManifestWriterStage", "params": {"output_path": "/tmp/out.jsonl"}}
+_READER = {"ref": "ManifestReader", "params": {"manifest_path": "/tmp/m.jsonl"}}  # noqa: S108
+_WRITER = {"ref": "ManifestWriterStage", "params": {"output_path": "/tmp/out.jsonl"}}  # noqa: S108
 _MONO_WF = {"ref": "MonoConversionStage", "params": {"keep_waveform_in_task": True}}
 _DUR_WAVE = {"ref": "GetAudioDurationStage", "params": {"input_residency": "waveform"}}
 _DUR_FILE = {"ref": "GetAudioDurationStage", "params": {"input_residency": "file"}}
 # One of the two pairs that pass state through ``task._metadata`` rather than the row.
 _OVERLAP_FILTER = {"ref": "OverlapFilterStage", "params": {}}
-_PRETRAIN_METRICS = {"ref": "PretrainMetricsAggregatorStage", "params": {"output_path": "/tmp/metrics.json"}}
+_PRETRAIN_METRICS = {"ref": "PretrainMetricsAggregatorStage", "params": {"output_path": "/tmp/metrics.json"}}  # noqa: S108
 _SNIPPET = {
     "ref": "SnippetExtractionStage",
     "params": {
-        "output_dir": "/tmp/snippets",
-        "output_audio_tar_path": "/tmp/snippets.tar",
+        "output_dir": "/tmp/snippets",  # noqa: S108
+        "output_audio_tar_path": "/tmp/snippets.tar",  # noqa: S108
         "dry_run": True,
     },
 }
@@ -47,7 +47,7 @@ def _parent_prefix(new: Recipe, n: int) -> SimpleNamespace:
         data_fingerprint=None,
         config_hash="PARENT_HASH",
         run_id="run-parent",
-        output_paths=["/tmp/parent_out.jsonl"],
+        output_paths=["/tmp/parent_out.jsonl"],  # noqa: S108
     )
 
 

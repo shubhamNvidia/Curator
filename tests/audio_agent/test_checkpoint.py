@@ -20,17 +20,17 @@ GPU work that persists nothing, and a waveform still resident for several stages
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path  # noqa: TC003
 from typing import Any
 
-import pytest
+import pytest  # noqa: TC002
 
 from nemo_curator.audio_agent import checkpoint, reuse, verbs
 from nemo_curator.audio_agent.recipe import Recipe
 
-_READER = {"ref": "ManifestReader", "params": {"manifest_path": "/tmp/m.jsonl"}}
+_READER = {"ref": "ManifestReader", "params": {"manifest_path": "/tmp/m.jsonl"}}  # noqa: S108
 _DUR = {"ref": "GetAudioDurationStage", "params": {}}
-_WRITER = {"ref": "ManifestWriterStage", "params": {"output_path": "/tmp/out.jsonl"}}
+_WRITER = {"ref": "ManifestWriterStage", "params": {"output_path": "/tmp/out.jsonl"}}  # noqa: S108
 # Expensive per its card, and persists nothing of its own -- the work worth not repeating.
 _ASR = {
     "ref": "ASRStage",
@@ -44,7 +44,7 @@ _ASR = {
 # can serialize, until a sanitizing stage drops it.
 _KEEPS_WAVEFORM = {
     "ref": "ResampleAudioStage",
-    "params": {"resampled_audio_dir": "/tmp/rs", "keep_waveform_in_task": True, "write_to_disk": False},
+    "params": {"resampled_audio_dir": "/tmp/rs", "keep_waveform_in_task": True, "write_to_disk": False},  # noqa: S108
 }
 _SANITIZER = {"ref": "AudioToDocumentStage", "params": {}}
 
@@ -82,7 +82,7 @@ class TestWhereItGoes:
         them. A manifest carries only ``task.data``, and nothing raises when the counters go
         missing -- the aggregator gets an empty dict and reports wrong numbers successfully."""
         overlap = {"ref": "OverlapFilterStage", "params": {}}
-        metrics = {"ref": "PretrainMetricsAggregatorStage", "params": {"output_path": "/tmp/metrics.json"}}
+        metrics = {"ref": "PretrainMetricsAggregatorStage", "params": {"output_path": "/tmp/metrics.json"}}  # noqa: S108
         recipe = _recipe(_READER, _ASR, overlap, metrics, _WRITER)
         spot, why = checkpoint.at(recipe, index=3)
         assert spot is None
@@ -100,12 +100,12 @@ class TestWhereItGoes:
     def test_a_writer_already_past_the_expensive_work_is_the_checkpoint(self) -> None:
         """Advising a second writer beside one the recipe already has is noise, and would
         repeat itself every scan."""
-        mid = {"ref": "ManifestWriterStage", "params": {"output_path": "/tmp/mid.jsonl"}}
+        mid = {"ref": "ManifestWriterStage", "params": {"output_path": "/tmp/mid.jsonl"}}  # noqa: S108
         spot, why = checkpoint.advise(_recipe(_READER, _ASR, mid, _DUR, _WRITER))
         assert spot is None
         assert "already writes a manifest" in why
 
-    def test_an_output_nothing_can_re_read_is_not_a_checkpoint(self, tmp_path: Any) -> None:
+    def test_an_output_nothing_can_re_read_is_not_a_checkpoint(self, tmp_path: Any) -> None:  # noqa: ANN401
         """Sortformer fills an RTTM directory and no source stage can start a pipeline from
         one, so counting it would answer "you are covered" to a user whose diarization is
         recomputed on every request."""
@@ -131,7 +131,7 @@ class TestTheRecipeItHandsBack:
         original = _recipe(_READER, _ASR, _DUR, _WRITER)
         spot, _ = checkpoint.advise(original)
         assert spot is not None
-        out, err = checkpoint.insert(original, index=spot.index, output_path="/tmp/ck.jsonl")
+        out, err = checkpoint.insert(original, index=spot.index, output_path="/tmp/ck.jsonl")  # noqa: S108
         assert err == ""
         assert out is not None
         assert [s.ref for s in out.stages] == [
@@ -141,7 +141,7 @@ class TestTheRecipeItHandsBack:
             "GetAudioDurationStage",
             "ManifestWriterStage",
         ]
-        assert out.stages[spot.index].params == {"output_path": "/tmp/ck.jsonl"}
+        assert out.stages[spot.index].params == {"output_path": "/tmp/ck.jsonl"}  # noqa: S108
         assert [s.params for s in out.stages if s.ref != "ManifestWriterStage"] == [
             s.params for s in original.stages if s.ref != "ManifestWriterStage"
         ]
@@ -150,7 +150,7 @@ class TestTheRecipeItHandsBack:
         original = _recipe(_READER, _ASR, _DUR, _WRITER)
         spot, _ = checkpoint.advise(original)
         assert spot is not None
-        out, _ = checkpoint.insert(original, index=spot.index, output_path="/tmp/ck.jsonl")
+        out, _ = checkpoint.insert(original, index=spot.index, output_path="/tmp/ck.jsonl")  # noqa: S108
         assert out is not None
         again, why = checkpoint.advise(out)
         assert again is None
@@ -162,7 +162,7 @@ class TestTheRecipeItHandsBack:
         assert "output path" in err
 
     def test_a_position_outside_the_recipe_is_refused(self) -> None:
-        out, err = checkpoint.insert(_recipe(_READER, _ASR, _WRITER), index=9, output_path="/tmp/ck.jsonl")
+        out, err = checkpoint.insert(_recipe(_READER, _ASR, _WRITER), index=9, output_path="/tmp/ck.jsonl")  # noqa: S108
         assert out is None
         assert "outside the recipe" in err
 
@@ -222,7 +222,7 @@ class TestTheVerb:
         assert "recipe" not in out
 
     def test_with_a_path_it_returns_the_recipe_and_runs_nothing(self) -> None:
-        out = verbs.add_checkpoint(_recipe(_READER, _ASR, _DUR, _WRITER), output_path="/tmp/ck.jsonl")
+        out = verbs.add_checkpoint(_recipe(_READER, _ASR, _DUR, _WRITER), output_path="/tmp/ck.jsonl")  # noqa: S108
         assert out["status"] == "ok"
         assert [s["ref"] for s in out["recipe"]["stages"]].count("ManifestWriterStage") == 2
         assert "validate" in out["next"]
@@ -240,7 +240,7 @@ class TestTheVerb:
         assert out["status"] == "error"
         assert "NoSuchStage" in out["reason"]
 
-    def test_a_path_outside_a_locked_workspace_is_refused(self, monkeypatch: Any, tmp_path: Any) -> None:
+    def test_a_path_outside_a_locked_workspace_is_refused(self, monkeypatch: Any, tmp_path: Any) -> None:  # noqa: ANN401
         """The checkpoint is a file the agent told the user to write, so its path answers to the
         same lock as everything else the agent proposes writing."""
         monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))

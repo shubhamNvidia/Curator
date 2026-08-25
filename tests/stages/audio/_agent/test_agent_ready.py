@@ -20,26 +20,34 @@ import pytest
 sf = pytest.importorskip("soundfile")
 torch = pytest.importorskip("torch")
 
-from nemo_curator.stages.audio._agent._agent_ready import AgentReady, StageContract
-from nemo_curator.stages.audio._agent._residency import produce_audio_filepath, resolve_audio, resolve_audio_path
-from nemo_curator.stages.audio.alm.alm_data_builder import ALMDataBuilderStage
-from nemo_curator.stages.audio.alm.alm_data_overlap import ALMDataOverlapStage
-from nemo_curator.stages.audio.common import GetAudioDurationStage, ManifestReaderStage, PreserveByValueStage
-from nemo_curator.stages.audio.io.convert import AudioToDocumentStage
-from nemo_curator.stages.audio.postprocessing.timestamp_mapper import TimestampMapperStage
-from nemo_curator.stages.audio.preprocessing.concatenation import SegmentConcatenationStage
-from nemo_curator.stages.audio.preprocessing.mono_conversion import MonoConversionStage
-from nemo_curator.stages.audio.tagging.merge_alignment_diarization import MergeAlignmentDiarizationStage
-from nemo_curator.stages.audio.tagging.prepare_module_segments import PrepareModuleSegmentsStage
-from nemo_curator.stages.audio.tagging.split import (
+from nemo_curator.stages.audio._agent._agent_ready import AgentReady, StageContract  # noqa: E402
+from nemo_curator.stages.audio._agent._residency import (  # noqa: E402
+    produce_audio_filepath,
+    resolve_audio,
+    resolve_audio_path,
+)
+from nemo_curator.stages.audio.alm.alm_data_builder import ALMDataBuilderStage  # noqa: E402
+from nemo_curator.stages.audio.alm.alm_data_overlap import ALMDataOverlapStage  # noqa: E402
+from nemo_curator.stages.audio.common import (  # noqa: E402
+    GetAudioDurationStage,
+    ManifestReaderStage,
+    PreserveByValueStage,
+)
+from nemo_curator.stages.audio.io.convert import AudioToDocumentStage  # noqa: E402
+from nemo_curator.stages.audio.postprocessing.timestamp_mapper import TimestampMapperStage  # noqa: E402
+from nemo_curator.stages.audio.preprocessing.concatenation import SegmentConcatenationStage  # noqa: E402
+from nemo_curator.stages.audio.preprocessing.mono_conversion import MonoConversionStage  # noqa: E402
+from nemo_curator.stages.audio.tagging.merge_alignment_diarization import MergeAlignmentDiarizationStage  # noqa: E402
+from nemo_curator.stages.audio.tagging.prepare_module_segments import PrepareModuleSegmentsStage  # noqa: E402
+from nemo_curator.stages.audio.tagging.split import (  # noqa: E402
     JoinSplitAudioMetadataStage,
     SplitASRAlignJoinStage,
     SplitLongAudioStage,
 )
-from nemo_curator.tasks import AudioTask
+from nemo_curator.tasks import AudioTask  # noqa: E402
 
 
-def test_residency_helpers_accept_file_waveform_and_custom_keys(tmp_path) -> None:
+def test_residency_helpers_accept_file_waveform_and_custom_keys(tmp_path) -> None:  # noqa: ANN001
     audio_path = tmp_path / "input.wav"
     data = np.stack(
         [
@@ -76,7 +84,7 @@ def test_residency_helpers_accept_file_waveform_and_custom_keys(tmp_path) -> Non
     assert item["path"] == "final.wav"
 
 
-def test_lightweight_audio_stages_expose_agent_contracts(tmp_path) -> None:
+def test_lightweight_audio_stages_expose_agent_contracts(tmp_path) -> None:  # noqa: ANN001, ARG001
     stages = [
         MonoConversionStage(),
         SegmentConcatenationStage(),

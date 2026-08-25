@@ -20,7 +20,7 @@ import os
 import shutil
 import socket
 import sys
-from pathlib import Path
+from pathlib import Path  # noqa: TC003
 from types import SimpleNamespace
 from typing import Any, ClassVar
 
@@ -30,7 +30,7 @@ from nemo_curator.audio_agent import _ray
 
 
 @pytest.fixture(autouse=True)
-def _isolated_bootstrap_state(monkeypatch: pytest.MonkeyPatch):
+def _isolated_bootstrap_state(monkeypatch: pytest.MonkeyPatch):  # noqa: ANN202
     saved = dict(_ray._STARTED)
     _ray._STARTED.clear()
     monkeypatch.delenv("RAY_ADDRESS", raising=False)
@@ -78,7 +78,7 @@ def test_failed_external_connection_fails_closed_without_local_bootstrap(
     monkeypatch.setenv("RAY_ADDRESS", address)
 
     def fail_probe(_address: str) -> dict[str, float]:
-        raise ConnectionError("unreachable")
+        raise ConnectionError("unreachable")  # noqa: EM101
 
     monkeypatch.setattr(_ray, "cluster_resources", fail_probe)
     monkeypatch.setattr(
@@ -208,7 +208,7 @@ class _FakeRayClient:
     instances: ClassVar[list[_FakeRayClient]] = []
     address = "127.0.0.1:6381"
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(self, **kwargs: Any) -> None:  # noqa: ANN401
         self.kwargs = kwargs
         self.started = False
         self.stops = 0
@@ -230,7 +230,7 @@ class _FakeRayClient:
 
 
 @pytest.fixture(autouse=True)
-def _reset_fake_clients():
+def _reset_fake_clients():  # noqa: ANN202
     _FakeRayClient.instances.clear()
     yield
     _FakeRayClient.instances.clear()
@@ -498,7 +498,7 @@ def test_a_bootstrap_that_dies_before_starting_leaves_no_directory_behind(
     temp_dir = tmp_path / "ray_audio_agent_ctor"
     _mock_local_start(monkeypatch, temp_dir)
 
-    def exploding_client(**_kwargs: Any) -> None:
+    def exploding_client(**_kwargs: Any) -> None:  # noqa: ANN401
         msg = "no acceptable RayClient"
         raise TypeError(msg)
 

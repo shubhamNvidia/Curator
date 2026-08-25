@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from pathlib import Path  # noqa: TC003
 
 import pytest
 
@@ -111,18 +111,18 @@ def test_plan_checkpoint_cli_forwards_compound_conditions(
 
 
 def test_run_rejects_non_mapping_goal_before_calling_the_verb(
-    tmp_path,
+    tmp_path,  # noqa: ANN001
     monkeypatch: pytest.MonkeyPatch,
-    capsys,
+    capsys,  # noqa: ANN001
 ) -> None:
     recipe = tmp_path / "recipe.yaml"
     recipe.write_text("stages: []\n", encoding="utf-8")
     called = False
 
-    def unexpected_run(*_args, **_kwargs):
+    def unexpected_run(*_args, **_kwargs):  # noqa: ANN202
         nonlocal called
         called = True
-        raise AssertionError("run must not receive an invalid goal")
+        raise AssertionError("run must not receive an invalid goal")  # noqa: EM101
 
     monkeypatch.setattr(aa, "run", unexpected_run)
 
@@ -143,7 +143,7 @@ def test_run_rejects_non_mapping_goal_before_calling_the_verb(
     assert "object mapping" in result["error"]
 
 
-def test_calibration_loader_preserves_wrapper_metadata(tmp_path) -> None:
+def test_calibration_loader_preserves_wrapper_metadata(tmp_path) -> None:  # noqa: ANN001
     wrapper = {
         "machine_fingerprint": "machine-a",
         "calibration": {
@@ -185,9 +185,9 @@ def test_nested_unmet_acceptance_returns_nonzero(cmd: str) -> None:
 
 
 def test_diagnose_cli_forwards_recipe_context_and_signals_action_required(
-    tmp_path,
+    tmp_path,  # noqa: ANN001
     monkeypatch: pytest.MonkeyPatch,
-    capsys,
+    capsys,  # noqa: ANN001
 ) -> None:
     recipe = tmp_path / "recipe.yaml"
     recipe.write_text("stages: []\n", encoding="utf-8")
@@ -227,9 +227,9 @@ def test_unknown_diagnosis_returns_nonzero() -> None:
 
 
 def test_delta_run_cli_forwards_the_execution_knobs_it_shares_with_run(
-    tmp_path,
+    tmp_path,  # noqa: ANN001
     monkeypatch: pytest.MonkeyPatch,
-    capsys,
+    capsys,  # noqa: ANN001
 ) -> None:
     recipe = tmp_path / "recipe.yaml"
     recipe.write_text("stages: []\n", encoding="utf-8")

@@ -41,15 +41,15 @@ class _FakeFastMCP:
         self.name = name
         self.tools: dict[str, Any] = {}
 
-    def tool(self):
-        def register(function):
+    def tool(self):  # noqa: ANN202
+        def register(function):  # noqa: ANN001, ANN202
             self.tools[function.__name__] = function
             return function
 
         return register
 
 
-def _build_fake_server(monkeypatch) -> _FakeFastMCP:
+def _build_fake_server(monkeypatch) -> _FakeFastMCP:  # noqa: ANN001
     mcp_module = ModuleType("mcp")
     mcp_module.__path__ = []  # type: ignore[attr-defined]
     server_module = ModuleType("mcp.server")
@@ -64,7 +64,7 @@ def _build_fake_server(monkeypatch) -> _FakeFastMCP:
     return mcp_server.build_server()
 
 
-def test_mcp_exposes_reuse_provenance_and_health_tools(monkeypatch) -> None:
+def test_mcp_exposes_reuse_provenance_and_health_tools(monkeypatch) -> None:  # noqa: ANN001
     server = _build_fake_server(monkeypatch)
 
     assert {
@@ -79,7 +79,7 @@ def test_mcp_exposes_reuse_provenance_and_health_tools(monkeypatch) -> None:
     } <= server.tools.keys()
 
 
-def test_mcp_parameter_contract_matches_public_verb_surface(monkeypatch) -> None:
+def test_mcp_parameter_contract_matches_public_verb_surface(monkeypatch) -> None:  # noqa: ANN001
     tools = _build_fake_server(monkeypatch).tools
 
     expected_parameters = {
@@ -184,8 +184,8 @@ def test_mcp_context_forwards_planning_preference(
 
 
 def test_mcp_checkpoint_planner_rejects_non_scalar_decision_value(
-    monkeypatch,
-    tmp_path,
+    monkeypatch,  # noqa: ANN001
+    tmp_path,  # noqa: ANN001
 ) -> None:
     tool = _build_fake_server(monkeypatch).tools["plan_checkpoint"]
     recipe = {
@@ -315,7 +315,7 @@ def test_mcp_checkpoint_planner_accepts_complete_compound_conditions(
     ]
 
 
-def test_mcp_forwards_run_and_report_arguments_without_reinterpretation(monkeypatch) -> None:
+def test_mcp_forwards_run_and_report_arguments_without_reinterpretation(monkeypatch) -> None:  # noqa: ANN001
     tools = _build_fake_server(monkeypatch).tools
     run_mock = Mock(return_value={"status": "completed"})
     report_mock = Mock(return_value={"status": "ok"})
@@ -332,7 +332,7 @@ def test_mcp_forwards_run_and_report_arguments_without_reinterpretation(monkeypa
         output_dir="/data/out",
         checkpoint_path="/data/checkpoint",
         bootstrap_ray=True,
-        smoke_token="smoke-proof",
+        smoke_token="smoke-proof",  # noqa: S106
         calibration=calibration,
         goal=goal,
     ) == {"status": "completed"}
@@ -343,7 +343,7 @@ def test_mcp_forwards_run_and_report_arguments_without_reinterpretation(monkeypa
         output_dir="/data/out",
         checkpoint_path="/data/checkpoint",
         bootstrap_ray=True,
-        smoke_token="smoke-proof",
+        smoke_token="smoke-proof",  # noqa: S106
         calibration=calibration,
         goal=goal,
     )
@@ -356,7 +356,7 @@ def test_mcp_forwards_run_and_report_arguments_without_reinterpretation(monkeypa
     )
 
 
-def test_mcp_forwards_diagnosis_context_without_applying_a_fix(monkeypatch) -> None:
+def test_mcp_forwards_diagnosis_context_without_applying_a_fix(monkeypatch) -> None:  # noqa: ANN001
     tools = _build_fake_server(monkeypatch).tools
     diagnose_mock = Mock(return_value={"status": "action_required"})
     monkeypatch.setattr(aa, "diagnose", diagnose_mock)
@@ -380,7 +380,7 @@ def test_mcp_forwards_diagnosis_context_without_applying_a_fix(monkeypatch) -> N
     )
 
 
-def test_mcp_forwards_provenance_and_reuse_arguments(monkeypatch) -> None:
+def test_mcp_forwards_provenance_and_reuse_arguments(monkeypatch) -> None:  # noqa: ANN001
     tools = _build_fake_server(monkeypatch).tools
     runs_mock = Mock(return_value={"runs": []})
     scan_mock = Mock(return_value={"decision": "fresh"})
@@ -429,7 +429,7 @@ def test_mcp_forwards_provenance_and_reuse_arguments(monkeypatch) -> None:
         output_dir="/data/out",
         checkpoint_path="/data/checkpoint",
         bootstrap_ray=True,
-        smoke_token="smoke-proof",
+        smoke_token="smoke-proof",  # noqa: S106
         calibration=calibration,
         goal=goal,
     ) == {"mode": "incremental"}
@@ -443,13 +443,13 @@ def test_mcp_forwards_provenance_and_reuse_arguments(monkeypatch) -> None:
         output_dir="/data/out",
         checkpoint_path="/data/checkpoint",
         bootstrap_ray=True,
-        smoke_token="smoke-proof",
+        smoke_token="smoke-proof",  # noqa: S106
         calibration=calibration,
         goal=goal,
     )
 
 
-def test_calibrate_result_is_forwarded_as_an_accepted_wrapper(monkeypatch) -> None:
+def test_calibrate_result_is_forwarded_as_an_accepted_wrapper(monkeypatch) -> None:  # noqa: ANN001
     tools = _build_fake_server(monkeypatch).tools
     wrapper = {"calibration": {"SomeStage": {"gpu_mem_gb": 2.5}}}
     calibrate_mock = Mock(return_value=wrapper)

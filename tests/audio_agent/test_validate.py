@@ -25,10 +25,10 @@ from nemo_curator.audio_agent.verbs import validate
 
 _READER_MANIFEST = Path(__file__).resolve().parents[1] / "fixtures/audio/alm/sample_input.jsonl"
 _READER = {"ref": "ManifestReader", "params": {"manifest_path": str(_READER_MANIFEST)}}
-_WRITER = {"ref": "ManifestWriterStage", "params": {"output_path": "/tmp/out.jsonl"}}
+_WRITER = {"ref": "ManifestWriterStage", "params": {"output_path": "/tmp/out.jsonl"}}  # noqa: S108
 _DOCUMENT_WRITER = {
     "ref": "DocumentBatchJsonlWriterStage",
-    "params": {"output_path": "/tmp/document-batch-out.jsonl"},
+    "params": {"output_path": "/tmp/document-batch-out.jsonl"},  # noqa: S108
 }
 _DURATION = {"ref": "GetAudioDurationStage", "params": {}}
 
@@ -145,7 +145,7 @@ class TestDataFlowChecks:
     def test_snippet_writer_rejects_a_resident_tensor(self) -> None:
         snippet_writer = {
             "ref": "SnippetManifestWriterStage",
-            "params": {"output_path": "/tmp/snippets.jsonl"},
+            "params": {"output_path": "/tmp/snippets.jsonl"},  # noqa: S108
         }
         r = _validate([_READER, {"ref": "SpeakerSeparationStage", "params": {}}, snippet_writer])
         assert "tensor_into_sink" in _codes(r)
@@ -166,7 +166,7 @@ class TestCheckIsolation:
 
 
 class TestEnvironmentGates:
-    def test_gpu_unavailable_is_reported_once(self, monkeypatch) -> None:
+    def test_gpu_unavailable_is_reported_once(self, monkeypatch) -> None:  # noqa: ANN001
         monkeypatch.setattr(
             verbs,
             "probe_env",
@@ -267,7 +267,7 @@ class TestAcceptanceContractBinding:
     def test_cli_separate_contract_is_also_fail_closed(
         self,
         tmp_path: Path,
-        capsys,
+        capsys,  # noqa: ANN001
     ) -> None:
         import json
 
@@ -410,12 +410,12 @@ class TestSourceSchemaHonesty:
             ]
         }
 
-    def _write(self, tmp_path, name: str, row: dict) -> str:
+    def _write(self, tmp_path, name: str, row: dict) -> str:  # noqa: ANN001
         path = tmp_path / name
         path.write_text(json.dumps(row) + "\n", encoding="utf-8")
         return str(path)
 
-    def test_a_manifest_without_an_audio_path_column_is_refused(self, tmp_path) -> None:
+    def test_a_manifest_without_an_audio_path_column_is_refused(self, tmp_path) -> None:  # noqa: ANN001
         """The 'validates green, yields zero rows' class: the reader declares
         audio_filepath but is schema-agnostic, so the declaration is not evidence.
 
@@ -433,31 +433,31 @@ class TestSourceSchemaHonesty:
         assert "'sentence'" in issue["message"]
         assert "audio_filepath" in issue["fix"]
 
-    def test_a_stage_pointed_at_the_real_column_is_not_flagged(self, tmp_path) -> None:
+    def test_a_stage_pointed_at_the_real_column_is_not_flagged(self, tmp_path) -> None:  # noqa: ANN001
         manifest = self._write(tmp_path, "cv.jsonl", {"path": "/a.wav", "sentence": "hi"})
         verdict = validate(self._recipe(manifest, {"audio_filepath_key": "path"}), data=manifest)
         assert "source_schema_mismatch" not in [i["code"] for i in verdict["issues"]]
 
-    def test_a_conventional_manifest_is_not_flagged(self, tmp_path) -> None:
+    def test_a_conventional_manifest_is_not_flagged(self, tmp_path) -> None:  # noqa: ANN001
         manifest = self._write(tmp_path, "nemo.jsonl", {"audio_filepath": "/a.wav", "text": "hi"})
         verdict = validate(self._recipe(manifest), data=manifest)
         assert "source_schema_mismatch" not in [i["code"] for i in verdict["issues"]]
 
-    def test_the_recipes_own_manifest_is_evidence_even_without_an_explicit_data_argument(self, tmp_path) -> None:
+    def test_the_recipes_own_manifest_is_evidence_even_without_an_explicit_data_argument(self, tmp_path) -> None:  # noqa: ANN001
         """validate binds and profiles the source named in the recipe, so the mismatch is
         caught whether or not the caller passes ``data``."""
         manifest = self._write(tmp_path, "cv.jsonl", {"path": "/a.wav"})
         verdict = validate(self._recipe(manifest))  # no data= argument
         assert "source_schema_mismatch" in [i["code"] for i in verdict["issues"]]
 
-    def test_no_observed_columns_means_no_claim(self, tmp_path) -> None:
+    def test_no_observed_columns_means_no_claim(self, tmp_path) -> None:  # noqa: ANN001
         """An empty manifest yields no columns; with no evidence the check stays silent
         rather than inventing a mismatch."""
         manifest = self._write_raw(tmp_path, "empty.jsonl", "")
         verdict = validate(self._recipe(manifest), data=manifest)
         assert "source_schema_mismatch" not in [i["code"] for i in verdict["issues"]]
 
-    def _write_raw(self, tmp_path, name: str, text: str) -> str:
+    def _write_raw(self, tmp_path, name: str, text: str) -> str:  # noqa: ANN001
         path = tmp_path / name
         path.write_text(text, encoding="utf-8")
         return str(path)

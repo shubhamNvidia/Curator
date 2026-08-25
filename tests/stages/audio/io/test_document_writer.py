@@ -36,7 +36,7 @@ def _batch(rows: list[dict], *, dataset_name: str = "audio") -> DocumentBatch:
     )
 
 
-def test_writes_one_jsonl_line_per_document_row_and_preserves_task(tmp_path) -> None:
+def test_writes_one_jsonl_line_per_document_row_and_preserves_task(tmp_path) -> None:  # noqa: ANN001
     output = tmp_path / "curated.jsonl"
     stage = DocumentBatchJsonlWriterStage(output_path=str(output))
     first = _batch([{"id": 1, "text": "héllo"}, {"id": 2, "text": "world"}])
@@ -58,7 +58,7 @@ def test_writes_one_jsonl_line_per_document_row_and_preserves_task(tmp_path) -> 
     assert returned._stage_perf == ["seed"]
 
 
-def test_setup_truncates_only_between_runs(tmp_path) -> None:
+def test_setup_truncates_only_between_runs(tmp_path) -> None:  # noqa: ANN001
     output = tmp_path / "curated.jsonl"
     stage = DocumentBatchJsonlWriterStage(output_path=str(output))
     batch = _batch([{"id": 1}])
@@ -73,7 +73,7 @@ def test_setup_truncates_only_between_runs(tmp_path) -> None:
     assert len(output.read_text(encoding="utf-8").splitlines()) == 1
 
 
-def test_supports_fsspec_cloud_paths(tmp_path) -> None:
+def test_supports_fsspec_cloud_paths(tmp_path) -> None:  # noqa: ANN001
     output = f"memory://document-writer/{tmp_path.parent.name}/{tmp_path.name}/curated.jsonl"
     stage = DocumentBatchJsonlWriterStage(output_path=output)
 
@@ -85,7 +85,7 @@ def test_supports_fsspec_cloud_paths(tmp_path) -> None:
     assert rows == [{"id": 1, "text": "café"}, {"id": 2, "text": "茶"}]
 
 
-def test_contract_is_document_batch_only_and_declares_disk_lifecycle(tmp_path) -> None:
+def test_contract_is_document_batch_only_and_declares_disk_lifecycle(tmp_path) -> None:  # noqa: ANN001
     stage = DocumentBatchJsonlWriterStage(output_path=str(tmp_path / "out.jsonl"))
     dynamic = build_contract(stage)
     static = static_contract(DocumentBatchJsonlWriterStage)

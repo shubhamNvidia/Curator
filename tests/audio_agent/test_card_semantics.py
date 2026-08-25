@@ -414,7 +414,7 @@ def test_a_card_must_date_itself_so_a_stale_guess_is_distinguishable_from_a_fres
     assert any("missing required field 'provenance'" in item for item in violations)
 
 
-def test_a_stage_shipping_without_a_card_fails_the_gate_unless_waived(monkeypatch) -> None:
+def test_a_stage_shipping_without_a_card_fails_the_gate_unless_waived(monkeypatch) -> None:  # noqa: ANN001
     """An uncarded stage was reported and never failed, so a stage could ship plannable with no
     card semantics behind it: ``discover`` lists it, the planner may pick it, and the host critic
     gets no meaning, scope or counterexample to reason from. ``--allow-uncarded`` stays as the

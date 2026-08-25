@@ -101,7 +101,7 @@ class _ToyInitStage(AgentReady):
 # --------------------------------------------------------------------------- #
 # Param derivation
 # --------------------------------------------------------------------------- #
-def test_stage_params_dataclass_choices_required_roles_descriptions():
+def test_stage_params_dataclass_choices_required_roles_descriptions():  # noqa: ANN202
     params = {p.name: p for p in stage_params(_ToyDataclassStage)}
     assert "name" not in params  # framework field excluded
     assert params["mode"].choices == ["task", "segments", "auto"]
@@ -115,7 +115,7 @@ def test_stage_params_dataclass_choices_required_roles_descriptions():
     assert params["threshold"].description == "Minimum score; None disables."
 
 
-def test_stage_params_init_signature_required_and_defaults():
+def test_stage_params_init_signature_required_and_defaults():  # noqa: ANN202
     params = {p.name: p for p in stage_params(_ToyInitStage)}
     assert params["input_value_key"].required is True
     assert params["target_value"].required is True
@@ -124,7 +124,7 @@ def test_stage_params_init_signature_required_and_defaults():
     assert params["input_value_key"].description == "Field to evaluate."
 
 
-def test_docstring_args_parser_handles_continuations_and_sections():
+def test_docstring_args_parser_handles_continuations_and_sections():  # noqa: ANN202
     doc = """Summary.
 
     Args:
@@ -144,7 +144,7 @@ def test_docstring_args_parser_handles_continuations_and_sections():
 # --------------------------------------------------------------------------- #
 # Contract assembly + serialization
 # --------------------------------------------------------------------------- #
-def test_build_contract_fills_params_and_key_roles():
+def test_build_contract_fills_params_and_key_roles():  # noqa: ANN202
     contract = build_contract(_ToyDataclassStage(score_key="renamed_score"))
     assert contract.contract_resolution == "configured"
     assert contract.params, "params should be auto-derived"
@@ -153,7 +153,7 @@ def test_build_contract_fills_params_and_key_roles():
     assert contract.stage_id == "_ToyDataclassStage"
 
 
-def test_static_contract_is_instance_free_for_required_arg_stage():
+def test_static_contract_is_instance_free_for_required_arg_stage():  # noqa: ANN202
     contract = static_contract(_ToyInitStage)  # no instantiation needed
     assert contract.contract_resolution == "static_params_and_hints"
     names = {p.name for p in contract.params}
@@ -161,7 +161,7 @@ def test_static_contract_is_instance_free_for_required_arg_stage():
     assert contract.stage_id == "_ToyInitStage"
 
 
-def test_to_dict_is_json_safe_even_with_nonserializable_default():
+def test_to_dict_is_json_safe_even_with_nonserializable_default():  # noqa: ANN202
     class _Weird:
         pass
 
@@ -171,7 +171,7 @@ def test_to_dict_is_json_safe_even_with_nonserializable_default():
     assert payload["params"][0]["default"].startswith("<non-serializable")
 
 
-def test_to_json_schema_maps_types_enums_and_required():
+def test_to_json_schema_maps_types_enums_and_required():  # noqa: ANN202
     schema = to_json_schema(
         [
             ParamSpec(name="mode", type="str", choices=["a", "b"], default="a"),
@@ -188,7 +188,7 @@ def test_to_json_schema_maps_types_enums_and_required():
 # --------------------------------------------------------------------------- #
 # By-role matching
 # --------------------------------------------------------------------------- #
-def test_reads_satisfied_by_role_survives_key_rename():
+def test_reads_satisfied_by_role_survives_key_rename():  # noqa: ANN202
     # Producer writes a score under a renamed key value.
     producer = build_contract(_ToyDataclassStage(score_key="model_b_mos"))
     # Consumer reads a score under a *different* key value.
@@ -203,7 +203,7 @@ def test_reads_satisfied_by_role_survives_key_rename():
     assert reads_satisfied_by_role(needs_waveform, produced_roles(producer)) is False
 
 
-def test_assert_agent_ready_static_and_dynamic_on_toy_stage():
+def test_assert_agent_ready_static_and_dynamic_on_toy_stage():  # noqa: ANN202
     contract = assert_agent_ready(
         _ToyDataclassStage(),
         fixture_factory=None,  # static-only (no execution)
@@ -216,7 +216,7 @@ def test_assert_agent_ready_static_and_dynamic_on_toy_stage():
 # --------------------------------------------------------------------------- #
 # Catalog + full-stack static conformance sweep
 # --------------------------------------------------------------------------- #
-def test_catalog_discovers_stages_and_round_trips_json():
+def test_catalog_discovers_stages_and_round_trips_json():  # noqa: ANN202
     from nemo_curator.stages.audio._agent._catalog import audio_stage_catalog, catalog_as_json, list_agent_ready_stages
 
     names = list_agent_ready_stages()
@@ -231,7 +231,7 @@ def test_catalog_discovers_stages_and_round_trips_json():
     assert all("contract" in e and isinstance(e["contract"], dict) for e in audio_stage_catalog())
 
 
-def test_all_agent_ready_stages_pass_static_conformance():
+def test_all_agent_ready_stages_pass_static_conformance():  # noqa: ANN202
     from nemo_curator.stages.audio._agent._catalog import get_agent_ready_stage_class, list_agent_ready_stages
 
     failures = []
@@ -245,7 +245,7 @@ def test_all_agent_ready_stages_pass_static_conformance():
     assert not failures, "static conformance failures:\n" + "\n".join(failures)
 
 
-def test_static_hints_are_optional_and_additive():
+def test_static_hints_are_optional_and_additive():  # noqa: ANN202
     # A stage with no AGENT_STATIC still yields a valid static contract.
     assert static_contract(_ToyDataclassStage).error_policy == "unknown"
 
@@ -299,14 +299,14 @@ class TestStagesDeclareTheirOwnAgentFacts:
 
         names = {f.name for f in fields(cls) if f.init}
         kwargs = {
-            f.name: ("/tmp/x" if ("path" in f.name or "dir" in f.name) else "x")
+            f.name: ("/tmp/x" if ("path" in f.name or "dir" in f.name) else "x")  # noqa: S108
             for f in fields(cls)
             if f.init and f.default is MISSING and f.default_factory is MISSING
         }
         if "write_to_disk" in names:
             kwargs["write_to_disk"] = True
         for name in self._REQUIRED_DIRS & names:
-            kwargs.setdefault(name, "/tmp/x")
+            kwargs.setdefault(name, "/tmp/x")  # noqa: S108
         return cls(**kwargs)
 
     def test_every_writer_declares_exactly_the_params_the_table_used_to_hold(self) -> None:
@@ -424,7 +424,7 @@ class TestEveryStageSaysWhetherItsRowsStandAlone:
         def placeholder(name: str) -> object:
             if name == "conditions":
                 return [{"input_value_key": "score", "target_value": 0.0, "operator": "ge"}]
-            return "/tmp/x" if ("dir" in name or "path" in name) else "x"
+            return "/tmp/x" if ("dir" in name or "path" in name) else "x"  # noqa: S108
 
         if is_dataclass(stage_cls):
             # An empty-string default is how these stages spell "required": the field exists so

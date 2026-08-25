@@ -361,7 +361,7 @@ class TestConstructingAStageTouchesNothing:
     nothing, on the one boundary where tool-supplied data meets ``cls(**params)``.
     """
 
-    def _no_io(self, monkeypatch, seen: list[str]):
+    def _no_io(self, monkeypatch, seen: list[str]):  # noqa: ANN001, ANN202
         """Make every filesystem/network entry point record itself instead of running."""
         import builtins
         import io as _io
@@ -369,7 +369,7 @@ class TestConstructingAStageTouchesNothing:
         import pathlib
         import socket
 
-        def trap(label: str):
+        def trap(label: str):  # noqa: ANN202
             def _boom(*_a: object, **_k: object) -> None:
                 seen.append(label)
                 msg = f"{label} during __init__"
@@ -397,7 +397,7 @@ class TestConstructingAStageTouchesNothing:
     # reaches the response. The stage is shared code and out of the audio agent's scope to change.
     _KNOWN_IO_IN_INIT = frozenset({"AudioDataFilterStage"})
 
-    def test_no_agent_ready_stage_touches_disk_or_network_when_constructed(self, monkeypatch) -> None:
+    def test_no_agent_ready_stage_touches_disk_or_network_when_constructed(self, monkeypatch) -> None:  # noqa: ANN001
         offenders: list[str] = []
         skipped: list[str] = []
         built = 0

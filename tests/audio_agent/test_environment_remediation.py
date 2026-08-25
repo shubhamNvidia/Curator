@@ -545,7 +545,7 @@ def test_execution_refuses_before_ray_or_output_preparation(
     monkeypatch.setattr(verbs, "probe_env", _cuda_mismatch)
 
     def must_not_run(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("execution preparation ran before the environment gate")
+        raise AssertionError("execution preparation ran before the environment gate")  # noqa: EM101
 
     monkeypatch.setattr(verbs, "_bootstrap_ray", must_not_run)
     monkeypatch.setattr(verbs, "_apply_ray_cluster_capacity", must_not_run)
@@ -608,7 +608,7 @@ def test_public_smoke_failure_is_structured_and_redacted(
     monkeypatch.setattr(verbs, "probe_env", _healthy_env)
 
     def fail_with_secret(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("HF_TOKEN=plain-runtime-token Permission denied")
+        raise RuntimeError("HF_TOKEN=plain-runtime-token Permission denied")  # noqa: EM101
 
     monkeypatch.setattr(verbs, "_run_pipeline_autofallback", fail_with_secret)
 
@@ -625,7 +625,7 @@ def test_public_smoke_failure_is_structured_and_redacted(
 def test_continuation_never_reintroduces_recipe_secrets_after_run_redaction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    secret_value = "hf_continuation_secret_value"
+    secret_value = "hf_continuation_secret_value"  # noqa: S105
     materialized = Recipe.from_dict(
         {
             "stages": [
@@ -663,7 +663,7 @@ def test_continuation_never_reintroduces_recipe_secrets_after_run_redaction(
     )
 
     assert secret_value not in str(result)
-    assert result["recipe"]["stages"][0]["params"]["hf_token"] == "<redacted-secret>"
+    assert result["recipe"]["stages"][0]["params"]["hf_token"] == "<redacted-secret>"  # noqa: S105
 
 
 @pytest.mark.parametrize(

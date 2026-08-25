@@ -31,7 +31,7 @@ from nemo_curator.stages.audio import agent as foundation
 # A GPU-required recipe (InferenceSortformerStage is bound=gpu / not gpu_optional).
 _GPU_RECIPE = {
     "stages": [
-        {"ref": "ManifestReader", "params": {"manifest_path": "/tmp/m.jsonl"}},
+        {"ref": "ManifestReader", "params": {"manifest_path": "/tmp/m.jsonl"}},  # noqa: S108
         {"ref": "InferenceSortformerStage", "params": {"resources": {"gpus": 1}}},
     ]
 }
@@ -77,7 +77,7 @@ def _available_env() -> EnvProfile:
     )
 
 
-def _built():
+def _built():  # noqa: ANN202
     built, _issues = build_stages(Recipe.from_dict(_GPU_RECIPE))
     assert built is not None
     return built
@@ -128,7 +128,7 @@ class TestPreflightGating:
 
 
 class TestPlannerFeasibility:
-    def _plan(self, env: EnvProfile):
+    def _plan(self, env: EnvProfile):  # noqa: ANN202
         built = _built()
         contracts = [foundation.build_contract(s) for s in built]
         return planner.plan(built, contracts, env)

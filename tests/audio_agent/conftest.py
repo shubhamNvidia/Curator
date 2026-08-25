@@ -50,7 +50,7 @@ the code were broken.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator  # noqa: TC003
 
 import pytest
 

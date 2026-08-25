@@ -47,7 +47,7 @@ def _folder(tmp_path: Path, names: list[str]) -> str:
     return str(d)
 
 
-def _profile(folder: str):
+def _profile(folder: str):  # noqa: ANN202
     return profiler.profile_data(folder, folder_extensions=[".wav"], recursive=True)
 
 
@@ -61,7 +61,7 @@ def _convert_recipe(folder: str, out: str) -> Recipe:
                     "params": {
                         "target_sample_rate": 16000,
                         "target_nchannels": 1,
-                        "resampled_audio_dir": "/tmp/rs_convert",
+                        "resampled_audio_dir": "/tmp/rs_convert",  # noqa: S108
                     },
                 },
                 {"ref": "ManifestWriterStage", "params": {"output_path": out}},
@@ -82,7 +82,7 @@ def _quality_recipe(folder: str, out: str, *, mos: float = 3.0) -> Recipe:
                     "params": {
                         "target_sample_rate": 16000,
                         "target_nchannels": 1,
-                        "resampled_audio_dir": "/tmp/rs_quality",
+                        "resampled_audio_dir": "/tmp/rs_quality",  # noqa: S108
                     },
                 },
                 {"ref": "ManifestWriterStage", "params": {"output_path": out}},
@@ -110,7 +110,7 @@ def _long_recipe(folder: str, out: str, *, mos: float = 3.0) -> Recipe:
                     "params": {
                         "target_sample_rate": 16000,
                         "target_nchannels": 1,
-                        "resampled_audio_dir": "/tmp/rs_long",
+                        "resampled_audio_dir": "/tmp/rs_long",  # noqa: S108
                     },
                 },
                 {
@@ -137,7 +137,7 @@ def _save_run(  # noqa: PLR0913 - a run record simply has this many fields
     folder: str,
     recipe: Recipe,
     *,
-    prior_profile: Any,
+    prior_profile: Any,  # noqa: ANN401
     goal: dict[str, Any] | None,
     created_at: str,
     pipeline_summary: str | None = None,
@@ -207,8 +207,8 @@ class TestPipelineSummaryIsDurable:
         class _Report:
             accepted = 1
             input_count = 1
-            output_paths = [str(store / "out.jsonl")]
-            per_stage_metrics: dict = {}
+            output_paths = [str(store / "out.jsonl")]  # noqa: RUF012
+            per_stage_metrics: dict = {}  # noqa: RUF012
 
         run_id = verbs._record_run(
             recipe,
@@ -238,8 +238,8 @@ class TestPipelineSummaryIsDurable:
         class _Report:
             accepted = 0
             input_count = 1
-            output_paths: list = []
-            per_stage_metrics: dict = {}
+            output_paths: list = []  # noqa: RUF012
+            per_stage_metrics: dict = {}  # noqa: RUF012
 
         run_id = verbs._record_run(
             recipe,

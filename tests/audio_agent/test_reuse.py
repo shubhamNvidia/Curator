@@ -31,9 +31,9 @@ import pytest
 from nemo_curator.audio_agent import artifacts, continuation, profiler, reuse, run_index, verbs
 from nemo_curator.audio_agent.recipe import Recipe
 
-_READER = {"ref": "ManifestReader", "params": {"manifest_path": "/tmp/m.jsonl"}}
+_READER = {"ref": "ManifestReader", "params": {"manifest_path": "/tmp/m.jsonl"}}  # noqa: S108
 _DUR = {"ref": "GetAudioDurationStage", "params": {}}
-_WRITER = {"ref": "ManifestWriterStage", "params": {"output_path": "/tmp/out.jsonl"}}
+_WRITER = {"ref": "ManifestWriterStage", "params": {"output_path": "/tmp/out.jsonl"}}  # noqa: S108
 # A stage the cards call expensive, and which persists nothing of its own -- the shape that made
 # an untimed hour look free.
 _ASR = {
@@ -72,7 +72,7 @@ class TestIdentitySplit:
     def test_output_location_does_not_change_semantic_hash(self) -> None:
         base = _frozen([_READER, _DUR, _WRITER])
         elsewhere = _frozen(
-            [_READER, _DUR, {"ref": "ManifestWriterStage", "params": {"output_path": "/tmp/other.jsonl"}}]
+            [_READER, _DUR, {"ref": "ManifestWriterStage", "params": {"output_path": "/tmp/other.jsonl"}}]  # noqa: S108
         )
         assert elsewhere.semantic_hash == base.semantic_hash
         assert elsewhere.config_hash != base.config_hash
@@ -171,7 +171,7 @@ class TestTieredDatasetKey:
 
         def fail_target(path: object, *args: object, **kwargs: object) -> os.stat_result:
             if isinstance(path, (str, bytes, os.PathLike)) and os.path.abspath(os.fsdecode(path)) == target:
-                raise OSError("simulated stat failure")
+                raise OSError("simulated stat failure")  # noqa: EM101
             return real_stat(path, *args, **kwargs)
 
         monkeypatch.setattr(profiler.os, "stat", fail_target)
@@ -423,7 +423,7 @@ def _publish(
     *,
     dataset_key: str = _KEY,
     duration_sec: float = 120.0,
-    **kw: Any,
+    **kw: Any,  # noqa: ANN401
 ) -> artifacts.Artifact:
     plan = artifacts.plan_steps(rec, dataset_key)[index]
     Path(plan.uri).parent.mkdir(parents=True, exist_ok=True)
@@ -457,7 +457,7 @@ class TestReuseDecision:
     ) -> None:
         rec = _frozen([_READER, _DUR, _WRITER])
 
-        def unexpected_probe(*_args: Any, **_kwargs: Any) -> Any:
+        def unexpected_probe(*_args: Any, **_kwargs: Any) -> Any:  # noqa: ANN401
             msg = "an unidentified dataset must not enter the artifact namespace"
             raise AssertionError(msg)
 
@@ -480,7 +480,7 @@ class TestReuseDecision:
     ) -> None:
         rec, _mid, _final = _pipeline(store)
 
-        def unexpected_plan(*_args: Any, **_kwargs: Any) -> Any:
+        def unexpected_plan(*_args: Any, **_kwargs: Any) -> Any:  # noqa: ANN401
             msg = "publishing must stop before planning an empty-key artifact"
             raise AssertionError(msg)
 
@@ -925,14 +925,14 @@ class TestMaterializer:
 
     def test_unreadable_artifact_kind_is_refused_not_guessed(self, store: Path) -> None:
         rec, _mid, _final = _pipeline(store)
-        out, err = continuation.materialize(rec, uri="/tmp/x", kind="rttm_dir", prefix=2)
+        out, err = continuation.materialize(rec, uri="/tmp/x", kind="rttm_dir", prefix=2)  # noqa: S108
         assert out is None
         assert "no source stage" in err
 
     def test_out_of_range_prefix_is_refused(self, store: Path) -> None:
         rec, _mid, _final = _pipeline(store)
-        assert continuation.materialize(rec, uri="/tmp/x", kind="manifest", prefix=0)[0] is None
-        assert continuation.materialize(rec, uri="/tmp/x", kind="manifest", prefix=99)[0] is None
+        assert continuation.materialize(rec, uri="/tmp/x", kind="manifest", prefix=0)[0] is None  # noqa: S108
+        assert continuation.materialize(rec, uri="/tmp/x", kind="manifest", prefix=99)[0] is None  # noqa: S108
 
 
 class TestIndex:
@@ -980,13 +980,13 @@ class TestIndex:
         class LockedOnCommit:
             """A working connection whose commit fails, as a contended database does."""
 
-            def __init__(self, conn: Any) -> None:
+            def __init__(self, conn: Any) -> None:  # noqa: ANN401
                 object.__setattr__(self, "_conn", conn)
 
-            def __getattr__(self, name: str) -> Any:
+            def __getattr__(self, name: str) -> Any:  # noqa: ANN401
                 return getattr(self._conn, name)
 
-            def __setattr__(self, name: str, value: Any) -> None:
+            def __setattr__(self, name: str, value: Any) -> None:  # noqa: ANN401
                 setattr(self._conn, name, value)
 
             def commit(self) -> None:
@@ -1002,7 +1002,7 @@ class TestIndex:
         rec, _mid, _final = _pipeline(store)
         art = _publish(rec, 3)
 
-        def unopenable(*_a: Any, **_k: Any) -> Any:
+        def unopenable(*_a: Any, **_k: Any) -> Any:  # noqa: ANN401
             msg = "unable to open database file"
             raise sqlite3.OperationalError(msg)
 
@@ -1074,7 +1074,7 @@ class TestContinueVerb:
         ]
         rec.freeze()
         Path(final).write_text(
-            "".join(json.dumps({"audio_filepath": f"/tmp/{index}.wav"}) + "\n" for index in range(20)),
+            "".join(json.dumps({"audio_filepath": f"/tmp/{index}.wav"}) + "\n" for index in range(20)),  # noqa: S108
             encoding="utf-8",
         )
         _publish(
@@ -1198,7 +1198,7 @@ class TestContinueVerb:
 
         seen: dict[str, object] = {}
 
-        def _capture(recipe, **kwargs):
+        def _capture(recipe, **kwargs):  # noqa: ANN001, ANN202
             seen["recipe"] = recipe
             seen["confirm"] = kwargs.get("confirm")
             return {"status": "completed", "run_id": "captured"}
@@ -1221,8 +1221,8 @@ class TestContinueVerb:
         rec, _mid, _final = _pipeline(store, source=src)
         _publish(rec, 1, dataset_key=key)
 
-        def _must_not_run(*_args, **_kwargs):
-            raise AssertionError("a mismatched confirmation reached run()")
+        def _must_not_run(*_args, **_kwargs):  # noqa: ANN202
+            raise AssertionError("a mismatched confirmation reached run()")  # noqa: EM101
 
         monkeypatch.setattr(verbs, "run", _must_not_run)
         result = aa.plan_continuation(
@@ -1269,11 +1269,11 @@ class TestContinueVerb:
                 [],
             )
 
-        def fake_execute(stages: list[Any], *_args: Any, **_kwargs: Any) -> tuple[list[Any], str]:
+        def fake_execute(stages: list[Any], *_args: Any, **_kwargs: Any) -> tuple[list[Any], str]:  # noqa: ANN401
             captured["executed_source"] = stages[0].physical_source
             return [object()], "batch"
 
-        def fake_report(**kwargs: Any) -> Any:
+        def fake_report(**kwargs: Any) -> Any:  # noqa: ANN401
             outputs = list(kwargs.get("output_paths") or [])
             return SimpleNamespace(
                 accepted=1,
@@ -1287,12 +1287,12 @@ class TestContinueVerb:
                 },
             )
 
-        def fake_publish(_rec: Recipe, _stages: list[Any], **kwargs: Any) -> list[dict[str, Any]]:
+        def fake_publish(_rec: Recipe, _stages: list[Any], **kwargs: Any) -> list[dict[str, Any]]:  # noqa: ANN401
             captured["published_dataset_key"] = kwargs["dataset_key"]
             captured["step_identity"] = kwargs["step_identity"]
             return []
 
-        def fake_record(_rec: Recipe, **kwargs: Any) -> str:
+        def fake_record(_rec: Recipe, **kwargs: Any) -> str:  # noqa: ANN401
             captured["recorded_data"] = kwargs["data"]
             captured["recorded_dataset_key"] = kwargs["dataset_key"]
             return "continued-run"
@@ -1358,7 +1358,7 @@ class TestContinueVerb:
             reuse_step_key=artifact_a.step_key,
         )
 
-        def must_not_execute(*_args: Any, **_kwargs: Any) -> Any:
+        def must_not_execute(*_args: Any, **_kwargs: Any) -> Any:  # noqa: ANN401
             msg = "a rejected continuation identity reached execution"
             raise AssertionError(msg)
 
@@ -1386,7 +1386,7 @@ class TestContinueVerb:
                 {
                     "dataset_key": _KEY,
                     "step_key": "forged",
-                    "artifact_uri": "/tmp/forged.jsonl",
+                    "artifact_uri": "/tmp/forged.jsonl",  # noqa: S108
                 },
             ),
         ],
@@ -1394,7 +1394,7 @@ class TestContinueVerb:
     def test_run_no_longer_accepts_independent_identity_overrides(
         self,
         name: str,
-        value: Any,
+        value: Any,  # noqa: ANN401
     ) -> None:
         with pytest.raises(TypeError, match=name):
             verbs.run(
@@ -2607,7 +2607,7 @@ class TestUnmeasuredWorkIsNotAssumedCheap:
     def test_a_stage_nobody_wrote_a_card_for_is_not_called_cheap(self) -> None:
         assert artifacts.stage_is_costly("NoCardWasEverWrittenForThisStage")
 
-    def test_a_card_that_does_not_state_its_bound_is_not_called_cheap(self, monkeypatch) -> None:
+    def test_a_card_that_does_not_state_its_bound_is_not_called_cheap(self, monkeypatch) -> None:  # noqa: ANN001
         """``bound: null`` is the placeholder a config-dependent stage carries while nobody has
         priced it. It leaves us exactly as uninformed as having no card -- already refused as
         cheap -- yet it used to read as "not gpu" and buy a pass under the auto-take threshold.
@@ -2619,7 +2619,7 @@ class TestUnmeasuredWorkIsNotAssumedCheap:
             monkeypatch.setattr(artifacts, "_card", lambda _ref, r=resource: {"resource": r})
             assert artifacts.stage_is_costly("AnyStage"), f"unstated bound in {resource} rated cheap"
 
-    def test_a_card_that_does_state_a_cheap_bound_is_still_taken_at_its_word(self, monkeypatch) -> None:
+    def test_a_card_that_does_state_a_cheap_bound_is_still_taken_at_its_word(self, monkeypatch) -> None:  # noqa: ANN001
         """The rule must not collapse into "everything is expensive", which would turn the
         reuse gate into a permanent nag -- the failure the costliness check was narrowed to avoid.
         """

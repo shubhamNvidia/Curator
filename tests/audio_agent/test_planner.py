@@ -23,7 +23,7 @@ from nemo_curator.audio_agent.recipe import Recipe, build_stages
 from nemo_curator.stages.audio import agent as foundation
 
 
-def _plan(stages: list[dict]):
+def _plan(stages: list[dict]):  # noqa: ANN202
     built, _issues = build_stages(Recipe.from_dict({"stages": stages}))
     assert built is not None, f"recipe failed to build: {stages}"
     contracts = [foundation.build_contract(s) for s in built]
@@ -34,7 +34,7 @@ class TestPlanner:
     def test_cpu_only_recipe_streams(self) -> None:
         p = _plan(
             [
-                {"ref": "ManifestReader", "params": {"manifest_path": "/tmp/m.jsonl"}},
+                {"ref": "ManifestReader", "params": {"manifest_path": "/tmp/m.jsonl"}},  # noqa: S108
                 {"ref": "GetAudioDurationStage", "params": {}},
             ]
         )
@@ -47,11 +47,11 @@ class TestPlanner:
         # not under-counted. The expansion note proves the composite was accounted for.
         p = _plan(
             [
-                {"ref": "ManifestReader", "params": {"manifest_path": "/tmp/m.jsonl"}},
-                {"ref": "ResampleAudioStage", "params": {"resampled_audio_dir": "/tmp/r"}},
+                {"ref": "ManifestReader", "params": {"manifest_path": "/tmp/m.jsonl"}},  # noqa: S108
+                {"ref": "ResampleAudioStage", "params": {"resampled_audio_dir": "/tmp/r"}},  # noqa: S108
                 {"ref": "VADSegmentationStage", "params": {}},
                 {"ref": "SplitASRAlignJoinStage", "params": {}},
-                {"ref": "ManifestWriterStage", "params": {"output_path": "/tmp/o.jsonl"}},
+                {"ref": "ManifestWriterStage", "params": {"output_path": "/tmp/o.jsonl"}},  # noqa: S108
             ]
         )
         assert any("expanded" in n for n in p.notes)
@@ -59,7 +59,7 @@ class TestPlanner:
     def test_estimate_reports_reservation_sum(self) -> None:
         p = _plan(
             [
-                {"ref": "ManifestReader", "params": {"manifest_path": "/tmp/m.jsonl"}},
+                {"ref": "ManifestReader", "params": {"manifest_path": "/tmp/m.jsonl"}},  # noqa: S108
                 {"ref": "GetAudioDurationStage", "params": {}},
             ]
         )

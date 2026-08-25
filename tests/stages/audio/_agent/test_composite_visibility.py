@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 _SEEDED = {"audio_filepath", "duration", "resampled_audio_filepath"}
 
 
-def _codes(report) -> set[str]:
+def _codes(report) -> set[str]:  # noqa: ANN001
     return {i.code for i in report.issues}
 
 
@@ -90,7 +90,7 @@ class TestExpansion:
         dies on contact -- after the user confirmed a full-scale run.
         """
         stage = SplitASRAlignJoinStage()
-        only_child = ResampleAudioStage(resampled_audio_dir="/tmp/x")
+        only_child = ResampleAudioStage(resampled_audio_dir="/tmp/x")  # noqa: S108
         monkeypatch.setattr(stage, "decompose_and_apply_with", lambda: [only_child])
 
         expansion = expand_composites([stage])
@@ -158,7 +158,7 @@ class TestInnerRequirementsAreVisible:
         ``run_checks`` and kills the verb, handing the caller a traceback instead of a verdict
         over a remedy hint that was never going to apply to a list anyway.
         """
-        composite = ManifestReader(manifest_path="/tmp/m.jsonl")
+        composite = ManifestReader(manifest_path="/tmp/m.jsonl")  # noqa: S108
         inner = next(child for child in composite.decompose() if hasattr(child, "file_extensions"))
         assert isinstance(inner.file_extensions, list), "the shared field really is unhashable"
 

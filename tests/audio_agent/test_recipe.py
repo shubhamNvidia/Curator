@@ -228,5 +228,5 @@ class TestAMalformedStageEntrySaysWhatIsWrong:
             {"stages": [], "acceptance_criteria": [{"nope": 1}]},
         ]
         for payload in malformed:
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError):  # noqa: PT011
                 Recipe.from_dict(payload)

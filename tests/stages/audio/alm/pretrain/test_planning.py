@@ -130,7 +130,7 @@ class TestSnippetCutPlannerStage:
 def _build_tiny_word_tokenizer(tmp_dir: Path, words: list[str]) -> Path:
     """Save a WordLevel HF fast tokenizer covering ``words`` to ``tmp_dir``."""
     vocab = {"[UNK]": 0, **{w: i for i, w in enumerate(words, start=1)}}
-    tok = Tokenizer(models.WordLevel(vocab=vocab, unk_token="[UNK]"))
+    tok = Tokenizer(models.WordLevel(vocab=vocab, unk_token="[UNK]"))  # noqa: S106
     tok.pre_tokenizer = pre_tokenizers.Whitespace()
     tok_dir = tmp_dir / "tok"
     tok_dir.mkdir()

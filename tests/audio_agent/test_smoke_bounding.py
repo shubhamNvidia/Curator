@@ -40,8 +40,8 @@ def _source_recipe(ref: str, params: dict[str, Any]) -> dict[str, Any]:
 
 def _stub_smoke_runtime(
     monkeypatch: pytest.MonkeyPatch,
-    inspect_source,
-    inspect_stages=None,
+    inspect_source,  # noqa: ANN001
+    inspect_stages=None,  # noqa: ANN001
 ) -> None:
     """Keep the test at the verb boundary while replacing only execution."""
     monkeypatch.delenv("AUDIO_AGENT_WORKSPACE", raising=False)
@@ -57,7 +57,7 @@ def _stub_smoke_runtime(
         ),
     )
 
-    def capture(stages, _mode, _executor, **_kwargs):
+    def capture(stages, _mode, _executor, **_kwargs):  # noqa: ANN001, ANN202
         inspect_source(stages[0])
         if inspect_stages is not None:
             inspect_stages(stages)
@@ -67,7 +67,7 @@ def _stub_smoke_runtime(
 
 
 @pytest.mark.parametrize("sample", [0, -1, True, 1.5, "2"])
-def test_smoke_rejects_non_positive_or_non_integer_sample(sample: Any) -> None:
+def test_smoke_rejects_non_positive_or_non_integer_sample(sample: Any) -> None:  # noqa: ANN401
     result = verbs.smoke(
         _source_recipe("ManifestReader", {"manifest_path": "/does/not/matter.jsonl"}),
         sample=sample,
@@ -93,7 +93,7 @@ def test_manifest_directory_is_concatenated_and_capped_in_execution_order(
     )
     captured: list[dict[str, Any]] = []
 
-    def inspect_source(source) -> None:
+    def inspect_source(source) -> None:  # noqa: ANN001
         assert source.__class__.__name__ == "ManifestReader"
         with open(source.manifest_path, encoding="utf-8") as bounded:
             captured.extend(json.loads(line) for line in bounded)
@@ -212,7 +212,7 @@ def test_prestaged_fleurs_is_adapted_to_a_bounded_local_manifest(
     )
     captured: list[dict[str, Any]] = []
 
-    def inspect_source(source) -> None:
+    def inspect_source(source) -> None:  # noqa: ANN001
         assert source.__class__.__name__ == "ManifestReader"
         with open(source.manifest_path, encoding="utf-8") as bounded:
             captured.extend(json.loads(line) for line in bounded)
@@ -265,7 +265,7 @@ def test_local_folder_sources_receive_an_ephemeral_sample_cap(
     authored = {key: str(root) if value == "{root}" else value for key, value in params.items()}
     seen: list[int] = []
 
-    def inspect_source(source) -> None:
+    def inspect_source(source) -> None:  # noqa: ANN001
         seen.append(source.max_samples)
 
     _stub_smoke_runtime(monkeypatch, inspect_source)
@@ -310,14 +310,14 @@ def test_smoke_never_truncates_the_production_manifest_and_cleans_its_sandbox(
         ),
     )
 
-    def exercise_lifecycle(stages, _mode, _executor, **_kwargs):
+    def exercise_lifecycle(stages, _mode, _executor, **_kwargs):  # noqa: ANN001, ANN202
         writer = stages[-1]
         sandbox_outputs.append(writer.output_path)
         assert writer.output_path != str(production)
         writer.setup_on_node()
         writer.setup()
         if raise_after_setup:
-            raise RuntimeError("injected failure after writer setup")
+            raise RuntimeError("injected failure after writer setup")  # noqa: EM101
         return [], "batch"
 
     monkeypatch.setattr(verbs, "_run_pipeline_autofallback", exercise_lifecycle)
@@ -438,7 +438,7 @@ def test_direct_and_composite_split_writers_are_isolated(
     )
     captured: list[str] = []
 
-    def inspect_stages(stages) -> None:
+    def inspect_stages(stages) -> None:  # noqa: ANN001
         captured.append(stages[1].output_dir)
 
     _stub_smoke_runtime(
@@ -460,7 +460,7 @@ def test_direct_and_composite_split_writers_are_isolated(
     )
 
     assert result["ran"] is True
-    assert captured and all(not os.path.exists(path) for path in captured)
+    assert captured and all(not os.path.exists(path) for path in captured)  # noqa: PT018
 
 
 def test_unknown_disk_writer_fails_the_future_stage_guard(
@@ -796,10 +796,10 @@ def test_streaming_fallback_resets_attempt_outputs_before_batch_retry(
 ) -> None:
     calls: list[str] = []
 
-    def execute(_stages, executor, *, checkpoint_path=None):
+    def execute(_stages, executor, *, checkpoint_path=None):  # noqa: ANN001, ANN202, ARG001
         calls.append(str(executor))
         if len(calls) == 1:
-            raise RuntimeError("streaming mode requires batch mode: not enough GPU capacity")
+            raise RuntimeError("streaming mode requires batch mode: not enough GPU capacity")  # noqa: EM101
         return []
 
     monkeypatch.setattr(verbs, "_make_executor", lambda mode: mode)
@@ -825,7 +825,7 @@ def test_streaming_fallback_resets_owned_partial_checkpoint_before_batch_retry(
     checkpoint = ManifestCheckpointStage(output_path=str(output))
     attempts = 0
 
-    def execute(_stages, _executor, *, checkpoint_path=None):
+    def execute(_stages, _executor, *, checkpoint_path=None):  # noqa: ANN001, ANN202, ARG001
         nonlocal attempts
         attempts += 1
         # Xenna executes a serialized worker copy, so retry ownership must be
@@ -834,7 +834,7 @@ def test_streaming_fallback_resets_owned_partial_checkpoint_before_batch_retry(
         worker_checkpoint.setup()
         worker_checkpoint.process(AudioTask(data={"attempt": attempts}))
         if attempts == 1:
-            raise RuntimeError("streaming mode requires batch mode: not enough GPU capacity")
+            raise RuntimeError("streaming mode requires batch mode: not enough GPU capacity")  # noqa: EM101
         return []
 
     monkeypatch.setattr(verbs, "_make_executor", lambda mode: mode)
@@ -862,7 +862,7 @@ def test_resource_planning_failure_is_structured_and_cleans_output_sandbox(
     roots: list[str] = []
     isolate = verbs._isolate_smoke_outputs
 
-    def capture_root(bound, report):
+    def capture_root(bound, report):  # noqa: ANN001, ANN202
         isolated = isolate(bound, report)
         roots.append(str(isolated.output_root))
         return isolated
@@ -882,5 +882,5 @@ def test_resource_planning_failure_is_structured_and_cleans_output_sandbox(
 
     assert result["status"] == "error"
     assert "resource planning failed" in result["reason"]
-    assert roots and all(not os.path.exists(root) for root in roots)
+    assert roots and all(not os.path.exists(root) for root in roots)  # noqa: PT018
     assert "smoke_token" not in result

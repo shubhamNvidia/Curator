@@ -196,7 +196,7 @@ ADDITIVE_STAGE_NAMES = (
 EXPECTED_LEGACY_COMPATIBILITY_SHA256 = "4dd5963290c825aafe3905b11203bccfde1fb229ca0c2852d7aae5930facc441"
 
 
-def _normalize(value: Any) -> Any:
+def _normalize(value: Any) -> Any:  # noqa: ANN401
     """Remove machine-specific roots while preserving semantic defaults."""
     if is_dataclass(value) and not isinstance(value, type):
         return _normalize(asdict(value))

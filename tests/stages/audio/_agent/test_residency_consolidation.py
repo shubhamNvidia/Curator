@@ -25,7 +25,7 @@ sample-rate-from-header behavior (kept as-is for now).
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from pathlib import Path  # noqa: TC003
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -53,86 +53,86 @@ def _wav(path: Path, *, channels: int = 1, n: int = 1600) -> str:
 # --------------------------------------------------------------------------- #
 # utmos._load_waveform_tensor  ->  torch (1, N) mono
 # --------------------------------------------------------------------------- #
-def test_utmos_waveform_stereo_tensor_to_mono():
+def test_utmos_waveform_stereo_tensor_to_mono():  # noqa: ANN202
     wf = torch.ones(2, 1600)
     out = _load_waveform_tensor({"waveform": wf, "sample_rate": _SR}, "t")
     assert out is not None
     t, sr = out
-    assert torch.is_tensor(t) and t.shape == (1, 1600) and sr == _SR
+    assert torch.is_tensor(t) and t.shape == (1, 1600) and sr == _SR  # noqa: PT018
 
 
-def test_utmos_waveform_numpy_1d_to_mono():
+def test_utmos_waveform_numpy_1d_to_mono():  # noqa: ANN202
     out = _load_waveform_tensor({"waveform": np.ones(1600, dtype="float32"), "sample_rate": _SR}, "t")
     t, _ = out
-    assert torch.is_tensor(t) and t.shape == (1, 1600)
+    assert torch.is_tensor(t) and t.shape == (1, 1600)  # noqa: PT018
 
 
-def test_utmos_waveform_present_no_sr_returns_none():
+def test_utmos_waveform_present_no_sr_returns_none():  # noqa: ANN202
     assert _load_waveform_tensor({"waveform": torch.ones(1, 1600)}, "t") is None
 
 
-def test_utmos_file_path_loads_mono(tmp_path: Path):
+def test_utmos_file_path_loads_mono(tmp_path: Path):  # noqa: ANN202
     out = _load_waveform_tensor({"audio_filepath": _wav(tmp_path / "u.wav", channels=2)}, "t")
     t, sr = out
-    assert t.shape[0] == 1 and sr == _SR
+    assert t.shape[0] == 1 and sr == _SR  # noqa: PT018
 
 
-def test_utmos_residency_waveform_no_data_returns_none(tmp_path: Path):
+def test_utmos_residency_waveform_no_data_returns_none(tmp_path: Path):  # noqa: ANN202
     out = _load_waveform_tensor({"audio_filepath": _wav(tmp_path / "u2.wav")}, "t", input_residency="waveform")
     assert out is None
 
 
-def test_utmos_missing_returns_none():
+def test_utmos_missing_returns_none():  # noqa: ANN202
     assert _load_waveform_tensor({}, "t") is None
 
 
 # --------------------------------------------------------------------------- #
 # sigmos._get_audio_numpy_sr  ->  np.float32 1D mono
 # --------------------------------------------------------------------------- #
-def test_sigmos_waveform_stereo_tensor_to_mono_numpy():
+def test_sigmos_waveform_stereo_tensor_to_mono_numpy():  # noqa: ANN202
     out = _get_audio_numpy_sr({"waveform": torch.ones(2, 1600), "sample_rate": _SR}, "t")
     a, sr = out
-    assert isinstance(a, np.ndarray) and a.dtype == np.float32 and a.ndim == 1 and a.shape == (1600,) and sr == _SR
+    assert isinstance(a, np.ndarray) and a.dtype == np.float32 and a.ndim == 1 and a.shape == (1600,) and sr == _SR  # noqa: PT018
 
 
-def test_sigmos_waveform_numpy_to_mono():
+def test_sigmos_waveform_numpy_to_mono():  # noqa: ANN202
     out = _get_audio_numpy_sr({"waveform": np.ones((2, 1600), dtype="float32"), "sample_rate": _SR}, "t")
     a, _ = out
-    assert a.ndim == 1 and a.shape == (1600,)
+    assert a.ndim == 1 and a.shape == (1600,)  # noqa: PT018
 
 
-def test_sigmos_file_path_loads_1d_numpy(tmp_path: Path):
+def test_sigmos_file_path_loads_1d_numpy(tmp_path: Path):  # noqa: ANN202
     out = _get_audio_numpy_sr({"audio_filepath": _wav(tmp_path / "s.wav", channels=2)}, "t")
     a, sr = out
-    assert isinstance(a, np.ndarray) and a.ndim == 1 and sr == _SR
+    assert isinstance(a, np.ndarray) and a.ndim == 1 and sr == _SR  # noqa: PT018
 
 
-def test_sigmos_waveform_present_no_sr_falls_back_to_file(tmp_path: Path):
+def test_sigmos_waveform_present_no_sr_falls_back_to_file(tmp_path: Path):  # noqa: ANN202
     # sigmos requires BOTH wf+sr for the in-memory branch; otherwise tries the file.
     out = _get_audio_numpy_sr({"waveform": torch.ones(1, 1600), "audio_filepath": _wav(tmp_path / "s2.wav")}, "t")
-    assert out is not None and out[0].ndim == 1
+    assert out is not None and out[0].ndim == 1  # noqa: PT018
 
 
-def test_sigmos_residency_waveform_no_data_returns_none(tmp_path: Path):
+def test_sigmos_residency_waveform_no_data_returns_none(tmp_path: Path):  # noqa: ANN202
     out = _get_audio_numpy_sr({"audio_filepath": _wav(tmp_path / "s3.wav")}, "t", input_residency="waveform")
     assert out is None
 
 
-def test_sigmos_missing_returns_none():
+def test_sigmos_missing_returns_none():  # noqa: ANN202
     assert _get_audio_numpy_sr({}, "t") is None
 
 
 # --------------------------------------------------------------------------- #
 # resolve_audio (unchanged) — pin its current contract for reference
 # --------------------------------------------------------------------------- #
-def test_resolve_audio_waveform_branch_does_not_force_mono():
+def test_resolve_audio_waveform_branch_does_not_force_mono():  # noqa: ANN202
     # resolve_audio keeps channels on the in-memory branch (mono only applies on file load).
     out = resolve_audio({"waveform": torch.ones(2, 1600), "sample_rate": _SR})
     t, sr = out
-    assert t.shape == (2, 1600) and sr == _SR
+    assert t.shape == (2, 1600) and sr == _SR  # noqa: PT018
 
 
-def test_resolve_audio_file_branch_applies_mono(tmp_path: Path):
+def test_resolve_audio_file_branch_applies_mono(tmp_path: Path):  # noqa: ANN202
     out = resolve_audio({"audio_filepath": _wav(tmp_path / "r.wav", channels=2)}, mono=True)
     t, _ = out
     assert t.shape[0] == 1
@@ -141,7 +141,7 @@ def test_resolve_audio_file_branch_applies_mono(tmp_path: Path):
 # --------------------------------------------------------------------------- #
 # common.resolve_waveform_from_item — unique sr-from-header behavior
 # --------------------------------------------------------------------------- #
-def test_common_reads_sr_from_header_without_reloading_waveform(tmp_path: Path):
+def test_common_reads_sr_from_header_without_reloading_waveform(tmp_path: Path):  # noqa: ANN202
     wav = _wav(tmp_path / "c.wav")
     provided = torch.ones(1, 1600)
     item = {"waveform": provided, "audio_filepath": wav}  # waveform present, sample_rate MISSING
@@ -157,19 +157,19 @@ def test_common_reads_sr_from_header_without_reloading_waveform(tmp_path: Path):
 # (pre-residency stages fed url_to_fs-normalized or raw paths to their own
 # machinery; the residency layer must not be stricter than they were)
 # --------------------------------------------------------------------------- #
-def test_resolve_audio_path_existing_file_returned_verbatim(tmp_path: Path):
+def test_resolve_audio_path_existing_file_returned_verbatim(tmp_path: Path):  # noqa: ANN202
     wav = _wav(tmp_path / "p.wav")
     assert resolve_audio_path({"audio_filepath": wav}, residency="file") == wav
 
 
-def test_resolve_audio_path_expands_tilde_for_existing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_resolve_audio_path_expands_tilde_for_existing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # noqa: ANN202
     _wav(tmp_path / "home_audio.wav")
     monkeypatch.setenv("HOME", str(tmp_path))
     resolved = resolve_audio_path({"audio_filepath": "~/home_audio.wav"}, residency="file")
     assert resolved == str(tmp_path / "home_audio.wav")
 
 
-def test_resolve_audio_expands_tilde_for_existing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_resolve_audio_expands_tilde_for_existing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # noqa: ANN202
     _wav(tmp_path / "home_audio.wav")
     monkeypatch.setenv("HOME", str(tmp_path))
     out = resolve_audio({"audio_filepath": "~/home_audio.wav"})
@@ -178,14 +178,14 @@ def test_resolve_audio_expands_tilde_for_existing_file(tmp_path: Path, monkeypat
     assert sr == _SR
 
 
-def test_resolve_audio_path_missing_file_passes_through(tmp_path: Path):
+def test_resolve_audio_path_missing_file_passes_through(tmp_path: Path):  # noqa: ANN202
     missing = str(tmp_path / "not_there.wav")
     assert resolve_audio_path({"audio_filepath": missing}, residency="file") == missing
     # auto residency with no waveform fallback also passes the path through
     assert resolve_audio_path({"audio_filepath": missing}, residency="auto") == missing
 
 
-def test_resolve_audio_path_missing_file_prefers_waveform_fallback(tmp_path: Path):
+def test_resolve_audio_path_missing_file_prefers_waveform_fallback(tmp_path: Path):  # noqa: ANN202
     missing = str(tmp_path / "not_there.wav")
     item = {"audio_filepath": missing, "waveform": torch.zeros(1, 1600), "sample_rate": _SR}
     temp: list[str] = []
@@ -197,7 +197,7 @@ def test_resolve_audio_path_missing_file_prefers_waveform_fallback(tmp_path: Pat
     assert not os.path.exists(resolved)
 
 
-def test_resolve_audio_path_no_input_returns_none():
+def test_resolve_audio_path_no_input_returns_none():  # noqa: ANN202
     assert resolve_audio_path({}, residency="file") is None
     assert resolve_audio_path({}, residency="auto") is None
 
@@ -228,7 +228,7 @@ def _writers(directory: str) -> dict[str, object]:
     }
 
 
-def test_in_memory_writers_do_not_accumulate_a_file_per_run(tmp_path: Path):
+def test_in_memory_writers_do_not_accumulate_a_file_per_run(tmp_path: Path):  # noqa: ANN202
     """The same audio written three times is one file, not three."""
     for name in _writers(str(tmp_path)):
         directory = tmp_path / f"out_{name}"
@@ -240,7 +240,7 @@ def test_in_memory_writers_do_not_accumulate_a_file_per_run(tmp_path: Path):
         assert os.path.basename(written).startswith("utt1_"), "the source stem must stay readable in the name"
 
 
-def test_write_audio_stable_separates_audio_that_differs(tmp_path: Path):
+def test_write_audio_stable_separates_audio_that_differs(tmp_path: Path):  # noqa: ANN202
     """Different audio, rate or tag must never resolve to the same name."""
     from nemo_curator.stages.audio._agent._residency import write_audio_stable
 
@@ -256,7 +256,7 @@ def test_write_audio_stable_separates_audio_that_differs(tmp_path: Path):
     assert len(names) == 4, f"distinct inputs collapsed onto one name: {names}"
 
 
-def test_write_audio_stable_without_an_output_dir_keeps_mkstemp_privacy(tmp_path: Path):
+def test_write_audio_stable_without_an_output_dir_keeps_mkstemp_privacy(tmp_path: Path):  # noqa: ANN202, ARG001
     """The no-output_dir default is the shared system temp dir, where a predictable name leaks.
 
     mkstemp was giving three things away for free there: an unguessable name, owner-only mode on

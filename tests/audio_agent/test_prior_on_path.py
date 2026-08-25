@@ -41,8 +41,8 @@ from nemo_curator.audio_agent.recipe import Recipe
 
 # Output-location params of the prior recipe. Never written -- the recipe is recorded, not run --
 # and excluded from reuse identity, so their exact value is irrelevant to what these tests assert.
-_PRIOR_RESAMPLE_DIR = "/tmp/rs_prior"
-_PRIOR_OUT = "/tmp/prior_out.jsonl"
+_PRIOR_RESAMPLE_DIR = "/tmp/rs_prior"  # noqa: S108
+_PRIOR_OUT = "/tmp/prior_out.jsonl"  # noqa: S108
 
 
 @pytest.fixture
@@ -61,7 +61,7 @@ def _folder(tmp_path: Path, names: list[str]) -> str:
     return str(d)
 
 
-def _profile(folder: str):
+def _profile(folder: str):  # noqa: ANN202
     return profiler.profile_data(folder, folder_extensions=[".wav"], recursive=True)
 
 
@@ -90,7 +90,7 @@ def _save_prior_run(
     folder: str,
     recipe: Recipe,
     *,
-    prior_profile,
+    prior_profile,  # noqa: ANN001
     created_at: str = "2026-08-17T07:19:19Z",
 ) -> str:
     """Persist a completed run of ``recipe`` on the folder as ``prior_profile`` saw it."""
@@ -251,7 +251,7 @@ class TestASecretParamNeverLeaksThroughTheDiff:
         (Path(folder) / "d.wav").write_bytes(b"RIFF" + b"\x09" * 5000)
 
         cur = prior.to_dict()
-        cur["stages"][1]["params"]["hf_token"] = "SECRET-CURRENT-TOKEN"
+        cur["stages"][1]["params"]["hf_token"] = "SECRET-CURRENT-TOKEN"  # noqa: S105
         result = verbs.reuse_scan(cur, data=folder)
 
         blob = repr(result)

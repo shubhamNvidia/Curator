@@ -157,7 +157,7 @@ class TestAmbiguousDefaultKey:
             merge,
         ]
 
-    def _report(self, merge: MergeAlignmentDiarizationStage):
+    def _report(self, merge: MergeAlignmentDiarizationStage):  # noqa: ANN202
         return validate_pipeline(
             self._pipeline(merge),
             initial_keys={"audio_filepath", "alignment"},

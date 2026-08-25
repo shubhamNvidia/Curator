@@ -38,10 +38,10 @@ class TestRedact:
         }
         out = _safety.redact(obj)
         assert out["api_key"] == "<redacted-secret>"
-        assert out["hf_token"] == "<redacted-secret>"
-        assert out["nested"]["password"] == "<redacted-secret>"
+        assert out["hf_token"] == "<redacted-secret>"  # noqa: S105
+        assert out["nested"]["password"] == "<redacted-secret>"  # noqa: S105
         assert out["nested"]["keep"] == 1
-        assert out["list"][0]["secret"] == "<redacted-secret>"
+        assert out["list"][0]["secret"] == "<redacted-secret>"  # noqa: S105
         assert out["text"].startswith("<redacted-transcript:")
         assert out["score"] == 3.5
 
@@ -123,35 +123,35 @@ class TestRedact:
 
 
 class TestWorkspaceLock:
-    def test_off_by_default(self, monkeypatch) -> None:
+    def test_off_by_default(self, monkeypatch) -> None:  # noqa: ANN001
         monkeypatch.delenv("AUDIO_AGENT_WORKSPACE", raising=False)
         assert _safety.workspace_root() is None
         assert _safety.path_violations(["/etc/passwd", "/anywhere/x.wav"]) == []
 
-    def test_blocks_outside_allows_inside(self, monkeypatch, tmp_path) -> None:
+    def test_blocks_outside_allows_inside(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))
         inside = str(tmp_path / "data" / "a.wav")
         violations = _safety.path_violations([inside, "/etc/passwd"])
         assert any("passwd" in v for v in violations)
         assert all("a.wav" not in v for v in violations)
 
-    def test_allows_remote_uris(self, monkeypatch, tmp_path) -> None:
+    def test_allows_remote_uris(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))
         assert _safety.path_violations(["s3://bucket/key", "http://h/x", None]) == []
 
-    def test_file_uri_is_still_a_local_path(self, monkeypatch, tmp_path) -> None:
+    def test_file_uri_is_still_a_local_path(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))
         inside = (tmp_path / "data.jsonl").as_uri()
         assert _safety.path_violations([inside]) == []
         assert any("passwd" in v for v in _safety.path_violations(["file:///etc/passwd"]))
 
-    def test_local_uri_alias_is_still_a_local_path(self, monkeypatch, tmp_path) -> None:
+    def test_local_uri_alias_is_still_a_local_path(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))
         inside = f"local://{tmp_path}/data.jsonl"
         assert _safety.path_violations([inside]) == []
         assert any("passwd" in v for v in _safety.path_violations(["local:///etc/passwd"]))
 
-    def test_a_file_uri_naming_another_host_is_not_a_workspace_path(self, monkeypatch, tmp_path) -> None:
+    def test_a_file_uri_naming_another_host_is_not_a_workspace_path(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         """``file://host/path`` names a path on *host*, not here. The lock rebuilds the ``//host``
         prefix before resolving precisely so that the remainder cannot be read as local.
 
@@ -172,7 +172,10 @@ class TestWorkspaceLock:
 
     @pytest.mark.parametrize("link_kind", ["directory", "file"])
     def test_a_symlink_out_of_the_workspace_does_not_escape_the_lock(
-        self, monkeypatch, tmp_path, link_kind: str
+        self,
+        monkeypatch,  # noqa: ANN001
+        tmp_path,  # noqa: ANN001
+        link_kind: str,
     ) -> None:
         """The lock is a string comparison against a resolved path, and the whole of the
         resolution is one ``os.path.realpath`` call. Swap it for ``abspath`` -- the reflex when
@@ -237,8 +240,8 @@ class TestRedactionDoesNotDefeatTheAgentsOwnWorkflow:
         """
         out = _safety.redact({"smoke_token": "9f3c1e", "api_token": "9f3c1e"})
 
-        assert out["smoke_token"] == "9f3c1e"
-        assert out["api_token"] == "<redacted-secret>", "real credentials are still redacted"
+        assert out["smoke_token"] == "9f3c1e"  # noqa: S105
+        assert out["api_token"] == "<redacted-secret>", "real credentials are still redacted"  # noqa: S105
 
     def test_a_transcript_is_redacted_whatever_container_holds_it(self) -> None:
         """Only bare strings were handled, so a transcript key holding a LIST -- per-segment
@@ -369,7 +372,7 @@ class TestSmokeToken:
             out = verbs.run(
                 recipe={"stages": [{"ref": "MonoConversionStage", "params": {}}]},
                 confirm=True,
-                smoke_token="9f3c1e–abcdef",  # noqa: RUF001 - en dash is intentional in this message
+                smoke_token="9f3c1e–abcdef",  # noqa: RUF001, S106 - en dash is intentional in this message
             )
         finally:
             os.environ.pop("AUDIO_AGENT_REQUIRE_SMOKE", None)
@@ -378,7 +381,7 @@ class TestSmokeToken:
         assert "smoke" in out["reason"], f"refused, but not over the token: {out['reason']}"
         json.dumps(out, default=str)  # the host has to be able to read the answer
 
-    def test_secret_env_changes_token(self, monkeypatch) -> None:
+    def test_secret_env_changes_token(self, monkeypatch) -> None:  # noqa: ANN001
         monkeypatch.setenv("AUDIO_AGENT_SMOKE_SECRET", "secret-a")
         _safety._smoke_secret.cache_clear()
         tok_a = _safety.smoke_token("h")
@@ -390,7 +393,7 @@ class TestSmokeToken:
 
 
 class TestRequireSmoke:
-    def test_env_toggle(self, monkeypatch) -> None:
+    def test_env_toggle(self, monkeypatch) -> None:  # noqa: ANN001
         monkeypatch.delenv("AUDIO_AGENT_REQUIRE_SMOKE", raising=False)
         assert _safety.require_smoke() is False
         for truthy in ("1", "true", "YES", "on"):
@@ -422,7 +425,7 @@ class TestDualPurposePathParams:
     def test_local_artifacts_are_treated_as_paths(self, path: str) -> None:
         assert _safety.names_local_path(path) is True
 
-    def test_default_recipe_with_a_hub_id_is_not_refused(self, monkeypatch, tmp_path) -> None:
+    def test_default_recipe_with_a_hub_id_is_not_refused(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         """Locking model_path by name alone would refuse the agent's own default recipe."""
         monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))
         recipe = Recipe.from_dict(
@@ -430,7 +433,7 @@ class TestDualPurposePathParams:
         )
         assert _safety.path_violations(_safety.recipe_path_params(recipe)) == []
 
-    def test_a_local_model_path_outside_the_workspace_is_blocked(self, monkeypatch, tmp_path) -> None:
+    def test_a_local_model_path_outside_the_workspace_is_blocked(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))
         recipe = Recipe.from_dict(
             {"stages": [{"ref": "SpeakerSeparationStage", "params": {"model_path": "/etc/evil.nemo"}}]}
@@ -442,7 +445,7 @@ class TestDualPurposePathParams:
         for a value that is relative and does not exist."""
         assert _safety.names_local_path("out/models/mymodel") is True
 
-    def test_classification_does_not_depend_on_where_the_agent_was_launched(self, monkeypatch, tmp_path) -> None:
+    def test_classification_does_not_depend_on_where_the_agent_was_launched(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         """The old existence probe ran against the working directory, so merely running next
         to a directory named ``nvidia/`` reclassified the default model id as a local file and
         refused the agent's own default recipe -- the same command passing or failing depending
@@ -465,21 +468,21 @@ class TestSharedDependencyLocationsAreNotLocked:
     multi-gigabyte checkpoints per recipe.
     """
 
-    def test_a_shared_model_cache_outside_the_workspace_is_allowed(self, monkeypatch, tmp_path) -> None:
+    def test_a_shared_model_cache_outside_the_workspace_is_allowed(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))
         recipe = Recipe.from_dict(
             {"stages": [{"ref": "InferenceSortformerStage", "params": {"cache_dir": "~/.cache/huggingface"}}]}
         )
         assert _safety.path_violations(_safety.recipe_path_params(recipe)) == []
 
-    def test_a_packaged_config_outside_the_workspace_is_allowed(self, monkeypatch, tmp_path) -> None:
+    def test_a_packaged_config_outside_the_workspace_is_allowed(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))
         recipe = Recipe.from_dict(
             {"stages": [{"ref": "AudioDataFilterStage", "params": {"config_path": "/opt/pkg/default_config.yaml"}}]}
         )
         assert _safety.path_violations(_safety.recipe_path_params(recipe)) == []
 
-    def test_the_dataset_and_outputs_are_still_locked(self, monkeypatch, tmp_path) -> None:
+    def test_the_dataset_and_outputs_are_still_locked(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         """The exemption is narrow: everything the run reads as data or writes as output stays
         contained, which is what the lock was opted into for."""
         monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))
@@ -493,14 +496,14 @@ class TestWorkspaceConfigValidation:
     """A misconfigured lock must never read as an absent one."""
 
     @pytest.mark.parametrize("bad", ["relative_ws", "/nonexistent/path/xyz"])
-    def test_invalid_workspace_fails_closed(self, monkeypatch, bad: str) -> None:
+    def test_invalid_workspace_fails_closed(self, monkeypatch, bad: str) -> None:  # noqa: ANN001
         monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", bad)
         assert _safety.workspace_config_error() is not None
         assert _safety.workspace_root() is None
         # Any path at all: a misconfigured lock must reject rather than silently allow.
         assert _safety.path_violations([os.path.join(tempfile.gettempdir(), "anything")]) != []
 
-    def test_valid_workspace_is_unaffected(self, monkeypatch, tmp_path) -> None:
+    def test_valid_workspace_is_unaffected(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))
         assert _safety.workspace_config_error() is None
         assert _safety.path_violations([str(tmp_path / "a.jsonl")]) == []

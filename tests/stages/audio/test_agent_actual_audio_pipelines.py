@@ -32,19 +32,19 @@ import pytest
 sf = pytest.importorskip("soundfile")
 pytest.importorskip("torch")
 
-from nemo_curator.stages.audio.common import (
+from nemo_curator.stages.audio.common import (  # noqa: E402
     GetAudioDurationStage,
     ManifestReaderStage,
     ManifestWriterStage,
     PreserveByValueStage,
     load_audio_file,
 )
-from nemo_curator.stages.audio.io.convert import AudioToDocumentStage
-from nemo_curator.stages.audio.postprocessing.timestamp_mapper import TimestampMapperStage
-from nemo_curator.stages.audio.preprocessing.concatenation import SegmentConcatenationStage
-from nemo_curator.stages.audio.preprocessing.mono_conversion import MonoConversionStage
-from nemo_curator.stages.audio.tagging.resample_audio import ResampleAudioStage
-from nemo_curator.tasks import AudioTask, FileGroupTask
+from nemo_curator.stages.audio.io.convert import AudioToDocumentStage  # noqa: E402
+from nemo_curator.stages.audio.postprocessing.timestamp_mapper import TimestampMapperStage  # noqa: E402
+from nemo_curator.stages.audio.preprocessing.concatenation import SegmentConcatenationStage  # noqa: E402
+from nemo_curator.stages.audio.preprocessing.mono_conversion import MonoConversionStage  # noqa: E402
+from nemo_curator.stages.audio.tagging.resample_audio import ResampleAudioStage  # noqa: E402
+from nemo_curator.tasks import AudioTask, FileGroupTask  # noqa: E402
 
 
 def _write_stereo_wav(path: Path, *, sample_rate: int = 16000, duration_sec: float = 0.5) -> Path:

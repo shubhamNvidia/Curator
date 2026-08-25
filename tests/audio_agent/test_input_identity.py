@@ -310,7 +310,7 @@ class TestManifestReader:
         from nemo_curator.audio_agent import verbs
 
         def must_not_bound(*_args: object, **_kwargs: object) -> None:
-            raise AssertionError("smoke attempted to bound a missing manifest selector")
+            raise AssertionError("smoke attempted to bound a missing manifest selector")  # noqa: EM101
 
         monkeypatch.setattr(verbs, "_bound_recipe", must_not_bound)
         result = verbs.smoke(_recipe("ManifestReader", {"manifest_path": str(tmp_path / "*.jsonl")}))
@@ -363,7 +363,7 @@ class TestFolderAndGeneratedSources:
                 "ReadLongFormManifestStage",
                 {
                     "input_manifest": "file:///tmp/long.jsonl",
-                    "audio_dir": "/tmp/audio",
+                    "audio_dir": "/tmp/audio",  # noqa: S108
                 },
             ),
         ],

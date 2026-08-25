@@ -129,7 +129,7 @@ class TestResampleAudioStage:
             assert len(os.listdir(tmpdir)) == 3, "sibling segments collapsed onto one filename"
 
 
-def _fake_ffmpeg_copy(cmd: list[str], **_: Any) -> SimpleNamespace:
+def _fake_ffmpeg_copy(cmd: list[str], **_: Any) -> SimpleNamespace:  # noqa: ANN401
     """Stand in for the ffmpeg call by copying the source to the requested output."""
     src = cmd[cmd.index("-i") + 1]
     dst = cmd[-1]
@@ -153,7 +153,7 @@ class TestSkippingExistingOutput:
 
         calls = {"n": 0}
 
-        def counting_ffmpeg(cmd: list[str], **kwargs: Any) -> SimpleNamespace:
+        def counting_ffmpeg(cmd: list[str], **kwargs: Any) -> SimpleNamespace:  # noqa: ANN401
             calls["n"] += 1
             return _fake_ffmpeg_copy(cmd, **kwargs)
 

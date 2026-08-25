@@ -459,30 +459,6 @@ fixable = ["ALL"]
     "PLR2004", # magic value used in comparison
     "ERA001", # allow commented-out code
 ]
-# The audio test suites lean on patterns idiomatic for tests but not library code: fixtures
-# typed loosely, /tmp and dummy tokens in fixtures, `importorskip` before imports of optional
-# heavy deps (whisperx/pyannote/nemo_text_processing), and mock signatures with unused args.
-# Scoped here rather than widened globally so other suites keep the stricter default.
-"tests/stages/audio/**/*.py" = [
-    "ANN001", "ANN202", "ANN401",  # loose annotations fine in tests
-    "S105", "S106", "S108",        # dummy tokens / /tmp in fixtures are not secrets
-    "E402",                        # importorskip before the optional dep's imports
-    "ARG001", "ARG005",            # mock/monkeypatch signatures carry unused args
-    "PT011", "PT018",              # pytest.raises/assert style not enforced here
-    "EM101",                       # inline exception strings in tests
-    "TC002", "TC003",              # type-only imports kept inline for readability
-    "RUF012",                      # mutable class attrs are test data
-]
-"tests/audio_agent/**/*.py" = [
-    "ANN001", "ANN202", "ANN401",
-    "S105", "S106", "S108",
-    "E402",
-    "ARG001", "ARG005",
-    "PT011", "PT018",
-    "EM101",
-    "TC002", "TC003",
-    "RUF012",
-]
 "benchmarking/**" = [
     "BLE001", # allow catching blind exceptions (benchmark runners need catch-all error handling)
 ]

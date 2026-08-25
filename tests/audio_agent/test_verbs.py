@@ -26,8 +26,8 @@ from nemo_curator.audio_agent import cli, run_store, verbs
 from nemo_curator.audio_agent.recipe import Recipe
 from nemo_curator.audio_agent.report import _row_count
 
-_READER = {"ref": "ManifestReader", "params": {"manifest_path": "/tmp/m.jsonl"}}
-_WRITER = {"ref": "ManifestWriterStage", "params": {"output_path": "/tmp/out.jsonl"}}
+_READER = {"ref": "ManifestReader", "params": {"manifest_path": "/tmp/m.jsonl"}}  # noqa: S108
+_WRITER = {"ref": "ManifestWriterStage", "params": {"output_path": "/tmp/out.jsonl"}}  # noqa: S108
 _RECIPE = {"stages": [_READER, {"ref": "GetAudioDurationStage", "params": {}}, _WRITER]}
 
 
@@ -53,13 +53,13 @@ class TestRunConfirmGate:
 
 
 class TestRunWorkspaceLock:
-    def test_refuses_path_outside_workspace(self, monkeypatch, tmp_path) -> None:
+    def test_refuses_path_outside_workspace(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         monkeypatch.setenv("AUDIO_AGENT_WORKSPACE", str(tmp_path))
         r = aa.run(_RECIPE, confirm=True, data="/etc/passwd")
         assert r["status"] == "refused"
         assert "workspace" in r["reason"].lower()
 
-    def test_unconfirmed_run_does_not_profile_an_outside_source(self, monkeypatch, tmp_path) -> None:
+    def test_unconfirmed_run_does_not_profile_an_outside_source(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         source = tmp_path / "outside.jsonl"
@@ -81,7 +81,7 @@ class TestRunWorkspaceLock:
         assert result["status"] == "refused"
         assert "workspace" in result["reason"].lower()
 
-    def test_validate_does_not_profile_an_outside_source(self, monkeypatch, tmp_path) -> None:
+    def test_validate_does_not_profile_an_outside_source(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         source = tmp_path / "outside.jsonl"
@@ -103,7 +103,7 @@ class TestRunWorkspaceLock:
         assert result["runnable"] is False
         assert result["issues"][0]["code"] == "path_outside_workspace"
 
-    def test_semantic_path_fields_do_not_trip_the_workspace_lock(self, monkeypatch, tmp_path) -> None:
+    def test_semantic_path_fields_do_not_trip_the_workspace_lock(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         audio_dir = tmp_path / "audio"
         audio_dir.mkdir()
         manifest = tmp_path / "long.jsonl"
@@ -138,16 +138,16 @@ class TestVerbInputBinding:
             "stages": [
                 {"ref": "ManifestReader", "params": {"manifest_path": source}},
                 {"ref": "GetAudioDurationStage", "params": {}},
-                {"ref": "ManifestWriterStage", "params": {"output_path": "/tmp/out.jsonl"}},
+                {"ref": "ManifestWriterStage", "params": {"output_path": "/tmp/out.jsonl"}},  # noqa: S108
             ]
         }
 
     @staticmethod
-    def _manifest(path) -> str:
+    def _manifest(path) -> str:  # noqa: ANN001
         path.write_text('{"audio_filepath": "/tmp/clip.wav"}\n', encoding="utf-8")
         return str(path)
 
-    def test_validate_rejects_same_content_at_a_different_source(self, tmp_path) -> None:
+    def test_validate_rejects_same_content_at_a_different_source(self, tmp_path) -> None:  # noqa: ANN001
         configured = self._manifest(tmp_path / "configured.jsonl")
         asserted = self._manifest(tmp_path / "asserted.jsonl")
 
@@ -157,7 +157,7 @@ class TestVerbInputBinding:
         assert any(issue["code"] == "data_source_mismatch" for issue in verdict["issues"])
         assert verdict["data_binding"]["primary_path"] == configured
 
-    def test_omitted_data_is_derived_from_the_recipe(self, tmp_path) -> None:
+    def test_omitted_data_is_derived_from_the_recipe(self, tmp_path) -> None:  # noqa: ANN001
         configured = self._manifest(tmp_path / "configured.jsonl")
 
         verdict = aa.validate(self._recipe(configured))
@@ -166,12 +166,12 @@ class TestVerbInputBinding:
         assert verdict["data_binding"]["profile_source"] == configured
         assert not any(issue["code"] == "data_source_missing" for issue in verdict["issues"])
 
-    def test_mismatched_smoke_refuses_before_bounding_or_execution(self, monkeypatch, tmp_path) -> None:
+    def test_mismatched_smoke_refuses_before_bounding_or_execution(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         configured = self._manifest(tmp_path / "configured.jsonl")
         asserted = self._manifest(tmp_path / "asserted.jsonl")
 
-        def must_not_bound(*_args, **_kwargs):
-            raise AssertionError("smoke attempted to bound a mismatched source")
+        def must_not_bound(*_args, **_kwargs):  # noqa: ANN202
+            raise AssertionError("smoke attempted to bound a mismatched source")  # noqa: EM101
 
         monkeypatch.setattr(verbs, "_bound_recipe", must_not_bound)
         result = verbs.smoke(self._recipe(configured), data=asserted)
@@ -179,12 +179,12 @@ class TestVerbInputBinding:
         assert result["status"] == "refused"
         assert result["data_binding"]["status"] == "mismatch"
 
-    def test_confirmed_mismatched_run_never_calls_executor(self, monkeypatch, tmp_path) -> None:
+    def test_confirmed_mismatched_run_never_calls_executor(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         configured = self._manifest(tmp_path / "configured.jsonl")
         asserted = self._manifest(tmp_path / "asserted.jsonl")
 
-        def must_not_run(*_args, **_kwargs):
-            raise AssertionError("executor was called for a mismatched source")
+        def must_not_run(*_args, **_kwargs):  # noqa: ANN202
+            raise AssertionError("executor was called for a mismatched source")  # noqa: EM101
 
         monkeypatch.delenv("AUDIO_AGENT_REQUIRE_SMOKE", raising=False)
         monkeypatch.setattr(verbs, "_run_pipeline_autofallback", must_not_run)
@@ -193,7 +193,7 @@ class TestVerbInputBinding:
         assert result["status"] == "refused"
         assert result["data_binding"]["status"] == "mismatch"
 
-    def test_reuse_scan_derives_a_nonempty_key_without_data(self, monkeypatch, tmp_path) -> None:
+    def test_reuse_scan_derives_a_nonempty_key_without_data(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         configured = self._manifest(tmp_path / "configured.jsonl")
         monkeypatch.setenv("AUDIO_AGENT_RUNS_DIR", str(tmp_path / "runs"))
 
@@ -202,7 +202,7 @@ class TestVerbInputBinding:
         assert result["dataset_key"].startswith(("stat:", "shape:"))
         assert result["data_binding"]["primary_path"] == configured
 
-    def test_report_rejects_a_denominator_from_another_source(self, tmp_path) -> None:
+    def test_report_rejects_a_denominator_from_another_source(self, tmp_path) -> None:  # noqa: ANN001
         configured = self._manifest(tmp_path / "configured.jsonl")
         asserted = self._manifest(tmp_path / "asserted.jsonl")
         output = tmp_path / "output.jsonl"
@@ -224,15 +224,15 @@ class TestMalformedSourceBinding:
             ]
         }
 
-    def test_all_recipe_verbs_fail_structured_before_execution(self, tmp_path) -> None:
+    def test_all_recipe_verbs_fail_structured_before_execution(self, tmp_path) -> None:  # noqa: ANN001
         source = tmp_path / "bad.jsonl"
         source.write_bytes(b"\xff\xfe")
         output = tmp_path / "out.jsonl"
         output.write_text("{}\n", encoding="utf-8")
         recipe = self._recipe(str(source), str(output))
 
-        def unexpected_executor(*_args, **_kwargs):
-            raise AssertionError("malformed source reached the executor")
+        def unexpected_executor(*_args, **_kwargs):  # noqa: ANN202
+            raise AssertionError("malformed source reached the executor")  # noqa: EM101
 
         verdict = aa.validate(recipe)
         smoke = aa.smoke(recipe, executor=unexpected_executor)
@@ -276,14 +276,14 @@ class TestPostHocReportIntegrity:
             recipe["acceptance_criteria"] = criteria
         return recipe
 
-    def test_missing_output_is_an_explicit_error(self, tmp_path) -> None:
+    def test_missing_output_is_an_explicit_error(self, tmp_path) -> None:  # noqa: ANN001
         result = verbs.report(str(tmp_path / "missing.jsonl"))
 
         assert result["status"] == "error"
         assert result["output_scan"]["status"] == "missing"
         assert "could not be read" in result["reason"]
 
-    def test_malformed_output_is_not_reported_clean(self, monkeypatch, tmp_path) -> None:
+    def test_malformed_output_is_not_reported_clean(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         output = tmp_path / "bad.jsonl"
         output.write_text('{"ok": 1}\n{bad json}\n', encoding="utf-8")
         monkeypatch.setattr(
@@ -299,7 +299,7 @@ class TestPostHocReportIntegrity:
         assert result["output_scan"]["malformed_rows"] == 1
         assert result["failure_reasons"][0]["code"] == "terminal_output_incomplete"
 
-    def test_recipe_refuses_an_unrelated_output(self, tmp_path) -> None:
+    def test_recipe_refuses_an_unrelated_output(self, tmp_path) -> None:  # noqa: ANN001
         source = tmp_path / "source.jsonl"
         source.write_text('{"audio_filepath":"clip.wav"}\n', encoding="utf-8")
         declared = tmp_path / "declared.jsonl"
@@ -318,8 +318,8 @@ class TestPostHocReportIntegrity:
 
     def test_recipe_identity_and_acceptance_are_bound_to_terminal_rows(
         self,
-        monkeypatch,
-        tmp_path,
+        monkeypatch,  # noqa: ANN001
+        tmp_path,  # noqa: ANN001
     ) -> None:
         source = tmp_path / "source.jsonl"
         source.write_text('{"audio_filepath":"clip.wav"}\n', encoding="utf-8")
@@ -353,8 +353,8 @@ class TestPostHocReportIntegrity:
 
     def test_aggregate_acceptance_uses_complete_terminal_row_mean(
         self,
-        monkeypatch,
-        tmp_path,
+        monkeypatch,  # noqa: ANN001
+        tmp_path,  # noqa: ANN001
     ) -> None:
         source = tmp_path / "source.jsonl"
         source.write_text(
@@ -396,8 +396,8 @@ class TestPostHocReportIntegrity:
 
     def test_report_does_not_manufacture_unknown_source_counts(
         self,
-        monkeypatch,
-        tmp_path,
+        monkeypatch,  # noqa: ANN001
+        tmp_path,  # noqa: ANN001
     ) -> None:
         output = tmp_path / "out.jsonl"
         output.write_text('{"audio_filepath":"a.wav"}\n', encoding="utf-8")
@@ -417,8 +417,8 @@ class TestPostHocReportIntegrity:
 
     def test_non_manifest_directory_returns_inventory_not_a_false_error(
         self,
-        monkeypatch,
-        tmp_path,
+        monkeypatch,  # noqa: ANN001
+        tmp_path,  # noqa: ANN001
     ) -> None:
         output = tmp_path / "clips"
         output.mkdir()
@@ -454,7 +454,7 @@ class TestPretrainFinalizerContract:
             [
                 self._stage(
                     "SnippetManifestWriterStage",
-                    output_path="/tmp/snippets.jsonl",
+                    output_path="/tmp/snippets.jsonl",  # noqa: S108
                 )
             ]
         )
@@ -468,25 +468,25 @@ class TestPretrainFinalizerContract:
             [
                 self._stage(
                     "SnippetExtractionStage",
-                    output_audio_tar_path="/tmp/snippets.tar",
+                    output_audio_tar_path="/tmp/snippets.tar",  # noqa: S108
                     audio_filepath_key="clip_path",
                 ),
                 self._stage(
                     "SnippetManifestWriterStage",
-                    output_path="/tmp/snippets.jsonl",
+                    output_path="/tmp/snippets.jsonl",  # noqa: S108
                 ),
                 self._stage(
                     "PretrainMetricsAggregatorStage",
-                    output_path="/tmp/metrics.json",
+                    output_path="/tmp/metrics.json",  # noqa: S108
                 ),
             ]
         )
 
         assert error == ""
         assert finalizer == verbs._PretrainFinalizer(
-            manifest_path="/tmp/snippets.jsonl",
-            metrics_path="/tmp/metrics.json",
-            audio_tar_path="/tmp/snippets.tar",
+            manifest_path="/tmp/snippets.jsonl",  # noqa: S108
+            metrics_path="/tmp/metrics.json",  # noqa: S108
+            audio_tar_path="/tmp/snippets.tar",  # noqa: S108
             audio_filepath_key="clip_path",
         )
 
@@ -494,8 +494,8 @@ class TestPretrainFinalizerContract:
 class TestCliExitSemantics:
     def test_structured_smoke_refusal_returns_nonzero(
         self,
-        tmp_path,
-        capsys,
+        tmp_path,  # noqa: ANN001
+        capsys,  # noqa: ANN001
     ) -> None:
         recipe = tmp_path / "recipe.yaml"
         recipe.write_text(yaml.safe_dump(_RECIPE), encoding="utf-8")
@@ -514,7 +514,7 @@ class TestCliExitSemantics:
         assert rc == 1
         assert result["status"] == "refused"
 
-    def test_structured_lookup_error_returns_nonzero(self, capsys) -> None:
+    def test_structured_lookup_error_returns_nonzero(self, capsys) -> None:  # noqa: ANN001
         rc = cli.main(["describe", "DefinitelyNotAnAudioStage"])
         result = json.loads(capsys.readouterr().out)
 
@@ -523,8 +523,8 @@ class TestCliExitSemantics:
 
     def test_missing_report_output_returns_nonzero(
         self,
-        tmp_path,
-        capsys,
+        tmp_path,  # noqa: ANN001
+        capsys,  # noqa: ANN001
     ) -> None:
         rc = cli.main(["report", "--output", str(tmp_path / "missing.jsonl")])
         result = json.loads(capsys.readouterr().out)
@@ -536,7 +536,7 @@ class TestCliExitSemantics:
 class TestContinuationExecutionEvidence:
     def test_fresh_branch_forwards_smoke_checkpoint_and_calibration(
         self,
-        monkeypatch,
+        monkeypatch,  # noqa: ANN001
     ) -> None:
         captured: dict[str, object] = {}
 
@@ -551,26 +551,26 @@ class TestContinuationExecutionEvidence:
             rec,
             {"mode": "full_rerun", "source": "none"},
             choice="fresh",
-            data="/tmp/m.jsonl",
+            data="/tmp/m.jsonl",  # noqa: S108
             confirm=rec.config_hash or True,
             output_dir=None,
             bootstrap_ray=False,
             goal={"task": "continue"},
             parent=None,
             continuation_mod=object(),
-            checkpoint_path="/tmp/checkpoint",
-            smoke_token="proof",
+            checkpoint_path="/tmp/checkpoint",  # noqa: S108
+            smoke_token="proof",  # noqa: S106
             calibration={"Stage": {"source": "measured"}},
         )
 
         assert result["status"] == "completed"
-        assert captured["checkpoint_path"] == "/tmp/checkpoint"
-        assert captured["smoke_token"] == "proof"
+        assert captured["checkpoint_path"] == "/tmp/checkpoint"  # noqa: S108
+        assert captured["smoke_token"] == "proof"  # noqa: S105
         assert captured["calibration"] == {"Stage": {"source": "measured"}}
 
 
 class TestRunRequireSmoke:
-    def test_refuses_without_smoke_token(self, monkeypatch) -> None:
+    def test_refuses_without_smoke_token(self, monkeypatch) -> None:  # noqa: ANN001
         monkeypatch.setenv("AUDIO_AGENT_REQUIRE_SMOKE", "1")
         monkeypatch.delenv("AUDIO_AGENT_WORKSPACE", raising=False)
         r = aa.run(_RECIPE, confirm=True)
@@ -581,8 +581,8 @@ class TestRunRequireSmoke:
 class TestRunAcceptanceResult:
     def test_run_returns_the_same_acceptance_result_it_records(
         self,
-        monkeypatch,
-        tmp_path,
+        monkeypatch,  # noqa: ANN001
+        tmp_path,  # noqa: ANN001
     ) -> None:
         env = SimpleNamespace(
             has_gpu=False,
@@ -610,12 +610,12 @@ class TestRunAcceptanceResult:
         acceptance_calls = 0
         recorded: dict = {}
 
-        def fake_acceptance(*_args, **_kwargs):
+        def fake_acceptance(*_args, **_kwargs):  # noqa: ANN202
             nonlocal acceptance_calls
             acceptance_calls += 1
             return acceptance
 
-        def fake_record(*_args, **kwargs):
+        def fake_record(*_args, **kwargs):  # noqa: ANN202
             recorded.update(kwargs)
             return "run-test"
 
@@ -689,7 +689,7 @@ class TestCatalogDisclosure:
         """The key is absent when everything imported, so healthy output is unchanged."""
         assert "unavailable" not in aa.discover()
 
-    def test_a_module_that_failed_to_import_is_disclosed(self, monkeypatch) -> None:
+    def test_a_module_that_failed_to_import_is_disclosed(self, monkeypatch) -> None:  # noqa: ANN001
         """On a supported CPU-only install the ASR stages are simply gone; the host must be
         able to say 'unavailable here' rather than 'this cannot be done'."""
         from nemo_curator.stages.audio._agent import _catalog
@@ -717,7 +717,7 @@ class TestDataInformedConfig:
     configures the recipe it builds instead of changing what the stage does by default.
     """
 
-    def _manifest(self, tmp_path, name, row, rate=16000):
+    def _manifest(self, tmp_path, name, row, rate=16000):  # noqa: ANN001, ANN202
         import numpy as np
         import soundfile as sf
 
@@ -728,7 +728,7 @@ class TestDataInformedConfig:
         path.write_text(json.dumps(row) + "\n", encoding="utf-8")
         return str(path)
 
-    def test_the_observed_rate_is_bound_so_the_default_does_not_discard_the_corpus(self, tmp_path) -> None:
+    def test_the_observed_rate_is_bound_so_the_default_does_not_discard_the_corpus(self, tmp_path) -> None:  # noqa: ANN001
         """MonoConversion VERIFIES the rate and drops non-matching rows; its 48 kHz default
         would silently discard a 16 kHz corpus."""
         manifest = self._manifest(tmp_path, "nemo.jsonl", {"audio_filepath": "@wav", "text": "hi"})
@@ -736,7 +736,7 @@ class TestDataInformedConfig:
         assert result["params"]["output_sample_rate"] == 16000
         assert result["asks"] == []
 
-    def test_a_folder_source_needs_no_column_question(self, tmp_path) -> None:
+    def test_a_folder_source_needs_no_column_question(self, tmp_path) -> None:  # noqa: ANN001
         """The agent creates the manifest for a folder, so the schema is known by construction."""
         import numpy as np
         import soundfile as sf
@@ -746,12 +746,12 @@ class TestDataInformedConfig:
         assert result["params"]["output_sample_rate"] == 16000
         assert result["asks"] == []
 
-    def test_an_explicit_value_outranks_the_inferred_one(self, tmp_path) -> None:
+    def test_an_explicit_value_outranks_the_inferred_one(self, tmp_path) -> None:  # noqa: ANN001
         manifest = self._manifest(tmp_path, "nemo.jsonl", {"audio_filepath": "@wav", "text": "hi"})
         result = aa.resolve("MonoConversionStage", explicit={"output_sample_rate": 48000}, data=manifest)
         assert result["params"]["output_sample_rate"] == 48000
 
-    def test_an_overridden_inference_leaves_no_trace_claiming_it_applied(self, tmp_path) -> None:
+    def test_an_overridden_inference_leaves_no_trace_claiming_it_applied(self, tmp_path) -> None:  # noqa: ANN001
         """The value was always the user's, but the strategy trail also gained a data_informed
         entry stating 16000 and why it was chosen -- an audit record of a binding that never
         happened. On the one param a user is most likely to have pinned deliberately, as a
@@ -762,7 +762,7 @@ class TestDataInformedConfig:
         rate_entries = [e for e in result["strategy"] if e["param"] == "output_sample_rate"]
         assert [e["value"] for e in rate_entries] == [48000]
 
-    def test_the_derivation_is_recorded_as_recomputable(self, tmp_path) -> None:
+    def test_the_derivation_is_recorded_as_recomputable(self, tmp_path) -> None:  # noqa: ANN001
         """A data-derived value must be stamped so a different dataset recomputes it."""
         manifest = self._manifest(tmp_path, "nemo.jsonl", {"audio_filepath": "@wav", "text": "hi"})
         entry = next(
@@ -776,7 +776,7 @@ class TestDataInformedConfig:
     def test_path_a_alone_is_unchanged(self) -> None:
         assert aa.resolve("UTMOSFilterStage", label="studio")["params"] == {"mos_threshold": 4.0}
 
-    def test_a_dataset_outside_the_workspace_is_refused_like_every_other_verb(self, monkeypatch, tmp_path) -> None:
+    def test_a_dataset_outside_the_workspace_is_refused_like_every_other_verb(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         """``resolve`` profiles ``data`` off the filesystem, so it owes the same lock the
         other data-taking verbs enforce. It was the one verb without the check -- harmless
         only while no adapter could pass ``data``, and a hole the moment one could."""
@@ -789,7 +789,7 @@ class TestDataInformedConfig:
         assert "outside the allowed workspace" in result["reason"]
         assert "params" not in result
 
-    def test_a_profile_that_read_no_audio_says_so(self, tmp_path) -> None:
+    def test_a_profile_that_read_no_audio_says_so(self, tmp_path) -> None:  # noqa: ANN001
         """An empty audio profile must not be mistaken for a healthy one."""
         from nemo_curator.audio_agent.profiler import profile_data
 

@@ -102,7 +102,7 @@ class TestSpeakerSeparationStage:
         assert "audio_filepath" not in contract.writes.data_keys
 
     @patch("nemo_curator.stages.audio.segmentation.speaker_separation.SpeakerSeparationStage._initialize_separator")
-    def test_write_to_disk_persists_and_sets_path(self, mock_init: MagicMock, tmp_path) -> None:
+    def test_write_to_disk_persists_and_sets_path(self, mock_init: MagicMock, tmp_path) -> None:  # noqa: ANN001
         stage = SpeakerSeparationStage(min_duration=0.5, write_to_disk=True, separated_audio_dir=str(tmp_path / "sep"))
         separator = MagicMock()
         separator.get_speaker_audio_data.return_value = {
@@ -116,7 +116,7 @@ class TestSpeakerSeparationStage:
         assert os.path.exists(item["audio_filepath"])
 
     @patch("nemo_curator.stages.audio.segmentation.speaker_separation.SpeakerSeparationStage._initialize_separator")
-    def test_write_to_disk_only_drops_waveform(self, mock_init: MagicMock, tmp_path) -> None:
+    def test_write_to_disk_only_drops_waveform(self, mock_init: MagicMock, tmp_path) -> None:  # noqa: ANN001
         stage = SpeakerSeparationStage(
             min_duration=0.5,
             write_to_disk=True,
@@ -393,7 +393,7 @@ def test_agent_fanout_children_have_isolated_metadata() -> None:
     sibling or the parent (the shared-reference bug class).
     """
 
-    def fake_speaker_audio_data(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+    def fake_speaker_audio_data(*_args: Any, **_kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
         return {
             "spk0": SimpleNamespace(audio=_TinyAudioSegment(), duration=0.25, diar_segments=[(0.0, 0.25)]),
             "spk1": SimpleNamespace(audio=_TinyAudioSegment(), duration=0.30, diar_segments=[(0.25, 0.55)]),

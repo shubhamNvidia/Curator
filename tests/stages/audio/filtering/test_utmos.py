@@ -137,7 +137,7 @@ class TestUTMOSFilterStage:
         stage = UTMOSFilterStage(mos_threshold=3.0)
         call_count = {"n": 0}
 
-        def model_side_effect(_waveform: torch.Tensor, sr: int = 16000) -> torch.Tensor:
+        def model_side_effect(_waveform: torch.Tensor, sr: int = 16000) -> torch.Tensor:  # noqa: ARG001
             call_count["n"] += 1
             return torch.tensor([4.0 if call_count["n"] % 2 == 1 else 2.0])
 
