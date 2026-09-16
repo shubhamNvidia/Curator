@@ -212,10 +212,12 @@ ADDITIVE_STAGE_NAMES = (
 # lifecycle, persistence, independence, and network gates.
 # Regenerated for the metrics safety corrections. Exactly two entries moved:
 # ComputeWERStage gained additive configurable timing-key defaults, and SQUIM
-# static discovery now reports its network/row-dependence gates while omitting
-# the runtime-only model from agent-settable parameters. Constructor defaults
-# and the other 44 stage entries remain unchanged.
-EXPECTED_LEGACY_COMPATIBILITY_SHA256 = "9ead857f23787c32fb0165f038c5c1fcd0bb4f7e54ff105fbd3d266955a5d6d3"
+# Regenerated for the filtering safety corrections. Exactly three entries moved:
+# Band, SIGMOS, and UTMOS now expose conservative static network/row-independence
+# gates, and their post-legacy agent knobs are keyword-only so the original
+# positional constructor slots keep their historical meanings. Runtime defaults
+# and the other 43 stage entries remain unchanged.
+EXPECTED_LEGACY_COMPATIBILITY_SHA256 = "16eeb6d22249d6efbfe7a1d30825f81383ed478ad02c52a9cbf6ff067e3f8239"
 
 
 def _normalize(value: Any) -> Any:  # noqa: ANN401

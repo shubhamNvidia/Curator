@@ -90,6 +90,8 @@ def test_auto_quality_scope_writes_are_conditional(stage_cls: type, key_param: s
     stage = stage_cls(mode="auto", **{key_param: "quality"})
     contract = stage.describe()
 
+    assert contract.writes.data_keys == []
+    assert contract.writes.segment_data_keys == []
     assert {("task", "quality"), ("segment", "quality")} <= _scoped_keys(contract)
     assert all(item.value_origin == "stage_generated" for item in contract.conditional_writes)
     assert any("'segments' is absent" in item.condition for item in contract.conditional_writes)
@@ -157,7 +159,7 @@ def test_semantic_review_labels_auto_scope_writes_as_conditional() -> None:
         ("task", "conditional"),
         ("segment", "conditional"),
     }
-    assert all(write["legacy_mechanical_write"] is True for write in quality_writes)
+    assert all(write["legacy_mechanical_write"] is False for write in quality_writes)
     assert all(
         condition["value_origin"] == "stage_generated" for write in quality_writes for condition in write["conditions"]
     )

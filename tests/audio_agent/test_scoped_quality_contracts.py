@@ -57,10 +57,13 @@ def test_task_mode_contract_exposes_only_task_residency_and_outputs(stage_cls: t
 
     assert contract.reads.data_keys == []
     assert contract.reads.segment_data_keys == []
-    assert _read_shapes(stage) == {
+    expected_reads = {
         (("samples", "rate"), (), ("waveform",)),
         (("path",), (), ("file",)),
     }
+    if stage_cls is BandFilterStage:
+        expected_reads.add((("samples", "path"), (), ("waveform",)))
+    assert _read_shapes(stage) == expected_reads
     assert contract.writes.data_keys == expected_outputs
     assert contract.writes.segment_data_keys == []
 
@@ -85,10 +88,13 @@ def test_segments_mode_contract_requires_container_and_segment_residency(
 
     assert contract.reads.data_keys == ["clips"]
     assert contract.reads.segment_data_keys == []
-    assert _read_shapes(stage) == {
+    expected_reads = {
         ((), ("samples", "rate"), ("waveform",)),
         ((), ("path",), ("file",)),
     }
+    if stage_cls is BandFilterStage:
+        expected_reads.add(((), ("samples", "path"), ("waveform",)))
+    assert _read_shapes(stage) == expected_reads
     assert contract.writes.data_keys == []
     assert contract.writes.segment_data_keys == expected_outputs
 
@@ -107,16 +113,30 @@ def test_auto_mode_contract_conservatively_exposes_both_scoped_branches(
     )
 
     contract = stage.describe()
-    expected_outputs = stage.outputs()[1]
-
     assert contract.reads.data_keys == []
     assert contract.reads.segment_data_keys == []
     assert _read_shapes(stage) == {
         (("path",), (), ("file",)),
         (("clips",), ("path",), ("file",)),
     }
-    assert contract.writes.data_keys == expected_outputs
-    assert contract.writes.segment_data_keys == expected_outputs
+    assert contract.writes.data_keys == []
+    assert contract.writes.segment_data_keys == []
+
+
+@pytest.mark.parametrize(("stage_cls", "output_key_param"), _STAGE_CASES)
+@pytest.mark.parametrize("mode", ["task", "segments"])
+def test_annotation_outputs_are_conditional_not_guaranteed(
+    stage_cls: type,
+    output_key_param: str,
+    mode: str,
+) -> None:
+    stage = stage_cls(mode=mode, action="annotate", **{output_key_param: "quality"})
+
+    contract = stage.describe()
+
+    assert contract.writes.data_keys == []
+    assert contract.writes.segment_data_keys == []
+    assert len(contract.conditional_writes) == 1
 
 
 @pytest.mark.parametrize(

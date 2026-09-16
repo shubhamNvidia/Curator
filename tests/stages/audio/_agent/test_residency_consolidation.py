@@ -32,7 +32,12 @@ import numpy as np
 import soundfile as sf
 import torch
 
-from nemo_curator.stages.audio._agent._residency import cleanup_temp_files, resolve_audio, resolve_audio_path
+from nemo_curator.stages.audio._agent._residency import (
+    cleanup_temp_files,
+    normalize_audio_waveform,
+    resolve_audio,
+    resolve_audio_path,
+)
 
 if TYPE_CHECKING:
     import pytest
@@ -67,8 +72,20 @@ def test_utmos_waveform_numpy_1d_to_mono():  # noqa: ANN202
     assert torch.is_tensor(t) and t.shape == (1, 1600)  # noqa: PT018
 
 
-def test_utmos_waveform_present_no_sr_returns_none():  # noqa: ANN202
-    assert _load_waveform_tensor({"waveform": torch.ones(1, 1600)}, "t") is None
+def test_utmos_waveform_present_no_sr_returns_none_in_waveform_mode():  # noqa: ANN202
+    assert _load_waveform_tensor({"waveform": torch.ones(1, 1600)}, "t", input_residency="waveform") is None
+
+
+def test_utmos_incomplete_waveform_pair_falls_back_to_file_in_auto_mode(tmp_path: Path):  # noqa: ANN202
+    out = _load_waveform_tensor(
+        {"waveform": torch.ones(1, 7), "audio_filepath": _wav(tmp_path / "u-fallback.wav", n=1600)},
+        "t",
+    )
+
+    assert out is not None
+    waveform, sample_rate = out
+    assert waveform.shape == (1, 1600)
+    assert sample_rate == _SR
 
 
 def test_utmos_file_path_loads_mono(tmp_path: Path):  # noqa: ANN202
@@ -136,6 +153,30 @@ def test_resolve_audio_file_branch_applies_mono(tmp_path: Path):  # noqa: ANN202
     out = resolve_audio({"audio_filepath": _wav(tmp_path / "r.wav", channels=2)}, mono=True)
     t, _ = out
     assert t.shape[0] == 1
+
+
+def test_resolve_audio_can_infer_only_sample_rate_from_file_header(tmp_path: Path):  # noqa: ANN202
+    resident = torch.full((1, 13), 0.75)
+    item = {"waveform": resident, "audio_filepath": _wav(tmp_path / "header.wav", n=31)}
+
+    out = resolve_audio(item, infer_sample_rate_from_file=True)
+
+    assert out is not None
+    waveform, sample_rate = out
+    assert waveform.data_ptr() == resident.data_ptr()
+    assert waveform.shape == (1, 13)
+    assert sample_rate == _SR
+    assert item["sample_rate"] == _SR
+
+
+def test_normalize_audio_waveform_scales_integer_pcm_before_downmix():  # noqa: ANN202
+    resident = torch.tensor([[32767, -32768], [0, 16384]], dtype=torch.int16)
+
+    waveform = normalize_audio_waveform(resident, stage_name="test", mono=True)
+
+    assert waveform.dtype == torch.float32
+    assert waveform.shape == (1, 2)
+    assert torch.allclose(waveform, torch.tensor([[32767 / 65536, -0.25]]))
 
 
 # --------------------------------------------------------------------------- #
