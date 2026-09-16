@@ -215,7 +215,10 @@ ADDITIVE_STAGE_NAMES = (
 # static discovery now reports its network/row-dependence gates while omitting
 # the runtime-only model from agent-settable parameters. Constructor defaults
 # and the other 44 stage entries remain unchanged.
-EXPECTED_LEGACY_COMPATIBILITY_SHA256 = "9ead857f23787c32fb0165f038c5c1fcd0bb4f7e54ff105fbd3d266955a5d6d3"
+# Regenerated for the segmentation safety corrections. Speaker separation now
+# advertises its first-run network requirement, while new segmentation knobs are
+# keyword-only so the legacy positional constructor surface remains unchanged.
+EXPECTED_LEGACY_COMPATIBILITY_SHA256 = "eb91f7de4d91a108a3aa057a869715443c7c947ea107178ad471e485849ef908"
 
 
 def _normalize(value: Any) -> Any:  # noqa: ANN401
