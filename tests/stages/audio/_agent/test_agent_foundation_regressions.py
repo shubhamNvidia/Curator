@@ -423,6 +423,18 @@ def test_concatenation_does_not_promise_upstream_keys_it_drops() -> None:
     assert "segments" not in after_concat.produced_keys
 
 
+def test_concatenation_sanitization_matches_output_residency(tmp_path: Path) -> None:
+    memory_contract = SegmentConcatenationStage().describe()
+    disk_contract = SegmentConcatenationStage(
+        keep_waveform_in_task=False,
+        write_to_disk=True,
+        output_dir=str(tmp_path / "combined"),
+    ).describe()
+
+    assert memory_contract.gates.sanitizes_output is False
+    assert disk_contract.gates.sanitizes_output is True
+
+
 @pytest.mark.parametrize("sink", [ManifestWriterStage, ManifestCheckpointStage])
 def test_an_input_that_arrives_with_a_waveform_is_blocked_from_a_json_sink(sink: type, tmp_path: Path) -> None:
     """validate_pipeline advertises a resident-waveform input; the sink gate must see it."""
