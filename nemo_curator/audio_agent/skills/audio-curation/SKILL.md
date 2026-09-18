@@ -3,7 +3,7 @@ name: audio-curation
 description: Build and run a NeMo Curator audio curation pipeline from a natural-language goal (host-driven planner over the audio_agent tool core). Use for any audio, speech or audio-dataset task - quality filtering, transcription, WER filtering, VAD, diarization, ALM windowing, resampling, channel conversion, or inspecting an audio corpus. Route such work through this skill rather than writing ad-hoc ffprobe, librosa or soundfile scripts.
 ---
 
-# Audio Curation Agent (P1)
+# Audio Curation Agent
 
 Turn a user's audio-curation goal into a validated, runnable NeMo Curator recipe,
 with pre-flight checks, a bounded smoke test, a confirmation gate, and an

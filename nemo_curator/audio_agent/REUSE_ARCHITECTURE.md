@@ -297,7 +297,8 @@ the price of an eviction policy, a staleness window, and a new way to serve wron
 - **T1 semantically equivalent** — differs only in resources / batch size / output path. By
   construction this *is* T0 once the hash split lands; that is the whole point of the split.
 - **T2 compatible superset** — a looser filter's output re-filtered to satisfy a stricter request.
-  Powerful, but easy to get subtly wrong. **Deferred to Phase 2**, and always approval-gated.
+  Powerful, but easy to get subtly wrong. This is not implemented; any future implementation
+  must remain approval-gated.
 
 ### The disk boundary still applies
 
@@ -508,7 +509,7 @@ Two related decisions:
 | Model-download TTL / first-run network | `ttl_sec` on download-stage artifacts |
 | Secret redaction asymmetry | keys are computed pre-redaction; only the persisted copy is redacted |
 | Concurrent publish of the same `step_key` | last writer wins on an identical key; the marker makes it idempotent |
-| Unbounded artifact growth | GC / retention is Phase 2; `reindex` already tolerates missing artifacts |
+| Unbounded artifact growth | Artifact GC / retention is not implemented; `reindex` already tolerates missing artifacts |
 
 ### A stated tension, accepted deliberately
 
@@ -535,25 +536,24 @@ identical.
 | Lookup | directory scan | rebuildable SQLite index |
 | Crash safety | partial output looks valid | atomic publish marker |
 
-Complexity added is moderate — three new modules (`artifacts`, `index`, `reuse`), one new stage —
-and the risk is contained: JSON records remain the source of truth, the index is rebuildable, and
-the confirm gate is untouched.
+The implementation spans artifact identity, storage/indexing, reuse planning, checkpoint advice,
+and delta execution. The risk remains contained: JSON records are the source of truth, the index
+is rebuildable, and execution remains confirmation-gated.
 
 ---
 
-## 11. Phasing
+## 11. Implementation status
 
-**Phase 1 (this change).** Hash split, tiered dataset key, artifact registry with enriched records
-and atomic publish, SQLite index, executable incremental continuation, the approval flow, the
-export stage, and tests.
+**Implemented.** Hash split, tiered dataset keys, the artifact registry with atomic publish, the
+SQLite index, executable incremental continuation, the approval flow, the export stage, and tests.
 
-**Phase 2.** Per-stage code identity (`impl_version`), so editing one stage stops emptying the
-store; and the checkpoint advisor (`checkpoint.py`), which finds where a mid-pipeline manifest may
-legally go by simulating the insertion rather than guessing.
+**Implemented.** Per-stage code identity (`impl_version`), so editing one stage does not invalidate
+unrelated artifacts; and the checkpoint advisor (`checkpoint.py`), which finds where a
+mid-pipeline manifest may legally go by simulating the insertion rather than guessing.
 
-**Phase 3 (this change).** Coverage-based per-file deltas (§7b): artifact coverage, change
-classification, the row-traceable region with `Gates.per_row_independent`, provenance by
-inspection, the narrowed run, the atomic merge, and `delta-run` on the card, CLI and MCP.
+**Implemented.** Coverage-based per-file deltas (§7b): artifact coverage, change classification,
+the row-traceable region with `Gates.per_row_independent`, provenance by inspection, the narrowed
+run, the atomic merge, and `delta-run` across the SDK, CLI, and MCP surfaces.
 
 **Still open.** Content-digest tiers above `stat`; T2 superset reuse (a corpus that strictly
 contains a previous one, without a per-file inventory); artifact GC / retention; a `why-rerun`

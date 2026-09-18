@@ -492,7 +492,7 @@ def _check_output_completeness(ctx: CheckContext) -> CheckResult:
 
     Only active when the caller passes ``expected_outputs`` (semantic roles the
     user asked for). Catches the "asked for transcripts, no ASR stage" class.
-    Phase 2 compiles ``expected_outputs`` from ``GoalSpec.acceptance_criteria``.
+    ``validate`` also compiles acceptance-criterion fields into ``expected_outputs``.
     """
     if not ctx.expected_outputs:
         return CheckResult()
