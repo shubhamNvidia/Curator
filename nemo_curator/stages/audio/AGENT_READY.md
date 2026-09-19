@@ -294,7 +294,7 @@ single-speaker.
 Only document facts grounded in code, a measured run or an authoritative model
 source, and mark their honesty tier in the card's `verified` block. Missing
 meaning should remain an explicit TODO; the host must ask rather than invent it.
-See `nemo_curator/audio_agent/knowledge/CARD_SCHEMA.md`.
+See `nemo_curator/stages/audio/audio_agent/knowledge/CARD_SCHEMA.md`.
 
 ## Discovery — how the agent finds your stage
 

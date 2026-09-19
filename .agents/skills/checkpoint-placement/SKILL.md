@@ -1,1 +1,1 @@
-../../../nemo_curator/audio_agent/skills/checkpoint-placement/SKILL.md
+../../../nemo_curator/stages/audio/audio_agent/skills/checkpoint-placement/SKILL.md

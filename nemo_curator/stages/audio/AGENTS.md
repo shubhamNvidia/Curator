@@ -11,8 +11,8 @@ Two different jobs happen in this directory, and they have opposite rules about 
 Stage source is shared library code. Never change a stage, a threshold, a filter or
 windowing logic to make one user's dataset produce the output they hoped for — diagnose
 from the data instead. The full guardrail, and what to do when output comes back empty,
-is in `nemo_curator/audio_agent/AGENTS.md`. Drive the work through the
-`nemo_curator.audio_agent` verbs rather than reading stage source to answer what a stage
+is in `nemo_curator/stages/audio/audio_agent/AGENTS.md`. Drive the work through the
+`nemo_curator.stages.audio.audio_agent` verbs rather than reading stage source to answer what a stage
 reads or writes: `describe <Stage> --params '{...}'` is the sanctioned answer, and
 `producers <key>` says who wrote a key.
 
@@ -20,7 +20,7 @@ reads or writes: `describe <Stage> --params '{...}'` is the sanctioned answer, a
 
 Read `AGENT_READY.md` in this directory. It is the authoritative checklist and it is
 maintained with the framework; work from it rather than from memory. The
-`audio-stage-authoring` skill (`nemo_curator/audio_agent/skills/audio-stage-authoring/SKILL.md`)
+`audio-stage-authoring` skill (`nemo_curator/stages/audio/audio_agent/skills/audio-stage-authoring/SKILL.md`)
 is the procedure that drives it.
 
 **Golden rule: every new knob defaults to today's behavior.** Agent-readiness is a
@@ -36,10 +36,10 @@ The mechanical contract is three things, each detailed in `AGENT_READY.md`:
 3. Add `assert_agent_ready(MyStage(...), fixture_factory=...)` as a test.
 
 Then give the stage a capability card under
-`nemo_curator/audio_agent/knowledge/cards/`, documenting what each externally consumed
+`nemo_curator/stages/audio/audio_agent/knowledge/cards/`, documenting what each externally consumed
 output *means* — roles prove two stages can connect, only the card lets the host judge
 whether connecting them serves the user's intent. Schema:
-`nemo_curator/audio_agent/knowledge/CARD_SCHEMA.md`. `card_conformance.audit()` must come
+`nemo_curator/stages/audio/audio_agent/knowledge/CARD_SCHEMA.md`. `card_conformance.audit()` must come
 back with zero violations.
 
 Follow the repo's existing stage conventions while you do it:
@@ -56,7 +56,7 @@ planner treats it as ground truth.
 
 ```bash
 .venv/bin/python -m pytest tests/stages/audio -m "not gpu" -q
-.venv/bin/python -m nemo_curator.audio_agent describe MyStage --params '{...}'
+.venv/bin/python -m nemo_curator.stages.audio.audio_agent describe MyStage --params '{...}'
 ```
 
 If `describe` does not match what the code actually touches for those params, the contract

@@ -19,7 +19,7 @@ through the `audio-curation` skill **before doing anything else**:
   dataset to produce output. Empty output is a data/config problem, not a code bug.
 
 The full procedure and guardrails live in
-[`nemo_curator/audio_agent/skills/audio-curation/SKILL.md`](nemo_curator/audio_agent/skills/audio-curation/SKILL.md).
+[`nemo_curator/stages/audio/audio_agent/skills/audio-curation/SKILL.md`](nemo_curator/stages/audio/audio_agent/skills/audio-curation/SKILL.md).
 
 ## Core abstractions
 

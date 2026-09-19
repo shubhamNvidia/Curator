@@ -17,7 +17,7 @@
 These modules are the STAGE-SIDE declaration layer: the vocabulary a stage uses
 to describe itself (``StageContract``, ``Gates``, ``IOSpec``, the ``AgentReady``
 mixin, the shared role names) plus the discovery, planning and conformance code
-that reads it. They live under ``stages/audio`` -- not under ``nemo_curator.audio_agent``
+that reads it. They live under ``stages/audio`` -- not under ``nemo_curator.stages.audio.audio_agent``
 -- on purpose: 43 stage modules import ``_agent_ready`` and 16 call into
 ``_residency`` from inside ``process()``. Moving them into the agent package would
 make ``nemo_curator.stages.audio`` unusable without the agent installed, inverting
