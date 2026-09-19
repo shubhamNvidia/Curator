@@ -511,6 +511,7 @@ ignore = [
   ".secrets.baseline",
   ".pre-commit-config.yaml",
   "api-design.md",
+  ".agents/**",
   ".claude/**",
   ".cursor/**",
   ".github/**",
