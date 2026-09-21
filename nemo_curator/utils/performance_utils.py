@@ -56,16 +56,17 @@ def resource_probe_metrics(
     process_time: float,
     num_items: int,
 ) -> dict[str, float]:
-    """Best-effort worker RSS, CUDA peak allocation, and throughput metrics."""
+    """Best-effort worker high-water RSS, CUDA peak, and throughput metrics."""
     metrics: dict[str, float] = {}
     try:
         import resource
 
         peak_rss = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
-        # Linux reports KiB; macOS reports bytes.
+        # Linux reports KiB; macOS reports bytes. This process-lifetime diagnostic
+        # must remain distinct from the per-stage keys consumed by calibration.
         peak_rss_bytes = peak_rss if sys.platform == "darwin" else peak_rss * 1024
         if peak_rss_bytes >= 0:
-            metrics["peak_host_mem_gb"] = peak_rss_bytes / (1024**3)
+            metrics["worker_lifetime_peak_host_mem_gb"] = peak_rss_bytes / (1024**3)
     except Exception:  # noqa: BLE001, S110 - unsupported platform/worker
         pass
     if gpu_probe_started:

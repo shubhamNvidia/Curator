@@ -728,7 +728,7 @@ def test_perf_aggregates_include_extrema_and_calibration_uses_peak() -> None:
     assert measured["scorer"]["throughput"] == 3.0
 
 
-def test_runtime_resource_probe_produces_host_memory_and_throughput() -> None:
+def test_runtime_resource_probe_keeps_worker_lifetime_memory_out_of_calibration() -> None:
     metrics = resource_probe_metrics(
         gpu_probe_started=False,
         process_time=2.0,
@@ -736,8 +736,21 @@ def test_runtime_resource_probe_produces_host_memory_and_throughput() -> None:
     )
 
     assert metrics["throughput"] == 2.5
-    assert metrics["peak_host_mem_gb"] > 0
+    assert metrics["worker_lifetime_peak_host_mem_gb"] > 0
+    assert "peak_host_mem_gb" not in metrics
     assert "peak_vram_gb" not in metrics
+    measured = calibration.from_smoke(
+        {
+            "per_stage_metrics": {
+                "scorer": {
+                    "custom.worker_lifetime_peak_host_mem_gb": {"max": 8.0},
+                    "custom.throughput": {"mean": 2.5},
+                }
+            }
+        }
+    )
+
+    assert measured["scorer"] == {"throughput": 2.5, "source": "measured"}
 
 
 def test_calibration_extraction_ignores_invalid_measurements() -> None:
