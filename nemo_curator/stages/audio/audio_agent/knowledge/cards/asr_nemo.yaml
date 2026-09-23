@@ -15,6 +15,15 @@ resource:
   gpu_optional: true
   bound: gpu
   throughput_hint: "adapter-dependent batched inference; the default NeMo path supports CPU, while some adapters require GPU runtimes"
+adapter_capabilities:
+  nemo_curator.models.asr.nemo_asr.NeMoASRAdapter:
+    supported_devices: [cpu, cuda]
+  nemo_curator.models.asr.faster_whisper.FasterWhisperASR:
+    supported_devices: [cpu, cuda]
+  nemo_curator.models.asr.qwen_asr.QwenASRAdapter:
+    supported_devices: [cuda]
+  nemo_curator.models.asr.qwen_omni.QwenOmniASRAdapter:
+    supported_devices: [cuda]
 use_cases:
   good_for:
     - "transcribing speech to text (pred_text)"
@@ -70,5 +79,5 @@ versions:   # verified interchangeable via model_id -- load + run + identical pr
   "nvidia/parakeet-tdt-0.6b-v2": "WHEN: English audio. Best English accuracy (6.05% avg WER on Open ASR) and highest throughput; up to 24 min/pass. Default preset (english_parakeet)."
   "nvidia/parakeet-tdt-0.6b-v3": "WHEN: multilingual European audio. 25 European languages (auto language ID). Preset: multilingual_parakeet_v3."
   "nvidia/parakeet-tdt_ctc-1.1b": "WHEN: very long English audio, or you need a CTC decoder. Larger hybrid FastConformer TDT+CTC (~1.1B), up to ~11 h/pass; heavier VRAM. Preset: longform_english_1_1b."
-verified: {params: mechanical, tags: mechanical, model_version: best_guess, resource: measured, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess, versions: measured}
-provenance: {model_card_url: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2", card_version: 7, last_validated: "2026-09-22"}
+verified: {params: mechanical, tags: mechanical, adapter_capabilities: mechanical, model_version: best_guess, resource: measured, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess, versions: measured}
+provenance: {model_card_url: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2", card_version: 8, last_validated: "2026-09-23"}

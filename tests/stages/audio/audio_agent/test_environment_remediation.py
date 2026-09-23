@@ -17,16 +17,19 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from nemo_curator.stages.audio import audio_agent as aa
 from nemo_curator.stages.audio.audio_agent import env_health, verbs
+from nemo_curator.stages.audio.audio_agent._device_capabilities import gpu_optional
 from nemo_curator.stages.audio.audio_agent.contracts import EnvProfile
 from nemo_curator.stages.audio.audio_agent.diagnostics import (
     diagnose_failure,
     environment_preflight,
 )
+from nemo_curator.stages.audio.audio_agent.index import get_index
 from nemo_curator.stages.audio.audio_agent.recipe import Recipe, build_stages
 
 _MANIFEST = Path(__file__).resolve().parents[3] / "fixtures/audio/alm/sample_input.jsonl"
@@ -504,7 +507,7 @@ def test_validate_keeps_local_gates_for_ray_discovery_and_loopback(
     assert "ffmpeg_missing" in {item["code"] for item in result["gate_flags"]}
 
 
-def test_hard_gpu_leaf_checks_cuda_even_if_recipe_reservation_is_zero() -> None:
+def test_cpu_capable_asr_adapter_ignores_cuda_mismatch_without_gpu_reservation() -> None:
     stages = _build(
         (
             "ASRStage",
@@ -518,8 +521,55 @@ def test_hard_gpu_leaf_checks_cuda_even_if_recipe_reservation_is_zero() -> None:
 
     decision = environment_preflight(stages, _cuda_mismatch())
 
+    assert decision["can_execute"] is True
+    assert "cuda_driver_toolkit" not in {issue["code"] for issue in decision["issues"]}
+
+
+@pytest.mark.parametrize(
+    ("adapter_target", "expected"),
+    [
+        ("nemo_curator.models.asr.nemo_asr.NeMoASRAdapter", True),
+        ("nemo_curator.models.asr.faster_whisper.FasterWhisperASR", True),
+        ("nemo_curator.models.asr.qwen_asr.QwenASRAdapter", False),
+        ("nemo_curator.models.asr.qwen_omni.QwenOmniASRAdapter", False),
+        ("third_party.UnknownAdapter", False),
+    ],
+)
+def test_asr_card_owns_adapter_cpu_fallback_capability(adapter_target: str, expected: bool) -> None:
+    card = get_index().card("ASRStage")
+
+    assert gpu_optional(SimpleNamespace(adapter_target=adapter_target), card) is expected
+
+
+def test_gpu_only_asr_adapter_requires_gpu_even_if_reservation_is_zero() -> None:
+    stages = _build(
+        (
+            "ASRStage",
+            {
+                "adapter_target": "nemo_curator.models.asr.qwen_asr.QwenASRAdapter",
+                "model_id": "Qwen/Qwen3-ASR-0.6B",
+                "resources": {"cpus": 1, "gpus": 0},
+            },
+        ),
+    )
+
+    decision = environment_preflight(
+        stages,
+        _healthy_env(
+            has_gpu=False,
+            gpu_count=0,
+            gpu_names=[],
+            gpu_mem_gb=0,
+            gpu_visibility="absent",
+            nvidia_smi_status="unavailable",
+            nvidia_smi_gpu_count=0,
+            nvidia_device_nodes=0,
+            torch_cuda_built=False,
+        ),
+    )
+
     assert decision["can_execute"] is False
-    assert "cuda_driver_toolkit" in {issue["code"] for issue in decision["issues"]}
+    assert "gpu_unavailable" in {issue["code"] for issue in decision["issues"]}
 
 
 @pytest.mark.parametrize("verb", ["smoke", "run"])

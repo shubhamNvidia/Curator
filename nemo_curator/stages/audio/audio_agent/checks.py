@@ -358,14 +358,26 @@ def _check_gpu_reservation(ctx: CheckContext) -> CheckResult:
     """
     from nemo_curator.stages.base import CompositeStage
 
+    from nemo_curator.stages.audio.audio_agent._device_capabilities import gpu_optional
+    from nemo_curator.stages.audio import agent as foundation
+
     idx = get_index()
     out: list[Issue] = []
     for i, s in enumerate(ctx.recipe.stages):
-        res_card = (idx.card(s.ref) or {}).get("resource") or {}
-        if res_card.get("bound") != "gpu" or res_card.get("gpu_optional"):
+        card = idx.card(s.ref) or {}
+        res_card = card.get("resource") or {}
+        if res_card.get("bound") != "gpu":
             continue
         stage_obj = ctx.stages[i] if i < len(ctx.stages) else None
         if stage_obj is None or isinstance(stage_obj, CompositeStage):
+            continue
+        try:
+            requires_gpu = bool(foundation.build_contract(stage_obj).gates.requires_gpu)
+        except Exception:  # noqa: BLE001 - an unreadable contract cannot justify a new warning
+            continue
+        configured_gpu_optional = gpu_optional(stage_obj, card)
+        requires_gpu = requires_gpu or (res_card.get("bound") == "gpu" and configured_gpu_optional is False)
+        if not requires_gpu or configured_gpu_optional is True:
             continue
         sres = getattr(stage_obj, "resources", None)
         gpus = float(getattr(sres, "gpus", 0.0) or 0.0)
@@ -375,8 +387,8 @@ def _check_gpu_reservation(ctx: CheckContext) -> CheckResult:
                 Issue(
                     "gpu_reservation_missing",
                     "warning",
-                    f"{s.ref}: card is bound=gpu / not gpu_optional but the stage reserves no GPU "
-                    "(resources.gpus=0) -- it will run on CPU (very slow) and may over-parallelize",
+                    f"{s.ref}: the configured implementation requires a GPU but the stage reserves none "
+                    "(resources.gpus=0)",
                     stage_index=i,
                     stage=s.ref,
                     fix=f"set resources=Resources(gpus=1) (VRAM ~ card gpu_mem_gb={res_card.get('gpu_mem_gb')})",

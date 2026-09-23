@@ -354,6 +354,12 @@ set.** When `validate` names a missing role, do a **targeted re-retrieval** (it 
 you *which* role, so query only that: the producing `cards --category`, or the role
 graph in `context`), add the producer, and re-plan. This is the retrieve↔plan loop.
 
+Use status language that matches this evidence. Until validation returns
+`runnable: true` and the mandatory semantic critique returns `intent_status: pass`,
+call saved YAML a **candidate recipe** or **blocked draft**. Reserve **validated**,
+**runnable**, and **working recipe** for the exact hash that has passed both checks;
+never describe the mere existence of a saved recipe file as proof that it works.
+
 - `unsatisfied_reads` / `unproducible_roles`: insert an upstream producer via targeted
   re-retrieval (role graph in `context`); only if a role is truly unproducible across
   the whole catalog is the goal impossible with these stages -- tell the user.

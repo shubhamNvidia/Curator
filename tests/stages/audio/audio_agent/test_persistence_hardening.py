@@ -29,6 +29,7 @@ from nemo_curator.stages.audio.audio_agent import artifacts, run_index, run_stor
 from nemo_curator.stages.audio.audio_agent.artifacts import Artifact
 from nemo_curator.stages.audio.audio_agent.contracts import RunRecord
 from nemo_curator.stages.audio.audio_agent.recipe import Recipe
+from nemo_curator.stages.audio.common import ManifestWriterStage
 
 
 def test_cloud_credentials_are_masked_in_display_history_and_kept_only_in_the_exact_recipe(
@@ -98,6 +99,40 @@ def test_publish_does_not_register_an_artifact_when_marker_write_fails(
         artifacts.publish(artifact)
 
     assert saved == []
+
+
+def test_failed_run_staging_preserves_existing_final_output(tmp_path) -> None:  # noqa: ANN001
+    final = tmp_path / "final.jsonl"
+    final.write_text("existing\n", encoding="utf-8")
+    stage = ManifestWriterStage(output_path=str(final))
+
+    staged = verbs._prepare_staged_file_outputs([stage])
+    assert stage.output_path != str(final)
+    with open(stage.output_path, "w", encoding="utf-8") as stream:
+        stream.write("partial\n")
+
+    verbs._discard_staged_file_outputs(staged)
+    verbs._restore_staged_file_outputs(staged)
+
+    assert final.read_text(encoding="utf-8") == "existing\n"
+    assert stage.output_path == str(final)
+    assert not list(tmp_path.glob("*.audio-agent-*.tmp"))
+
+
+def test_successful_run_staging_atomically_replaces_final_output(tmp_path) -> None:  # noqa: ANN001
+    final = tmp_path / "final.jsonl"
+    final.write_text("existing\n", encoding="utf-8")
+    stage = ManifestWriterStage(output_path=str(final))
+
+    staged = verbs._prepare_staged_file_outputs([stage])
+    with open(stage.output_path, "w", encoding="utf-8") as stream:
+        stream.write("complete\n")
+    verbs._promote_staged_file_outputs(staged)
+    verbs._restore_staged_file_outputs(staged)
+
+    assert final.read_text(encoding="utf-8") == "complete\n"
+    assert stage.output_path == str(final)
+    assert not list(tmp_path.glob("*.audio-agent-*.tmp"))
 
 
 @contextlib.contextmanager

@@ -40,6 +40,7 @@ import sys
 import tempfile
 import time
 import types
+import uuid
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -77,6 +78,89 @@ _EVIDENCE_ROWS = 2000
 # instead (``_bound_recipe``), keeping pre-staged roots read-only.
 _SMOKE_FILE_OUTPUT_PARAMS = frozenset({"output_path", "output_manifest", "output_audio_tar_path"})
 _SMOKE_DIR_OUTPUT_PARAMS = frozenset(OUTPUT_LOCATION_PARAMS - _SMOKE_FILE_OUTPUT_PARAMS - {"raw_data_dir"})
+
+
+@dataclass
+class _StagedFileOutput:
+    """One fixed-file sink redirected until the full pipeline succeeds."""
+
+    stage: Any
+    param: str
+    final_path: str
+    staged_path: str
+
+
+def _prepare_staged_file_outputs(stages: list[Any]) -> list[_StagedFileOutput]:  # noqa: ANN401
+    """Redirect opted-in sinks to unique sibling files owned by this run."""
+    outputs: list[_StagedFileOutput] = []
+    token = uuid.uuid4().hex
+    try:
+        for stage_index, stage in enumerate(stages):
+            params = getattr(stage, "AGENT_ATOMIC_OUTPUT_PARAMS", ())
+            for param in params:
+                final_path = getattr(stage, param, None)
+                if not isinstance(final_path, str) or not final_path:
+                    continue
+                staged_path = f"{final_path}.audio-agent-{token}-{stage_index}.tmp"
+                setattr(stage, param, staged_path)
+                outputs.append(
+                    _StagedFileOutput(
+                        stage=stage,
+                        param=param,
+                        final_path=final_path,
+                        staged_path=staged_path,
+                    )
+                )
+    except Exception:
+        _restore_staged_file_outputs(outputs)
+        _discard_staged_file_outputs(outputs)
+        raise
+    return outputs
+
+
+def _restore_staged_file_outputs(outputs: list[_StagedFileOutput]) -> None:
+    for output in outputs:
+        setattr(output.stage, output.param, output.final_path)
+
+
+def _discard_staged_file_outputs(outputs: list[_StagedFileOutput]) -> None:
+    """Delete only temporary files named and owned by this run."""
+    from fsspec.core import url_to_fs
+
+    for output in outputs:
+        with contextlib.suppress(Exception):  # noqa: BLE001 - cleanup must not mask the run failure
+            fs, path = url_to_fs(output.staged_path)
+            if fs.exists(path):
+                fs.rm(path)
+
+
+def _promote_staged_file_outputs(outputs: list[_StagedFileOutput]) -> None:
+    """Replace each final file only after every pipeline stage has completed."""
+    from fsspec.core import url_to_fs
+
+    for output in outputs:
+        staged_fs, staged_path = url_to_fs(output.staged_path)
+        _, final_path = url_to_fs(output.final_path)
+        if not staged_fs.exists(staged_path):
+            msg = f"pipeline completed without creating staged output {output.staged_path!r}"
+            raise FileNotFoundError(msg)
+        protocol = staged_fs.protocol
+        protocols = {protocol} if isinstance(protocol, str) else set(protocol)
+        if protocols & {"file", "local"}:
+            final_parent = os.path.dirname(final_path) or "."
+            os.makedirs(final_parent, exist_ok=True)
+            with open(staged_path, "rb") as stream:
+                os.fsync(stream.fileno())
+            os.replace(staged_path, final_path)
+            from nemo_curator.utils.atomic_io import fsync_directory
+
+            with contextlib.suppress(OSError):
+                fsync_directory(os.path.abspath(final_parent))
+        else:
+            # A same-filesystem move keeps failed pipeline attempts away from the
+            # final key. Backends that cannot replace an occupied key fail here
+            # while preserving the old final object.
+            staged_fs.mv(staged_path, final_path)
 
 
 # --------------------------------------------------------------------------- #
@@ -2154,9 +2238,11 @@ def run(  # noqa: PLR0913, C901, PLR0911, PLR0912, PLR0915 - one verb, one keywo
     results: list[Any] | None = None
     used_mode: str | None = None
     pretrain_output_rows: int | None = None
+    staged_file_outputs: list[_StagedFileOutput] = []
     started_at = _utc_now()
     t0 = time.perf_counter()
     try:
+        staged_file_outputs = _prepare_staged_file_outputs(stages)
         if pretrain_finalizer is not None:
             pretrain_finalizer.prepare()
         results, used_mode = _run_pipeline_autofallback(
@@ -2173,6 +2259,7 @@ def run(  # noqa: PLR0913, C901, PLR0911, PLR0912, PLR0915 - one verb, one keywo
             finalized_rows = pretrain_finalizer.finalize()
             if isinstance(finalized_rows, int) and not isinstance(finalized_rows, bool):
                 pretrain_output_rows = max(0, finalized_rows)
+        _promote_staged_file_outputs(staged_file_outputs)
     except Exception as e:  # noqa: BLE001 - classify + report, do not crash the caller
         # No finalize on the failure path: merging unconditionally would overwrite a prior
         # completed output bundle with empty files when this attempt produced no shards.
@@ -2187,6 +2274,9 @@ def run(  # noqa: PLR0913, C901, PLR0911, PLR0912, PLR0915 - one verb, one keywo
             execution_target=execution_target,
         )
         failures.append(dict(runtime_diagnosis.get("failure") or {}))
+        _discard_staged_file_outputs(staged_file_outputs)
+    finally:
+        _restore_staged_file_outputs(staged_file_outputs)
     elapsed = time.perf_counter() - t0
     ended_at = _utc_now()
     if used_mode is not None and used_mode != rplan.mode:
@@ -5354,6 +5444,7 @@ def _plan_resources(  # noqa: ANN202
     # supported CPU-only (audio_cpu) install plans and runs instead of being refused.
     # Mutates `stages` in place, which is the same list the caller then executes.
     cpu_notes = planner.cpu_fallback(stages, env_obj)
+    worker_notes = planner.pin_cpu_model_workers(stages)
     contracts: list[Any] = []
     for st in stages:
         try:
@@ -5363,6 +5454,8 @@ def _plan_resources(  # noqa: ANN202
     rplan = planner.plan(stages, contracts, env_obj, data_profile, calibration=calibration)
     for note in cpu_notes:
         rplan.notes.append("cpu_fallback: " + note)
+    for note in worker_notes:
+        rplan.notes.append("worker_sizing: " + note)
     return rplan
 
 
