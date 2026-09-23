@@ -18,10 +18,10 @@ the framework auto-derives the rest, and one test tells you if anything is missi
    literals in `process()`).
 3. Add one test: **`assert_agent_ready(MyStage(...), fixture_factory=...)`**.
 
-Those three items make the stage mechanically composable. Also document the meaning of
-externally consumed outputs, especially filterable fields and anything crossing a
-fan-out/aggregation boundary. `assert_agent_ready` can prove keys and cardinality; it
-cannot prove that a reasoner will interpret a value correctly.
+Those three items make the stage mechanically composable. Also update its capability card
+with the meaning of externally consumed outputs (especially filterable fields and anything
+crossing a fan-out/aggregation boundary). `assert_agent_ready` can prove keys and
+cardinality; it cannot prove that a reasoner will interpret a value correctly.
 
 ---
 
@@ -127,8 +127,8 @@ seeds tensor residency for the JSON-sink gate. Set `requires_keys` on a
 exists upstream (in the write's own scope): the planner then ignores the branch
 -- for both purposes -- on inputs that cannot reach it. File hydration that only
 *replaces* an incomplete resident waveform/sample-rate pair is the canonical
-case: without the hint, a file-backed scorer followed by `ManifestWriterStage`
-could be refused for a tensor the runtime never introduces.
+case: without the hint, `UTMOSFilterStage() -> ManifestWriterStage` on a plain
+file manifest would be refused for a tensor the runtime never introduces.
 
 Use `metadata_writes` for a conditional `task._metadata` output. Unconditional
 metadata inputs/outputs remain declared through
@@ -263,9 +263,9 @@ resolved automatically from your `*_key` **field name** via `nemo_curator/stages
 
 Roles answer “can these stages connect?” They do not answer “what does this
 value mean here?” A pipeline can connect perfectly and still apply a valid
-filter to the wrong entity. Put that semantic knowledge in the stage's durable
-documentation, where a host can reason over it; do not add a per-field rule or a
-hard `field_scope` ontology to the Python core.
+filter to the wrong entity. Put that semantic knowledge in the capability card,
+where the host LLM can reason over it; do not add a per-field rule or a hard
+`field_scope` ontology to the Python core.
 
 For each output that another stage may select, aggregate, compare or filter,
 document:
@@ -282,11 +282,13 @@ document:
 - **counterexample** — at least one plausible but wrong interpretation and its
   pipeline consequence.
 
-For example, if a speaker-separation stage computes the original clip's
-detected-speaker count once and copies it to every per-speaker child, say so
-explicitly: filtering that child field to `== 1` selects children whose **parent
-source** had one detected speaker; it does not test whether each already-separated
-child track is single-speaker.
+Use the card's optional `semantic_facts` mapping for structured prose, or
+`notes`/`caveats` when the fact spans several outputs. For example, if a
+speaker-separation stage computes the original clip's detected-speaker count
+once and copies it to every per-speaker child, say so explicitly: filtering that
+child field to `== 1` selects children whose **parent source** had one detected
+speaker; it does not test whether each already-separated child track is
+single-speaker.
 
 Only document facts grounded in code, a measured run or an authoritative model
 source, and mark their honesty tier in the card's `verified` block. Missing
@@ -323,9 +325,9 @@ def test_my_stage_is_agent_ready(tmp_path):
     assert_agent_ready(MyStage(), fixture, expected_cardinality="1:1", available_keys={"audio_filepath"})
 ```
 
-For GPU/model stages, keep the conformance test CPU-only by reusing the fake-model
-or stub setup in that stage's test module. You don't need to memorize the mechanical
-rules — if the test passes, the contract is internally consistent.
+For GPU/model stages, reuse the existing fake-model/stub setup (see
+`tests/stages/audio/test_agent_simulation_pipelines.py`) so the test needs no GPU. You don't need to
+memorize the rules — if the test passes, the contract is honest.
 
 ---
 
@@ -334,8 +336,8 @@ rules — if the test passes, the contract is internally consistent.
 - [ ] `AgentReady` + `describe()` with `reads`, `writes`, `cardinality`, honest `gates`
 - [ ] every read/written `task.data` key is a `*_key` constructor field (no bare literals)
 - [ ] new `*_key` concepts have a `_roles.KEY_ROLES` entry (or `INTERNAL_KEY_FIELDS`)
-- [ ] durable stage documentation explains each externally consumed output's meaning,
-      unit, provenance, scope/granularity, propagation and a counterexample
+- [ ] capability card explains each externally consumed output's meaning, unit,
+      provenance, scope/granularity, propagation and a counterexample
 - [ ] new `AudioTask`s preserve `_metadata` and `list(_stage_perf)` (manual — not covered by `assert_agent_ready`)
 - [ ] if you override `process_batch`, write to disk, or set `lifecycle_side_effects` — decided
       `gates.per_row_independent` (`True`/`False`, per instance if conditional); otherwise left it
@@ -343,5 +345,5 @@ rules — if the test passes, the contract is internally consistent.
 - [ ] `assert_agent_ready(...)` test added and green
 - [ ] defaults unchanged → existing pipelines behave exactly as before
 
-Auto-derivation handles params/roles/dispatch/description; stage documentation supplies
-meaning only the author knows. Neither documentation step changes runtime defaults.
+Auto-derivation handles params/roles/dispatch/description; the card supplies meaning only the
+stage author knows. Neither documentation step changes runtime defaults.
