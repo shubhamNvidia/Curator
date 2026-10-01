@@ -37,6 +37,7 @@ param_dependencies:
   data_dir: "required: the stage scans this folder for audio files; there is no download step."
 conflicts_with: [ManifestReader, CreateInitialManifestReadSpeechStage, CreateInitialManifestFleursStage]
 notes:
+  - "audio_item_id encodes the relative stem and always includes the escaped extension, independent of the full/delta cohort. Existing stem-only IDs change to prevent different formats from aliasing. Framework source IDs use a stable digest of the canonical absolute source path; adding earlier filenames does not shift completed source identity."
   - "Generic, dataset-agnostic source. Emits one AudioTask per file with audio_filepath + a filename-derived audio_item_id; no transcripts (add an ASR stage if you need text)."
   - "References existing files on disk -- it does not download or write audio, so the card carries no writes_disk tag (see the tag<->gate conformance check)."
   - "Asserts nothing about the audio it lists: no rate, channel count or transcript is claimed, so anything downstream that needs those must measure them. That is the property that makes it the safe default for an unknown corpus."

@@ -1374,6 +1374,10 @@ def _automatic_retry_reset_hook(
 
 def _release_retry_reservations(stages: list[Any]) -> None:
     """Discard cross-process retry ownership records after a successful attempt."""
+    from nemo_curator.backends.failed_task_markers import failed_task_manifest_exists
+
+    if failed_task_manifest_exists():
+        return
     for stage in stages:
         release = getattr(stage, "release_retry_reservation", None)
         if callable(release):
@@ -5174,7 +5178,50 @@ def _run_pipeline(stages: list[Any], executor: Any, *, checkpoint_path: str | No
     # driver's stdout, e.g. verbose NeMo output) go to stderr during execution, so a
     # host parsing the CLI's stdout never sees them interleaved with the result.
     with contextlib.redirect_stdout(sys.stderr):
-        return pipeline.run(executor, checkpoint_path=checkpoint_path)
+        from nemo_curator.backends.failed_task_markers import failed_task_manifest_exists
+
+        pipeline.build()
+        prepared = []
+        try:
+            for stage in pipeline.stages:
+                prepare = getattr(stage, "prepare_on_driver", None)
+                if callable(prepare):
+                    prepare(checkpoint_path=checkpoint_path)
+                    prepared.append(stage)
+            result = pipeline.run(executor, checkpoint_path=checkpoint_path)
+            if failed_task_manifest_exists():
+                _abort_prepared_audio_stages(prepared)
+            else:
+                _finalize_audio_stages(pipeline.stages)
+        except Exception:
+            _abort_prepared_audio_stages(prepared)
+            raise
+        return result
+
+
+def _finalize_audio_stages(stages: list[Any]) -> None:
+    errors = []
+    for stage in stages:
+        finalize = getattr(stage, "finalize", None)
+        if callable(finalize):
+            try:
+                finalize()
+            except Exception as exc:  # noqa: BLE001 - attempt every durable output finalizer
+                errors.append(exc)
+    if errors:
+        raise errors[0]
+
+
+def _abort_prepared_audio_stages(stages: list[Any]) -> None:
+    from loguru import logger
+
+    for stage in stages:
+        abort = getattr(stage, "abort_on_driver", None)
+        if callable(abort):
+            try:
+                abort()
+            except Exception as exc:  # noqa: BLE001 - preserve the original execution failure
+                logger.error(f"Audio stage {stage.name} driver cleanup failed: {exc}")
 
 
 def _calibration_for_run(

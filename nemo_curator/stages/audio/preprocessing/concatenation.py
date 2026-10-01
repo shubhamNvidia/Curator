@@ -125,6 +125,19 @@ class SegmentConcatenationStage(AgentReady, ProcessingStage[AudioTask, AudioTask
             msg = "output_dir is required when write_to_disk=True"
             raise ValueError(msg)
 
+        from nemo_curator.stages.audio._agent._residency import validate_audio_key_configuration
+
+        outputs = {
+            "original_file_key": self.original_file_key,
+            "num_segments_key": self.num_segments_key,
+            "total_duration_sec_key": self.total_duration_sec_key,
+        }
+        if self.keep_waveform_in_task:
+            outputs.update(waveform_key=self.waveform_key, sample_rate_key=self.sample_rate_key)
+        if self.write_to_disk:
+            outputs["audio_filepath_key"] = self.audio_filepath_key
+        validate_audio_key_configuration(self.name, input_keys={}, output_keys=outputs)
+
     def inputs(self) -> tuple[list[str], list[str]]:
         return [], []
 

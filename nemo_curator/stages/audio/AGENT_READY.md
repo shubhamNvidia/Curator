@@ -348,3 +348,21 @@ memorize the rules — if the test passes, the contract is honest.
 
 Auto-derivation handles params/roles/dispatch/description; the card supplies meaning only the
 stage author knows. Neither documentation step changes runtime defaults.
+
+
+## Driver lifecycle for durable outputs
+
+The audio agent execution wrapper calls `prepare_on_driver(checkpoint_path=...)`
+on stages that implement it to reserve shared
+output state before the executor serializes workers. Node and worker setup must
+adopt that reservation without destructive initialization. `finalize()` runs on
+the original driver stage after successful execution; every finalizer is attempted
+even when another finalizer fails. Completion markers require durable reservation
+evidence and must never infer empty input from missing worker state.
+
+`abort_on_driver()` releases owned run bookkeeping after preparation or execution
+failure while retaining partial user artifacts. A resumable sink must preserve
+already committed source rows when `checkpoint_path` is supplied. Audio-agent
+ManifestWriter runs reset the output once on the driver; execution outside the
+agent retains the legacy worker `setup()` reset behavior. The shared `Pipeline`
+does not coordinate these agent-specific hooks.

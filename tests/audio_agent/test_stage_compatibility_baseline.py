@@ -260,7 +260,7 @@ ADDITIVE_STAGE_NAMES = (
 # changes are additive keyword-only key parameters, conservative static gates,
 # and restored legacy defaults; existing positional constructors remain stable.
 EXPECTED_LEGACY_COMPATIBILITY_SHA256 = (
-    "e2d0b9c17b2a2aa9ab289bc8839f7d2a5352f65727caa0facbfb0f28655f3cb6"  # pragma: allowlist secret
+    "8053367b9bc196b6e1d74505f45ab76932f5d72594355ad0e09850a552474a1c"  # pragma: allowlist secret
 )
 
 

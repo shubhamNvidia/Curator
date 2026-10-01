@@ -977,6 +977,8 @@ def test_agent_segmentation_quality_pipeline_annotate_and_filter(tmp_path: Path)
         audio_filepath_key="agent_audio_path",
         waveform_key="agent_waveform",
         sample_rate_key="agent_sr",
+        output_waveform_key="agent_waveform",
+        output_sample_rate_key="agent_sr",
         segments_key="agent_segments",
         start_ms_key="agent_start_ms",
         end_ms_key="agent_end_ms",
@@ -1113,6 +1115,8 @@ def test_agent_yaml_custom_key_quality_pipeline_to_document(tmp_path: Path) -> N
                     "audio_filepath_key": "agent_audio_path",
                     "waveform_key": "agent_waveform",
                     "sample_rate_key": "agent_sr",
+                    "output_waveform_key": "agent_waveform",
+                    "output_sample_rate_key": "agent_sr",
                     "segments_key": "agent_segments",
                     "segment_num_key": "agent_segment_num",
                     "duration_key": "agent_segment_duration",
@@ -1534,7 +1538,7 @@ def test_agent_optional_fanout_for_vad_and_diarizers_with_custom_keys(tmp_path: 
     assert isinstance(whisperx_children, list)
     assert len(whisperx_children) == 2
     assert whisperx.describe().cardinality == "1:N fan-out"
-    assert whisperx.describe().iteration_key == "agent_vad_segments"
+    assert whisperx.describe().iteration_key == "agent_segment_num"
     assert whisperx.ray_stage_spec()[RayStageSpecKeys.IS_FANOUT_STAGE] is True
     assert "agent_vad_segments" not in whisperx_children[0].data
     assert whisperx_children[0].data["agent_start"] == 0.0
@@ -1572,7 +1576,7 @@ def test_agent_optional_fanout_for_vad_and_diarizers_with_custom_keys(tmp_path: 
     assert isinstance(pyannote_children, list)
     assert len(pyannote_children) == 2
     assert pyannote.describe().cardinality == "1:N fan-out"
-    assert pyannote.describe().iteration_key == "agent_segments"
+    assert pyannote.describe().iteration_key == "agent_segment_num"
     assert pyannote.ray_stage_spec()[RayStageSpecKeys.IS_FANOUT_STAGE] is True
     assert "agent_segments" not in pyannote_children[0].data
     assert "agent_overlaps" not in pyannote_children[0].data
@@ -1609,7 +1613,7 @@ def test_agent_optional_fanout_for_vad_and_diarizers_with_custom_keys(tmp_path: 
     assert isinstance(sortformer_children, list)
     assert len(sortformer_children) == 2
     assert sortformer.describe().cardinality == "1:N fan-out"
-    assert sortformer.describe().iteration_key == "agent_diar_segments"
+    assert sortformer.describe().iteration_key == "agent_segment_num"
     assert sortformer.ray_stage_spec()[RayStageSpecKeys.IS_FANOUT_STAGE] is True
     assert "agent_diar_segments" not in sortformer_children[0].data
     assert sortformer_children[0].data["agent_speaker"] == "spk0"

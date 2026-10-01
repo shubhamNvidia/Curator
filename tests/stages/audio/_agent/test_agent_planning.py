@@ -200,3 +200,27 @@ class TestAmbiguousDefaultKey:
         )
 
         assert not [i for i in report.warnings if i.code == "ambiguous_default_key"]
+
+
+def test_rebuild_drops_inherited_conditional_only_keys_in_both_scopes() -> None:
+    from nemo_curator.stages.audio._agent._agent_ready import ConditionalWrite
+
+    class ContractStage(AgentReady):
+        def __init__(self, contract: StageContract) -> None:
+            self.contract = contract
+
+        def describe(self) -> StageContract:
+            return self.contract
+
+    for nested in (False, True):
+        spec = IOSpec(segment_data_keys=["duration"]) if nested else IOSpec(data_keys=["duration"])
+        producer = ContractStage(
+            StageContract(conditional_writes=[ConditionalWrite(writes=spec, condition="optional")])
+        )
+        rebuild = ContractStage(StageContract(preserves_upstream_keys=False))
+        consumer = ContractStage(StageContract(reads=spec))
+        before = validate_pipeline([producer, consumer], initial_keys=set(), initial_segment_keys=set())
+        after = validate_pipeline([producer, rebuild, consumer], initial_keys=set(), initial_segment_keys=set())
+        assert any(issue.code == "conditional_read" for issue in before.issues)
+        assert not after.ok or not after.keys_ok
+        assert not any(issue.code == "conditional_read" for issue in after.issues)

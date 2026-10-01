@@ -797,3 +797,112 @@ class TestDataInformedConfig:
         notes = profile_data(manifest).to_dict()["notes"]
         assert any("no rows carried an audio path" in n for n in notes)
         assert profile_data(manifest, audio_filepath_key="path").to_dict()["notes"] == []
+
+
+class TestAgentDriverLifecycle:
+    def test_prepares_before_execution_and_finalizes_afterward(self) -> None:
+        from unittest.mock import Mock
+
+        from nemo_curator.stages.audio.common import PreserveByValueStage
+
+        events = []
+        stage = PreserveByValueStage("keep", True)
+        stage.prepare_on_driver = lambda **_: events.append("prepare")
+        stage.finalize = lambda: events.append("finalize")
+        executor = Mock()
+        executor.execute.side_effect = lambda *_: events.append("execute")
+        verbs._run_pipeline([stage], executor)
+        assert events == ["prepare", "execute", "finalize"]
+
+    def test_attempts_later_finalizers_after_one_raises(self) -> None:
+        from unittest.mock import Mock
+
+        import pytest
+
+        from nemo_curator.stages.audio.common import PreserveByValueStage
+
+        first, second = PreserveByValueStage("keep", True), PreserveByValueStage("keep", True)
+        first.finalize = Mock(side_effect=RuntimeError("first finalizer failed"))
+        second.finalize = Mock()
+        with pytest.raises(RuntimeError, match="first finalizer failed"):
+            verbs._run_pipeline([first, second], Mock())
+        second.finalize.assert_called_once_with()
+
+    def test_failure_aborts_without_finalizing(self) -> None:
+        from unittest.mock import Mock
+
+        import pytest
+
+        from nemo_curator.stages.audio.common import PreserveByValueStage
+
+        stage = PreserveByValueStage("keep", True)
+        stage.prepare_on_driver = Mock()
+        stage.abort_on_driver = Mock()
+        stage.finalize = Mock()
+        executor = Mock()
+        executor.execute.side_effect = RuntimeError("executor failed")
+        with pytest.raises(RuntimeError, match="executor failed"):
+            verbs._run_pipeline([stage], executor)
+        stage.abort_on_driver.assert_called_once_with()
+        stage.finalize.assert_not_called()
+
+    def test_failed_tasks_leave_checkpoint_incomplete(self, monkeypatch, tmp_path: Path) -> None:  # noqa: ANN001
+        from unittest.mock import Mock
+
+        from nemo_curator.backends import failed_task_markers
+        from nemo_curator.stages.audio.common import ManifestCheckpointStage, ManifestWriterStage
+
+        checkpoint = tmp_path / "checkpoint.jsonl"
+        output = tmp_path / "manifest.jsonl"
+        monkeypatch.setattr(failed_task_markers, "failed_task_manifest_exists", lambda: True)
+        verbs._run_pipeline_autofallback(
+            [ManifestCheckpointStage(str(checkpoint)), ManifestWriterStage(str(output))], "batch", Mock()
+        )
+        assert not Path(f"{checkpoint}._COMPLETE").exists()
+        assert Path(f"{checkpoint}._RETRY_OWNER").exists()
+        assert not Path(f"{output}._RUN").exists()
+
+    def test_serialized_workers_and_empty_input(self, tmp_path: Path) -> None:
+        import pickle
+
+        from nemo_curator.stages.audio.common import (
+            CreateInitialManifestAudioFolderStage,
+            ManifestCheckpointStage,
+            ManifestWriterStage,
+        )
+        from nemo_curator.tasks import EmptyTask
+
+        class SerializedExecutor:
+            def execute(self, stages, initial_tasks):  # noqa: ANN001, ANN202
+                current = initial_tasks or [EmptyTask()]
+                for stage in stages:
+                    if not current:
+                        continue
+                    worker = pickle.loads(pickle.dumps(stage))  # noqa: S301 - only locally serialized stages
+                    worker.setup_on_node()
+                    worker.setup()
+                    current = worker.process_batch(current)
+                return current
+
+        for with_rows in (False, True):
+            root = tmp_path / str(with_rows)
+            root.mkdir()
+            source = root / "source"
+            source.mkdir()
+            if with_rows:
+                (source / "a.wav").touch()
+            checkpoint = root / "checkpoint.jsonl"
+            output = root / "manifest.jsonl"
+            result = verbs._run_pipeline(
+                [
+                    CreateInitialManifestAudioFolderStage(str(source)),
+                    ManifestCheckpointStage(str(checkpoint)),
+                    ManifestWriterStage(str(output)),
+                ],
+                SerializedExecutor(),
+            )
+            assert len(result) == int(with_rows)
+            assert checkpoint.read_text() == output.read_text()
+            assert Path(f"{checkpoint}._COMPLETE").exists()
+            assert not Path(f"{checkpoint}._RETRY_OWNER").exists()
+            assert not Path(f"{output}._RUN").exists()
