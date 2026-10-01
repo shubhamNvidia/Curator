@@ -203,7 +203,7 @@ def _parse_conditions(raw: str | None) -> list[Any] | dict[str, Any] | None:
 def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one flat block per subcommand
     p = argparse.ArgumentParser(
         prog="nemo_curator.stages.audio.audio_agent",
-        description="Audio Agent (P1) tool surface",
+        description="Audio Agent tool surface",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 

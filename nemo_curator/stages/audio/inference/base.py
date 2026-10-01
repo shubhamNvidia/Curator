@@ -339,7 +339,7 @@ class AdapterInferenceStage(ProcessingStage[AudioTask, AudioTask], Generic[Adapt
     resources: Resources
     prefetch_fail_on_error: bool
     _adapter: AdapterT | None
-    # Each executor worker owns an independently loaded model.  The audio agent
+    # Each executor worker owns an independently loaded model. The Audio Agent
     # uses this trait to avoid unconstrained CPU autoscaling when no explicit
     # worker count was requested.
     MODEL_RESIDENT_PER_WORKER = True

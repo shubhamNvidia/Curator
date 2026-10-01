@@ -41,7 +41,7 @@ def test_nested_module_entrypoint_serves_the_cli() -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "Audio Agent (P1) tool surface" in result.stdout
+    assert "Audio Agent tool surface" in result.stdout
     assert "discover" in result.stdout
     assert "run" in result.stdout
 

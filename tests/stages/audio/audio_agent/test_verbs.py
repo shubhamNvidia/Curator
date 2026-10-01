@@ -16,9 +16,11 @@
 resolve, and row-accurate evidence counting (no GPU / Ray execution needed)."""
 
 import json
+import pickle
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import yaml
 
 from nemo_curator.stages.audio import audio_agent as aa
@@ -29,6 +31,87 @@ from nemo_curator.stages.audio.audio_agent.report import _row_count
 _READER = {"ref": "ManifestReader", "params": {"manifest_path": "/tmp/m.jsonl"}}  # noqa: S108
 _WRITER = {"ref": "ManifestWriterStage", "params": {"output_path": "/tmp/out.jsonl"}}  # noqa: S108
 _RECIPE = {"stages": [_READER, {"ref": "GetAudioDurationStage", "params": {}}, _WRITER]}
+
+
+@pytest.mark.parametrize("rows", [[], [{"row": 1}, {"row": 2}]])
+def test_run_pipeline_prepares_sinks_before_serialized_workers(tmp_path: Path, rows: list[dict]) -> None:
+    from nemo_curator.backends.base import WorkerMetadata
+    from nemo_curator.stages.audio.common import ManifestCheckpointStage, ManifestWriterStage
+    from nemo_curator.tasks import AudioTask
+
+    checkpoint_path = tmp_path / "checkpoint.jsonl"
+    manifest_path = tmp_path / "manifest.jsonl"
+    stages = [ManifestCheckpointStage(str(checkpoint_path)), ManifestWriterStage(str(manifest_path))]
+
+    class Executor:
+        def execute(self, execution_stages, _initial_tasks):  # noqa: ANN001, ANN202
+            assert checkpoint_path.read_bytes() == manifest_path.read_bytes() == b""
+            workers = pickle.loads(pickle.dumps(execution_stages))  # noqa: S301
+            for worker in workers:
+                worker.setup_on_node()
+                worker.setup(WorkerMetadata())
+            for row in rows:
+                task = workers[0].process(AudioTask(data=row))
+                workers[1].process(task)
+            return []
+
+    assert verbs._run_pipeline(stages, Executor()) == []
+    assert [json.loads(line) for line in checkpoint_path.read_text().splitlines()] == rows
+    assert manifest_path.read_bytes() == checkpoint_path.read_bytes()
+    assert Path(f"{checkpoint_path}._COMPLETE").exists()
+    assert not Path(f"{manifest_path}._WRITER_RUN").exists()
+
+
+def test_run_pipeline_does_not_launch_executor_after_preparation_failure(tmp_path: Path) -> None:
+    from nemo_curator.stages.audio.common import ManifestCheckpointStage
+
+    retained = tmp_path / "retained.jsonl"
+    retained.write_text('{"retained": true}\n')
+
+    class Executor:
+        def execute(self, _stages, _initial_tasks):  # noqa: ANN001, ANN202
+            raise AssertionError("executor must not launch after failed preparation")  # noqa: EM101
+
+    with pytest.raises(FileExistsError, match="refuses to overwrite"):
+        verbs._run_pipeline([ManifestCheckpointStage(str(retained))], Executor())
+    assert retained.read_text() == '{"retained": true}\n'
+
+
+def test_batch_fallback_prepares_a_clean_second_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nemo_curator.backends.base import WorkerMetadata
+    from nemo_curator.stages.audio.common import ManifestCheckpointStage, ManifestWriterStage
+    from nemo_curator.tasks import AudioTask
+
+    checkpoint_path = tmp_path / "checkpoint.jsonl"
+    manifest_path = tmp_path / "manifest.jsonl"
+    stages = [ManifestCheckpointStage(str(checkpoint_path)), ManifestWriterStage(str(manifest_path))]
+    attempts: list[str] = []
+
+    class Executor:
+        def __init__(self, mode: str) -> None:
+            self.mode = mode
+
+        def execute(self, execution_stages, _initial_tasks):  # noqa: ANN001, ANN202
+            attempts.append(self.mode)
+            assert checkpoint_path.read_bytes() == manifest_path.read_bytes() == b""
+            workers = pickle.loads(pickle.dumps(execution_stages))  # noqa: S301
+            for worker in workers:
+                worker.setup_on_node()
+                worker.setup(WorkerMetadata())
+            row = {"attempt": self.mode}
+            workers[1].process(workers[0].process(AudioTask(data=row)))
+            if self.mode == "streaming":
+                raise RuntimeError("streaming mode requires batch mode: not enough GPU capacity")  # noqa: EM101
+            return []
+
+    monkeypatch.setattr(verbs, "_make_executor", Executor)
+    result, mode = verbs._run_pipeline_autofallback(
+        stages, "streaming", None, before_retry=verbs._automatic_retry_reset_hook(stages)
+    )
+    assert result == []
+    assert mode == "batch"
+    assert attempts == ["streaming", "batch"]
+    assert checkpoint_path.read_text() == manifest_path.read_text() == '{"attempt": "batch"}\n'
 
 
 class TestRunConfirmGate:

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+from itertools import combinations
 
 import pytest
 import torch
@@ -41,6 +42,59 @@ def _make_nested_task(segments: list[dict]) -> AudioTask:
 
 
 class TestSegmentConcatenationStage:
+    @pytest.mark.parametrize("write_to_disk", [False, True])
+    @pytest.mark.parametrize(
+        ("left", "right"),
+        list(
+            combinations(
+                [
+                    "waveform_key",
+                    "sample_rate_key",
+                    "original_file_key",
+                    "num_segments_key",
+                    "total_duration_sec_key",
+                    "audio_filepath_key",
+                ],
+                2,
+            )
+        ),
+    )
+    def test_every_active_output_pair_must_be_distinct(self, left: str, right: str, write_to_disk: bool) -> None:
+        if not write_to_disk and "audio_filepath_key" in {left, right}:
+            return
+        with pytest.raises(ValueError, match="must be distinct"):
+            SegmentConcatenationStage(
+                **{left: "collision", right: "collision"}, write_to_disk=write_to_disk, output_dir="/unused"
+            )
+
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {"num_segments_key": "waveform"},
+            {"total_duration_sec_key": "sample_rate"},
+            {"original_file_key": "num_segments"},
+            {"waveform_key": "sample_rate"},
+            {"write_to_disk": True, "output_dir": "/unused", "audio_filepath_key": "waveform"},
+            {"num_segments_key": ""},
+            {"segments_key": ""},
+            {
+                "keep_waveform_in_task": False,
+                "write_to_disk": True,
+                "output_dir": "/unused",
+                "waveform_key": "sample_rate",
+            },
+        ],
+    )
+    def test_rejects_destructive_output_keys(self, params: dict) -> None:
+        with pytest.raises(ValueError, match=r"must be distinct|must be a non-empty"):
+            SegmentConcatenationStage(**params)
+
+    def test_inactive_output_key_can_alias_active_metadata(self) -> None:
+        stage = SegmentConcatenationStage(audio_filepath_key="num_segments")
+        result = stage.process(_make_nested_task([_make_segment_dict()]))
+        assert result.data["num_segments"] == 1
+        assert torch.is_tensor(result.data["waveform"])
+
     def test_process_batch_concatenates_segments(self) -> None:
         segments = [
             _make_segment_dict(duration_ms=2000, segment_num=0),

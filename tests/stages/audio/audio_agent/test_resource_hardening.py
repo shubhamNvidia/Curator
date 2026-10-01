@@ -463,6 +463,28 @@ def test_explicit_cpu_model_worker_count_is_preserved() -> None:
     assert notes == []
 
 
+def test_resource_planning_does_not_silently_convert_a_gpu_recipe_to_cpu() -> None:
+    stages = [
+        ASRStage(
+            adapter_target="nemo_curator.models.asr.nemo_asr.NeMoASRAdapter",
+            model_id="nvidia/parakeet-tdt-0.6b-v2",
+            resources=Resources(cpus=1, gpus=1),
+        )
+    ]
+
+    result = verbs._plan_resources(
+        stages,
+        EnvProfile(gpu_count=0, total_cpus=8, total_ram_gb=64),
+        None,
+    )
+
+    assert stages[0].resources.gpus == 1
+    assert stages[0].num_workers() is None
+    assert result.feasible is False
+    assert any("but no GPU is available" in item for item in result.escalations)
+    assert not any("cpu_fallback" in note for note in result.notes)
+
+
 def test_positive_gpu_reservation_needs_a_gpu_even_when_card_says_optional() -> None:
     stage = _Stage(resources=Resources(cpus=1, gpus=0.1))
     result = _plan(
@@ -758,7 +780,7 @@ def test_perf_aggregates_include_extrema_and_calibration_uses_peak() -> None:
     assert measured["scorer"]["throughput"] == 3.0
 
 
-def test_runtime_resource_probe_produces_host_memory_and_throughput() -> None:
+def test_runtime_resource_probe_keeps_worker_lifetime_memory_out_of_calibration() -> None:
     metrics = resource_probe_metrics(
         gpu_probe_started=False,
         process_time=2.0,
@@ -766,8 +788,21 @@ def test_runtime_resource_probe_produces_host_memory_and_throughput() -> None:
     )
 
     assert metrics["throughput"] == 2.5
-    assert metrics["peak_host_mem_gb"] > 0
+    assert metrics["worker_lifetime_peak_host_mem_gb"] > 0
+    assert "peak_host_mem_gb" not in metrics
     assert "peak_vram_gb" not in metrics
+    measured = calibration.from_smoke(
+        {
+            "per_stage_metrics": {
+                "scorer": {
+                    "custom.worker_lifetime_peak_host_mem_gb": {"max": 8.0},
+                    "custom.throughput": {"mean": 2.5},
+                }
+            }
+        }
+    )
+
+    assert measured["scorer"] == {"throughput": 2.5, "source": "measured"}
 
 
 def test_calibration_extraction_ignores_invalid_measurements() -> None:

@@ -440,7 +440,7 @@ def test_every_verb_the_instructions_mention_exists(cli_verbs: set[str]) -> None
     An agent following a document that names a verb the CLI dropped gets a usage error at
     the step it was told to run, which reads as a broken tool rather than a stale document.
     """
-    invocation = re.compile(r"(?:-m nemo_curator\.audio_agent|nemo-curator-audio)\s+(?:\.\.\.\s+)?([a-z][a-z-]+)")
+    invocation = re.compile(r"-m nemo_curator\.stages\.audio\.audio_agent\s+(?:\.\.\.\s+)?([a-z][a-z-]+)")
     docs = [
         *sorted(_SKILLS.rglob("*.md")),
         _REPO / "nemo_curator/stages/audio/audio_agent/AGENTS.md",

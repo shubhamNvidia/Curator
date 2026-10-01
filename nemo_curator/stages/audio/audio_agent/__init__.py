@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Audio Agent (P1) — host-driven pipeline builder.
+"""Audio Agent — host-driven pipeline builder.
 
 A thin, deterministic tool core that a host LLM (Claude/Cursor/Codex) drives to
 turn a natural-language audio-curation goal into a validated, runnable NeMo

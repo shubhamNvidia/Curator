@@ -416,6 +416,7 @@ class TestEveryStageSaysWhetherItsRowsStandAlone:
     # describe(). Pinned so that a flip to True has to be argued for, and so a newly
     # corpus-dependent stage cannot join the set unremarked.
     EXPECTED_CORPUS_DEPENDENT: ClassVar[set[str]] = {
+        "CreateInitialManifestReadSpeechStage",
         "ManifestGroupExportStage",
         "PretrainMetricsAggregatorStage",
         "PyAnnoteDiarizationStage",

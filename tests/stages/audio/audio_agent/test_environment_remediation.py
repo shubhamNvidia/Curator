@@ -535,7 +535,7 @@ def test_cpu_capable_asr_adapter_ignores_cuda_mismatch_without_gpu_reservation()
         ("third_party.UnknownAdapter", False),
     ],
 )
-def test_asr_card_owns_adapter_cpu_fallback_capability(adapter_target: str, expected: bool) -> None:
+def test_asr_card_owns_adapter_cpu_support_capability(adapter_target: str, expected: bool) -> None:
     card = get_index().card("ASRStage")
 
     assert gpu_optional(SimpleNamespace(adapter_target=adapter_target), card) is expected

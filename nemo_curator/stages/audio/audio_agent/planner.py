@@ -296,48 +296,7 @@ def _valid_calibration_number(value: Any) -> bool:  # noqa: ANN401
     )
 
 
-def cpu_fallback(stages: list[Any], env: Any, *, index: Any = None) -> list[str]:  # noqa: ANN401
-    """Drop the Ray GPU reservation of GPU-OPTIONAL stages on a host with no GPU.
-
-    ``audio_cpu`` is a supported install profile, and some stages can run on CPU.
-    Such stages may nevertheless declare a GPU reservation by default, which a
-    GPU-less scheduler can never satisfy. Zero the reservation only when the
-    configured implementation declares CPU support, falling back to the card for
-    legacy stages without implementation metadata.
-
-    Deliberately conservative: a stage that requires a GPU keeps its reservation
-    and still escalates, so a genuinely GPU-bound recipe is never quietly turned
-    into a CPU run.
-
-    Not applied when the GPU is merely MASKED (present but unreachable from this
-    process): there a device is assumed present and the reservation must stand.
-    """
-    from nemo_curator.stages.audio.audio_agent._device_capabilities import gpu_optional
-    from nemo_curator.stages.audio.audio_agent.index import get_index
-    from nemo_curator.stages.resources import Resources
-
-    if int(getattr(env, "gpu_count", 0) or 0) > 0 or bool(getattr(env, "gpu_possibly_masked", False)):
-        return []
-    idx = index or get_index()
-    notes: list[str] = []
-    for i, stage in enumerate(stages):
-        resources = getattr(stage, "resources", None)
-        reserved = float(getattr(resources, "gpus", 0.0) or 0.0)
-        if reserved <= 0:
-            continue
-        card = idx.card(type(stage).__name__) or {}
-        if gpu_optional(stage, card) is not True:
-            continue  # required, or unvouched: leave it to escalate honestly
-        cpus = float(getattr(resources, "cpus", 1.0) or 1.0)
-        stages[i] = stage.with_(resources=Resources(cpus=cpus))
-        notes.append(
-            f"{type(stage).__name__}: released a {reserved} GPU reservation and scheduled on CPU "
-            "(configured implementation supports CPU; no GPU on this host)"
-        )
-    return notes
-
-
-def pin_cpu_model_workers(stages: list[Any]) -> list[str]:  # noqa: ANN401
+def pin_cpu_model_workers(stages: list[Any]) -> list[str]:
     """Pin unsized CPU model stages to one worker per stage.
 
     Model-resident stages load one independent model in every actor.  Leaving

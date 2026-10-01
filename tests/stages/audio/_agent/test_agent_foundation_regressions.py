@@ -78,6 +78,11 @@ class _AgentParamMetadataFixture:
     runtime_only: object | None = field(default=None, metadata={"agent_param": False})
 
 
+@dataclass
+class _AgentRequiredMetadataFixture:
+    required_for_agent: str = field(default="", metadata={"agent_required": True})
+
+
 class _ConfiguredContractStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     def __init__(self, contract: StageContract) -> None:
         self.contract = contract
@@ -91,6 +96,13 @@ class _ConfiguredContractStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
 
 def test_stage_params_respects_field_level_agent_exclusion() -> None:
     assert [param.name for param in stage_params(_AgentParamMetadataFixture)] == ["visible"]
+
+
+def test_stage_params_can_require_a_runtime_default_for_agent_configuration() -> None:
+    param = stage_params(_AgentRequiredMetadataFixture)[0]
+
+    assert param.default == ""
+    assert param.required is True
 
 
 def test_optional_reads_are_visible_without_blocking_fallback_paths() -> None:
@@ -914,7 +926,9 @@ def test_resident_pcm_stereo_is_normalized_before_downmix(waveform: object, stag
         ("max_sample_rate", 48000.0, ValueError),
     ],
 )
-def test_sample_rate_filter_rejects_invalid_config(field_name: str, value: object, error_type: type[Exception]) -> None:
+def test_sample_rate_filter_rejects_invalid_config(
+    field_name: str, value: object, error_type: type[Exception]
+) -> None:
     with pytest.raises(error_type, match=field_name):
         SampleRateFilterStage(**{field_name: value})
 

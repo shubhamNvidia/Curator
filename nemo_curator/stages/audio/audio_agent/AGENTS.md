@@ -62,8 +62,9 @@ itself. Create the environment first, once:
 uv sync --extra audio_cuda12   # --extra audio_cpu if there is no GPU
 ```
 
-All verbs print JSON. Run them with the repo virtualenv interpreter from the repo root
-(base `python` lacks Curator's deps), or as `nemo-curator-audio <verb>` from an install:
+All verbs print JSON. The host runs them with the interpreter that owns the Curator
+installation; from a checkout, use the repo virtualenv interpreter from the repo root
+(base `python` lacks Curator's dependencies):
 
 ```bash
 .venv/bin/python -m nemo_curator.stages.audio.audio_agent discover        # stages (name, category, one-liner)
