@@ -7,7 +7,6 @@ model_id: "adapter-dependent. NeMoASRAdapter: any NeMo ASR checkpoint (default p
 model_version: "user-specified via model_id; the english_parakeet preset pins nvidia/parakeet-tdt-0.6b-v2"
 domain: {language: "checkpoint-dependent (default preset = English)", style: read+conversational}
 constraints:
-  supported_sample_rates: [16000]   # ASRStage resamples input to target_sample_rate before adapter inference
   input_duration_sweetspot_sec: {min: 0.5, max: 40.0}
 resource:
   cpus: 1.0
@@ -54,6 +53,7 @@ comparison:
   choose_when: "you need plain transcripts, on any supported backend. For word timestamps/alignments use NeMoASRAlignerStage or SplitASRAlignJoinStage; for who-said-what add a diarizer + MergeAlignmentDiarizationStage."
   known_limitations: "device support is adapter-dependent; GPU is required for practical NeMo throughput and by some vLLM adapters; output key is pred_text (not text)"
 notes:
+  - "Source audio need not already match the inference rate: ASRStage resamples internally to target_sample_rate before adapter inference."
   - "ASRStage is the canonical Curator ASR runtime; every backend is an adapter passed to adapter_target rather than a parallel stage implementation. It replaced InferenceAsrNemoStage, which no longer exists."
   - "Adapter choice: NeMoASRAdapter for NeMo/parakeet checkpoints (the measured, best-covered path). The two vLLM Qwen adapters are supported by the stage but their resource and accuracy figures below are NOT measured here -- size the GPU from the model card before a large run."
   - "Language is adapter-dependent. NeMoASRAdapter ignores it (a parakeet checkpoint takes no language argument); QwenASRAdapter passes the resolved NAME to its transcribe call; QwenOmniASRAdapter interpolates it into {language} in the prompt and switches to en_prompt_text on the exact string 'English'. So supply ISO CODES, never names: 'English' lowercases to 'english', matches no entry, is forwarded as-is, and silently loses the English prompt path."
@@ -80,4 +80,4 @@ versions:   # verified interchangeable via model_id -- load + run + identical pr
   "nvidia/parakeet-tdt-0.6b-v3": "WHEN: multilingual European audio. 25 European languages (auto language ID). Preset: multilingual_parakeet_v3."
   "nvidia/parakeet-tdt_ctc-1.1b": "WHEN: very long English audio, or you need a CTC decoder. Larger hybrid FastConformer TDT+CTC (~1.1B), up to ~11 h/pass; heavier VRAM. Preset: longform_english_1_1b."
 verified: {params: mechanical, tags: mechanical, adapter_capabilities: mechanical, model_version: best_guess, resource: measured, constraints: best_guess, domain: best_guess, use_cases: best_guess, comparison: best_guess, versions: measured}
-provenance: {model_card_url: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2", card_version: 8, last_validated: "2026-09-23"}
+provenance: {model_card_url: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2", card_version: 9, last_validated: "2026-10-05"}

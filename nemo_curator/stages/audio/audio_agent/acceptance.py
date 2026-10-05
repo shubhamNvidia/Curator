@@ -86,6 +86,17 @@ def parse_criteria(raw: Any) -> list[AcceptanceCriterion]:  # noqa: ANN401
         except (TypeError, ValueError) as e:
             msg = f"acceptance criterion #{i}: {e}"
             raise ValueError(msg) from e
+        if criterion.is_deterministic:
+            fields = [criterion.field_name]
+            if criterion.type == "output_completeness":
+                fields.append(criterion.compiles_to)
+            for field in fields:
+                if field and _is_nested_field(field):
+                    msg = (
+                        f"acceptance criterion #{i}: nested field {field!r} is not supported by "
+                        "deterministic acceptance; use a top-level serialized field or reviewer_judgment"
+                    )
+                    raise ValueError(msg)
         if criterion.id in seen:
             msg = f"acceptance criterion #{i}: duplicate id {criterion.id!r}"
             raise ValueError(msg)
@@ -890,7 +901,7 @@ def _resolve_output_field(
 
 def _is_nested_field(field: str) -> bool:
     """Whether a field names content below the top-level manifest object."""
-    return "." in field or "[]" in field
+    return "." in field or "[" in field or "]" in field
 
 
 def _retained_count(value: Any) -> int | None:  # noqa: ANN401

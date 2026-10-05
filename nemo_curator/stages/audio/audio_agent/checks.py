@@ -256,6 +256,60 @@ def _rate_converted_to(stage: Any, built: Any) -> int | None:  # noqa: ANN401 - 
     return _to_int(v)
 
 
+def _sample_rate_provenance(ctx: CheckContext, data_srs: set[int]) -> list[set[int]]:  # noqa: C901
+    """Track file and resident rate evidence separately for each configured binding."""
+    # A conversion only changes the keys it actually writes. In particular, the
+    # default resampler leaves the source filepath untouched, and ASR's internal
+    # input preparation does not change audio supplied to a later stage.
+    file_rates: dict[str, set[int]] = {}
+    resident_rates: dict[str, set[int]] = {}
+    converted_resident_keys: set[str] = set()
+    for key in ctx.initial_tensor_keys or ():
+        resident_rates[key] = set(data_srs)
+    if ctx.initial_tensor_keys is None and "waveform" in ctx.initial_roles:
+        resident_rates["waveform"] = set(data_srs)
+    # Built stages carry real parameter defaults, but a stage that failed to construct is
+    # skipped in build_stages, so only trust the pairing when nothing was dropped.
+    built = list(ctx.stages or []) if len(ctx.stages or []) == len(ctx.recipe.stages) else []
+    rates: list[set[int]] = []
+    for i, s in enumerate(ctx.recipe.stages):
+        stage_obj = built[i] if built else None
+
+        def param(name: str, default: Any = None, stage: Any = s, obj: Any = stage_obj) -> Any:  # noqa: ANN401
+            return stage.params.get(name, getattr(obj, name, default))
+
+        filepath_key = param("filepath_key", param("audio_filepath_key", "audio_filepath"))
+        waveform_key = param("waveform_key", "waveform")
+        residency = param("input_residency", "file")
+        file_srs = file_rates.get(filepath_key, data_srs)
+        waveform_srs = resident_rates.get(waveform_key)
+        if residency == "waveform" or (residency == "auto" and waveform_key in converted_resident_keys):
+            srs_here = set(waveform_srs or ())
+        elif residency == "auto" and waveform_srs is not None:
+            # Auto prefers a usable resident pair, but a file fallback can still be
+            # taken on other rows. Both routes must meet the model constraint.
+            srs_here = set(waveform_srs) | set(file_srs)
+        else:
+            srs_here = set(file_srs)
+        rates.append(srs_here)
+        if s.ref == "ResampleAudioStage":
+            converted = _rate_converted_to(s, stage_obj)
+            if converted is not None:
+                if param("write_to_disk", True):
+                    file_rates[param("resampled_audio_filepath_key", "resampled_audio_filepath")] = {converted}
+                    if param("update_audio_filepath", False):
+                        original_key = param("original_audio_filepath_key", "original_audio_filepath")
+                        file_rates.setdefault(original_key, set(file_srs))
+                        file_rates[filepath_key] = {converted}
+                if param("keep_waveform_in_task", False):
+                    resident_rates[waveform_key] = {converted}
+                    converted_resident_keys.add(waveform_key)
+                elif param("write_to_disk", True) and residency != "file":
+                    resident_rates.pop(waveform_key, None)
+                    converted_resident_keys.discard(waveform_key)
+    return rates
+
+
 @register("card_constraints")
 def _check_card_constraints(ctx: CheckContext) -> CheckResult:
     """Model-card constraints (batch, sample-rate, duration, max-speakers)."""
@@ -270,20 +324,9 @@ def _check_card_constraints(ctx: CheckContext) -> CheckResult:
         else set()
     )
     mean_dur = (_to_float((data_profile or {}).get("mean_duration_sec")) or 0.0) if data_profile else 0.0
-    # The rate the audio carries AT each point, not the rate the source files had. Comparing a
-    # model's supported rates against the source profile warns about 48 kHz input to a 16 kHz
-    # model even when a resample sits immediately upstream -- correct pipelines told they are
-    # broken, which is how a validator loses its authority.
-    effective_srs = set(data_srs)
-    # Built stages carry real parameter defaults, but a stage that failed to construct is
-    # skipped in build_stages, so only trust the pairing when nothing was dropped.
-    built = list(ctx.stages or []) if len(ctx.stages or []) == len(ctx.recipe.stages) else []
+    rates = _sample_rate_provenance(ctx, data_srs)
     for i, s in enumerate(ctx.recipe.stages):
-        # A stage is judged on what it RECEIVES, so snapshot before applying its own conversion.
-        srs_here = set(effective_srs)
-        converted = _rate_converted_to(s, built[i] if built else None)
-        if converted is not None:
-            effective_srs = {converted}
+        srs_here = rates[i]
         card = idx.card(s.ref)
         if not card:
             continue
@@ -356,10 +399,9 @@ def _check_gpu_reservation(ctx: CheckContext) -> CheckResult:
     actors. Card-driven, so a new GPU stage is covered with no code change. Composites are
     skipped -- they delegate resources to their decomposed inner stages.
     """
-    from nemo_curator.stages.base import CompositeStage
-
-    from nemo_curator.stages.audio.audio_agent._device_capabilities import gpu_optional
     from nemo_curator.stages.audio import agent as foundation
+    from nemo_curator.stages.audio.audio_agent._device_capabilities import gpu_optional
+    from nemo_curator.stages.base import CompositeStage
 
     idx = get_index()
     out: list[Issue] = []
@@ -373,7 +415,7 @@ def _check_gpu_reservation(ctx: CheckContext) -> CheckResult:
             continue
         try:
             requires_gpu = bool(foundation.build_contract(stage_obj).gates.requires_gpu)
-        except Exception:  # noqa: BLE001 - an unreadable contract cannot justify a new warning
+        except Exception:  # noqa: BLE001, S112 - an unreadable contract cannot justify a new warning
             continue
         configured_gpu_optional = gpu_optional(stage_obj, card)
         requires_gpu = requires_gpu or (res_card.get("bound") == "gpu" and configured_gpu_optional is False)
@@ -500,7 +542,7 @@ def _check_unproducible(ctx: CheckContext) -> CheckResult:
 
 @register("output_completeness")
 def _check_output_completeness(ctx: CheckContext) -> CheckResult:
-    """Every requested output role must be produced by some stage in the recipe.
+    """Every requested output role must survive to the end of the recipe.
 
     Only active when the caller passes ``expected_outputs`` (semantic roles the
     user asked for). Catches the "asked for transcripts, no ASR stage" class.
@@ -509,19 +551,39 @@ def _check_output_completeness(ctx: CheckContext) -> CheckResult:
     if not ctx.expected_outputs:
         return CheckResult()
     from nemo_curator.stages.audio import agent as foundation
-    from nemo_curator.stages.audio._agent._conformance import produced_roles
 
-    available_roles = set(ctx.initial_roles)
-    available_keys = set(ctx.initial_keys)
-    for st in ctx.stages:
+    report = foundation.validate_pipeline(
+        ctx.stages,
+        initial_roles=ctx.initial_roles,
+        initial_keys=ctx.initial_keys,
+        initial_tensor_keys=ctx.initial_tensor_keys,
+        available_gpus=None,
+    )
+    available_roles = set(report.produced_roles)
+    available_keys = set(report.produced_keys)
+    # A conditional writer is still a potential producer; acceptance verifies
+    # whether its branch ran. Its field must survive all later transformations.
+    for index, stage in enumerate(ctx.stages):
         try:
-            contract = foundation.build_contract(st)
-        except Exception:  # noqa: BLE001, S112
+            contract = foundation.build_contract(stage)
+        except Exception:  # noqa: BLE001, S112 - data_flow reports unreadable contracts
             continue
-        available_roles |= produced_roles(contract)
-        available_keys |= set(contract.writes.data_keys) | set(contract.writes.segment_data_keys)
         for conditional in contract.conditional_writes:
-            available_keys |= set(conditional.writes.data_keys) | set(conditional.writes.segment_data_keys)
+            keys = set(conditional.writes.data_keys)
+            segment_keys = set(conditional.writes.segment_data_keys)
+            roles = {contract.key_roles.get(key, "unknown") for key in keys} - {"unknown"}
+            segment_roles = {contract.key_roles.get(key, "unknown") for key in segment_keys} - {"unknown"}
+            suffix = foundation.validate_pipeline(
+                ctx.stages[index + 1 :],
+                initial_roles=roles,
+                initial_keys=keys,
+                initial_segment_roles=segment_roles,
+                initial_segment_keys=segment_keys,
+                initial_tensor_keys=set(),
+                available_gpus=None,
+            )
+            available_keys |= (keys | segment_keys) & set(suffix.produced_keys)
+            available_roles |= (roles | segment_roles) & set(suffix.produced_roles)
     out: list[Issue] = []
     for want in ctx.expected_outputs:
         # Satisfied by a produced semantic role OR a literal produced key. The key match
@@ -532,7 +594,7 @@ def _check_output_completeness(ctx: CheckContext) -> CheckResult:
                 Issue(
                     "missing_output_producer",
                     "error",
-                    f"requested output {want!r} is not produced by any stage in the recipe (no matching role or key)",
+                    f"requested output {want!r} is not available at the end of the recipe (no matching role or key)",
                     fix="add a stage that produces this output (see discover / find_producers), or drop the requirement",
                 )
             )

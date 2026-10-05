@@ -938,3 +938,32 @@ class TestPlan:
         assert decision.status == "none"
         assert "PretrainMetricsAggregator" in decision.reason
         assert "corpus together" in decision.reason
+
+
+def test_republish_retains_generated_asset_dependency_checks(tmp_path: Path) -> None:
+    rec, out = _pipeline(tmp_path, tmp_path / "source.jsonl")
+    asset = tmp_path / "generated.bin"
+    asset.write_bytes(b"before")
+    prior = _publish(rec, 2, dataset_key=_PRIOR, rows=[{"audio_filepath": str(asset)}], coverage={})
+    prior.dependencies = {str(asset): artifacts.content_digest(str(asset))}
+    prior.deterministic = False
+    artifacts.save(prior)
+    asset.write_bytes(b"after delta")
+    decision = delta.Delta(sinks=(delta.Sink(index=2, param="output_path", uri=out, step_key=prior.step_key),))
+    published, problems = delta.republish(
+        rec,
+        decision,
+        dataset_key=_KEY,
+        fingerprint_tier="stat",
+        inventory={},
+        run_id="delta",
+        added_sec=1,
+    )
+    assert not problems
+    merged = artifacts.load(published[0]["step_key"])
+    assert merged is not None
+    assert not merged.deterministic
+    assert merged.dependencies == {str(asset): artifacts.content_digest(str(asset))}
+    assert not artifacts.invalid_reasons(merged, dataset_key=_KEY)
+    asset.unlink()
+    assert any("dependency" in reason for reason in artifacts.invalid_reasons(merged, dataset_key=_KEY))

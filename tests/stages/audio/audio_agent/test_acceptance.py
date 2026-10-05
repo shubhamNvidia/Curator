@@ -997,3 +997,30 @@ class TestTheTerminalScanShortcutMatchesCheckingEveryRow:
         assert self._shortcut([0.0, 3.0], "!=", 1.5, 0)[0] == "unverifiable"
         assert self._shortcut([2.0, 2.0], "!=", 1.5, 0)[0] == "met"
         assert self._shortcut([1.5, 1.5], "!=", 1.5, 0)[0] == "not_met"
+
+
+@pytest.mark.parametrize("field", ["segments.speaker_id", "segments[].speaker_id", "segments[0].speaker_id"])
+@pytest.mark.parametrize("location", ["field", "compiles_to"])
+def test_nested_deterministic_output_criteria_are_rejected_before_execution(field: str, location: str) -> None:
+    criterion = {"id": "speakers", "type": "output_completeness"}
+    if location == "field":
+        criterion["check"] = {"field": field}
+    else:
+        criterion["compiles_to"] = field
+    with pytest.raises(ValueError, match=r"nested field.*not supported"):
+        aa.verify([criterion], evidence={})
+
+
+def test_nested_numeric_criteria_are_rejected_instead_of_promising_verification() -> None:
+    criterion = _crit("quality", "scores.mos", ">=", 3.0)
+    with pytest.raises(ValueError, match=r"nested field.*not supported"):
+        acceptance.parse_criteria([criterion])
+
+
+def test_nested_reviewer_criterion_remains_available() -> None:
+    criterion = {
+        "id": "meaning",
+        "type": "semantic_fit",
+        "check": {"field": "segments[].speaker_id", "method": "reviewer_judgment"},
+    }
+    assert acceptance.parse_criteria([criterion])[0].field_name == "segments[].speaker_id"
