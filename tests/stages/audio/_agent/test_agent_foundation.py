@@ -422,9 +422,12 @@ class TestEveryStageSaysWhetherItsRowsStandAlone:
         "PyAnnoteDiarizationStage",
         # Duplicate-id / duplicate-basename checks depend on which other rows are present.
         "ReadLongFormManifestStage",
+        "ResampleAudioStage",
         "SegmentExtractionStage",
         "SnippetExtractionStage",
         "SnippetManifestWriterStage",
+        "SplitASRAlignJoinStage",
+        "SplitLongAudioStage",
         "TorchSquimQualityMetricsStage",
     }
 
@@ -449,8 +452,8 @@ class TestEveryStageSaysWhetherItsRowsStandAlone:
         """The stage as shipped, supplying only what its constructor refuses to go without.
 
         The defaults are the point: several stages answer this gate per instance rather than per
-        class -- ``SplitLongAudioStage`` is independent only while no shared ``output_dir``
-        flattens every source's splits into one namespace -- so filling in optional params would
+        class -- ``ResampleAudioStage`` is independent only when it does not write into a
+        shared output namespace -- so filling in optional params would
         measure a configuration nobody runs.
         """
         import inspect

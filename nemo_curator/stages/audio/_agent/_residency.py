@@ -407,6 +407,7 @@ def resolve_audio(  # noqa: C901, PLR0912, PLR0913 (complexity accepted: policy 
     loader: Callable[..., tuple[Any, int]] | None = None,
     infer_sample_rate_from_file: bool = False,
     file_audio_hydration: FileAudioHydration = "never",
+    preserve_pcm_dtype: bool = False,
 ) -> tuple[Any, int] | None:
     """Return ``(waveform_2d, sample_rate)`` from tensor keys or a file path.
 
@@ -421,6 +422,9 @@ def resolve_audio(  # noqa: C901, PLR0912, PLR0913 (complexity accepted: policy 
     from an incomplete or unusable resident pair. ``"never"`` is the default,
     preserving file-only and explicit-file consumers. Every update happens only
     after the loader succeeds, so failures cannot leave a partial pair.
+
+    ``preserve_pcm_dtype`` retains array PCM precision for a consumer that explicitly
+    normalizes amplitude. It defaults to the historical float32 array conversion.
 
     ``loader`` overrides the file-loading callable (default
     :func:`~nemo_curator.stages.audio.common.load_audio_file`); stages pass
@@ -446,7 +450,9 @@ def resolve_audio(  # noqa: C901, PLR0912, PLR0913 (complexity accepted: policy 
                     raise
                 resident_rate_error = ex
             else:
-                return ensure_waveform_2d(waveform), sample_rate
+                # Preserve PCM dtype until the consuming stage normalizes its amplitude.
+                resident = torch.as_tensor(waveform) if preserve_pcm_dtype and hasattr(waveform, "dtype") else waveform
+                return ensure_waveform_2d(resident), sample_rate
         if residency == "auto" and infer_sample_rate_from_file:
             path = item.get(audio_filepath_key)
             if path:
@@ -454,7 +460,10 @@ def resolve_audio(  # noqa: C901, PLR0912, PLR0913 (complexity accepted: policy 
                 if os.path.exists(expanded):
                     sample_rate = int(sf.info(expanded).samplerate)
                     item[sample_rate_key] = sample_rate
-                    return ensure_waveform_2d(waveform), sample_rate
+                    resident = (
+                        torch.as_tensor(waveform) if preserve_pcm_dtype and hasattr(waveform, "dtype") else waveform
+                    )
+                    return ensure_waveform_2d(resident), sample_rate
 
     if residency == "waveform":
         return None
@@ -549,6 +558,21 @@ def _as_soundfile_array(waveform: Any) -> Any:  # noqa: ANN401
     return waveform
 
 
+def _bounded_audio_prefix(stem: str, tag: str, directory: str, suffix_bytes: int) -> str:
+    """Fit derived names within the destination filesystem's component limit."""
+    try:
+        limit = os.pathconf(directory, "PC_NAME_MAX")
+    except (OSError, ValueError):
+        limit = 255
+    if limit <= 0:
+        limit = 255
+    prefix = f"{stem}{f'_{tag}' if tag else ''}_"
+    budget = max(0, limit - suffix_bytes)
+    while len(os.fsencode(prefix)) > budget:
+        prefix = prefix[:-1]
+    return prefix
+
+
 def write_audio_stable(
     waveform: Any,  # noqa: ANN401 - a torch tensor or numpy array, same as _as_soundfile_array takes
     sample_rate: int,
@@ -570,7 +594,9 @@ def write_audio_stable(
     """
     arr = _as_soundfile_array(waveform)
     if output_dir is None:
-        fd, path = tempfile.mkstemp(prefix=f"{stem}{f'_{tag}' if tag else ''}_", suffix=".wav")
+        # mkstemp adds an eight-character random token before the extension.
+        prefix = _bounded_audio_prefix(stem, tag, tempfile.gettempdir(), 8 + len(".wav"))
+        fd, path = tempfile.mkstemp(prefix=prefix, suffix=".wav")
         os.close(fd)
         try:
             sf.write(path, arr, int(sample_rate))
@@ -587,7 +613,9 @@ def write_audio_stable(
     # representation SoundFile will write so distinct audio layouts cannot
     # claim the same stable path.
     digest.update(f"|{arr.shape!r}|{arr.dtype.str}|{int(sample_rate)}|wav".encode())
-    path = os.path.join(output_dir, f"{stem}{f'_{tag}' if tag else ''}_{digest.hexdigest()[:16]}.wav")
+    suffix = f"{digest.hexdigest()[:16]}.wav"
+    prefix = _bounded_audio_prefix(stem, tag, output_dir, len(suffix))
+    path = os.path.join(output_dir, f"{prefix}{suffix}")
     # Write beside the target and rename, so a killed or concurrent writer cannot leave a
     # half-written file at a name the next run treats as finished.
     staged_fd, staged = tempfile.mkstemp(prefix=".", suffix=".wav", dir=output_dir)
