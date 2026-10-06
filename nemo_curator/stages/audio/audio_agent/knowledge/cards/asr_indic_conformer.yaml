@@ -1,0 +1,23 @@
+stage_id: InferenceIndicConformerHybridStage
+category: transcribe
+summary: "IndicConformer hybrid CTC/RNNT ASR wrapper for resident audio and a configured checkpoint."
+tags: [needs_gpu, needs_internet_first_run, batch_only]
+model_id: "ai4bharat/indicconformer_stt_hi_hybrid_ctc_rnnt_large"
+domain: {language: "configured Indic checkpoint; default checkpoint is Hindi", style: speech}
+resource: {bound: gpu}
+use_cases:
+  good_for: ["transcribing resident Indic speech with a matching checkpoint and source_lang code"]
+  avoid_for: ["file-only manifests without waveform preparation", "assuming one language-specific checkpoint covers every allowed code"]
+params_of_note:
+  model_id: "Choose the language-specific checkpoint; the default is the Hindi hybrid checkpoint."
+  decode_mode: "rnnt (default) or ctc; both use the configured checkpoint."
+  backend: "nemo (default), or tensorrt with an existing tensorrt_engine_dir. TensorRT replaces the encoder; preprocessing and decoding remain in NeMo."
+  max_audio_sec_per_actor: "Padded audio-seconds budget per adapter call, default 2400; choose a compatible max_inference_duration_s."
+  keep_waveform: "False removes waveform after inference; enable it for a downstream audio consumer."
+notes:
+  - "Defaults read waveform and sampling_rate and write asr_prediction and asr_language. Match downstream keys explicitly."
+  - "Missing or unsupported source_lang emits an empty prediction and routing notes; the wrapper does not mark _skipme for unsupported languages."
+  - "Uses the shared ASRStage duration ceiling and bounded batching. Hard-cut segment stitching cannot preserve speech context across a boundary."
+  - "Device support depends on backend: NeMo accepts CPU execution, while TensorRT requires one GPU. Confirm the selected backend before changing device resources."
+verified: {params: mechanical, tags: mechanical, domain: best_guess, resource: best_guess, use_cases: best_guess}
+provenance: {model_card_url: null, card_version: 1, last_validated: "2026-10-06"}

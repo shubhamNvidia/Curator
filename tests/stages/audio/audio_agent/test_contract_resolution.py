@@ -222,7 +222,7 @@ class TestAnUnresolvedContractSaysSoAndSaysWhatWouldFixIt:
     def test_asr_stage_reports_its_required_adapter_and_model(self) -> None:
         detail = aa.describe("ASRStage")["contract_unresolved"]
 
-        assert detail["required_params"] == ["adapter_target", "model_id"]
+        assert detail["required_params"] == ["adapter_target", "model_id", "max_audio_sec_per_actor"]
         assert "adapter_target" in detail["retry_with"]
         assert "model_id" in detail["retry_with"]
 
