@@ -462,6 +462,8 @@ class TestEveryStageSaysWhetherItsRowsStandAlone:
             pass
 
         def placeholder(name: str) -> object:
+            if name == "max_audio_sec_per_actor":
+                return 2400.0
             if name == "conditions":
                 return [{"input_value_key": "score", "target_value": 0.0, "operator": "ge"}]
             return "/tmp/x" if ("dir" in name or "path" in name) else "x"  # noqa: S108

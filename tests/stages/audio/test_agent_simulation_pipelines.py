@@ -484,6 +484,7 @@ def _fake_asr_stage(**kwargs: Any) -> ASRStage:  # noqa: ANN401
     stage = ASRStage(
         adapter_target="nemo_curator.models.asr.nemo_asr.NeMoASRAdapter",
         model_id="nvidia/stt_en_fastconformer_ctc_large",
+        max_audio_sec_per_actor=2400.0,
         **kwargs,
     )
     stage._adapter = _FakeASRAdapter()

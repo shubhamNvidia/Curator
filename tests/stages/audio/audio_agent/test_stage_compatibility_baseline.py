@@ -86,6 +86,9 @@ LEGACY_STAGE_NAMES = (
 ADDITIVE_STAGE_NAMES = (
     "ChannelCountStage",
     "DocumentBatchJsonlWriterStage",
+    "InferenceIndicCanaryStage",
+    "InferenceIndicConformerHybridStage",
+    "InferenceParakeetStage",
     "ManifestCheckpointStage",
     "PreserveByValueConditionsStage",
     "SampleRateFilterStage",
@@ -259,8 +262,11 @@ ADDITIVE_STAGE_NAMES = (
 # Regenerated after the reviewed cross-PR compatibility corrections. The
 # changes are additive keyword-only key parameters, conservative static gates,
 # and restored legacy defaults; existing positional constructors remain stable.
+# Current-main ASR adds a required padded-seconds budget, bounded segmentation,
+# language output and skip-policy knobs. A full payload comparison confirms that
+# only ASRStage changed among the legacy 46; the other 45 entries are identical.
 EXPECTED_LEGACY_COMPATIBILITY_SHA256 = (
-    "afe9ea54b49192f0193128564771854f5b9a6e05b7fd4272d16e40e7e910c267"  # pragma: allowlist secret
+    "7b13e52e0175836c0a44c63ec9c84070fdf6323b40595c47e5cef39df7d71c28"  # pragma: allowlist secret
 )
 
 
