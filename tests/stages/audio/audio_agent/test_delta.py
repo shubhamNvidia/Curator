@@ -236,6 +236,27 @@ class TestNarrowingIsNotInvisible:
         assert "depends on the other rows" in reason
 
 
+@pytest.mark.parametrize(("naming", "depth"), [("legacy", 1), ("source_hash", 2)])
+def test_sortformer_rttm_policy_controls_agent_delta_region(naming: str, depth: int, tmp_path: Path) -> None:
+    recipe = Recipe.from_dict(
+        {
+            "stages": [
+                {"ref": "ManifestReader", "params": {"manifest_path": str(tmp_path / "input.jsonl")}},
+                {
+                    "ref": "InferenceSortformerStage",
+                    "params": {"rttm_out_dir": str(tmp_path / "rttm"), "rttm_naming": naming},
+                },
+            ]
+        }
+    ).freeze()
+    actual_depth, reason = delta.region(recipe, upto=2)
+    assert actual_depth == depth
+    if naming == "legacy":
+        assert "InferenceSortformerStage" in reason
+    else:
+        assert reason == ""
+
+
 class TestInventory:
     """The profiler records WHICH files back the dataset key, not just their digest."""
 
