@@ -875,12 +875,12 @@ def test_streaming_fallback_resets_owned_partial_checkpoint_before_batch_retry(
     checkpoint = ManifestCheckpointStage(output_path=str(output))
     attempts = 0
 
-    def execute(_stages, _executor, *, checkpoint_path=None):  # noqa: ANN001, ANN202, ARG001
+    def execute(pipeline, _executor, *, checkpoint_path=None):  # noqa: ANN001, ANN202, ARG001
         nonlocal attempts
         attempts += 1
         # Xenna executes a serialized worker copy, so retry ownership must be
         # durable evidence the original driver-side stage can verify.
-        worker_checkpoint = copy.deepcopy(checkpoint)
+        worker_checkpoint = copy.deepcopy(pipeline.stages[0])
         worker_checkpoint.setup()
         worker_checkpoint.process(AudioTask(data={"attempt": attempts}))
         if attempts == 1:
@@ -888,7 +888,7 @@ def test_streaming_fallback_resets_owned_partial_checkpoint_before_batch_retry(
         return []
 
     monkeypatch.setattr(verbs, "_make_executor", lambda mode: mode)
-    monkeypatch.setattr(verbs, "_run_pipeline", execute)
+    monkeypatch.setattr("nemo_curator.pipeline.Pipeline.run", execute)
 
     results, used_mode = verbs._run_pipeline_autofallback(
         [checkpoint],
@@ -900,6 +900,7 @@ def test_streaming_fallback_resets_owned_partial_checkpoint_before_batch_retry(
     assert results == []
     assert used_mode == "batch"
     assert output.read_text(encoding="utf-8") == '{"attempt": 2}\n'
+    assert Path(f"{output}._COMPLETE").exists()
     assert not Path(f"{output}._RETRY_OWNER").exists()
 
 
