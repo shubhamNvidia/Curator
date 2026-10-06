@@ -1094,3 +1094,48 @@ def test_nested_acceptance_recipe_is_rejected_before_data_access(monkeypatch: py
     )
     with pytest.raises(ValueError, match=r"nested field.*not supported"):
         verbs.validate(recipe)
+
+
+def test_run_pipeline_binds_manifest_resume_to_configured_pipeline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import lmdb
+
+    from nemo_curator.pipeline import Pipeline
+    from nemo_curator.stages.audio import agent as foundation
+    from nemo_curator.stages.audio.common import GetAudioDurationStage, ManifestWriterStage
+    from nemo_curator.tasks import AudioTask
+    from nemo_curator.utils.resumability_actor import METADATA_DIRNAME
+
+    checkpoint = tmp_path / "state"
+    output = tmp_path / "output.jsonl"
+    calls = []
+
+    def execute(pipeline, _executor, *, checkpoint_path):  # noqa: ANN001, ANN202
+        assert checkpoint_path == str(checkpoint)
+        writer = pickle.loads(pickle.dumps(pipeline.stages[-1]))  # noqa: S301 - only locally serialized stages
+        writer.setup_on_node()
+        writer.setup()
+        assert writer._pipeline_identity == foundation.pipeline_identity(pipeline.stages)
+        if not calls:
+            writer.process(AudioTask(data={"finished_source": True}))
+            state = checkpoint / METADATA_DIRNAME / "worker.mdb"
+            with lmdb.open(str(state), subdir=False, max_dbs=1) as env:
+                completed = env.open_db(b"completed_sources")
+                with env.begin(write=True) as txn:
+                    txn.put(b"source", b"1", db=completed)
+        calls.append(True)
+        return []
+
+    monkeypatch.setattr(Pipeline, "run", execute)
+    for _ in range(2):
+        assert verbs._run_pipeline([ManifestWriterStage(str(output))], object(), checkpoint_path=str(checkpoint)) == []
+    assert output.read_text() == '{"finished_source": true}\n'
+    assert len(calls) == 2
+    with pytest.raises(RuntimeError, match="cannot authenticate"):
+        verbs._run_pipeline(
+            [GetAudioDurationStage(), ManifestWriterStage(str(output))], object(), checkpoint_path=str(checkpoint)
+        )
+    assert len(calls) == 2
+    assert output.read_text() == '{"finished_source": true}\n'
+    assert not Path(f"{output}._RUN").exists()

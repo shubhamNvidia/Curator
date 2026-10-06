@@ -5637,14 +5637,24 @@ def _run_pipeline(stages: list[Any], executor: Any, *, checkpoint_path: str | No
     # host parsing the CLI's stdout never sees them interleaved with the result.
     with contextlib.redirect_stdout(sys.stderr):
         from nemo_curator.backends.failed_task_markers import failed_task_manifest_exists
+        from nemo_curator.stages.audio import agent as foundation
+        from nemo_curator.stages.audio.common import ManifestWriterStage
 
         pipeline.build()
+        writer_identity = (
+            foundation.pipeline_identity(pipeline.stages)
+            if checkpoint_path is not None and any(isinstance(stage, ManifestWriterStage) for stage in pipeline.stages)
+            else None
+        )
         prepared = []
         try:
             for stage in pipeline.stages:
                 prepare = getattr(stage, "prepare_on_driver", None)
                 if callable(prepare):
-                    prepare(checkpoint_path=checkpoint_path)
+                    if isinstance(stage, ManifestWriterStage):
+                        prepare(checkpoint_path=checkpoint_path, pipeline_identity=writer_identity)
+                    else:
+                        prepare(checkpoint_path=checkpoint_path)
                     prepared.append(stage)
             result = pipeline.run(executor, checkpoint_path=checkpoint_path)
             if failed_task_manifest_exists():
