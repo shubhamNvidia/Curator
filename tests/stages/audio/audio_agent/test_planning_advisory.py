@@ -392,6 +392,19 @@ def test_existing_persisted_transform_can_prove_a_file_backed_boundary(
 # --------------------------------------------------------------- row independence
 def _split_recipe(tmp_path: Path, *, output_dir: str | None, preference: dict | None = _REFINE) -> dict:
     """The who-said-what shape: split/ASR/join, then a terminal manifest a delta could merge."""
+    source = tmp_path / "split-input.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "audio_filepath": "/data/recording.wav",
+                "resampled_audio_filepath": "/data/recording-16k.wav",
+                "duration": 10.0,
+                "diar_segments": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     split: dict = {
         "ref": "SplitASRAlignJoinStage",
         "params": {"segments_key": "diar_segments", "decoder_type": "rnnt"},
@@ -400,7 +413,7 @@ def _split_recipe(tmp_path: Path, *, output_dir: str | None, preference: dict | 
         split["params"]["output_dir"] = output_dir
     recipe = {
         "stages": [
-            {"ref": "ManifestReader", "params": {"manifest_path": str(_INPUT)}},
+            {"ref": "ManifestReader", "params": {"manifest_path": str(source)}},
             split,
             {"ref": "MergeAlignmentDiarizationStage", "params": {}},
             {"ref": "ManifestWriterStage", "params": {"output_path": str(tmp_path / "out.jsonl")}},

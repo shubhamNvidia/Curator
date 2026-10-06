@@ -563,7 +563,11 @@ def _check_output_completeness(ctx: CheckContext) -> CheckResult:
     available_keys = set(report.produced_keys)
     # A conditional writer is still a potential producer; acceptance verifies
     # whether its branch ran. Its field must survive all later transformations.
-    for index, stage in enumerate(ctx.stages):
+    from nemo_curator.stages.audio._agent._composite import expand_composites
+
+    expanded = expand_composites(ctx.stages)
+    execution_stages = [item.stage for item in expanded.stages] if expanded.fully_resolved else ctx.stages
+    for index, stage in enumerate(execution_stages):
         try:
             contract = foundation.build_contract(stage)
         except Exception:  # noqa: BLE001, S112 - data_flow reports unreadable contracts
@@ -574,7 +578,7 @@ def _check_output_completeness(ctx: CheckContext) -> CheckResult:
             roles = {contract.key_roles.get(key, "unknown") for key in keys} - {"unknown"}
             segment_roles = {contract.key_roles.get(key, "unknown") for key in segment_keys} - {"unknown"}
             suffix = foundation.validate_pipeline(
-                ctx.stages[index + 1 :],
+                execution_stages[index + 1 :],
                 initial_roles=roles,
                 initial_keys=keys,
                 initial_segment_roles=segment_roles,
@@ -599,6 +603,16 @@ def _check_output_completeness(ctx: CheckContext) -> CheckResult:
                 )
             )
     return CheckResult(issues=out)
+
+
+@register("acceptance_evaluability")
+def _check_acceptance_evaluability(ctx: CheckContext) -> CheckResult:
+    """Surface evidence requirements before approving a mechanically valid plan."""
+    from nemo_curator.stages.audio.audio_agent.acceptance import evaluability_issues
+    from nemo_curator.stages.audio.audio_agent.verbs import _terminal_evidence_outputs
+
+    _, row_coverage = _terminal_evidence_outputs(ctx.recipe, [])
+    return CheckResult(issues=evaluability_issues(ctx.acceptance_criteria, row_coverage=row_coverage))
 
 
 @register("request_type_sanity")
@@ -698,8 +712,46 @@ def _check_diarization_continuity(ctx: CheckContext) -> CheckResult:
     return CheckResult(issues=out)
 
 
-# Constructor fields through which a stage is told which column holds the audio path.
-_AUDIO_PATH_KEY_FIELDS = ("audio_filepath_key", "filepath_key")
+def _missing_source_audio_keys(stages: list[Any], columns: set[str]) -> set[str]:
+    """Check configured file consumers against observed keys, not a reader's defaults."""
+    from nemo_curator.stages.audio._agent._agent_registry import build_contract
+    from nemo_curator.stages.audio._agent._composite import expand_composites
+    from nemo_curator.stages.audio._agent._roles import role_for_value
+
+    available = set(columns)
+    expansion = expand_composites(stages[1:])
+    if not expansion.fully_resolved:
+        msg = "cannot resolve source audio consumers through an opaque composite"
+        raise ValueError(msg)
+
+    def missing_paths(spec: Any, roles: dict[str, str]) -> set[str]:  # noqa: ANN401 - configured IOSpec
+        return {
+            key
+            for key in spec.data_keys
+            if roles.get(key, role_for_value(key)) == "audio_filepath" and key not in available
+        }
+
+    for item in expansion.stages:
+        contract = build_contract(item.stage)
+        missing = missing_paths(contract.reads, contract.key_roles)
+        groups = [contract.reads_one_of] if contract.reads_one_of else []
+        groups.extend(
+            branch.reads_one_of
+            for branch in contract.conditional_reads
+            if set(branch.requires_keys) <= available and not set(branch.forbids_keys) & available
+        )
+        for alternatives in groups:
+            # An available resident/nested alternative needs no top-level file.
+            if alternatives and not any(set(spec.data_keys) <= available for spec in alternatives):
+                missing.update(key for spec in alternatives for key in missing_paths(spec, contract.key_roles))
+        if missing:
+            return missing
+        if not contract.preserves_upstream_keys:
+            available.clear()
+        available.difference_update(contract.removes_keys)
+        available.difference_update(contract.invalidates_keys)
+        available.update(contract.writes.data_keys)
+    return set()
 
 
 @register("source_schema")
@@ -720,34 +772,26 @@ def _check_source_schema(ctx: CheckContext) -> CheckResult:
     source is a blocking error, and the fix is either to convert the manifest or to say
     explicitly which column holds the audio.
 
-    Fires only when ALL of the following hold, so a correctly-configured pipeline is never
-    false-flagged: a manifest was profiled, its columns were observed, none of them carries
-    the ``audio_filepath`` role, and no stage was pointed at one of the columns that IS
-    present -- an explicit ``audio_filepath_key`` is the caller stating the format, which is
-    exactly what this asks for.
+    Text/metadata-only recipes need no audio column. Configured consumers,
+    including composite leaves and alternative resident inputs, determine
+    whether the observed schema actually needs a file carrier.
     """
-    from nemo_curator.stages.audio._agent._roles import role_for_value
-
     profile = ctx.data_profile or {}
     if profile.get("kind") != "manifest":
         return CheckResult()
     columns = {str(c) for c in (profile.get("manifest_keys") or [])}
     if not columns:
         return CheckResult()  # nothing observed -> no evidence, so no claim
-    if any(role_for_value(column) == "audio_filepath" for column in columns):
-        return CheckResult()  # the conventional column is present
-    # A stage explicitly pointed at one of the real columns is correctly configured.
-    for stage in ctx.recipe.stages:
-        for key_field in _AUDIO_PATH_KEY_FIELDS:
-            if str(stage.params.get(key_field) or "") in columns:
-                return CheckResult()
+    missing = _missing_source_audio_keys(ctx.stages, columns)
+    if not missing:
+        return CheckResult()
     return CheckResult(
         issues=[
             Issue(
                 "source_schema_mismatch",
                 "error",
-                f"the manifest's columns {sorted(columns)} contain no 'audio_filepath', which is the "
-                "key every audio stage reads; this recipe would validate, run, and yield no rows",
+                f"the manifest's columns {sorted(columns)} cannot supply the configured "
+                f"audio_filepath input key(s) {sorted(missing)} required by this recipe",
                 fix=(
                     "convert the manifest to the NeMo format, where each row carries its audio under "
                     "'audio_filepath' -- or, if the column is deliberately named something else, say so "

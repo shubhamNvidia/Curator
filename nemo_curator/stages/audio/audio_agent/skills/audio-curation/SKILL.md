@@ -227,6 +227,12 @@ python -m nemo_curator.stages.audio.audio_agent context --goal '{"task":"quality
 (GPU? ffmpeg? installed extras?), matched blueprints/recipes, and patterns.
 Tell the user what you found (it is often news to them).
 
+Scope every absence claim to what was inspected. A folder profile covers audio
+files, not accompanying transcript manifests: `has_transcripts=false` is not
+proof that the corpus has no labels. Say "transcripts were not inspected" unless
+a relevant manifest was actually checked. Do not auto-ingest a sidecar or rerun
+inference merely to resolve that uncertainty.
+
 **Same folder already curated?** Before inventing a recipe, list priors and compare
 the user's current request to each prior's recorded prompt and `pipeline_summary`:
 
@@ -359,6 +365,12 @@ Use status language that matches this evidence. Until validation returns
 call saved YAML a **candidate recipe** or **blocked draft**. Reserve **validated**,
 **runnable**, and **working recipe** for the exact hash that has passed both checks;
 never describe the mere existence of a saved recipe file as proof that it works.
+
+Read acceptance-evaluability issues before offering execution. A producer for
+a field is not proof that the final sink exposes checkable, complete evidence.
+Resolve unsupported deterministic bindings in the recipe; disclose reviewer-only
+requirements separately. A reviewer-only must remains unverifiable in automatic
+acceptance: do not promise an automatic `met` verdict or silently weaken it.
 
 - `unsatisfied_reads` / `unproducible_roles`: insert an upstream producer via targeted
   re-retrieval (role graph in `context`); only if a role is truly unproducible across

@@ -2013,7 +2013,13 @@ def smoke(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
         rpt.per_stage_metrics = _stage_metrics(results)
         sampled_rows = list(_result_rows(results))
         rpt.examples = _examples_from_rows(sampled_rows, limit=3)
-        rpt.goals_met = rpt.retained > 0
+        from nemo_curator.stages.audio.audio_agent.acceptance import parse_criteria, permits_empty_result
+
+        rpt.goals_met = rpt.retained > 0 or permits_empty_result(
+            parse_criteria(rec.acceptance_criteria), input_count=min(sample, rpt.input_count)
+        )
+        if rpt.retained == 0 and rpt.goals_met:
+            rpt.notes.append("empty_sample_permitted_by_acceptance_contract; full-dataset yield is not established")
         incomplete_outputs = _empty_required_outputs(rec, sampled_rows)
         if incomplete_outputs:
             # A stage may retain rows while omitting a required field or filling it
