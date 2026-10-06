@@ -275,6 +275,9 @@ class DocumentBatchJsonlWriterStage(AgentReady, ProcessingStage[DocumentBatch, D
 
     output_path: str
     name: str = "document_batch_jsonl_writer"
+    # The Audio Agent redirects these fixed-file outputs to a run-owned sibling
+    # and publishes them only after the whole pipeline succeeds.
+    AGENT_ATOMIC_OUTPUT_PARAMS: ClassVar[tuple[str, ...]] = ("output_path",)
     # A retried source can encounter a partially appended shared file. Until this
     # sink writes source-attributable atomic shards, checkpointed execution must
     # fail before setup rather than silently duplicate or truncate rows.
@@ -325,6 +328,9 @@ class DocumentBatchJsonlWriterStage(AgentReady, ProcessingStage[DocumentBatch, D
 
     def process(self, task: DocumentBatch) -> DocumentBatch:
         dataframe = task.to_pandas()
+        if len(dataframe.index) and not len(dataframe.columns):
+            msg = "DocumentBatchJsonlWriterStage cannot write a nonempty batch with no columns"
+            raise ValueError(msg)
         if not dataframe.empty:
             with self._fs.open(self._path, "a", encoding="utf-8") as stream:
                 dataframe.to_json(

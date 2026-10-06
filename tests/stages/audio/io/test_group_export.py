@@ -17,10 +17,12 @@
 import csv
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
 
+from nemo_curator.backends.ray_data.adapter import RayDataStageAdapter
 from nemo_curator.stages.audio._agent._agent_registry import build_contract
 from nemo_curator.stages.audio._agent._planning import validate_pipeline
 from nemo_curator.stages.audio.io.group_export import ManifestGroupExportStage
@@ -47,6 +49,29 @@ def _unsafe_group_file(directory: Path, prefix: str, extension: str) -> Path:
 
 
 class TestGroupExport:
+    def test_unencodable_nested_value_is_dropped_without_changing_the_input(self, tmp_path: Path) -> None:
+        nested = []
+        for _ in range(sys.getrecursionlimit() + 20):
+            nested = [nested]
+        task = AudioTask(dataset_name="test", data={"speaker_id": "a", "text": "kept", "custom": nested})
+        stage = ManifestGroupExportStage(output_dir=str(tmp_path), format="json")
+        stage.setup()
+        assert stage.process_batch([task]) == [task]
+        assert json.loads((tmp_path / "a.jsonl").read_text()) == {"speaker_id": "a", "text": "kept"}
+        assert task.data["custom"] is nested
+
+    def test_ray_data_batches_persist_final_timeline_without_teardown(self, tmp_path: Path) -> None:
+        stage = ManifestGroupExportStage(output_dir=str(tmp_path), write_timeline=True, timeline_flush_rows=100)
+        stage.setup()
+        adapter = RayDataStageAdapter(stage)
+        later = AudioTask(dataset_name="test", data={"speaker_id": "b", "text": "later", "start": 2, "end": 3})
+        earlier = AudioTask(dataset_name="test", data={"speaker_id": "a", "text": "earlier", "start": 0, "end": 1})
+        assert adapter._process_batch_internal({"item": [later]})["item"] == [later]
+        timeline = tmp_path / "timeline.txt"
+        assert timeline.read_text().splitlines() == ["[2.00 - 3.00] b: later"]
+        assert adapter._process_batch_internal({"item": [earlier]})["item"] == [earlier]
+        assert timeline.read_text().splitlines() == ["[0.00 - 1.00] a: earlier", "[2.00 - 3.00] b: later"]
+
     def test_txt_one_file_per_group_with_timestamps(self, tmp_path) -> None:  # noqa: ANN001
         out = str(tmp_path / "by_speaker")
         _run(ManifestGroupExportStage(output_dir=out), _ROWS)
@@ -98,6 +123,30 @@ class TestGroupExport:
         _run(ManifestGroupExportStage(output_dir=str(isolated), include_timestamps=False), [rows[0]])
         integer_name = next(name for name, content in mappings[0].items() if content.strip() == "integer group")
         assert (isolated / integer_name).read_text().strip() == "integer group"
+
+    @pytest.mark.parametrize("format_name", ["txt", "json", "csv"])
+    def test_long_group_names_fit_filesystem_component_limit(self, tmp_path: Path, format_name: str) -> None:
+        value = "speaker_" + "x" * 300
+        rows = [{"speaker_id": value, "text": "kept"}]
+        out = tmp_path / format_name
+
+        _run(ManifestGroupExportStage(output_dir=str(out), format=format_name), rows)
+
+        files = list(out.iterdir())
+        assert len(files) == 1
+        assert len(files[0].name.encode("utf-8")) <= 255
+        assert "~" in files[0].stem
+
+    def test_long_group_names_are_stable_across_arrival_order(self, tmp_path: Path) -> None:
+        groups = ["speaker_" + "a" * 300, "speaker_" + "b" * 300]
+        mappings = []
+        for directory, order in ((tmp_path / "a", groups), (tmp_path / "b", list(reversed(groups)))):
+            _run(
+                ManifestGroupExportStage(output_dir=str(directory), include_timestamps=False),
+                [{"speaker_id": group, "text": group[-1]} for group in order],
+            )
+            mappings.append({path.name: path.read_text() for path in directory.glob("*.txt")})
+        assert mappings[0] == mappings[1]
 
     def test_colliding_timeline_labels_do_not_depend_on_arrival_order(self, tmp_path: Path) -> None:
         rows = [
