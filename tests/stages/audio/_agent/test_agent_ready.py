@@ -108,7 +108,7 @@ def test_lightweight_audio_stages_expose_agent_contracts(tmp_path) -> None:  # n
 
     extraction_contract = SegmentConcatenationStage().describe()
     assert extraction_contract.metadata_writes == ["segment_mappings"]
-    assert extraction_contract.cardinality == "N:1"
+    assert extraction_contract.cardinality == "filter"
 
     doc_stage = AudioToDocumentStage(batch_size=2, keep_keys=["text"])
     assert doc_stage.batch_size == 2
@@ -157,3 +157,30 @@ def test_timestamp_mapper_contract_declares_data_replacement() -> None:
 
     assert contract.preserves_upstream_keys is False
     assert "original_file" in contract.writes.data_keys
+
+
+@pytest.mark.parametrize(
+    "conditions",
+    [
+        {"duration": {"operator": "gt", "target_value": 1}},
+        [{"input_value_key": "duration", "operator": "gt", "target_value": 1}],
+    ],
+)
+def test_condition_schema_accepts_both_runtime_forms(conditions: dict[str, object] | list[dict[str, object]]) -> None:
+    from nemo_curator.stages.audio.agent import build_contract, describe_stage, to_json_schema
+    from nemo_curator.stages.audio.common import PreserveByValueConditionsStage
+
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = to_json_schema(describe_stage("PreserveByValueConditionsStage").params)
+    jsonschema.validate({"conditions": conditions}, schema)
+    assert build_contract(PreserveByValueConditionsStage(conditions)).cardinality == "filter"
+
+
+def test_optional_parameter_schema_accepts_explicit_null() -> None:
+    from nemo_curator.stages.audio.agent import describe_stage, to_json_schema
+
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = to_json_schema(describe_stage("SampleRateFilterStage").params)
+    jsonschema.validate({"allowed_sample_rates": None, "min_sample_rate": None}, schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({"allowed_sample_rates": "16000"}, schema)

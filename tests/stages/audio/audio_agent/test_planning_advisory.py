@@ -430,22 +430,18 @@ def _forfeited(result: dict) -> list[dict]:
     ]
 
 
-def test_a_param_that_forfeits_incremental_reuse_is_surfaced_under_refine_later(
+def test_shared_split_outputs_do_not_offer_a_false_reuse_remedy(
     tmp_path: Path,
 ) -> None:
-    """One tidy-looking output directory costs every future delta; say so before it is chosen."""
+    """Dropping output_dir cannot make source-adjacent split names independent."""
     result = aa.validate(_split_recipe(tmp_path, output_dir=str(tmp_path / "chunks")))
     advisories = _forfeited(result)
 
-    assert len(advisories) == 1
-    assert advisories[0]["stage"] == "SplitASRAlignJoinStage"
-    assert advisories[0]["params_responsible"] == ["output_dir"]
-    assert advisories[0]["suggested_shape"]["drop_params"] == ["output_dir"]
-    # Advice, never a blocker.
+    assert advisories == []
     assert result["runnable"] is True
 
 
-def test_no_advice_when_the_recipe_already_keeps_its_rows_independent(tmp_path: Path) -> None:
+def test_source_adjacent_split_outputs_do_not_offer_a_false_reuse_remedy(tmp_path: Path) -> None:
     assert _forfeited(aa.validate(_split_recipe(tmp_path, output_dir=None))) == []
 
 

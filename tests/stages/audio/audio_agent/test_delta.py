@@ -532,14 +532,9 @@ class TestRegion:
         ).freeze()
         assert delta.region(rec, upto=2) == (2, "")
 
-    def test_a_split_stage_is_independent_only_while_its_outputs_cannot_collide(self, tmp_path: Path) -> None:
-        """The surviving example of a gate answered per instance rather than per class.
-
-        Split names come from the source basename alone, so an ``output_dir`` puts every file in
-        one flat namespace and ``spk1/utt1.wav`` and ``spk2/utt1.wav`` fight over the same output
-        path. Without one they land beside their source and cannot collide. A flat ``False`` would
-        cost the delta on the default configuration, which is the one that is actually safe.
-        """
+    @pytest.mark.parametrize("shared_output", [False, True])
+    def test_split_output_names_stop_delta_reuse(self, tmp_path: Path, shared_output: bool) -> None:
+        """Source-adjacent names can collide across extensions or split plans too."""
 
         def _region(params: dict[str, object]) -> tuple[int, str]:
             rec = Recipe.from_dict(
@@ -552,8 +547,8 @@ class TestRegion:
             ).freeze()
             return delta.region(rec, upto=2)
 
-        assert _region({}) == (2, "")
-        depth, reason = _region({"output_dir": str(tmp_path / "splits")})
+        params = {"output_dir": str(tmp_path / "splits")} if shared_output else {}
+        depth, reason = _region(params)
         assert depth == 1
         assert "SplitLongAudio" in reason
 
@@ -772,14 +767,8 @@ class TestPlan:
         assert decision.status != "ready"
         assert "no prior run" in decision.reason
 
-    def test_a_directory_resume_point_names_what_shortened_the_region(self, tmp_path: Path) -> None:
-        """The realistic GPU shape: resample writes a directory, then a corpus-dependent stage.
-
-        Measured against a real SQUIM pipeline, this refusal said only "ResampleAudioStage does
-        not own a manifest the merge can rewrite" -- blaming the stage that happens to hold the
-        deepest output, never mentioning the stage that actually shortened the region, and
-        offering nothing to do about it. Both halves belong in the sentence.
-        """
+    def test_shared_resample_outputs_stop_reuse_before_a_directory_resume_point(self, tmp_path: Path) -> None:
+        """A later artifact cannot restore independence lost at shared resample output names."""
         audio = tmp_path / "audio"
         inventory = _corpus(audio, ("a.wav", "b.wav"))
         rec = Recipe.from_dict(
@@ -804,9 +793,8 @@ class TestPlan:
         )
 
         assert decision.status != "ready"
-        assert "TorchSquimQualityMetrics" in decision.reason, decision.reason
         assert "ResampleAudioStage" in decision.reason
-        assert "add-checkpoint" in decision.reason
+        assert "nothing is persisted that early" in decision.reason
 
     def test_a_prior_result_published_elsewhere_is_refused_by_name(self, tmp_path: Path) -> None:
         """Output paths are outside the reuse identity, so one step key can span two files.

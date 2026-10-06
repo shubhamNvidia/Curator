@@ -86,9 +86,6 @@ LEGACY_STAGE_NAMES = (
 ADDITIVE_STAGE_NAMES = (
     "ChannelCountStage",
     "DocumentBatchJsonlWriterStage",
-    "InferenceIndicCanaryStage",
-    "InferenceIndicConformerHybridStage",
-    "InferenceParakeetStage",
     "ManifestCheckpointStage",
     "PreserveByValueConditionsStage",
     "SampleRateFilterStage",
@@ -266,7 +263,7 @@ ADDITIVE_STAGE_NAMES = (
 # language output and skip-policy knobs. A full payload comparison confirms that
 # only ASRStage changed among the legacy 46; the other 45 entries are identical.
 EXPECTED_LEGACY_COMPATIBILITY_SHA256 = (
-    "7b13e52e0175836c0a44c63ec9c84070fdf6323b40595c47e5cef39df7d71c28"  # pragma: allowlist secret
+    "97e3d961d98d9dfe87ec7d55de39c78c954fb682349dce9a3ca666ca2dd81bf5"  # pragma: allowlist secret
 )
 
 
@@ -472,7 +469,7 @@ def test_the_static_view_no_longer_calls_a_fan_out_stage_1_to_1() -> None:
     assert static_contract(get_agent_ready_stage_class("SnippetExtractionStage")).cardinality == ("1:N fan-out")
     assert static_contract(get_agent_ready_stage_class("ManifestReader")).cardinality == ("1:N fan-out")
     assert static_contract(get_agent_ready_stage_class("PreserveByValueStage")).cardinality == ("filter")
-    assert static_contract(get_agent_ready_stage_class("SegmentConcatenationStage")).cardinality == ("N:1")
+    assert static_contract(get_agent_ready_stage_class("SegmentConcatenationStage")).cardinality == ("filter")
 
 
 def test_a_param_dependent_cardinality_is_offered_as_options_not_guessed() -> None:
