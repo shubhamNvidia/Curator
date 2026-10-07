@@ -595,20 +595,6 @@ def test_mapped_submillisecond_diarization_interval_remains_nonempty() -> None:
     assert result.data["diar_segments"] == [[5.0, 5.001]]
 
 
-def test_unmapped_submillisecond_diarization_interval_remains_nonempty() -> None:
-    result = TimestampMapperStage().process(
-        _make_task({"audio_filepath": "clip.wav", "diar_segments": [[0.0001, 0.0009]]})
-    )
-
-    assert isinstance(result, AudioTask)
-    assert result.data["original_start_ms"] == 0
-    assert result.data["original_end_ms"] == 1
-    assert result.data["duration_ms"] == 1
-    assert result.data["duration"] == 0.001
-    assert result.data["speaking_duration"] == 0.001
-    assert result.data["diar_segments"] == [[0.0, 0.001]]
-
-
 def test_mapped_diarization_rejects_multiple_original_files() -> None:
     mappings = [
         {"concat_start_ms": 0, "concat_end_ms": 1000, "original_file": "a.wav", "original_start_ms": 0},
@@ -928,3 +914,20 @@ def test_duration_only_input_does_not_advertise_diarization_output() -> None:
 
     assert not report.ok
     assert any(issue.code == "unsatisfied_reads" and issue.stage_index == 1 for issue in report.issues)
+
+
+@pytest.mark.parametrize(
+    "segments", [[{"start": 0.0001, "end": 0.0002, "speaker": "A"}], [{"start": -0.0001, "end": 0.5}]]
+)
+def test_unmapped_dictionary_turns_preserve_positive_source_bounds(segments: list) -> None:
+    result = TimestampMapperStage().process(_make_task({"diar_segments": segments}))
+    assert result.data["original_start_ms"] == 0
+    turn = result.data["diar_segments"][0]
+    assert 0 <= turn["start"] < turn["end"]
+    assert turn["end"] == segments[0]["end"]
+
+
+def test_unmapped_scalar_start_is_clamped_to_source() -> None:
+    result = TimestampMapperStage().process(_make_task({"start_ms": -1, "end_ms": 500}))
+    assert result.data["original_start_ms"] == 0
+    assert result.data["duration_ms"] == 500
