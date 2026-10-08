@@ -93,6 +93,7 @@ class PrepareModuleSegmentsStage(AgentReady, ProcessingStage[AudioTask, AudioTas
         return StageContract(
             reads=IOSpec(data_keys=[self.segments_key, self.duration_key]),
             writes=IOSpec(data_keys=[self.segments_key]),
+            preserves_upstream_segment_keys=False,
             # Consulted-when-present: an alignment/overlap list and the row-identity keys used
             # to seed the per-row RNG. Optional so planning never blocks on their absence.
             optional_reads=IOSpec(
@@ -106,7 +107,11 @@ class PrepareModuleSegmentsStage(AgentReady, ProcessingStage[AudioTask, AudioTas
             ),
             conditional_writes=[
                 ConditionalWrite(
-                    writes=IOSpec(segment_data_keys=[self.text_key, self.words_key, self.metrics_key]),
+                    writes=IOSpec(
+                        segment_data_keys=list(
+                            dict.fromkeys(["speaker", "start", "end", self.text_key, self.words_key, self.metrics_key])
+                        )
+                    ),
                     condition=(
                         f"preparation emits a non-empty '{self.segments_key}' list; each prepared "
                         "segment contains reconstructed text, word alignments, and metric lists"

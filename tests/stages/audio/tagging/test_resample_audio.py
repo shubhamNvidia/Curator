@@ -16,8 +16,10 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
+import time
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -748,3 +750,53 @@ def test_resident_keys_cannot_alias_metadata(tmp_path, resident_key: str, metada
 
 def test_inactive_resident_alias_and_legacy_in_place_path_remain_supported(tmp_path) -> None:  # noqa: ANN001
     ResampleAudioStage(str(tmp_path), waveform_key="duration", audio_filepath_key="resampled_audio_filepath")
+
+
+@pytest.mark.parametrize("stem", ["a" * 190, "é" * 95, "a" * 250, "é" * 125])
+def test_real_conversion_bounds_staging_name(tmp_path: Path, stem: str) -> None:
+    source = tmp_path / f"{stem}.wav"
+    sf.write(source, np.zeros(16000, dtype=np.float32), 16000)
+    destination = tmp_path / "converted"
+    stage = ResampleAudioStage(str(destination))
+    stage.setup_on_node()
+    result = stage.process_batch([AudioTask(data={"audio_filepath": str(source)})])
+    final = Path(result[0].data[stage.resampled_audio_filepath_key])
+    assert final.is_file()
+    assert len(final.name.encode()) <= 255
+    assert sf.info(final).frames == 16000
+    assert stat.S_IMODE(final.stat().st_mode) == stat.S_IMODE(source.stat().st_mode)
+    assert list(destination.iterdir()) == [final]
+
+
+def test_memory_only_lifecycle_avoids_durable_destination(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    resolve_fs = resample_audio_module.url_to_fs
+
+    def forbidden_destination(path: str) -> tuple[Any, str]:
+        assert path != str(tmp_path / "unused")
+        return resolve_fs(path)
+
+    monkeypatch.setattr(resample_audio_module, "url_to_fs", forbidden_destination)
+    stage = ResampleAudioStage(
+        str(tmp_path / "unused"), write_to_disk=False, keep_waveform_in_task=True, input_residency="waveform"
+    )
+    stage.setup_on_node()
+    assert stage.describe().gates.output_path_params == []
+    assert stage.describe().gates.requires_ffmpeg
+    output = stage.process_batch(
+        [AudioTask(data={stage.waveform_key: np.zeros(16000, dtype=np.float32), "sample_rate": 16000})]
+    )
+    assert len(output) == 1
+    assert output[0].data[stage.sample_rate_key] == 16000
+    assert not (tmp_path / "unused").exists()
+
+
+def test_resident_output_identity_ignores_container_timestamp(tmp_path: Path) -> None:
+    waveform = np.linspace(-0.5, 0.5, 16000, dtype=np.float32)
+    identifiers = []
+    for _ in range(2):
+        stage = ResampleAudioStage(str(tmp_path), input_residency="waveform")
+        task = stage.process(AudioTask(data={"waveform": waveform.copy(), "sample_rate": 16000}))
+        identifiers.append(task.data[stage.audio_item_id_key])
+        time.sleep(1.1)
+    assert identifiers[0] == identifiers[1]
+    assert len(list(tmp_path.iterdir())) == 1
