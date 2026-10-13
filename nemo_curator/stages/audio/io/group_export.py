@@ -32,10 +32,13 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from loguru import logger
 
 from nemo_curator.stages.audio._agent._agent_ready import AgentReady, Gates, IOSpec, StageContract, StaticHints
+from nemo_curator.stages.audio.common import ManifestWriterStage
 from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.tasks import AudioTask
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from nemo_curator.backends.base import WorkerMetadata
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -127,6 +130,9 @@ class ManifestGroupExportStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
     and at each successful batch boundary. ``teardown`` also flushes direct
     ``process`` calls, so batch execution does not depend on worker shutdown.
 
+    Driver preparation retains committed export state across worker replacement.
+    Unprepared direct ``setup`` starts a new run.
+
     Rows pass through unchanged, so this can sit anywhere after the data exists -- it is a
     tee, not a sink. Non-serializable values (e.g. a resident ``waveform`` tensor) are dropped
     from the written columns rather than crashing the export.
@@ -181,6 +187,7 @@ class ManifestGroupExportStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
     _pending: int = field(default=0, init=False, repr=False)
     _group_stems: dict[str, str] = field(default_factory=dict, init=False, repr=False)
     _group_labels: dict[str, str] = field(default_factory=dict, init=False, repr=False)
+    _journal: ManifestWriterStage | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         super().__init__()
@@ -192,7 +199,32 @@ class ManifestGroupExportStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
             raise ValueError(msg)
 
     # ------------------------------------------------------------------ lifecycle
+    def prepare_on_driver(self, *, checkpoint_path: Path | None = None) -> None:
+        """Reserve run state before workers are serialized; checkpoint resume is unsupported."""
+        if checkpoint_path is not None:
+            msg = "ManifestGroupExportStage does not support pipeline checkpoint resume"
+            raise ValueError(msg)
+        journal = ManifestWriterStage(os.path.join(self.output_dir, ".nemo_curator_group_export.jsonl"))
+        journal.prepare_on_driver()
+        self._journal = journal
+
+    def prepare_for_pipeline(self, *, checkpoint_path: Path | None = None) -> bool:
+        if self._journal is not None and getattr(self._journal, "_run_token", None) is not None:
+            return False
+        self.prepare_on_driver(checkpoint_path=checkpoint_path)
+        return True
+
+    def _verify_export_ownership(self) -> bool:
+        prepared = self._journal is not None and getattr(self._journal, "_run_token", None) is not None
+        if prepared:
+            self._journal.setup_on_node()
+        elif os.path.exists(os.path.join(self.output_dir, ".nemo_curator_group_export.jsonl._RUN")):
+            msg = "ManifestGroupExportStage cannot replace output owned by an active pipeline run"
+            raise RuntimeError(msg)
+        return prepared
+
     def setup(self, _worker_metadata: WorkerMetadata | None = None) -> None:
+        prepared = self._verify_export_ownership()
         os.makedirs(self.output_dir, exist_ok=True)
         # Group files are truncated on FIRST touch in this run (not up front), so a re-run
         # replaces its own output instead of appending to the previous run's -- and a group
@@ -204,11 +236,55 @@ class ManifestGroupExportStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
         self._pending = 0
         self._group_stems = {}
         self._group_labels = {}
+        if prepared:
+            self._restore_exports()
         logger.info(f"[{self.name}] exporting groups of {self.group_by!r} to {self.output_dir}")
+
+    def _restore_exports(self) -> None:
+        offsets = {}
+        with open(self._journal.output_path, encoding="utf-8") as source:
+            for line in source:
+                event = json.loads(line)
+                path = os.path.join(self.output_dir, event["filename"])
+                self._written.add(path)
+                offsets[path] = event["offset"]
+                self._group_stems[event["identity"]] = event["stem"]
+                if event["csv_fields"] is not None:
+                    self._csv_fields[path] = event["csv_fields"]
+                if event["csv_dropped"]:
+                    self._csv_dropped.add(path)
+                if event["timeline"] is not None:
+                    self._timeline.append(tuple(event["timeline"]))
+                    self._group_labels[event["identity"]] = event["label"]
+        for path, offset in offsets.items():
+            with open(path, "r+b") as output:
+                if output.seek(0, os.SEEK_END) < offset:
+                    msg = f"Committed group export is incomplete: {path}"
+                    raise RuntimeError(msg)
+                output.truncate(offset)
+        if self.write_timeline:
+            self._flush_timeline()
+
+    def finalize(self) -> None:
+        if self._journal is not None and getattr(self._journal, "_run_token", None) is not None:
+            self.setup()
+            os.remove(self._journal.output_path)
+            self.abort_on_driver()
+
+    def abort_on_driver(self) -> None:
+        if self._journal is not None:
+            self._journal.abort_on_driver()
+
+    def reset_for_retry(self) -> None:
+        self.abort_on_driver()
 
     def teardown(self) -> None:
         if self.write_timeline:
-            self._flush_timeline()
+            try:
+                self._flush_timeline()
+            except RuntimeError:
+                # A retired worker must not rewrite a subsequent run's timeline.
+                return
 
     def num_workers(self) -> int | None:
         return 1  # every group file is appended to from one place; keeps ordering sane
@@ -253,6 +329,7 @@ class ManifestGroupExportStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
 
     # ------------------------------------------------------------------ processing
     def process(self, task: AudioTask) -> AudioTask:
+        self._verify_export_ownership()
         row = task.data if isinstance(task.data, dict) else {}
         # ``is None``, not truthiness: speaker ids are commonly zero-indexed, and
         # ``row.get(...) or ...`` filed every ``speaker_id == 0`` row under
@@ -275,6 +352,7 @@ class ManifestGroupExportStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
             ),
         )
         self._append(stem, row)
+        label = None
         if self.write_timeline:
             label_reserved = {_safe_name(self.missing_group)} if not missing else set()
             label = self._group_labels.setdefault(
@@ -287,6 +365,20 @@ class ManifestGroupExportStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
                 ),
             )
             self._record_timeline(label, row)
+        if self._journal is not None and getattr(self._journal, "_run_token", None) is not None:
+            filename = f"{stem}.{_EXT[self.format]}"
+            path = os.path.join(self.output_dir, filename)
+            event = {
+                "identity": identity,
+                "stem": stem,
+                "filename": filename,
+                "offset": os.path.getsize(path),
+                "csv_fields": self._csv_fields.get(path),
+                "csv_dropped": path in self._csv_dropped,
+                "label": label,
+                "timeline": self._timeline[-1] if self.write_timeline else None,
+            }
+            self._journal.write_jsonl_batch(json.dumps(event, ensure_ascii=False) + "\n")
         return task
 
     def _append(self, group: str, row: dict[str, Any]) -> None:
@@ -306,7 +398,9 @@ class ManifestGroupExportStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
                 # a different shape -- a missing transcript, a column dropped for being
                 # non-serializable, a different insertion order -- be written under a header it
                 # does not match, silently shifting values into the wrong columns.
-                fields = self._csv_fields.setdefault(path, list(selected))
+                fields = self._csv_fields.setdefault(
+                    path, list(self.columns) if self.columns is not None else list(selected)
+                )
                 writer = csv.DictWriter(f, fieldnames=fields, restval="", extrasaction="ignore")
                 if first:
                     writer.writeheader()
@@ -352,6 +446,7 @@ class ManifestGroupExportStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
     def _flush_timeline(self) -> None:
         if not self._timeline:
             return
+        self._verify_export_ownership()
         path = os.path.join(self.output_dir, _TIMELINE)
         with open(path, "w", encoding="utf-8") as f:
             f.writelines(f"{line}\n" for _start, line in sorted(self._timeline, key=lambda e: e[0]))
