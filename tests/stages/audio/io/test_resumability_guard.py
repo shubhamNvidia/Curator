@@ -19,9 +19,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from nemo_curator.stages.audio._agent._agent_registry import build_contract
 
 from nemo_curator.pipeline import Pipeline
+from nemo_curator.stages.audio._agent._agent_registry import build_contract
 from nemo_curator.stages.audio.io.convert import DocumentBatchJsonlWriterStage
 from nemo_curator.stages.audio.io.extract_segments import SegmentExtractionStage
 from nemo_curator.stages.audio.io.group_export import ManifestGroupExportStage

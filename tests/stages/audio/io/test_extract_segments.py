@@ -25,8 +25,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 import soundfile as sf
-from nemo_curator.stages.audio._agent._planning import validate_pipeline
 
+from nemo_curator.stages.audio._agent._planning import validate_pipeline
 from nemo_curator.stages.audio.io.extract_segments import (
     SegmentExtractionStage,
     _base_metadata,
@@ -98,7 +98,6 @@ def test_sortformer_shaped_mapper_output_extracts_each_speaker(wav_dir: Path, tm
     )
     mapped = mapper.process(task)
     assert isinstance(mapped, AudioTask)
-
     extractor.process_batch([mapped])
 
     assert (output_dir / "file_a_speaker_0_segment_000.wav").exists()

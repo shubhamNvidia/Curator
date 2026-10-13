@@ -21,10 +21,10 @@ import sys
 from pathlib import Path
 
 import pytest
-from nemo_curator.stages.audio._agent._agent_registry import build_contract
-from nemo_curator.stages.audio._agent._planning import validate_pipeline
 
 from nemo_curator.backends.ray_data.adapter import RayDataStageAdapter
+from nemo_curator.stages.audio._agent._agent_registry import build_contract
+from nemo_curator.stages.audio._agent._planning import validate_pipeline
 from nemo_curator.stages.audio.io.group_export import ManifestGroupExportStage
 from nemo_curator.tasks import AudioTask
 
