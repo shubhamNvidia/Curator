@@ -184,7 +184,7 @@ class PreserveByValueStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         self,
         input_value_key: str,
         target_value: float | str,
-        operator: str = "eq",
+        operator: Literal["lt", "le", "eq", "ne", "ge", "gt"] = "eq",
         missing_value_policy: Literal["error", "drop"] = "error",
     ):
         self.input_value_key = input_value_key

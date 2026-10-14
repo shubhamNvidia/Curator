@@ -387,3 +387,178 @@ class TestGroupExport:
         gates = ManifestGroupExportStage.describe_static().gates
         assert gates.writes_to_disk and gates.lifecycle_side_effects  # noqa: PT018
         assert ManifestGroupExportStage.describe_static().error_policy == "fail"
+
+
+def test_configured_csv_columns_survive_an_unserializable_first_value(tmp_path: Path) -> None:
+    stage = ManifestGroupExportStage(output_dir=str(tmp_path), format="csv", columns=["text", "score"])
+    _run(
+        stage,
+        [
+            {"speaker_id": "speaker", "text": "first", "score": object()},
+            {"speaker_id": "speaker", "text": "second", "score": 4.0},
+        ],
+    )
+
+    with (tmp_path / "speaker.csv").open(newline="") as stream:
+        reader = csv.DictReader(stream)
+        assert reader.fieldnames == ["text", "score"]
+        assert list(reader) == [{"text": "first", "score": ""}, {"text": "second", "score": "4.0"}]
+
+
+@pytest.mark.parametrize("format_name", ["txt", "json", "csv"])
+@pytest.mark.parametrize("write_timeline", [False, True])
+def test_replacement_worker_restores_committed_rows_and_headers(
+    tmp_path: Path, format_name: str, write_timeline: bool
+) -> None:
+    import pickle
+
+    driver = ManifestGroupExportStage(
+        output_dir=str(tmp_path), format=format_name, columns=["text"], write_timeline=write_timeline
+    )
+    assert driver.prepare_for_pipeline()
+    assert not driver.prepare_for_pipeline()
+    serialized = pickle.dumps(driver)
+    first = pickle.loads(serialized)  # noqa: S301
+    first.setup()
+    first.process(AudioTask(data={"speaker_id": "speaker", "text": "first é", "start": 0, "end": 1}))
+    extension = "jsonl" if format_name == "json" else format_name
+    output = tmp_path / f"speaker.{extension}"
+    committed = output.read_bytes()
+    with output.open("ab") as stream:
+        stream.write(b"uncommitted partial write")
+
+    replacement = pickle.loads(serialized)  # noqa: S301
+    replacement.setup()
+    assert output.read_bytes() == committed
+    replacement.process(AudioTask(data={"speaker_id": "speaker", "text": "second", "start": 2, "end": 3}))
+    replacement.teardown()
+    driver.finalize()
+
+    if format_name == "csv":
+        with output.open(newline="") as stream:
+            assert list(csv.DictReader(stream)) == [{"text": "first é"}, {"text": "second"}]
+        assert output.read_text().count("text\n") == 1
+    elif format_name == "json":
+        assert [json.loads(line) for line in output.read_text().splitlines()] == [
+            {"text": "first é"},
+            {"text": "second"},
+        ]
+    else:
+        assert len(output.read_text().splitlines()) == 2
+        assert "first é" in output.read_text()
+        assert "second" in output.read_text()
+    if write_timeline:
+        timeline = (tmp_path / "timeline.txt").read_text()
+        assert "first é" in timeline
+        assert "second" in timeline
+    assert not list(tmp_path.glob(".*"))
+
+    driver.prepare_on_driver()
+    fresh_worker = pickle.loads(pickle.dumps(driver))  # noqa: S301
+    fresh_worker.setup()
+    fresh_worker.process(AudioTask(data={"speaker_id": "speaker", "text": "fresh", "start": 0, "end": 1}))
+    driver.finalize()
+    assert "fresh" in output.read_text()
+    assert "first é" not in output.read_text()
+    assert "second" not in output.read_text()
+
+
+def test_group_export_refuses_concurrent_driver_ownership(tmp_path: Path) -> None:
+    first = ManifestGroupExportStage(output_dir=str(tmp_path))
+    second = ManifestGroupExportStage(output_dir=str(tmp_path))
+    first.prepare_on_driver()
+    try:
+        with pytest.raises(FileExistsError):
+            second.prepare_on_driver()
+    finally:
+        first.abort_on_driver()
+
+
+def test_pipeline_driver_prepares_and_finalizes_group_export(tmp_path: Path) -> None:
+    import pickle
+    from types import SimpleNamespace
+
+    from nemo_curator.pipeline import Pipeline
+
+    stage = ManifestGroupExportStage(output_dir=str(tmp_path), write_timeline=True)
+    tasks = [AudioTask(data={"speaker_id": "speaker", "text": text}) for text in ("first", "second")]
+
+    def execute(stages: list[ManifestGroupExportStage], initial_tasks: list[AudioTask]) -> list[AudioTask]:
+        serialized = pickle.dumps(stages[0])
+        for task in initial_tasks:
+            worker = pickle.loads(serialized)  # noqa: S301
+            worker.setup()
+            worker.process(task)
+            worker.teardown()
+        return initial_tasks
+
+    pipeline = Pipeline(name="export", stages=[stage])
+    result = pipeline._execute_with_driver_lifecycle(SimpleNamespace(execute=execute), tasks, None)
+
+    assert result == tasks
+    assert (tmp_path / "speaker.txt").read_text().splitlines() == ["first", "second"]
+    assert (tmp_path / "timeline.txt").read_text().splitlines() == ["speaker: first", "speaker: second"]
+    assert not list(tmp_path.glob(".*"))
+
+
+def test_unprepared_export_cannot_replace_an_active_drivers_rows(tmp_path: Path) -> None:
+    import pickle
+
+    driver = ManifestGroupExportStage(output_dir=str(tmp_path))
+    driver.prepare_on_driver()
+    worker = pickle.loads(pickle.dumps(driver))  # noqa: S301
+    worker.setup()
+    worker.process(AudioTask(data={"speaker_id": "speaker", "text": "committed"}))
+    output = tmp_path / "speaker.txt"
+    original = output.read_bytes()
+    unprepared = ManifestGroupExportStage(output_dir=str(tmp_path))
+    try:
+        with pytest.raises(RuntimeError, match="active pipeline run"):
+            unprepared.setup()
+        with pytest.raises(RuntimeError, match="active pipeline run"):
+            unprepared.process(AudioTask(data={"speaker_id": "speaker", "text": "unowned"}))
+        assert output.read_bytes() == original
+    finally:
+        driver.abort_on_driver()
+    unprepared.setup()
+    unprepared.process(AudioTask(data={"speaker_id": "speaker", "text": "fresh"}))
+    assert output.read_text() == "fresh\n"
+    with pytest.raises(RuntimeError, match="driver-prepared shared output"):
+        worker.process(AudioTask(data={"speaker_id": "speaker", "text": "stale worker"}))
+    assert output.read_text() == "fresh\n"
+
+
+@pytest.mark.parametrize("release", ["finalize", "abort_on_driver"])
+def test_retired_worker_teardown_preserves_the_next_runs_timeline(tmp_path: Path, release: str) -> None:
+    import pickle
+
+    first = ManifestGroupExportStage(output_dir=str(tmp_path), write_timeline=True, timeline_flush_rows=1)
+    first.prepare_on_driver()
+    worker = pickle.loads(pickle.dumps(first))  # noqa: S301
+    worker.setup()
+    worker.process(AudioTask(data={"speaker_id": "speaker", "text": "old run"}))
+    getattr(first, release)()
+
+    current = ManifestGroupExportStage(output_dir=str(tmp_path), write_timeline=True, timeline_flush_rows=1)
+    current.prepare_on_driver()
+    try:
+        current.setup()
+        current.process(AudioTask(data={"speaker_id": "speaker", "text": "new run"}))
+        timeline = tmp_path / "timeline.txt"
+        committed = timeline.read_bytes()
+        worker.teardown()
+        assert timeline.read_bytes() == committed
+        assert "new run" in timeline.read_text()
+    finally:
+        current.abort_on_driver()
+
+
+def test_failed_repeated_preparation_retains_the_original_reservation(tmp_path: Path) -> None:
+    stage = ManifestGroupExportStage(output_dir=str(tmp_path))
+    stage.prepare_on_driver()
+    with pytest.raises(FileExistsError):
+        stage.prepare_on_driver()
+    stage.abort_on_driver()
+    assert not (tmp_path / ".nemo_curator_group_export.jsonl._RUN").exists()
+    stage.prepare_on_driver()
+    stage.abort_on_driver()
