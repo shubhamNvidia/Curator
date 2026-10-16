@@ -158,7 +158,7 @@ def _intervals_from_timestamps(entry: dict) -> list[Interval]:
     return [(start_ms, end_ms, dur)]
 
 
-def _intervals_from_diar_segments(entry: dict) -> list[Interval]:
+def _intervals_from_diar_segments(entry: dict, *, round_empty_intervals: bool = False) -> list[Interval]:
     diar_segments = entry.get("diar_segments", [])
     if not diar_segments:
         speaker_id = entry.get("speaker_id", "unknown")
@@ -187,20 +187,33 @@ def _intervals_from_diar_segments(entry: dict) -> list[Interval]:
         valid_segments.append((start, end, isinstance(segment, Mapping)))
     valid_segments.sort(key=lambda bounds: bounds[0])
     return [
-        _diar_interval(start, end, dictionary_turn=dictionary_turn) for start, end, dictionary_turn in valid_segments
+        _diar_interval(start, end, dictionary_turn=dictionary_turn, round_empty_intervals=round_empty_intervals)
+        for start, end, dictionary_turn in valid_segments
     ]
 
 
-def _diar_interval(start: Any, end: Any, *, dictionary_turn: bool) -> Interval:  # noqa: ANN401
+def _diar_interval(
+    start: Any,  # noqa: ANN401
+    end: Any,  # noqa: ANN401
+    *,
+    dictionary_turn: bool,
+    round_empty_intervals: bool = False,
+) -> Interval:
     if dictionary_turn:
         # Dictionary turns are expressed in seconds; round outwards so a
         # positive sub-millisecond turn cannot become an empty interval.
         start_ms, end_ms = math.floor(start * 1000), math.ceil(end * 1000)
         return start_ms, end_ms, (end_ms - start_ms) / 1000
-    return int(start * 1000), int(end * 1000), end - start
+    start_ms, end_ms = int(start * 1000), int(end * 1000)
+    if round_empty_intervals and end_ms <= start_ms:
+        start_ms, end_ms = math.floor(start * 1000), math.ceil(end * 1000)
+        return start_ms, end_ms, (end_ms - start_ms) / 1000
+    return start_ms, end_ms, end - start
 
 
-def _expand_nested_speaker_entries(entries: list[dict]) -> tuple[list[dict], list[tuple[dict, list[dict]]]]:
+def _expand_nested_speaker_entries(
+    entries: list[dict], *, default_speaker: str | None = None
+) -> tuple[list[dict], list[tuple[dict, list[dict]]]]:
     """Normalize dictionary diarization segments into canonical per-speaker rows."""
     expanded = []
     expanded_groups = []
@@ -212,17 +225,26 @@ def _expand_nested_speaker_entries(entries: list[dict]) -> tuple[list[dict], lis
             if isinstance(segment, Mapping) and segment.get("speaker") is not None
         }
         if not nested_speakers:
-            expanded.append(entry)
+            if default_speaker is not None and entry.get("speaker_id") is None:
+                speaker_entry = {**entry, "speaker_id": default_speaker}
+                expanded.append(speaker_entry)
+                expanded_groups.append((entry, [speaker_entry]))
+            else:
+                expanded.append(entry)
             continue
+        fallback_speaker = entry.get("speaker_id")
+        if fallback_speaker is None:
+            fallback_speaker = default_speaker if default_speaker is not None else "unknown"
+        segments_by_speaker: dict[str, list] = defaultdict(list)
+        for segment in segments:
+            speaker = segment.get("speaker") if isinstance(segment, Mapping) else None
+            speaker_id = str(fallback_speaker if speaker is None else speaker)
+            segments_by_speaker[speaker_id].append(segment)
         speaker_entries = []
-        for speaker_id in sorted(nested_speakers):
+        for speaker_id, speaker_segments in sorted(segments_by_speaker.items()):
             speaker_entry = dict(entry)
             speaker_entry["speaker_id"] = speaker_id
-            speaker_entry["diar_segments"] = [
-                segment
-                for segment in segments
-                if isinstance(segment, Mapping) and str(segment.get("speaker")) == speaker_id
-            ]
+            speaker_entry["diar_segments"] = speaker_segments
             expanded.append(speaker_entry)
             speaker_entries.append(speaker_entry)
         expanded_groups.append((entry, speaker_entries))
@@ -280,7 +302,7 @@ def detect_combo(entries: list) -> int:
     has_speaker = "speaker_id" in first or has_nested_speaker
     has_diar = "diar_segments" in first
 
-    if has_speaker and has_diar:
+    if has_diar and (has_speaker or first.get("diar_segments") is not None):
         return 3
     if has_speaker:
         return 4
@@ -394,6 +416,10 @@ class SegmentExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     grouped by combo and ``original_file`` so heterogeneous batches are
     handled without making behavior depend on row order.
 
+    In partially labeled diarization, each turn uses its own speaker label
+    when present. Unlabeled turns use the parent ``speaker_id``, or ``unknown``
+    when the parent has no label; all valid intervals are retained.
+
     This is an IO stage: ``process()`` raises ``NotImplementedError``
     and all work is done in ``process_batch()``, following the same
     pattern as ``AudioToDocumentStage`` and ``ALMManifestWriterStage``.
@@ -428,6 +454,8 @@ class SegmentExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             raise ValueError(msg)
         self._metadata_by_filename: dict[str, dict] = {}
         self._segment_reservations: dict[str, dict[str, Any]] = {}
+        self._claimed_filenames: set[str] = set()
+        self._filename_owners: dict[str, str] = {}
         self._state_is_wal = True
         self._task_ids_by_entry: dict[int, str] = {}
         self._segment_counter: dict[str, int] = defaultdict(int)
@@ -443,9 +471,8 @@ class SegmentExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         return StageContract(
             reads_one_of=[
                 IOSpec(data_keys=["original_file", "original_start_ms", "original_end_ms"], accepts=["file"]),
-                # ``speaker_id`` may be present on the row or inside each
-                # diarization mapping. The contract can express the carrier,
-                # while runtime validates the nested mapping shape.
+                # Unlabeled intervals use the unknown-speaker group. Labels
+                # may also be present on the row or inside each mapping.
                 IOSpec(data_keys=["original_file", "diar_segments"], accepts=["file"]),
             ],
             writes=IOSpec(data_keys=[self.output_key], produces=["disk"]),
@@ -535,6 +562,8 @@ class SegmentExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
     def _load_output_state(self) -> None:
         self._metadata_by_filename = {}
         self._segment_reservations = {}
+        self._claimed_filenames = set()
+        self._filename_owners = {}
         self._segment_counter = defaultdict(int)
         self._speaker_segment_counter = defaultdict(lambda: defaultdict(int))
         self._state_is_wal = True
@@ -546,6 +575,7 @@ class SegmentExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                     filename = row.get("filename")
                     if filename:
                         self._metadata_by_filename[filename] = row
+                        self._claimed_filenames.add(filename)
                         self._advance_counter(row)
 
         if not os.path.exists(self._state_path):
@@ -566,6 +596,8 @@ class SegmentExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                 message = f"[{self.name}] Cannot safely resume from malformed extraction reservation"
                 raise TypeError(message)
             self._segment_reservations[resume_key] = record
+            self._claimed_filenames.add(record["filename"])
+            self._filename_owners.setdefault(record["filename"], resume_key)
             self._advance_counter(record)
 
     def _parse_output_state(self, content: str) -> dict[str, dict[str, Any]]:
@@ -715,29 +747,30 @@ class SegmentExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         original_file: str,
         entry: dict[str, Any],
         make_filename: Callable[[], str],
-    ) -> tuple[str, bool]:
+    ) -> str:
         existing = self._segment_reservations.get(resume_key)
-        if existing is not None:
-            return existing["filename"], True
-        filename = make_filename()
+        if existing is not None and self._filename_owners.get(existing["filename"]) == resume_key:
+            return existing["filename"]
+        filename = self._claim_filename(make_filename)
         record: dict[str, Any] = {"filename": filename, "original_file": original_file}
         if entry.get("speaker_id") is not None:
             record["speaker_id"] = entry["speaker_id"]
         self._segment_reservations[resume_key] = record
+        self._filename_owners[filename] = resume_key
         self._persist_output_state(resume_key, record)
-        return filename, False
+        return filename
 
-    def _write_audio_atomically(
-        self, output_path: str, audio: np.ndarray, sample_rate: int, *, reuse_existing: bool
-    ) -> None:
-        if reuse_existing:
-            try:
-                existing = sf.info(output_path)
-            except (OSError, RuntimeError, sf.LibsndfileError):
-                existing = None
-            if existing is not None and existing.samplerate == sample_rate and existing.frames == len(audio):
-                return
+    def _claim_filename(self, make_filename: Callable[[], str]) -> str:
+        # Different speaker labels can render the same legacy filename stem.
+        filename = make_filename()
+        while filename in self._claimed_filenames:
+            filename = make_filename()
+        self._claimed_filenames.add(filename)
+        return filename
 
+    def _write_audio_atomically(self, output_path: str, audio: np.ndarray, sample_rate: int) -> None:
+        # Reservations stabilize names, not contents: a source or a previously
+        # written artifact can change without changing its rate or frame count.
         fd, temp_path = tempfile.mkstemp(prefix=".segment-extraction-", suffix=".tmp", dir=self.output_dir)
         os.close(fd)
         try:
@@ -793,7 +826,9 @@ class SegmentExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             self._speaker_segment_counter[name][speaker_id] += 1
             return f"{name}_speaker_{speaker_num}_segment_{idx:03d}.{self.output_format}"
 
-        expanded_entries, expanded_groups = _expand_nested_speaker_entries(entries)
+        expanded_entries, expanded_groups = _expand_nested_speaker_entries(
+            entries, default_speaker="unknown" if record_output_paths else None
+        )
         inherited_paths: dict[int, list[Any]] = {}
         for parent, speaker_entries in expanded_groups:
             parent_task_id = self._task_ids_by_entry.get(id(parent))
@@ -810,7 +845,9 @@ class SegmentExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         result = self._extract_file_segments(
             expanded_entries,
             sort_key=lambda x: x.get("speaker_id", ""),
-            get_intervals=_intervals_from_diar_segments,
+            get_intervals=lambda entry: _intervals_from_diar_segments(
+                entry, round_empty_intervals=record_output_paths
+            ),
             make_filename=_make_filename,
             record_output_paths=record_output_paths,
         )
@@ -892,10 +929,11 @@ class SegmentExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                     if record_output_paths:
                         resume_key = self._segment_resume_key(entry, original_file, start_ms, end_ms, seg_idx)
                         if resume_key is None:
-                            out_filename = make_filename(original_name, entry, seg_idx)
-                            is_retry = False
+                            out_filename = self._claim_filename(
+                                lambda name=original_name, item=entry, index=seg_idx: make_filename(name, item, index)
+                            )
                         else:
-                            out_filename, is_retry = self._reserved_filename(
+                            out_filename = self._reserved_filename(
                                 resume_key,
                                 original_file,
                                 entry,
@@ -903,7 +941,6 @@ class SegmentExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                             )
                     else:
                         out_filename = make_filename(original_name, entry, seg_idx)
-                        is_retry = False
                     output_path = os.path.join(self.output_dir, out_filename)
 
                     try:
@@ -914,7 +951,6 @@ class SegmentExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                             output_path,
                             audio,
                             info.samplerate,
-                            reuse_existing=is_retry,
                         )
                         if record_output_paths and output_path not in written_paths[id(entry)]:
                             written_paths[id(entry)].append(output_path)

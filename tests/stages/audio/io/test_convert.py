@@ -17,11 +17,13 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 import torch
 
 from nemo_curator.stages.audio._agent._agent_registry import build_contract
+from nemo_curator.stages.audio._agent._conformance import assert_agent_ready
 from nemo_curator.stages.audio._agent._planning import validate_pipeline
 from nemo_curator.stages.audio.io.convert import AudioToDocumentStage
 from nemo_curator.tasks import AudioTask, DocumentBatch
@@ -247,3 +249,20 @@ def test_custom_segments_key_is_removed_in_contract_and_runtime() -> None:
 
     report = validate_pipeline([stage], initial_keys={"audio_filepath", "chunks"})
     assert "chunks" not in report.produced_keys
+
+
+@pytest.mark.parametrize("value", [Path("file.wav"), object(), torch.zeros(2), np.longdouble("0.123")])
+def test_projected_sanitized_column_keeps_its_declared_schema(value) -> None:  # noqa: ANN001
+    stage = AudioToDocumentStage(keep_keys=["id", "custom"], strict_json=True)
+    task = AudioTask(data={"id": 1, "custom": value})
+    assert_agent_ready(stage, lambda: task, available_keys={"id", "custom"})
+    batch = stage.process_batch([task])[0]
+    assert batch.to_pandas().to_dict("records") == [{"id": 1, "custom": None}]
+    assert json.loads(batch.to_pandas().to_json(orient="records", lines=True)) == {"id": 1, "custom": None}
+
+
+def test_projection_preserves_missing_columns_and_still_excludes_audio_carriers() -> None:
+    stage = AudioToDocumentStage(keep_keys=["text", "missing", "waveform", "segments"], strict_json=True)
+    task = AudioTask(data={"text": "kept", "waveform": torch.zeros(2), "segments": []})
+    assert_agent_ready(stage, lambda: task)
+    assert stage.process_batch([task])[0].to_pandas().to_dict("records") == [{"text": "kept", "missing": None}]

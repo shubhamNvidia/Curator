@@ -28,6 +28,7 @@ from nemo_curator.stages.base import ProcessingStage
 from nemo_curator.tasks import AudioTask, DocumentBatch
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from nemo_curator.backends.base import NodeInfo, WorkerMetadata
@@ -71,7 +72,9 @@ class AudioToDocumentStage(AgentReady, ProcessingStage[AudioTask, DocumentBatch]
 
     Args:
         batch_size: Optional instance override for the inherited batch size.
-        keep_keys: Optional allowlist of task-data keys to retain.
+        keep_keys: Optional allowlist of task-data keys to retain. Selected columns
+            remain present with null values when missing or rejected by sanitization;
+            drop_keys and excluded audio carriers are still omitted.
         drop_keys: Additional task-data keys to remove.
         serialize_segments: Retain and recursively sanitize ``segments_key``.
         segments_key: Configurable key containing segment metadata.
@@ -199,10 +202,9 @@ class AudioToDocumentStage(AgentReady, ProcessingStage[AudioTask, DocumentBatch]
             and type(value).__module__.startswith("numpy")
             and callable(item := getattr(value, "item", None))
         ):
-            try:
-                return self._sanitize_nested(item(), path=path, active=active)
-            except ValueError:
-                pass
+            normalized = self._sanitize_numpy(value, item, path=path, active=active)
+            if normalized is not _DROP_VALUE:
+                return normalized
 
         if self.strict_json:
             try:
@@ -213,6 +215,23 @@ class AudioToDocumentStage(AgentReady, ProcessingStage[AudioTask, DocumentBatch]
                 )
                 return _DROP_VALUE
         return value
+
+    def _sanitize_numpy(self, value: object, item: Callable[[], object], *, path: str, active: set[int]) -> object:
+        if id(value) in active:
+            return _DROP_VALUE
+        try:
+            scalar = item()
+        except ValueError:
+            return _DROP_VALUE
+        # Extended-precision scalars can return their own NumPy type
+        # from item(); that conversion makes no progress toward JSON.
+        if type(scalar) is type(value):
+            return _DROP_VALUE
+        active.add(id(value))
+        try:
+            return self._sanitize_nested(scalar, path=path, active=active)
+        finally:
+            active.remove(id(value))
 
     def _sanitize(self, data: dict) -> dict:
         """Remove non-serializable keys and any remaining tensor values."""
@@ -230,6 +249,9 @@ class AudioToDocumentStage(AgentReady, ProcessingStage[AudioTask, DocumentBatch]
             nested = self._sanitize_nested(v, path=k, active=set())
             if nested is not _DROP_VALUE:
                 cleaned[k] = nested
+        if self.keep_keys is not None:
+            for key in self._projected_keys():
+                cleaned.setdefault(key, None)
         return cleaned
 
     def process_batch(self, tasks: list[AudioTask]) -> list[DocumentBatch]:
@@ -306,8 +328,9 @@ class DocumentBatchJsonlWriterStage(AgentReady, ProcessingStage[DocumentBatch, D
         """Reserve and replace the manifest once before workers are serialized."""
         from nemo_curator.stages.audio.common import ManifestWriterStage
 
-        self._writer_lifecycle = ManifestWriterStage(self.output_path)
-        self._writer_lifecycle.prepare_on_driver(checkpoint_path=checkpoint_path)
+        lifecycle = ManifestWriterStage(self.output_path)
+        lifecycle.prepare_on_driver(checkpoint_path=checkpoint_path)
+        self._writer_lifecycle = lifecycle
 
     def prepare_for_pipeline(self, *, checkpoint_path: str | Path | None = None) -> bool:
         """Prepare an ordinary run unless an external driver already owns the sink."""
@@ -316,6 +339,14 @@ class DocumentBatchJsonlWriterStage(AgentReady, ProcessingStage[DocumentBatch, D
             return False
         self.prepare_on_driver(checkpoint_path=checkpoint_path)
         return True
+
+    def _verify_output_ownership(self) -> None:
+        lifecycle = getattr(self, "_writer_lifecycle", None)
+        if lifecycle is not None and getattr(lifecycle, "_run_token", None) is not None:
+            lifecycle.setup_on_node()
+        elif self._fs.exists(f"{self._path}._RUN"):
+            msg = "DocumentBatchJsonlWriterStage cannot append to output owned by an active pipeline run"
+            raise RuntimeError(msg)
 
     def setup(self, _worker_metadata: WorkerMetadata | None = None) -> None:
         """Open for appending; replacement actors must preserve committed rows.
@@ -327,9 +358,7 @@ class DocumentBatchJsonlWriterStage(AgentReady, ProcessingStage[DocumentBatch, D
         parent_dir = "/".join(self._path.split("/")[:-1])
         if parent_dir:
             self._fs.makedirs(parent_dir, exist_ok=True)
-        lifecycle = getattr(self, "_writer_lifecycle", None)
-        if lifecycle is not None:
-            lifecycle.setup_on_node()
+        self._verify_output_ownership()
         with contextlib.suppress(FileExistsError), self._fs.open(self._path, "x", encoding="utf-8"):
             pass
         logger.info(f"DocumentBatchJsonlWriterStage: writing to {self.output_path}")
@@ -360,6 +389,8 @@ class DocumentBatchJsonlWriterStage(AgentReady, ProcessingStage[DocumentBatch, D
             msg = "DocumentBatchJsonlWriterStage cannot write a nonempty batch with no columns"
             raise ValueError(msg)
         lifecycle = getattr(self, "_writer_lifecycle", None)
+        if not dataframe.empty:
+            self._verify_output_ownership()
         if not dataframe.empty and lifecycle is not None:
             lifecycle.write_jsonl_batch(dataframe.to_json(orient="records", lines=True, force_ascii=False))
         elif not dataframe.empty:
