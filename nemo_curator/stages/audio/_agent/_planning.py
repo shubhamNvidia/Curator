@@ -1092,14 +1092,9 @@ def _advance(walk: _Walk, contract: StageContract, name: str) -> None:  # noqa: 
     reachable_conditionals = _reachable_conditional_writes(walk, contract)
     if contract.invalidates_prior_writes.data_keys or contract.invalidates_prior_writes.segment_data_keys:
         _revoke_prior_writes(walk, contract)
-    # Keys this stage drops on its main path. A conditional write of the same key (a branch that
-    # happens to keep it, or re-emits it with a different meaning such as a tar member name) must
-    # not resurrect it for planning: removal is the guarantee-level fact, the branch the exception.
+    # Explicit removals/invalidation dominate conditional writes. Rebuilding a row clears
+    # inherited keys below, but its declared conditional outputs remain possible outputs.
     blocked_keys = set(contract.removes_keys) | set(contract.invalidates_keys)
-    blocked_segment_keys: set[str] = set()
-    if not contract.preserves_upstream_keys:
-        blocked_keys |= walk.available_keys - written
-        blocked_segment_keys |= walk.segment_available_keys - segment_written
     if not contract.preserves_upstream_keys:
         # A stage that rebuilds the task rather than adding to it: whatever it does not write
         # is not downstream. Folding its writes into the inherited state would keep every
@@ -1145,7 +1140,7 @@ def _advance(walk: _Walk, contract: StageContract, name: str) -> None:  # noqa: 
         # Possible, not guaranteed: kept in the ``possible_*`` sets so a downstream read met
         # only from here surfaces as a ``conditional_read`` warning.
         possible = set(reachable.writes.data_keys) - blocked_keys
-        possible_segment = set(reachable.writes.segment_data_keys) - blocked_segment_keys
+        possible_segment = set(reachable.writes.segment_data_keys)
         walk.possible_keys |= possible
         walk.possible_segment_keys |= possible_segment
         walk.possible_roles |= _roles_for_keys(contract, possible)

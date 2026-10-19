@@ -1025,3 +1025,45 @@ def test_prior_write_invalidation_retracts_only_the_selected_scope(scope: str, c
     assert stage.describe().to_dict()["invalidates_prior_writes"][
         "data_keys" if scope == "task" else "segment_data_keys"
     ] == ["owned_score"]
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("reemit", [False, True])
+def test_rebuild_can_conditionally_copy_a_guaranteed_input(nested: bool, reemit: bool) -> None:
+    scope = "segment_data_keys" if nested else "data_keys"
+    spec = IOSpec(**{scope: ["probe_key"]})
+    producer = _ContractStage(StageContract(writes=spec))
+    rebuild = _ContractStage(
+        StageContract(
+            writes=IOSpec(data_keys=["audio_filepath"]),
+            preserves_upstream_keys=False,
+            conditional_writes=[
+                ConditionalWrite(writes=spec, requires_keys=["probe_key"], condition="input is non-null")
+            ]
+            if reemit
+            else [],
+        )
+    )
+    consumer = _ContractStage(StageContract(reads=spec))
+    report = validate_pipeline([producer, rebuild, consumer])
+
+    assert report.ok is reemit
+    assert any(issue.code == ("conditional_read" if reemit else "unsatisfied_reads") for issue in report.issues)
+    assert "probe_key" not in validate_pipeline([producer, rebuild]).produced_keys
+
+
+@pytest.mark.parametrize("removal", ["removes_keys", "invalidates_keys"])
+def test_explicit_removal_still_blocks_conditional_copies(removal: str) -> None:
+    spec = IOSpec(data_keys=["probe_key"])
+    producer = _ContractStage(StageContract(writes=spec))
+    rebuild = _ContractStage(
+        StageContract(
+            **{removal: ["probe_key"]},
+            preserves_upstream_keys=False,
+            conditional_writes=[
+                ConditionalWrite(writes=spec, requires_keys=["probe_key"], condition="runtime branch")
+            ],
+        )
+    )
+    report = validate_pipeline([producer, rebuild, _ContractStage(StageContract(reads=spec))])
+    assert not report.ok
