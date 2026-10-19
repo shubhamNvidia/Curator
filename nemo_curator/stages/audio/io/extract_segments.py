@@ -305,7 +305,8 @@ def detect_combo(entries: list) -> int:
     has_speaker = "speaker_id" in first or has_nested_speaker
     has_diar = "diar_segments" in first
 
-    if has_diar and (has_speaker or first.get("diar_segments") is not None):
+    has_timestamp_range = {"original_start_ms", "original_end_ms"} <= first.keys()
+    if has_diar and (has_speaker or (first.get("diar_segments") is not None and not has_timestamp_range)):
         return 3
     if has_speaker:
         return 4
@@ -848,9 +849,7 @@ class SegmentExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         result = self._extract_file_segments(
             expanded_entries,
             sort_key=lambda x: x.get("speaker_id", ""),
-            get_intervals=lambda entry: _intervals_from_diar_segments(
-                entry, round_empty_intervals=True
-            ),
+            get_intervals=lambda entry: _intervals_from_diar_segments(entry, round_empty_intervals=True),
             make_filename=_make_filename,
             record_output_paths=record_output_paths,
         )

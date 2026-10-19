@@ -42,6 +42,7 @@ from nemo_curator.stages.audio.io.extract_segments import (
     load_manifest,
     load_manifests,
 )
+from nemo_curator.stages.audio.postprocessing.timestamp_mapper import TimestampMapperStage
 from nemo_curator.stages.resources import Resources
 from nemo_curator.tasks import AudioTask
 
