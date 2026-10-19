@@ -752,7 +752,7 @@ _KNOWN_CARD_FIELDS = frozenset(
 )
 
 
-def _adapter_capability_violations(
+def _adapter_capability_violations(  # noqa: C901 - independent capability-schema field checks
     stage_id: str,
     card: dict[str, Any],
     params: set[str],
@@ -797,9 +797,7 @@ def _adapter_capability_violations(
     for preset, values in (card.get("presets") or {}).items():
         adapter_target = values.get("adapter_target") if isinstance(values, dict) else None
         if isinstance(adapter_target, str) and adapter_target not in capabilities:
-            violations.append(
-                f"{prefix} does not declare preset {preset!r} adapter_target {adapter_target!r}"
-            )
+            violations.append(f"{prefix} does not declare preset {preset!r} adapter_target {adapter_target!r}")
     return violations
 
 

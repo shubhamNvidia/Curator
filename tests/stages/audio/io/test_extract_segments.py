@@ -1159,7 +1159,9 @@ def test_atomic_extraction_accepts_legal_long_output_names(wav_dir: Path, tmp_pa
     assert list(output_dir.glob(".segment-extraction-*")) == []
 
 
-@pytest.mark.parametrize("prefix_length", [1, 6, 80, "unicode_escape"])
+@pytest.mark.parametrize(
+    "prefix_length", [1, 6, 80, "unicode_escape", "filename_escape_complete", "original_file_escape_complete"]
+)
 def test_retry_recovers_an_interrupted_first_reservation(
     wav_dir: Path, tmp_path: Path, prefix_length: int | str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1173,7 +1175,13 @@ def test_retry_recovers_an_interrupted_first_reservation(
     def interrupt_write(resume_key: str, record: dict) -> None:
         persist(resume_key, record)
         payload = state.read_text()
-        cut = payload.index("\\u") + 4 if prefix_length == "unicode_escape" else prefix_length
+        if isinstance(prefix_length, str):
+            field = "original_file" if prefix_length == "original_file_escape_complete" else "filename"
+            field_start = payload.index(f'"{field}":')
+            escape_length = 4 if prefix_length == "unicode_escape" else 6
+            cut = payload.index("\\u", field_start) + escape_length
+        else:
+            cut = prefix_length
         state.write_text(payload[:cut])
         message = "reservation write interrupted"
         raise RuntimeError(message)

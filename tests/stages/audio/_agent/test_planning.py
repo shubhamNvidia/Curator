@@ -383,3 +383,40 @@ def test_child_replacement_rebuilds_tensor_residency(
     )
     assert report.ok is (not parent_tensor and not new_child_tensor)
     assert any(issue.code == "tensor_into_sink" for issue in report.issues) is (parent_tensor or new_child_tensor)
+
+
+@pytest.mark.parametrize("scope", ["task", "segment"])
+@pytest.mark.parametrize("conditional", [False, True])
+def test_prior_write_invalidation_retracts_only_the_selected_scope(scope: str, conditional: bool) -> None:
+    replaced = IOSpec(data_keys=["owned_score"]) if scope == "task" else IOSpec(segment_data_keys=["owned_score"])
+    stage = _ContractStage(
+        StageContract(
+            invalidates_prior_writes=replaced,
+            writes=IOSpec() if conditional else replaced,
+            conditional_writes=[ConditionalWrite(writes=replaced)] if conditional else [],
+        )
+    )
+    consumer = _ContractStage(StageContract(reads=replaced))
+    report = validate_pipeline(
+        [stage, consumer],
+        initial_keys={"owned_score", "unrelated"},
+        initial_segment_keys={"owned_score", "unrelated"},
+    )
+
+    assert report.ok
+    assert any(issue.code == "conditional_read" for issue in report.issues) is conditional
+    assert "unrelated" in report.produced_keys
+    assert "owned_score" in report.produced_keys
+    other_scope = (
+        IOSpec(segment_data_keys=["owned_score", "unrelated"])
+        if scope == "task"
+        else IOSpec(data_keys=["owned_score", "unrelated"])
+    )
+    assert not validate_pipeline(
+        [stage, _ContractStage(StageContract(reads=other_scope))],
+        initial_keys={"owned_score", "unrelated"},
+        initial_segment_keys={"owned_score", "unrelated"},
+    ).issues
+    assert stage.describe().to_dict()["invalidates_prior_writes"][
+        "data_keys" if scope == "task" else "segment_data_keys"
+    ] == ["owned_score"]

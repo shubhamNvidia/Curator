@@ -634,7 +634,7 @@ class SegmentExtractionStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
                     escape = line[error.pos :]
                     incomplete_json = (
                         escape.startswith("u")
-                        and len(escape) < len("u0000")
+                        and len(escape) <= len("u0000")
                         and all(char in "0123456789abcdefABCDEF" for char in escape[1:])
                     )
                 is_torn_tail = (

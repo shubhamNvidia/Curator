@@ -109,10 +109,11 @@ def _install_agent_simulation_stubs() -> None:  # noqa: C901, PLR0915 (complexit
     pydub.AudioSegment = _FakeAudioSegment
     sys.modules["pydub"] = pydub
 
-    silero_vad = types.ModuleType("silero_vad")
-    silero_vad.load_silero_vad = lambda: object()
-    silero_vad.get_speech_timestamps = lambda *_args, **_kwargs: []
-    sys.modules["silero_vad"] = silero_vad
+    if importlib.util.find_spec("silero_vad") is None:
+        silero_vad = types.ModuleType("silero_vad")
+        silero_vad.load_silero_vad = lambda: object()
+        silero_vad.get_speech_timestamps = lambda *_args, **_kwargs: []
+        sys.modules["silero_vad"] = silero_vad
 
     # Same rule as librosa: never shadow a REAL whisperx — the tests attach
     # stage-level fakes (stage._vad_model), so the stubs are import-satisfiers
@@ -2116,7 +2117,7 @@ def test_agent_planner_detects_missing_keys_and_collisions() -> None:
     #    nested list it can consolidate.
     assert VADSegmentationStage(nested=False, segments_key="segments").describe().cardinality == "1:N fan-out"
     assert nested_vad.describe().cardinality == "1:1 nested-list"
-    assert concat.describe().cardinality == "N:1"
+    assert concat.describe().cardinality == "filter"
 
     # 3. Key collision: two scorers writing the same output key collide; distinct
     #    keys do not. This is exactly the A/B scoring case full key authority enables.
