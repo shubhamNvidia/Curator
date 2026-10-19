@@ -247,14 +247,12 @@ class TestMetricSegmentContainers:
     def test_metric_stages_skip_malformed_segment_children(self) -> None:
         audio = np.zeros(16000, dtype=np.float32)
         bandwidth = BandwidthEstimationStage(input_residency="waveform")
-        bandwidth.process(
-            AudioTask(data={"waveform": audio, "sample_rate": 16000, "segments": [None]})
-        )
+        bandwidth.process(AudioTask(data={"waveform": audio, "sample_rate": 16000, "segments": [None]}))
 
         squim = TorchSquimQualityMetricsStage(input_residency="waveform")
-        assert squim._collect_waveforms_for_entry(
-            0, {"waveform": audio, "sample_rate": 16000, "segments": [None]}
-        ) == []
+        assert (
+            squim._collect_waveforms_for_entry(0, {"waveform": audio, "sample_rate": 16000, "segments": [None]}) == []
+        )
 
         wer = ComputeWERStage()
         task = AudioTask(data={"segments": [None]})

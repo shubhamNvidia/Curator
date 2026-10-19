@@ -85,10 +85,6 @@ selected by the presence of `segments_key`.
 
 ### Conditional/data-dependent writes
 
-Use `invalidates_prior_writes=IOSpec(...)` when processing clears an inherited field
-before trying to replace it. Declare task and segment keys in their respective scopes;
-the planner retracts the old guarantee before accounting for the stage's own writes.
-
 Keep `writes` as the existing mechanical output declaration. When a listed
 field is only written on a runtime branch—or a non-preserving stage may copy an
 upstream field only when it is present—add factual possibility metadata:
@@ -209,6 +205,9 @@ Three more rules:
 - **Getting it wrong is asymmetric.** `False` when you were safe costs a full rerun — annoying and
   harmless. `True` when you were not silently produces rows a full run would never have produced,
   and republishes them as the corpus's reusable result. **When unsure, declare `False`.**
+- **Selectable adapters fail closed.** A stage may declare `True` only for adapter targets whose
+  batching contract it has reviewed; unknown plug-ins remain `False` even when the built-in
+  adapter is independent.
 
 `CreateInitialManifestAudioFolderStage` is the reference for a conditionally safe
 source. Its unbounded scan is per-row independent, but `max_samples` truncates the
@@ -349,7 +348,9 @@ rules — if the test passes, the contract is internally consistent.
 
 - [ ] `AgentReady` + `describe()` with `reads`, `writes`, `cardinality`, honest `gates`
 - [ ] every read/written `task.data` key is a `*_key` constructor field (no bare literals)
+- [ ] adapter/model payload field names remain protocol-owned; only `task.data` schema keys become knobs
 - [ ] new `*_key` concepts have a `_roles.KEY_ROLES` entry (or `INTERNAL_KEY_FIELDS`)
+- [ ] branch-only outputs, including audit placeholders, are `ConditionalWrite`s rather than guaranteed writes
 - [ ] durable stage documentation explains each externally consumed output's meaning,
       unit, provenance, scope/granularity, propagation and a counterexample
 - [ ] new `AudioTask`s preserve `_metadata` and `list(_stage_perf)` (manual — not covered by `assert_agent_ready`)

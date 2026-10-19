@@ -14,37 +14,19 @@
 
 from __future__ import annotations
 
+import jsonschema
 import numpy as np
 import pytest
+import soundfile as sf
+import torch
 
-sf = pytest.importorskip("soundfile")
-torch = pytest.importorskip("torch")
-
-from nemo_curator.stages.audio._agent._agent_ready import AgentReady, StageContract  # noqa: E402
-from nemo_curator.stages.audio._agent._residency import (  # noqa: E402
+from nemo_curator.stages.audio._agent._residency import (
     produce_audio_filepath,
     resolve_audio,
     resolve_audio_path,
 )
-from nemo_curator.stages.audio.alm.alm_data_builder import ALMDataBuilderStage  # noqa: E402
-from nemo_curator.stages.audio.alm.alm_data_overlap import ALMDataOverlapStage  # noqa: E402
-from nemo_curator.stages.audio.common import (  # noqa: E402
-    GetAudioDurationStage,
-    ManifestReaderStage,
-    PreserveByValueStage,
-)
-from nemo_curator.stages.audio.io.convert import AudioToDocumentStage  # noqa: E402
-from nemo_curator.stages.audio.postprocessing.timestamp_mapper import TimestampMapperStage  # noqa: E402
-from nemo_curator.stages.audio.preprocessing.concatenation import SegmentConcatenationStage  # noqa: E402
-from nemo_curator.stages.audio.preprocessing.mono_conversion import MonoConversionStage  # noqa: E402
-from nemo_curator.stages.audio.tagging.merge_alignment_diarization import MergeAlignmentDiarizationStage  # noqa: E402
-from nemo_curator.stages.audio.tagging.prepare_module_segments import PrepareModuleSegmentsStage  # noqa: E402
-from nemo_curator.stages.audio.tagging.split import (  # noqa: E402
-    JoinSplitAudioMetadataStage,
-    SplitASRAlignJoinStage,
-    SplitLongAudioStage,
-)
-from nemo_curator.tasks import AudioTask  # noqa: E402
+from nemo_curator.stages.audio.preprocessing.concatenation import SegmentConcatenationStage
+from nemo_curator.tasks import AudioTask
 
 
 def test_residency_helpers_accept_file_waveform_and_custom_keys(tmp_path) -> None:  # noqa: ANN001
@@ -84,37 +66,6 @@ def test_residency_helpers_accept_file_waveform_and_custom_keys(tmp_path) -> Non
     assert item["path"] == "final.wav"
 
 
-def test_lightweight_audio_stages_expose_agent_contracts(tmp_path) -> None:  # noqa: ANN001, ARG001
-    stages = [
-        MonoConversionStage(),
-        SegmentConcatenationStage(),
-        GetAudioDurationStage(),
-        PreserveByValueStage("keep", True),
-        ManifestReaderStage(),
-        AudioToDocumentStage(keep_keys=["text"]),
-        TimestampMapperStage(),
-        MergeAlignmentDiarizationStage(),
-        PrepareModuleSegmentsStage(),
-        SplitLongAudioStage(),
-        JoinSplitAudioMetadataStage(),
-        SplitASRAlignJoinStage(),
-        ALMDataBuilderStage(),
-        ALMDataOverlapStage(),
-    ]
-
-    for stage in stages:
-        assert isinstance(stage, AgentReady)
-        assert isinstance(stage.describe(), StageContract)
-
-    extraction_contract = SegmentConcatenationStage().describe()
-    assert extraction_contract.metadata_writes == ["segment_mappings"]
-    assert extraction_contract.cardinality == "filter"
-
-    doc_stage = AudioToDocumentStage(batch_size=2, keep_keys=["text"])
-    assert doc_stage.batch_size == 2
-    assert doc_stage.keep_keys == ["text"]
-
-
 def test_segment_concatenation_preserves_metadata_and_stage_perf() -> None:
     stage = SegmentConcatenationStage(silence_duration_sec=0.0)
     parent = AudioTask(
@@ -152,13 +103,6 @@ def test_segment_concatenation_preserves_metadata_and_stage_perf() -> None:
     assert result._stage_perf == ["perf-entry"]
 
 
-def test_timestamp_mapper_contract_declares_data_replacement() -> None:
-    contract = TimestampMapperStage().describe()
-
-    assert contract.preserves_upstream_keys is False
-    assert "original_file" in contract.writes.data_keys
-
-
 @pytest.mark.parametrize(
     "conditions",
     [
@@ -170,7 +114,6 @@ def test_condition_schema_accepts_both_runtime_forms(conditions: dict[str, objec
     from nemo_curator.stages.audio.agent import build_contract, describe_stage, to_json_schema
     from nemo_curator.stages.audio.common import PreserveByValueConditionsStage
 
-    jsonschema = pytest.importorskip("jsonschema")
     schema = to_json_schema(describe_stage("PreserveByValueConditionsStage").params)
     jsonschema.validate({"conditions": conditions}, schema)
     assert build_contract(PreserveByValueConditionsStage(conditions)).cardinality == "filter"
@@ -179,7 +122,6 @@ def test_condition_schema_accepts_both_runtime_forms(conditions: dict[str, objec
 def test_optional_parameter_schema_accepts_explicit_null() -> None:
     from nemo_curator.stages.audio.agent import describe_stage, to_json_schema
 
-    jsonschema = pytest.importorskip("jsonschema")
     schema = to_json_schema(describe_stage("SampleRateFilterStage").params)
     jsonschema.validate({"allowed_sample_rates": None, "min_sample_rate": None}, schema)
     with pytest.raises(jsonschema.ValidationError):

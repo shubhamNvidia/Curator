@@ -12,26 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Audio channel-count stage: record it, select on it, or change it.
-
-``action`` picks which of the three, in the vocabulary ``UTMOSFilterStage``, ``BandFilterStage``
-and ``SIGMOSFilterStage`` already use for measure-and-keep versus measure-and-drop, extended
-with the one thing a channel count can do that a quality score cannot: be changed.
-
-Sample rate, format and file layout are never touched, so a pipeline sets its rate policy
-separately -- ``SampleRateFilterStage`` to select rates, ``ResampleAudioStage`` to convert
-them -- or sets none at all.
-
-Example:
-    from nemo_curator.pipeline import Pipeline
-    from nemo_curator.stages.audio.preprocessing import ChannelCountStage
-
-    pipeline = Pipeline(name="audio_pipeline")
-    pipeline.add_stage(ChannelCountStage())                                    # record the count
-    pipeline.add_stage(ChannelCountStage(action="filter", allowed_channels=[1]))  # keep mono only
-    pipeline.add_stage(ChannelCountStage(action="convert", target_channels=1))    # make it mono
-"""
+"""Record, filter, or convert audio channel counts."""
 
 import math
 import os
@@ -74,56 +55,11 @@ ChannelAction = Literal["annotate", "filter", "convert"]
 
 @dataclass
 class ChannelCountStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
-    """
-    Record, select on, or change the number of audio channels.
+    """Record, filter, or convert the number of audio channels.
 
-    ============  =================================================================
-    action        behaviour
-    ============  =================================================================
-    ``annotate``  records ``num_channels`` on every row and keeps them all (default)
-    ``filter``    records it, then drops the rows whose count is not allowed
-    ``convert``   brings the audio to ``target_channels``, in memory
-    ============  =================================================================
-
-    Selecting and converting are deliberately separate actions rather than one parameter that
-    means both. They do opposite things to a corpus -- ``convert`` changes every row and keeps
-    all of them, ``filter`` changes nothing and keeps a subset -- so a single knob spelling both
-    makes "mono" ambiguous between "make it mono" and "keep only what already is". Parameters
-    belonging to an action you did not choose are refused at construction rather than ignored.
-
-    ``annotate`` and ``filter`` never decode. A channel count sits in the file header, which
-    ``soundfile.info`` reads without touching samples, so putting either in front of a decoding
-    stage costs almost nothing and spares the rejected rows entirely. ``convert`` must decode,
-    because it has to rewrite the samples.
-
-    **What ``num_channels`` means depends on the action.** Under ``annotate``/``filter`` it is
-    the count OBSERVED in the source audio. Under ``convert`` it is the count RESULTING from the
-    conversion. ``sample_rate`` carries exactly this trap between ``SampleRateFilterStage`` (a
-    measurement) and ``ResampleAudioStage`` (a target); reading a pipeline's final
-    ``num_channels`` without knowing which stage last wrote it inverts its meaning.
-
-    Under ``convert``, what happens depends on how many channels the input actually has:
-
-    ============  ==================  ==================================================
-    input         target              behaviour
-    ============  ==================  ==================================================
-    ``N``         ``N``               passed through unchanged
-    ``N > 1``     ``1``               averaged into one channel (standard mono downmix)
-    ``1``         ``T > 1``           duplicated into ``T`` identical channels
-    ``N > T > 1`` ``T``               REFUSED -- the row is dropped
-    ============  ==================  ==================================================
-
-    That refusal is deliberate. A correct downmix to more than one channel needs ITU-R BS.775
-    coefficients *and* the file's channel order, and a bare ``(channels, samples)`` tensor
-    carries neither -- WAV channel order comes from the file's channel mask, which is gone by
-    the time the audio is a tensor. Averaging 5.1 into two channels does not produce stereo, it
-    produces a phase-smeared mix that sounds plausible and is wrong. ``ResampleAudioStage``
-    drives ffmpeg, which does know layouts, so that is the honest tool for those conversions.
-    Downmix to ``1`` is not the same problem: averaging every channel together IS what mono
-    means, so it needs no layout knowledge.
-
-    Nothing here ever resamples. When a rate must actually change, ``ResampleAudioStage``
-    converts it via ffmpeg.
+    Annotate/filter report the observed count; convert reports the resulting
+    count. Conversion supports mono downmix and mono duplication without
+    resampling. Unsupported channel layouts drop the row.
 
     Args:
         action: "annotate" records num_channels and keeps every row (default); "filter" also
@@ -228,12 +164,7 @@ class ChannelCountStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             self._validate_convert()
 
     def _reject_other_actions_params(self) -> None:
-        """Refuse parameters belonging to an action other than the configured one.
-
-        Ignoring them is what makes the two intents blur: ``action="convert",
-        allowed_channels=[1]`` reads as "make everything mono AND only keep mono", and whichever
-        half is silently dropped, the corpus that comes out is not the one that was asked for.
-        """
+        """Reject parameters that the configured action would ignore."""
         defaults = {item.name: item.default for item in fields(self)}
         foreign = [
             (name, owner)
@@ -279,18 +210,13 @@ class ChannelCountStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
             raise ValueError(msg)
 
     def _validate_convert(self) -> None:
-        # Before the target checks below: a conversion with nowhere to put its result is wrong
-        # for every target, including the default mono one that needs no target_channels.
         reject_sinkless_conversion(
             stage="ChannelCountStage(action='convert')",
             keep_waveform_in_task=self.keep_waveform_in_task,
             write_to_disk=self.write_to_disk,
             update_audio_filepath=self.update_audio_filepath,
         )
-        # Type as well as range. YAML reads ``target_channels: 2.0`` as a float, which used to
-        # construct fine and then die inside a worker at ``waveform.repeat(2.0, 1)`` with a
-        # TypeError -- not one of the (OSError, RuntimeError) this stage drops rows for, so it
-        # propagated and took the run down mid-corpus instead of being caught at the recipe.
+        # Tensor.repeat requires an integer target even for values read from YAML.
         target = self.target_channels
         if target is None:
             return
@@ -307,10 +233,10 @@ class ChannelCountStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
         return 1 if self.target_channels is None else self.target_channels
 
     def inputs(self) -> tuple[list[str], list[str]]:
-        return [], []
+        return ["data"], []
 
     def outputs(self) -> tuple[list[str], list[str]]:
-        return [], self._written_keys()
+        return ["data"], self._written_keys()
 
     def _written_keys(self) -> list[str]:
         if self.action != "convert":
