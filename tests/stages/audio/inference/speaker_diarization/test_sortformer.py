@@ -27,10 +27,6 @@ from nemo_curator.stages.audio.inference.speaker_diarization.stage import (
     InferenceSortformerStage as CanonicalStage,
 )
 from nemo_curator.tasks import AudioTask
-from tests.stages.audio.inference import review_helpers as rh
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
 
 
 def test_compatibility_module_reexports_canonical_stage() -> None:

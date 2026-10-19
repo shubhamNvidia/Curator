@@ -433,6 +433,14 @@ class AdapterInferenceStage(ProcessingStage[AudioTask, AudioTask], Generic[Adapt
 
     def inputs(self) -> tuple[list[str], list[str]]:
         """Declare either the configured in-memory waveform or file input."""
+        residency = getattr(self, "input_residency", None)
+        if residency is not None:
+            return _inference_audio_input_spec(
+                residency,
+                audio_filepath_key=self.audio_filepath_key,
+                waveform_key=self.waveform_key,
+                sample_rate_key=self.sample_rate_key,
+            )
         if self.waveform_key:
             return [], [self.waveform_key, self.sample_rate_key]
         return [], [self.audio_filepath_key]
