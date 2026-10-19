@@ -29,6 +29,22 @@ from nemo_curator.stages.audio.io.convert import AudioToDocumentStage
 from nemo_curator.tasks import AudioTask, DocumentBatch
 
 
+@pytest.mark.parametrize("value", [np.longdouble("0.123"), np.clongdouble("1+2j")])
+def test_strict_json_drops_numpy_scalars_without_a_python_scalar(value) -> None:  # noqa: ANN001
+    stage = AudioToDocumentStage(strict_json=True)
+    result = stage.process_batch([AudioTask(data={"id": "kept", "score": value})])
+    assert result[0].to_pandas().to_dict("records") == [{"id": "kept"}]
+
+
+def test_strict_json_handles_cyclic_numpy_object_arrays() -> None:
+    cyclic = np.empty(1, dtype=object)
+    cyclic[0] = cyclic
+    result = AudioToDocumentStage(strict_json=True).process_batch(
+        [AudioTask(data={"id": "kept", "cycle": cyclic, "score": np.array([np.float32(0.5)])})]
+    )
+    assert result[0].to_pandas().to_dict("records") == [{"id": "kept", "score": 0.5}]
+
+
 def test_audio_to_document_stage_process_raises() -> None:
     entry = AudioTask(
         dataset_name="ds",

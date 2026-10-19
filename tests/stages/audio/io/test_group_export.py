@@ -60,16 +60,21 @@ class TestGroupExport:
         assert json.loads((tmp_path / "a.jsonl").read_text()) == {"speaker_id": "a", "text": "kept"}
         assert task.data["custom"] is nested
 
-    def test_ray_data_batches_persist_final_timeline_without_teardown(self, tmp_path: Path) -> None:
+    def test_ray_data_batches_publish_final_timeline_without_teardown(self, tmp_path: Path) -> None:
+        import pickle
+
         stage = ManifestGroupExportStage(output_dir=str(tmp_path), write_timeline=True, timeline_flush_rows=100)
-        stage.setup()
-        adapter = RayDataStageAdapter(stage)
+        stage.prepare_on_driver()
+        worker = pickle.loads(pickle.dumps(stage))  # noqa: S301 - local stage fixture
+        worker.setup()
+        adapter = RayDataStageAdapter(worker)
         later = AudioTask(dataset_name="test", data={"speaker_id": "b", "text": "later", "start": 2, "end": 3})
         earlier = AudioTask(dataset_name="test", data={"speaker_id": "a", "text": "earlier", "start": 0, "end": 1})
         assert adapter._process_batch_internal({"item": [later]})["item"] == [later]
         timeline = tmp_path / "timeline.txt"
-        assert timeline.read_text().splitlines() == ["[2.00 - 3.00] b: later"]
+        assert not timeline.exists()
         assert adapter._process_batch_internal({"item": [earlier]})["item"] == [earlier]
+        stage.finalize()
         assert timeline.read_text().splitlines() == ["[0.00 - 1.00] a: earlier", "[2.00 - 3.00] b: later"]
 
     def test_txt_one_file_per_group_with_timestamps(self, tmp_path) -> None:  # noqa: ANN001
@@ -415,8 +420,7 @@ def test_replacement_worker_restores_committed_rows_and_headers(
     driver = ManifestGroupExportStage(
         output_dir=str(tmp_path), format=format_name, columns=["text"], write_timeline=write_timeline
     )
-    assert driver.prepare_for_pipeline()
-    assert not driver.prepare_for_pipeline()
+    driver.prepare_on_driver()
     serialized = pickle.dumps(driver)
     first = pickle.loads(serialized)  # noqa: S301
     first.setup()
@@ -474,7 +478,7 @@ def test_group_export_refuses_concurrent_driver_ownership(tmp_path: Path) -> Non
         first.abort_on_driver()
 
 
-def test_pipeline_driver_prepares_and_finalizes_group_export(tmp_path: Path) -> None:
+def test_pipeline_uses_caller_prepared_group_export(tmp_path: Path) -> None:
     import pickle
     from types import SimpleNamespace
 
@@ -493,7 +497,13 @@ def test_pipeline_driver_prepares_and_finalizes_group_export(tmp_path: Path) -> 
         return initial_tasks
 
     pipeline = Pipeline(name="export", stages=[stage])
-    result = pipeline._execute_with_driver_lifecycle(SimpleNamespace(execute=execute), tasks, None)
+    stage.prepare_on_driver()
+    try:
+        result = pipeline.run(SimpleNamespace(execute=execute), initial_tasks=tasks)
+        assert not (tmp_path / "timeline.txt").exists()
+        stage.finalize()
+    finally:
+        stage.abort_on_driver()
 
     assert result == tasks
     assert (tmp_path / "speaker.txt").read_text().splitlines() == ["first", "second"]
@@ -544,6 +554,7 @@ def test_retired_worker_teardown_preserves_the_next_runs_timeline(tmp_path: Path
     try:
         current.setup()
         current.process(AudioTask(data={"speaker_id": "speaker", "text": "new run"}))
+        current.finalize()
         timeline = tmp_path / "timeline.txt"
         committed = timeline.read_bytes()
         worker.teardown()
@@ -562,3 +573,54 @@ def test_failed_repeated_preparation_retains_the_original_reservation(tmp_path: 
     assert not (tmp_path / ".nemo_curator_group_export.jsonl._RUN").exists()
     stage.prepare_on_driver()
     stage.abort_on_driver()
+
+
+@pytest.mark.parametrize("prepared", [False, True])
+def test_group_name_cannot_overwrite_the_run_journal(tmp_path: Path, prepared: bool) -> None:
+    stage = ManifestGroupExportStage(output_dir=str(tmp_path), format="json")
+    if prepared:
+        stage.prepare_on_driver()
+    stage.setup()
+    row = {"speaker_id": ".nemo_curator_group_export", "text": "kept"}
+    try:
+        stage.process_batch([AudioTask(data=row)])
+        output = _unsafe_group_file(tmp_path, ".nemo_curator_group_export", "jsonl")
+        assert json.loads(output.read_text()) == row
+        stage.finalize()
+        assert not (tmp_path / ".nemo_curator_group_export.jsonl").exists()
+        assert not (tmp_path / ".nemo_curator_group_export.jsonl._RUN").exists()
+    finally:
+        stage.abort_on_driver()
+
+
+def test_prepared_timeline_is_published_once_after_all_batches(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    import builtins
+    import pickle
+
+    driver = ManifestGroupExportStage(output_dir=str(tmp_path), write_timeline=True, timeline_flush_rows=3)
+    driver.prepare_on_driver()
+    worker = pickle.loads(pickle.dumps(driver))  # noqa: S301 - local stage fixture
+    worker.setup()
+    real_open = builtins.open
+    rewrites = []
+
+    def count_timeline_writes(path, mode="r", *args, **kwargs):  # noqa: ANN001, ANN202
+        if str(path) == str(tmp_path / "timeline.txt") and mode == "w":
+            rewrites.append(path)
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", count_timeline_writes)
+    try:
+        for i in reversed(range(20)):
+            worker.process_batch(
+                [AudioTask(data={"speaker_id": "speaker", "text": f"row {i}", "start": i, "end": i + 1})]
+            )
+        worker.teardown()
+        assert rewrites == []
+        driver.finalize()
+        assert len(rewrites) == 1
+        assert (tmp_path / "timeline.txt").read_text().splitlines() == [
+            f"[{i:.2f} - {i + 1:.2f}] speaker: row {i}" for i in range(20)
+        ]
+    finally:
+        driver.abort_on_driver()

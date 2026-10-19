@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 _EXT = {"txt": "txt", "json": "jsonl", "csv": "csv"}
 _TIMELINE = "timeline.txt"
+_JOURNAL = ".nemo_curator_group_export.jsonl"
 _MISSING_IDENTITY = "<missing-group>"
 _NAME_MAX_BYTES = 255
 
@@ -126,12 +127,14 @@ class ManifestGroupExportStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
     * ``csv``  -- header + the selected columns
 
     With ``write_timeline`` it also writes a single who-spoke-when ``timeline.txt`` ordered by
-    start time across all groups. The timeline is rewritten every ``timeline_flush_rows`` rows
-    and at each successful batch boundary. ``teardown`` also flushes direct
-    ``process`` calls, so batch execution does not depend on worker shutdown.
+    start time across all groups. Driver-prepared runs persist timeline entries in
+    the journal and publish the sorted timeline at finalization. Standalone calls
+    snapshot every ``timeline_flush_rows`` rows, at batch boundaries, and at teardown.
 
-    Driver preparation retains committed export state across worker replacement.
-    Unprepared direct ``setup`` starts a new run.
+    Explicit driver preparation retains committed export state across worker
+    replacement and requires caller-managed finalization or abort. Ordinary
+    ``Pipeline.run()`` does not manage these hooks: worker ``setup()`` starts
+    fresh export state, so replacement workers can overwrite earlier output.
 
     Rows pass through unchanged, so this can sit anywhere after the data exists -- it is a
     tee, not a sink. Non-serializable values (e.g. a resident ``waveform`` tensor) are dropped
@@ -147,6 +150,8 @@ class ManifestGroupExportStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
         write_timeline: Also write a combined, time-ordered ``timeline.txt``.
         start_key / end_key: Segment timing columns used for ordering and timestamps.
         missing_group: Group name used for rows with no ``group_by`` value.
+        timeline_flush_rows: Snapshot interval for standalone per-row use. Prepared
+            pipelines publish the timeline once at finalization.
     """
 
     output_dir: str
@@ -204,21 +209,15 @@ class ManifestGroupExportStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
         if checkpoint_path is not None:
             msg = "ManifestGroupExportStage does not support pipeline checkpoint resume"
             raise ValueError(msg)
-        journal = ManifestWriterStage(os.path.join(self.output_dir, ".nemo_curator_group_export.jsonl"))
+        journal = ManifestWriterStage(os.path.join(self.output_dir, _JOURNAL))
         journal.prepare_on_driver()
         self._journal = journal
-
-    def prepare_for_pipeline(self, *, checkpoint_path: Path | None = None) -> bool:
-        if self._journal is not None and getattr(self._journal, "_run_token", None) is not None:
-            return False
-        self.prepare_on_driver(checkpoint_path=checkpoint_path)
-        return True
 
     def _verify_export_ownership(self) -> bool:
         prepared = self._journal is not None and getattr(self._journal, "_run_token", None) is not None
         if prepared:
             self._journal.setup_on_node()
-        elif os.path.exists(os.path.join(self.output_dir, ".nemo_curator_group_export.jsonl._RUN")):
+        elif os.path.exists(os.path.join(self.output_dir, f"{_JOURNAL}._RUN")):
             msg = "ManifestGroupExportStage cannot replace output owned by an active pipeline run"
             raise RuntimeError(msg)
         return prepared
@@ -262,12 +261,12 @@ class ManifestGroupExportStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
                     msg = f"Committed group export is incomplete: {path}"
                     raise RuntimeError(msg)
                 output.truncate(offset)
-        if self.write_timeline:
-            self._flush_timeline()
 
     def finalize(self) -> None:
         if self._journal is not None and getattr(self._journal, "_run_token", None) is not None:
             self.setup()
+            if self.write_timeline:
+                self._flush_timeline()
             os.remove(self._journal.output_path)
             self.abort_on_driver()
 
@@ -279,6 +278,8 @@ class ManifestGroupExportStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
         self.abort_on_driver()
 
     def teardown(self) -> None:
+        if self._journal is not None and getattr(self._journal, "_run_token", None) is not None:
+            return
         if self.write_timeline:
             try:
                 self._flush_timeline()
@@ -291,7 +292,8 @@ class ManifestGroupExportStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
 
     def process_batch(self, tasks: list[AudioTask]) -> list[AudioTask]:
         results = super().process_batch(tasks)
-        if self.write_timeline and self._pending:
+        prepared = self._journal is not None and getattr(self._journal, "_run_token", None) is not None
+        if self.write_timeline and self._pending and not prepared:
             self._flush_timeline()
         return results
 
@@ -339,6 +341,8 @@ class ManifestGroupExportStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
         group_value = self.missing_group if missing else raw
         identity = _group_identity(group_value, missing=missing)
         reserved = {"timeline"} if self.format == "txt" and self.write_timeline else set()
+        if self.format == "json":
+            reserved.add(_JOURNAL.removesuffix(f".{_EXT[self.format]}"))
         if not missing:
             reserved.add(_safe_name(self.missing_group))
         stem = self._group_stems.setdefault(
@@ -440,7 +444,8 @@ class ManifestGroupExportStage(AgentReady, ProcessingStage[AudioTask, AudioTask]
         stamp = f"[{span[0]:.2f} - {span[1]:.2f}] " if span else ""
         self._timeline.append((start, f"{stamp}{group}: {body}"))
         self._pending += 1
-        if self._pending >= max(1, self.timeline_flush_rows):
+        prepared = self._journal is not None and getattr(self._journal, "_run_token", None) is not None
+        if not prepared and self._pending >= max(1, self.timeline_flush_rows):
             self._flush_timeline()
 
     def _flush_timeline(self) -> None:

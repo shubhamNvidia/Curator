@@ -209,21 +209,23 @@ class _SerializedWriterExecutor(BaseExecutor):
         return initial_tasks
 
 
-def test_pipeline_reruns_replace_output_and_worker_replacements_append(tmp_path) -> None:  # noqa: ANN001
+def test_pipeline_reruns_and_worker_replacements_append_to_existing_output(tmp_path) -> None:  # noqa: ANN001
     output = tmp_path / "curated.jsonl"
     output.write_text('{"id": "stale"}\n')
     pipeline = Pipeline(name="document-writer")
     pipeline.add_stage(DocumentBatchJsonlWriterStage(str(output)))
+    expected = ["stale"]
     for run in ("first", "second"):
         pipeline.run(
             _SerializedWriterExecutor(),
             initial_tasks=[_batch([{"id": run + "-a"}]), _batch([{"id": run + "-b"}])],
         )
-        assert [json.loads(line)["id"] for line in output.read_text().splitlines()] == [run + "-a", run + "-b"]
+        expected.extend([run + "-a", run + "-b"])
+        assert [json.loads(line)["id"] for line in output.read_text().splitlines()] == expected
         assert not output.with_name(output.name + "._RUN").exists()
 
 
-def test_failed_pipeline_releases_ownership_without_deleting_written_rows(tmp_path) -> None:  # noqa: ANN001
+def test_failed_pipeline_and_empty_rerun_preserve_written_rows(tmp_path) -> None:  # noqa: ANN001
     output = tmp_path / "curated.jsonl"
     pipeline = Pipeline(name="document-writer")
     pipeline.add_stage(DocumentBatchJsonlWriterStage(str(output)))
@@ -232,7 +234,7 @@ def test_failed_pipeline_releases_ownership_without_deleting_written_rows(tmp_pa
     assert [json.loads(line)["id"] for line in output.read_text().splitlines()] == ["partial"]
     assert not output.with_name(output.name + "._RUN").exists()
     pipeline.run(_SerializedWriterExecutor(), initial_tasks=[])
-    assert output.read_text() == ""
+    assert [json.loads(line)["id"] for line in output.read_text().splitlines()] == ["partial"]
 
 
 def test_pipeline_keeps_external_agent_preparation_owned_by_the_caller(tmp_path) -> None:  # noqa: ANN001
@@ -267,3 +269,63 @@ def test_prepared_document_batch_opens_one_append_stream(tmp_path, monkeypatch) 
     assert [json.loads(line) for line in output.read_text().splitlines()] == [
         {"id": i, "text": "héllo"} for i in range(64)
     ]
+
+
+@pytest.mark.parametrize("release", [None, "finalize", "abort_on_driver"])
+@pytest.mark.parametrize("reserve_before_setup", [False, True])
+def test_unowned_writer_cannot_append_to_an_active_run(tmp_path, release, reserve_before_setup) -> None:  # noqa: ANN001
+    output = tmp_path / "reserved.jsonl"
+    unowned = DocumentBatchJsonlWriterStage(str(output))
+    if release is not None:
+        unowned.prepare_on_driver()
+        unowned.setup()
+        unowned.process(_batch([{"id": "previous"}]))
+        getattr(unowned, release)()
+    if not reserve_before_setup:
+        unowned.setup()
+
+    owner = DocumentBatchJsonlWriterStage(str(output))
+    owner.prepare_on_driver()
+    worker = pickle.loads(pickle.dumps(owner))  # noqa: S301 - local stage fixture
+    try:
+        worker.setup()
+        worker.process(_batch([{"id": "owned"}]))
+        committed = output.read_bytes()
+        if reserve_before_setup:
+            with pytest.raises(RuntimeError, match="active pipeline run"):
+                unowned.setup()
+        with pytest.raises(RuntimeError, match="active pipeline run"):
+            unowned.process(_batch([{"id": "unowned"}]))
+        assert output.read_bytes() == committed
+        worker.process(_batch([{"id": "still-owned"}]))
+        owner.finalize()
+    finally:
+        owner.abort_on_driver()
+
+    unowned.setup()
+    unowned.process(_batch([{"id": "standalone"}]))
+    assert [json.loads(line)["id"] for line in output.read_text().splitlines()] == [
+        "owned",
+        "still-owned",
+        "standalone",
+    ]
+
+
+def test_failed_repeated_preparation_preserves_writer_ownership(tmp_path) -> None:  # noqa: ANN001
+    output = tmp_path / "reserved.jsonl"
+    writer = DocumentBatchJsonlWriterStage(str(output))
+    writer.prepare_on_driver()
+    try:
+        writer.setup()
+        writer.process(_batch([{"id": "owned"}]))
+        committed = output.read_bytes()
+        with pytest.raises(FileExistsError):
+            writer.prepare_on_driver()
+        assert output.read_bytes() == committed
+        writer.process(_batch([{"id": "still-owned"}]))
+        writer.finalize()
+    finally:
+        writer.abort_on_driver()
+    assert not output.with_name(output.name + "._RUN").exists()
+    writer.prepare_on_driver()
+    writer.abort_on_driver()

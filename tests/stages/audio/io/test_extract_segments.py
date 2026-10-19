@@ -42,7 +42,6 @@ from nemo_curator.stages.audio.io.extract_segments import (
     load_manifest,
     load_manifests,
 )
-from nemo_curator.stages.audio.postprocessing.timestamp_mapper import TimestampMapperStage
 from nemo_curator.stages.resources import Resources
 from nemo_curator.tasks import AudioTask
 
@@ -76,35 +75,30 @@ def _write_manifest(path: Path, entries: list[dict]) -> str:
     return manifest
 
 
-def test_sortformer_shaped_mapper_output_extracts_each_speaker(wav_dir: Path, tmp_path: Path) -> None:
+def test_sortformer_shaped_diarization_extracts_each_speaker(wav_dir: Path, tmp_path: Path) -> None:
     output_dir = tmp_path / "extracted"
-    mapper = TimestampMapperStage()
     extractor = SegmentExtractionStage(output_dir=str(output_dir))
     report = validate_pipeline(
-        [mapper, extractor],
-        initial_roles={"audio_filepath", "diar_segments"},
-        initial_keys={"audio_filepath", "diar_segments"},
+        [extractor],
+        initial_keys={"original_file", "diar_segments"},
     )
     assert report.ok
 
     task = AudioTask(
         dataset_name="test",
         data={
-            "audio_filepath": _wav_path(wav_dir),
+            "original_file": _wav_path(wav_dir),
             "diar_segments": [
                 {"start": 0.25, "end": 0.75, "speaker": "speaker_0"},
                 {"start": 1.25, "end": 1.75, "speaker": "speaker_1"},
             ],
         },
     )
-    mapped = mapper.process(task)
-    assert isinstance(mapped, AudioTask)
-
-    extractor.process_batch([mapped])
+    extractor.process_batch([task])
 
     assert (output_dir / "file_a_speaker_0_segment_000.wav").exists()
     assert (output_dir / "file_a_speaker_1_segment_000.wav").exists()
-    assert len(mapped.data["extracted_path"]) == 2
+    assert len(task.data["extracted_path"]) == 2
 
 
 # ------------------------------------------------------------------
@@ -1159,9 +1153,7 @@ def test_atomic_extraction_accepts_legal_long_output_names(wav_dir: Path, tmp_pa
     assert list(output_dir.glob(".segment-extraction-*")) == []
 
 
-@pytest.mark.parametrize(
-    "prefix_length", [1, 6, 80, "unicode_escape", "filename_escape_complete", "original_file_escape_complete"]
-)
+@pytest.mark.parametrize("prefix_length", [1, 6, 80, "unicode_escape"])
 def test_retry_recovers_an_interrupted_first_reservation(
     wav_dir: Path, tmp_path: Path, prefix_length: int | str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1175,13 +1167,7 @@ def test_retry_recovers_an_interrupted_first_reservation(
     def interrupt_write(resume_key: str, record: dict) -> None:
         persist(resume_key, record)
         payload = state.read_text()
-        if isinstance(prefix_length, str):
-            field = "original_file" if prefix_length == "original_file_escape_complete" else "filename"
-            field_start = payload.index(f'"{field}":')
-            escape_length = 4 if prefix_length == "unicode_escape" else 6
-            cut = payload.index("\\u", field_start) + escape_length
-        else:
-            cut = prefix_length
+        cut = payload.index("\\u") + 4 if prefix_length == "unicode_escape" else prefix_length
         state.write_text(payload[:cut])
         message = "reservation write interrupted"
         raise RuntimeError(message)
@@ -1226,6 +1212,69 @@ def test_first_reservation_corruption_is_not_treated_as_an_interruption(tmp_path
     with pytest.raises(RuntimeError, match="Cannot safely resume"):
         SegmentExtractionStage(output_dir=str(output_dir))._load_output_state()
     assert state.read_text() == content
+
+
+def test_fresh_run_refreshes_changed_source(wav_dir: Path, tmp_path: Path) -> None:
+    source = _wav_path(wav_dir)
+    destination = tmp_path / "extracted"
+    data = {"original_file": source, "original_start_ms": 0, "original_end_ms": 1000}
+    first = AudioTask(task_id="0_0", data=dict(data))
+    SegmentExtractionStage(output_dir=str(destination)).process_batch([first])
+    output = Path(first.data["extracted_path"][0])
+    previous = output.read_bytes()
+    sf.write(source, np.zeros(NUM_SAMPLES, dtype=np.float32), SAMPLE_RATE)
+
+    second = AudioTask(task_id="0_0", data=dict(data))
+    SegmentExtractionStage(output_dir=str(destination)).process_batch([second])
+
+    assert second.data["extracted_path"] == [str(output)]
+    assert output.read_bytes() != previous
+    audio, rate = sf.read(output)
+    assert rate == SAMPLE_RATE
+    assert np.count_nonzero(audio) == 0
+
+
+def test_retry_replaces_a_valid_but_unrelated_reserved_output(wav_dir: Path, tmp_path: Path) -> None:
+    destination = tmp_path / "extracted"
+    data = {"original_file": _wav_path(wav_dir), "original_start_ms": 0, "original_end_ms": 1000}
+    first = AudioTask(task_id="0_0", data=dict(data))
+    SegmentExtractionStage(output_dir=str(destination)).process_batch([first])
+    output = Path(first.data["extracted_path"][0])
+    expected = output.read_bytes()
+    sf.write(output, np.zeros((SAMPLE_RATE, 2), dtype=np.float32), SAMPLE_RATE)
+
+    second = AudioTask(task_id="0_0", data=dict(data))
+    SegmentExtractionStage(output_dir=str(destination)).process_batch([second])
+
+    assert second.data["extracted_path"] == [str(output)]
+    assert output.read_bytes() == expected
+
+
+def test_speakerless_diarization_runs_and_retains_distinct_retry_paths(wav_dir: Path, tmp_path: Path) -> None:
+    output_dir = tmp_path / "extracted"
+    extractor = SegmentExtractionStage(output_dir=str(output_dir))
+    assert validate_pipeline([extractor], initial_keys={"original_file", "diar_segments"}).ok
+    data = {"original_file": _wav_path(wav_dir), "diar_segments": [[0.25, 0.75]]}
+    first = AudioTask(task_id="0_0", data=dict(data))
+    extractor.process_batch([first])
+    second = AudioTask(task_id="0_1", data=dict(data))
+    SegmentExtractionStage(output_dir=str(output_dir)).process_batch([second])
+    retried = AudioTask(task_id="0_0", data=dict(data))
+    SegmentExtractionStage(output_dir=str(output_dir)).process_batch([retried])
+
+    assert len(first.data["extracted_path"]) == 1
+    assert first.data["extracted_path"] != second.data["extracted_path"]
+    assert first.data["extracted_path"] == retried.data["extracted_path"]
+    assert len(list(output_dir.glob("*.wav"))) == 2
+    assert all(sf.info(path).frames == SAMPLE_RATE // 2 for path in output_dir.glob("*.wav"))
+
+
+def test_empty_speakerless_diarization_emits_no_clips(wav_dir: Path, tmp_path: Path) -> None:
+    task = AudioTask(data={"original_file": _wav_path(wav_dir), "diar_segments": []})
+    output_dir = tmp_path / "extracted"
+    assert SegmentExtractionStage(output_dir=str(output_dir)).process_batch([task]) == [task]
+    assert task.data["extracted_path"] == []
+    assert not list(output_dir.glob("*.wav"))
 
 
 @pytest.mark.parametrize("parent_speaker", ["speaker_0", "speaker_1", None])

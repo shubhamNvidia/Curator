@@ -45,8 +45,9 @@ def test_unsafe_io_stages_reject_checkpointing_before_touching_outputs(tmp_path:
 
     for stage, output in cases:
         assert stage.is_resumable is False
+        pipeline = Pipeline(name="checkpoint_guard", stages=[stage])
         with pytest.raises(ValueError, match=stage.name):
-            Pipeline(name="checkpoint_guard", stages=[stage]).run(checkpoint_path=checkpoint)
+            pipeline.run(checkpoint_path=checkpoint)
         assert not output.exists()
 
     assert not checkpoint.exists()

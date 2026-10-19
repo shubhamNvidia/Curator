@@ -282,8 +282,9 @@ class DocumentBatchJsonlWriterStage(AgentReady, ProcessingStage[DocumentBatch, D
     """Append every row in a DocumentBatch to one JSONL manifest.
 
     This is the task-type-compatible terminal sink for
-    :class:`AudioToDocumentStage`. ``Pipeline.run()`` replaces the output once
-    on the driver; successive batches and replacement workers append. The input ``DocumentBatch``
+    :class:`AudioToDocumentStage`. Ordinary ``Pipeline.run()`` execution appends to
+    existing output, including across reruns. Explicit driver preparation replaces
+    the output once before workers are serialized. The input ``DocumentBatch``
     is returned unchanged so its dataset name, metadata, and performance records
     are preserved.
 
@@ -332,14 +333,6 @@ class DocumentBatchJsonlWriterStage(AgentReady, ProcessingStage[DocumentBatch, D
         lifecycle.prepare_on_driver(checkpoint_path=checkpoint_path)
         self._writer_lifecycle = lifecycle
 
-    def prepare_for_pipeline(self, *, checkpoint_path: str | Path | None = None) -> bool:
-        """Prepare an ordinary run unless an external driver already owns the sink."""
-        lifecycle = getattr(self, "_writer_lifecycle", None)
-        if lifecycle is not None and getattr(lifecycle, "_run_token", None) is not None:
-            return False
-        self.prepare_on_driver(checkpoint_path=checkpoint_path)
-        return True
-
     def _verify_output_ownership(self) -> None:
         lifecycle = getattr(self, "_writer_lifecycle", None)
         if lifecycle is not None and getattr(lifecycle, "_run_token", None) is not None:
@@ -351,8 +344,8 @@ class DocumentBatchJsonlWriterStage(AgentReady, ProcessingStage[DocumentBatch, D
     def setup(self, _worker_metadata: WorkerMetadata | None = None) -> None:
         """Open for appending; replacement actors must preserve committed rows.
 
-        Pipeline.run prepares the driver automatically. Direct stage callers may
-        call prepare_on_driver to replace output; unprepared direct use appends.
+        Callers may explicitly call prepare_on_driver to replace output and must
+        finalize or abort their reservation. Ordinary Pipeline.run use appends.
         """
         self._fs, self._path = url_to_fs(self.output_path)
         parent_dir = "/".join(self._path.split("/")[:-1])
