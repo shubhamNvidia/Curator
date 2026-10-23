@@ -15,9 +15,12 @@
 """Unit tests for the deterministic grounding layer (validate / checks)."""
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import ClassVar
+from typing import ClassVar, Literal
+
+import pytest
 
 from nemo_curator.stages.audio import audio_agent as aa
 from nemo_curator.stages.audio.audio_agent import cli, profiler
@@ -51,7 +54,7 @@ class TestValidateContract:
 
     def test_valid_recipe_is_runnable(self) -> None:
         r = _validate([_READER, _DURATION, _WRITER])
-        assert r.get("runnable") is not False
+        assert r["runnable"] is True
         assert r.get("status") != "fail"
 
     def test_clean_validation_requires_separate_semantic_review(self) -> None:
@@ -404,8 +407,42 @@ class TestSampleRateFollowsThePipeline:
             params["target_sample_rate"] = target
         return {"ref": "ResampleAudioStage", "params": params}
 
-    # InferenceSortformerStage's card declares supported_sample_rates: [16000].
-    _SIXTEEN_K_ONLY: ClassVar[dict] = {"ref": "InferenceSortformerStage", "params": {}}
+    @pytest.fixture(autouse=True)
+    def strict_rate_consumer(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from nemo_curator.stages import base
+        from nemo_curator.stages.audio import agent
+        from nemo_curator.stages.audio._agent._agent_ready import AgentReady, IOSpec, StageContract
+        from nemo_curator.stages.audio.audio_agent.index import get_index
+        from nemo_curator.stages.base import ProcessingStage
+        from nemo_curator.tasks import AudioTask
+
+        agent.list_agent_ready_stages()
+        monkeypatch.setattr(base, "_STAGE_REGISTRY", dict(base._STAGE_REGISTRY))
+
+        @dataclass
+        class StrictRateConsumerStage(AgentReady, ProcessingStage[AudioTask, AudioTask]):
+            filepath_key: str = "audio_filepath"
+            waveform_key: str = "waveform"
+            sample_rate_key: str = "sample_rate"
+            input_residency: Literal["file", "waveform", "auto"] = "file"
+
+            def describe(self) -> StageContract:
+                file_input = IOSpec(data_keys=[self.filepath_key], accepts=["file"])
+                resident = IOSpec(data_keys=[self.waveform_key, self.sample_rate_key], accepts=["waveform"])
+                if self.input_residency == "auto":
+                    return StageContract(reads_one_of=[file_input, resident])
+                return StageContract(reads=resident if self.input_residency == "waveform" else file_input)
+
+            def process(self, task: AudioTask) -> AudioTask:
+                return task
+
+        ref = StrictRateConsumerStage.__name__
+        monkeypatch.setattr(self, "_SIXTEEN_K_ONLY", {"ref": ref, "params": {}}, raising=False)
+        monkeypatch.setitem(
+            get_index()._cards_by_stage,
+            ref,
+            {"category": "transcribe", "constraints": {"supported_sample_rates": [16000]}},
+        )
 
     def test_asr_accepts_source_rate_converted_internally(self) -> None:
         from nemo_curator.stages.audio.audio_agent.checks import CheckContext, _check_card_constraints
@@ -461,7 +498,7 @@ class TestSampleRateFollowsThePipeline:
     def test_consumer_bound_to_resampled_filepath_uses_converted_rate(self, tmp_path: Path) -> None:
         manifest = self._corpus(tmp_path, 48000)
         reader = {"ref": "ManifestReader", "params": {"manifest_path": manifest}}
-        consumer = {"ref": "InferenceSortformerStage", "params": {"filepath_key": "resampled_audio_filepath"}}
+        consumer = {**self._SIXTEEN_K_ONLY, "params": {"filepath_key": "resampled_audio_filepath"}}
         assert self._rate_warnings([reader, self._resample(tmp_path, 16000), consumer], manifest) == []
 
     def test_retained_waveform_does_not_change_file_consumer_rate(self, tmp_path: Path) -> None:
@@ -473,7 +510,7 @@ class TestSampleRateFollowsThePipeline:
         assert len(warnings) == 1
         for residency in ("waveform", "auto"):
             consumer = {
-                "ref": "InferenceSortformerStage",
+                **self._SIXTEEN_K_ONLY,
                 "params": {"input_residency": residency, "waveform_key": "converted_waveform"},
             }
             assert self._rate_warnings([reader, resample, consumer], manifest) == []
@@ -484,6 +521,13 @@ class TestSampleRateFollowsThePipeline:
         warnings = self._rate_warnings([reader, self._SIXTEEN_K_ONLY], manifest)
         assert len(warnings) == 1
         assert "48000" in warnings[0]["message"]
+
+    def test_internally_resampling_diarizer_accepts_the_source_rate(self, tmp_path: Path) -> None:
+        manifest = self._corpus(tmp_path, 48000)
+        reader = {"ref": "ManifestReader", "params": {"manifest_path": manifest}}
+        consumer = {"ref": "InferenceSortformerStage", "params": {}}
+
+        assert self._rate_warnings([reader, consumer], manifest) == []
 
     def test_an_omitted_target_resolves_to_the_stage_default(self, tmp_path: Path) -> None:
         # ResampleAudioStage converts to 16 kHz by default, whether or not the recipe says so.
