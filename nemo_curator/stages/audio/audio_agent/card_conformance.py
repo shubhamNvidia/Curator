@@ -1149,9 +1149,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--allow-uncarded",
         action="store_true",
-        help="accept missing cards (coverage gaps are reported without failing by default)",
+        help="do not fail on coverage gaps (default: an uncarded stage fails the gate)",
     )
-    ap.parse_args(argv)
+    args = ap.parse_args(argv)
 
     result = audit()
     # Blueprints are planner-facing worked examples, so a preset naming a parameter that
@@ -1160,8 +1160,14 @@ def main(argv: list[str] | None = None) -> int:
     result["blueprint_violations"] = blueprints["violations"]
     result["blueprint_count"] = blueprints["blueprint_count"]
     print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
-    # Coverage gaps remain visible in the audit; invalid cards and blueprints fail.
+    # Drift, orphan cards, and coverage gaps are all hard failures. An uncarded stage used to be
+    # reported only, which meant a stage could ship plannable with no card semantics behind it --
+    # `discover` lists it, the planner may pick it, and the host critic gets no meaning, scope or
+    # counterexample to reason from. --allow-uncarded is the deliberate escape hatch for a
+    # work-in-progress stage; the flag existed for this and was simply never wired up.
     ok = not result["violations"] and not result["orphan_cards"] and not blueprints["violations"]
+    if result["uncarded_stages"] and not args.allow_uncarded:
+        ok = False
     return 0 if ok else 1
 
 

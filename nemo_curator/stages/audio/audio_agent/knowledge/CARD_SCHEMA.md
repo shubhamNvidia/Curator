@@ -278,3 +278,8 @@ mechanical surface is honest, not that every intended use is semantically sound.
 Coverage gaps (stages with no card) are reported by `audit()` and fail the default
 CLI gate. Use `--allow-uncarded` only when deliberately checking a work-in-progress
 catalog; discovery alone does not replace the release requirement for a truthful card.
+
+Card coverage is also required by the normal audio test suite. The requirement follows
+agent discovery: a registered stage with `AgentReady` and its own `describe()` must
+ship a valid card. Stages outside that discovery catalog do not need cards. No fixed
+stage inventory or module-specific exemption is used for this coverage check.

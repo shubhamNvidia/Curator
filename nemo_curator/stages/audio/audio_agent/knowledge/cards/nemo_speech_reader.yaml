@@ -1,0 +1,31 @@
+stage_id: NeMoSpeechReaderStage
+category: ingest
+summary: "Decode a discovered NeMo manifest/tar shard into mono audio tasks and explicit error placeholders."
+tags: [writes_disk, fanout]
+model_id: null
+params_of_note:
+  output_dir: "Optional local shared output root; tar input also creates temporary indexed-manifest state."
+  max_audio_duration_sec: "Duration limit, default 12 hours; overlong rows become read_error/audio_too_long placeholders."
+  keep_waveform: "Retain decoded mono float32 samples by default; false omits the resident waveform."
+  reader_workers: "Optional cap on reader actors."
+  audio_filepath_key: "Preserves the manifest audio reference, default audio_filepath."
+  original_file_key: "Resolved source for non-tarred input; tar member identity for tarred input."
+  sample_rate_key: "Decoded sample rate in Hz when decoding succeeds."
+composition:
+  typical_upstream: [NeMoSpeechDiscoveryStage]
+  typical_downstream: [NeMoSpeechWriterStage]
+semantic_facts:
+  decoded_audio:
+    meaning: "Successful rows carry mono waveform, sample rates, channel count and decoded cut duration in seconds."
+    scope: "One original manifest row."
+    provenance: "NeMo/Lhotse shard decoding; manifest metadata survives failed or overlong reads."
+    propagation: "Shard row identity and total row count are carried in task metadata for output finalization."
+    counterexamples:
+      - "A read_error placeholder does not guarantee decoded audio fields."
+      - "original_file for a tar member is not an independently readable local path."
+      - "source_lang is a corpus label, not a language-model prediction."
+notes:
+  - "Requires the NeMo/Lhotse reader dependencies. Use NeMoSpeechAudioReader to discover and read input directly."
+  - "Task key parameters rename outputs; input manifest columns and the shard metadata protocol retain fixed names."
+verified: {params: mechanical, tags: mechanical, semantic_facts: mechanical}
+provenance: {card_version: 1, last_validated: "2026-10-26"}

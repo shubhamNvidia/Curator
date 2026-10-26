@@ -1,0 +1,33 @@
+stage_id: AudioTextLLMStage
+category: text_norm
+summary: "Transform transcript text through a shared inference server while retaining audio task metadata."
+tags: []
+model_id: null
+deterministic: false
+params_of_note:
+  endpoint: "Required shared inference server endpoint; the server owns the model and GPUs."
+  model_name: "Required model served at endpoint; no checkpoint is selected by this card."
+  prompt: "System prompt followed by text, or one user message when it contains {text}."
+  text_key: "Input transcript, default text; audio samples are not sent."
+  output_text_key: "Response text, default processed_text; rewrite guards may retain the original transcript."
+  mode: "text, recover_entities, or language_id; special modes have different reference and skip semantics."
+  ground_truth_key: "Optional reference for entity recovery, default granary_v1_prediction."
+  validation_mode: "none by default; itn and tn enable heuristic rewrite guards, not semantic correctness checks."
+  operations: "Independent text operations sent concurrently; dependent operations require separate stages."
+  language_rules: "Per-language prompt rules; required when prompt contains {language_rules}."
+  skip_if_output_exists: "Reuse output-key presence, including an empty value, instead of requesting it again."
+  request_timeout_s: "Batch deadline covering requests, retries and concurrency waits."
+semantic_facts:
+  processed_text:
+    meaning: "Configured operation's text response or retained original after a rejected rewrite."
+    scope: "One transcript; independent operations have separate configured output keys."
+    provenance: "Remote model response plus mode-specific cleanup and optional rewrite heuristics."
+    propagation: "Tasks and audio metadata survive in order; language mismatches set a skip reason without dropping rows."
+    counterexamples:
+      - "The default none validation can retain empty or truncated responses."
+      - "Rewrite heuristics do not prove transcription accuracy or semantic equivalence."
+notes:
+  - "Requires an available server. Local stage CPU resources do not account for the server's GPU or model-memory requirements."
+  - "Stochastic remote generation is possible. Request failures propagate after retries; clients and pending requests are cleaned up on failure or teardown."
+verified: {params: mechanical, tags: mechanical, semantic_facts: mechanical}
+provenance: {card_version: 1, last_validated: "2026-10-26"}

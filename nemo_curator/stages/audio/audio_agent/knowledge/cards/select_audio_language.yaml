@@ -1,0 +1,30 @@
+stage_id: SelectAudioLanguageStage
+category: transcribe
+summary: "Select a task language using the three-component LID ensemble's precedence policy."
+tags: []
+model_id: null
+params_of_note:
+  results_key: "Optional ensemble result mapping, default lid; consumed and removed after selection."
+  output_key: "Chosen language, default source_lang; empty on missing predictions, skipped on disagreement."
+  notes_key: "Retains component predictions and confidence plus selection notes; default additional_notes."
+  confidence_key: "Chosen model confidence inside notes_key, default source_lid_confidence; zero on rejection."
+  speechbrain_model_id: "Primary model identity, default SpeechBrainLangID; must match the producer's model_id."
+  indic_canary_model_id: "Indic component identity, default IndicCanaryLangID."
+  whisper_model_id: "Whisper component identity, default WhisperLangID."
+  indic_languages: "Languages requiring three-way agreement unless Whisper predicts English."
+composition:
+  typical_upstream: [AudioLIDInferenceStage]
+semantic_facts:
+  source_lang:
+    meaning: "Selected lowercase task language, empty for missing predictions, or skipped for disagreement."
+    scope: "One task, based on the component windows."
+    provenance: "Whisper English wins; otherwise three-way agreement, or primary/Whisper agreement for non-Indic languages."
+    propagation: "Tasks are retained, including rejections; downstream stages must honor the skip reason."
+    counterexamples:
+      - "Selection is not a majority vote or a calibrated consensus probability."
+      - "This stage does not remove rejected rows or retain the raw lid mapping."
+notes:
+  - "A successful selection clears only this selector's own rejection reasons; unrelated upstream skip reasons survive."
+  - "Missing or empty Whisper predictions reject even when other components agree."
+verified: {params: mechanical, tags: mechanical, semantic_facts: mechanical}
+provenance: {card_version: 1, last_validated: "2026-10-26"}

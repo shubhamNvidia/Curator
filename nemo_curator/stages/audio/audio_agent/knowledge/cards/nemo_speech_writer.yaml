@@ -1,0 +1,31 @@
+stage_id: NeMoSpeechWriterStage
+category: export
+summary: "Persist per-task NeMo Opus/manifest receipts as a terminal sink for shard finalization."
+tags: [writes_disk, sink, sanitizes_output, is_filter]
+model_id: null
+params_of_note:
+  output_dir: "Required absolute path on a shared POSIX-style filesystem, visible at the same path to every worker."
+  target_sample_rate: "Required rate for waveform-bearing rows, default 16000 Hz; this writer does not resample."
+  save_audio: "Default true encodes Opus; false writes manifest-only rows retaining the original audio reference."
+  writer_concurrency: "Number of stateless writer actors, default 1."
+  output_audio_filepath_key: "Optional preset and recorded Opus path relative to output_dir."
+  start_ms_key: "Child start relative to the input offset, in milliseconds."
+  original_offset_key: "Inherited source-recording offset in seconds."
+composition:
+  typical_upstream: [NeMoSpeechAudioReader]
+semantic_facts:
+  persisted_row:
+    meaning: "One receipt per consumed task or fan-out child, used to assemble a shard manifest."
+    scope: "Output task identity plus original shard-row identity."
+    provenance: "Resident samples or a retained source reference; vad_empty/read_error rows are placeholders."
+    propagation: "No output tasks return from this terminal sink; waveform is omitted and retained array/tensor metadata is serialized."
+    counterexamples:
+      - "A completed pipeline does not by itself create finalized manifests or done markers."
+      - "Metadata-manifest reload cannot restore the framework task identity and shard metadata needed to resume this sink."
+      - "Saved row audio paths are relative to the shard manifest's parent, while output_audio_filepath is relative to output_dir."
+notes:
+  - "After a successful pipeline run, call finalize_nemo_speech_output to create manifests and completion markers."
+  - "Shard completion depends on every source row. Preserve shard metadata and deterministic task identity across intermediate stages."
+  - "Encoding needs Ogg Opus support in soundfile/libsndfile, or the writer's ffmpeg fallback."
+verified: {params: mechanical, tags: mechanical, semantic_facts: mechanical}
+provenance: {card_version: 1, last_validated: "2026-10-26"}

@@ -1,0 +1,30 @@
+stage_id: PrepareIndicASRInputStage
+category: preprocess
+summary: "Load Hindi 16 kHz audio and initialize reference and resident-waveform fields for Indic ASR."
+tags: []
+model_id: null
+constraints: {supported_sample_rates: [16000]}
+params_of_note:
+  audio_root: "Required base directory for relative paths; absolute paths may be used without it."
+  audio_item_id_key: "Required nonempty clip identity, default audio_item_id."
+  duration_key: "Manifest duration in seconds; must match decoded duration within 1 ms and is retained unchanged."
+  source_lang_key: "Must contain hi; default source_lang."
+  text_key: "Required nonempty reference; removed after copying to both reference outputs."
+  granary_v1_prediction_key: "Legacy reference copy, default granary_v1_prediction; not model output."
+  reference_text_key: "Reference copy for downstream WER, default reference_text."
+  sample_rate_key: "Decoded sample rate in Hz; default sampling_rate."
+  waveform_key: "Mono float32 tensor with shape [1, samples], default waveform."
+semantic_facts:
+  reference_text:
+    meaning: "Unchanged input reference, also copied to the legacy granary_v1_prediction field."
+    scope: "One clip."
+    provenance: "The configured input text field, not an ASR model."
+    propagation: "Input text is removed; reference copies and the existing duration remain."
+    counterexamples:
+      - "A field named granary_v1_prediction is still a reference here; it must not be treated as a generated hypothesis."
+notes:
+  - "Downmixes to mono but does not resample; rejects rates other than 16000 Hz."
+  - "Clears the shared skip reason and initializes model labels while preserving existing notes. Use this for the specified input protocol."
+  - "Resident tensors require a downstream serialization boundary before a JSON manifest sink."
+verified: {params: mechanical, tags: mechanical, constraints: mechanical, semantic_facts: mechanical}
+provenance: {card_version: 1, last_validated: "2026-10-26"}
