@@ -1,0 +1,28 @@
+stage_id: AudioSegmentWriterStage
+category: export
+summary: "Write resident 16 kHz mono segments as Opus files and remove transient audio metadata."
+tags: [writes_disk, sanitizes_output]
+model_id: null
+params_of_note:
+  output_dir: "Required local directory shared at the same path across executor nodes; clips go below audio/."
+  waveform_key: "Nonempty finite mono waveform to encode, default waveform."
+  sample_rate_key: "Must be 16000 Hz for encoded rows, default sample_rate."
+  audio_filepath_key: "Source path on input, replaced by an absolute Opus path after encoding."
+  original_file_key: "Original source recording preserved for provenance."
+  audio_item_id_key: "Replaced with the segment's content/source/interval identity."
+  vad_empty_key: "Retain a no-speech audit row without encoding a clip."
+semantic_facts:
+  audio_filepath:
+    meaning: "Absolute path of a successfully encoded segment, or source path for a no-speech audit row."
+    scope: "One input task."
+    provenance: "Resident samples; filenames hash source identity, interval and PCM content."
+    propagation: "Waveform, whole-recording diarization and transient fields are removed; other JSON-safe metadata survives."
+    counterexamples:
+      - "A retained vad_empty row does not prove a new clip was written."
+      - "LID rejection flags do not suppress audio writing."
+notes:
+  - "Requires soundfile/libsndfile with Ogg Opus encoding support. read_error and invalid audio raise."
+  - "Publishes each encoded file atomically and retains the input task unchanged if encoding fails."
+  - "Sanitizes known audio fields; any other retained metadata must already be JSON serializable."
+verified: {params: mechanical, tags: mechanical, semantic_facts: mechanical}
+provenance: {card_version: 1, last_validated: "2026-10-26"}

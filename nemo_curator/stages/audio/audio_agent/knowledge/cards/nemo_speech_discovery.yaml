@@ -1,0 +1,29 @@
+stage_id: NeMoSpeechDiscoveryStage
+category: ingest
+summary: "Expand NeMo input configuration into stable source tasks for manifest/tar shards."
+tags: [fanout]
+model_id: null
+params_of_note:
+  yaml_path: "NeMo input configuration file; provide this or inline input_cfg."
+  input_cfg: "Inline resolved configuration takes precedence over yaml_path."
+  corpus_filter: "Optional corpus restriction before shard expansion."
+  language_filter: "Optional language restriction before shard expansion."
+  output_dir: "Required in default done_markers mode; completion markers and incomplete shard state live here."
+  resume_mode: "done_markers skips verified completed shards; checkpoint delegates scheduling to Pipeline.run(checkpoint_path=...)."
+  cleanup_partial: "In done_markers mode, remove incomplete JSONL and progress/receipt state before replay; retained Opus files remain."
+composition:
+  typical_downstream: [NeMoSpeechReaderStage]
+semantic_facts:
+  shard_task:
+    meaning: "FileGroupTask identifying a physical manifest/tar pair and its reader configuration."
+    scope: "One expanded shard, not one audio recording."
+    provenance: "Filtered NeMo input configuration and validated completion state."
+    propagation: "The inner reader consumes these tasks; this stage does not decode audio."
+    counterexamples:
+      - "Discovery can delete incomplete output state when done-marker cleanup is enabled."
+      - "Artifact-driven scheduling and pipeline source checkpoints cannot be enabled together."
+notes:
+  - "Use NeMoSpeechAudioReader for the complete user-facing source; this stage is its discovery half."
+  - "Duplicate shard identities fail; set distinct shard_key_prefix values for colliding input entries."
+verified: {params: mechanical, tags: mechanical, semantic_facts: mechanical}
+provenance: {card_version: 1, last_validated: "2026-10-26"}

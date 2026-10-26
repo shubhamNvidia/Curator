@@ -1,0 +1,32 @@
+stage_id: NeMoSpeechAudioReader
+category: ingest
+summary: "Discover and decode NeMo nemo/nemo_tarred input configuration into mono audio tasks."
+tags: [writes_disk, fanout]
+model_id: null
+params_of_note:
+  yaml_path: "NeMo input configuration file; provide this or inline input_cfg."
+  input_cfg: "Inline resolved configuration takes precedence over yaml_path."
+  output_dir: "Required for default done_markers scheduling, on a filesystem shared across executor nodes."
+  resume_mode: "Use done_markers for artifact restarts, or checkpoint with Pipeline.run(checkpoint_path=...); never combine them."
+  cleanup_partial: "Default true; done-marker discovery clears incomplete shard manifests, receipts and progress before replay."
+  keep_waveform: "Default true retains decoded mono float32 audio; false omits the resident waveform."
+  max_audio_duration_sec: "Default 12 hours; overlong rows remain explicit error placeholders."
+  corpus_filter: "Optional corpus restriction applied before expansion."
+  language_filter: "Optional language restriction applied before expansion."
+composition:
+  typical_downstream: [AudioLIDInferenceStage, NeMoSpeechWriterStage]
+semantic_facts:
+  audio_rows:
+    meaning: "One task per manifest row, with decoded audio when successful and explicit read errors otherwise."
+    scope: "Original shard rows; downstream fan-out can create several outputs per row."
+    provenance: "NeMoSpeechDiscoveryStage followed by NeMoSpeechReaderStage."
+    propagation: "Shard metadata must survive downstream processing for NeMoSpeechWriterStage finalization."
+    counterexamples:
+      - "Tar-member original_file values are not standalone local audio paths."
+      - "A corpus language label does not prove a model identified that language."
+notes:
+  - "Requires NeMo/Lhotse reader dependencies; default discovery can clean incomplete output state."
+  - "Malformed, missing and overlong rows remain placeholders and do not guarantee resident audio."
+  - "Choose this composite as the complete source; its two inner stages are also individually discoverable."
+verified: {params: mechanical, tags: mechanical, semantic_facts: mechanical}
+provenance: {card_version: 1, last_validated: "2026-10-26"}

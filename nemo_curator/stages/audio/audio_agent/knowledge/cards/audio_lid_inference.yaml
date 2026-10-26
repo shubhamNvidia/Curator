@@ -1,0 +1,34 @@
+stage_id: AudioLIDInferenceStage
+category: transcribe
+summary: "Identify the language of a leading audio window through a configurable LID adapter."
+tags: [batch_only, needs_internet_first_run]
+model_id: null
+params_of_note:
+  adapter_target: "Required import path implementing AudioLIDAdapter; provider checkpoint settings belong in adapter_kwargs."
+  model_id: "Required identity under results_key; this is not the adapter's checkpoint name."
+  tag: "Required ensemble role recorded beside the language and confidence."
+  waveform_key: "None loads audio_filepath_key; otherwise waveform_key and sample_rate_key supply resident audio."
+  sample_rate: "Canonical adapter rate, default 16000 Hz; input is downmixed and resampled internally."
+  min_duration_sec: "Clips shorter than this receive a completed empty prediction; default 1 second."
+  max_duration_sec: "Only the leading window is classified; default 10 seconds, zero disables truncation."
+  results_key: "Shared mapping, default lid; each adapter updates only its model_id entry."
+  skip_if_output_exists: "Reuse model_id membership, including an empty prediction or zero confidence."
+  fail_on_audio_error: "Mark row-local preparation errors with the shared skip reason; short clips do not set it."
+  retry_skip_reasons: "Exact skip reasons this stage may clear before retrying; unrelated skips remain blocking."
+composition:
+  typical_upstream: [NeMoSpeechAudioReader]
+  typical_downstream: [SelectAudioLanguageStage]
+semantic_facts:
+  lid:
+    meaning: "Mapping from configured model identity to language, confidence and ensemble tag."
+    scope: "One task's leading audio window."
+    provenance: "Configured adapter; missing, invalid or too-short audio gets an empty result."
+    propagation: "Other model entries and task metadata survive; terminal skips can prevent a new entry."
+    counterexamples:
+      - "Confidence is provider-specific and is not calibrated across ensemble components."
+      - "A leading-window label does not establish every segment's or speaker's language."
+notes:
+  - "Requires adapter_target, model_id and tag; no checkpoint is selected by this card. Resources and optional dependencies depend on the adapter."
+  - "Only process_batch is supported. Arbitrary adapters are not certified for per-row delta reuse."
+verified: {params: mechanical, tags: mechanical, semantic_facts: mechanical}
+provenance: {card_version: 1, last_validated: "2026-10-26"}
