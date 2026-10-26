@@ -72,6 +72,14 @@ threshold/key dimension. Explicit one-level segment decisions use
 `PreserveByValueConditionsStage` with a generic configured `items_key`;
 recursive nested, metadata-private and batch/corpus decisions remain unsupported.
 
+Any registered agent-ready producer may opt in through a mechanically verified
+`decision` declaration; no central producer-name list is required. The gate
+checks the configured score binding and selector, and preserves any class-declared
+safe settings. A producer declaring `SEPARABLE_DECISION_DIMENSIONS` must use a
+compound decision covering every declared dimension; other producers use scalar
+decisions. Authors must still verify that annotation and selection reproduce the
+documented behavior, rather than treating a writable numeric field as that proof.
+
 ```yaml
 decision:
   kind: scalar                         # optional for legacy scalar cards
@@ -106,8 +114,8 @@ on `PreserveByValueStage`. Model filters that are safe only under exact
 configuration add `producer_constraints` (for example
 `{action: annotate, mode: task}`), which conformance compares with the
 producer's class-declared safe settings.
-`value_type` is a mechanically enforced JSON-scalar type. The two phase-1
-producers declare `number`, which rejects booleans, strings, null, containers,
+`value_type` is a mechanically enforced JSON-scalar type. A `number` declaration
+rejects booleans, strings, null, containers,
 and non-finite floats before a candidate can be ready or configured.
 `allowed_operators` may contain only `lt`, `le`, `eq`, `ne`, `ge`, `gt`.
 `missing_score_policy: selector_error` records the default behavior: an absent
@@ -253,7 +261,7 @@ the full configured workload fits.
 - uses an unknown `resource` key / non-numeric numeric / bad `bound`;
 - declares a `versions` block that isn't a `{model_id: string}` map, sets it without a `model_id`, or has a model-selecting `preset` (sets `model_name`/`model_path`) whose model id isn't documented in `versions`;
 - declares a `metrics` block with a bad `scale.direction`, a `threshold_param` that isn't a real param, or a `valid_range` that isn't `[lo, hi]`;
-- declares a `decision` outside the supported producers, uses unknown/missing
+- declares a `decision` for an unregistered producer, uses unknown/missing
   fields or unsupported values, drifts from producer/selector constructor
   params/defaults/writes, omits exact producer constraints/compound dimensions,
   or omits `verified.decision: mechanical`;
@@ -267,4 +275,6 @@ advisory reasoning material, not deterministic validation rules. Review them
 against code/model evidence when authoring the card; green conformance means the
 mechanical surface is honest, not that every intended use is semantically sound.
 
-Coverage gaps (stages with no card) are **reported, not failed** — they name the authoring backlog.
+Coverage gaps (stages with no card) are reported by `audit()` and fail the default
+CLI gate. Use `--allow-uncarded` only when deliberately checking a work-in-progress
+catalog; discovery alone does not replace the release requirement for a truthful card.

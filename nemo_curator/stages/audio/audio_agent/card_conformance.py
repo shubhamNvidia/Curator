@@ -32,8 +32,8 @@ drift (the exact ``resample`` / ``audio_to_document`` failure class):
   in ``verified`` instead.
 * a ``metrics`` block, if present, must use a valid ``scale.direction``, a real
   ``threshold_param``, and a ``[lo, hi]`` ``valid_range``.
-* a ``decision`` block, if present, must describe one of the explicitly supported
-  task or one-level segment score producers and its real downstream selector
+* a ``decision`` block, if present, must describe a registered producer's
+  task or one-level segment scores and its real downstream selector
   parameters. The score key's declared fallback is checked against the constructor
   default and the key parameter must control a real stage write.
 * ``semantic_facts``, if present, is shape-checked as advisory prose.  The gate
@@ -65,20 +65,6 @@ _ADAPTER_CAPABILITY_FIELDS = frozenset({"supported_devices", "cpu_requires"})
 _VERIFIED_TIERS = frozenset({"mechanical", "measured", "best_guess"})
 _DIRECTIONS = frozenset({"higher_better", "lower_better"})
 _SEMANTIC_PROSE_FIELDS = frozenset({"meaning", "unit", "provenance", "scope", "propagation"})
-_DECISION_PRODUCERS = frozenset(
-    {
-        "GetAudioDurationStage",
-        "GetPairwiseWerStage",
-        "SIGMOSFilterStage",
-        "UTMOSFilterStage",
-    }
-)
-_DECISION_KINDS = {
-    "GetAudioDurationStage": "scalar",
-    "GetPairwiseWerStage": "scalar",
-    "SIGMOSFilterStage": "compound",
-    "UTMOSFilterStage": "scalar",
-}
 _DECISION_VALUE_TYPES = frozenset({"number", "string", "boolean"})
 _DECISION_FIELDS = frozenset(
     {
@@ -493,9 +479,16 @@ def _decision_violations(  # noqa: C901, PLR0912, PLR0915 - one branch per card 
         f"{prefix} is missing required field {key!r}" for key in sorted(required_fields) if key not in raw
     )
 
-    if stage_id not in _DECISION_PRODUCERS:
-        violations.append(f"{prefix} is only supported for {sorted(_DECISION_PRODUCERS)} in this phase")
-    expected_kind = _DECISION_KINDS.get(stage_id)
+    from nemo_curator.stages.audio.audio_agent._resolve import resolve_stage_class
+
+    try:
+        producer = resolve_stage_class(stage_id)
+    except Exception:  # noqa: BLE001 - unresolved producers cannot certify a decision
+        violations.append(f"{prefix} producer is not a registered agent-ready stage")
+        expected_kind = None
+    else:
+        dimensions = getattr(producer, "SEPARABLE_DECISION_DIMENSIONS", ())
+        expected_kind = "compound" if dimensions else "scalar"
     if kind not in {"scalar", "compound"}:
         violations.append(f"{prefix}.kind must be 'scalar' or 'compound'")
     elif expected_kind is not None and kind != expected_kind:
