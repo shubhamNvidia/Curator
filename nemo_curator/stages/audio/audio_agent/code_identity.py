@@ -82,6 +82,16 @@ def _compute(stage_ref: str, *, adapter_target: str | None = None) -> str:
         files = _closure(cls.__module__)
         if not files:
             return _fallback()
+        from nemo_curator.stages.audio.audio_agent import _verb_pretrain
+
+        if stage_ref in _verb_pretrain._OUTPUT_PARAMS:
+            # Bundle assembly belongs to the driver, beyond the worker's import closure.
+            finalizer_path = _module_file(_verb_pretrain.__name__, _package_root())
+            merger_files = _closure("nemo_curator.stages.audio.alm.pretrain.finalize")
+            if not finalizer_path or not merger_files:
+                return _fallback()
+            files[_verb_pretrain.__name__] = finalizer_path
+            files.update(merger_files)
         if adapter_target is None:
             adapter_target = getattr(cls, "adapter_target", None)
         if adapter_target is not None:
