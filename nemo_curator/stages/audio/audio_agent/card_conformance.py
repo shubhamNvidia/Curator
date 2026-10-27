@@ -743,6 +743,8 @@ _KNOWN_CARD_FIELDS = frozenset(
         "deterministic",
         "decision",
         "adapter_capabilities",
+        "io",
+        "planning",
     }
 )
 
@@ -914,6 +916,10 @@ def check_card(  # noqa: C901, PLR0912, PLR0915 - one branch per card section
     params = _stage_param_names(stage_id)
     if params is None:
         return [f"{stage_id}: stage_id does not resolve to a registered agent-ready stage"]
+    from nemo_curator.stages.audio.audio_agent._capabilities import io_violations, planning_violations
+
+    v.extend(io_violations(stage_id, card, params))
+    v.extend(planning_violations(stage_id, card, params))
 
     # required structural fields (a card must state its category, a summary, and how
     # honest each fact is — the verified tiers).
@@ -1080,6 +1086,7 @@ def audit(index: Any = None) -> dict[str, Any]:  # noqa: ANN401
     gate_unverified = sorted(s for s in (carded & all_stages) if _effective_default_gates(s) is None)
     return {
         "violations": violations,
+        "knowledge_errors": list(getattr(idx, "load_errors", [])),
         "orphan_cards": sorted(carded - all_stages),  # cards for a stage that no longer exists
         "uncarded_stages": sorted(all_stages - carded),  # stages still missing a card (coverage gap)
         "gate_unverified": gate_unverified,  # tags present but unjudgeable: not default-constructible
@@ -1165,7 +1172,12 @@ def main(argv: list[str] | None = None) -> int:
     # `discover` lists it, the planner may pick it, and the host critic gets no meaning, scope or
     # counterexample to reason from. --allow-uncarded is the deliberate escape hatch for a
     # work-in-progress stage; the flag existed for this and was simply never wired up.
-    ok = not result["violations"] and not result["orphan_cards"] and not blueprints["violations"]
+    ok = (
+        not result["violations"]
+        and not result["orphan_cards"]
+        and not result.get("knowledge_errors")
+        and not blueprints["violations"]
+    )
     if result["uncarded_stages"] and not args.allow_uncarded:
         ok = False
     return 0 if ok else 1

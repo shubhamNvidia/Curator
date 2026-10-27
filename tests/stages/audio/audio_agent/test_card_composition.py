@@ -137,6 +137,7 @@ class TestTheShippedCardsConform:
     def test_no_card_violates_anything(self) -> None:
         # Including the two checks above: the recommendation graph is checked, not just described.
         result = audit()
+        assert not result["knowledge_errors"], result["knowledge_errors"]
         assert result["violations"] == {}, result["violations"]
 
 
