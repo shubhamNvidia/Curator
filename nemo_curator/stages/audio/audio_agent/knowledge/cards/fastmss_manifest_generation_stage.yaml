@@ -1,0 +1,31 @@
+stage_id: FastMSSManifestGenerationStage
+summary: "Generate whole-meeting mixtures from finite JSONL meeting requests using the unchanged native FastMSS worker."
+category: ingest
+tags: [writes_disk]
+model_id: null
+deterministic: false
+domain: {language: any, style: any}
+resource: {cpus: 1.0, gpu_mem_gb: 0.0, gpu_optional: false, bound: cpu}
+params_of_note:
+  manifest_path: "Local JSONL produced by simulation.prepare_fastmss_requests: one record per meeting, with frozen native configuration and dependency fingerprints."
+  config_path: "Original .yaml used during preparation; changed configurations require preparing requests again."
+  input_root: "Shared read-only directory enclosing all source CutSets, absolute file-backed recordings, optional noise and HMM-fit manifests. No symlinks."
+  fastmss_root: "Trusted shared FastMSS checkout containing recipes/sim.py and fastmss; included in dependency identity."
+  output_dir: "Disjoint shared output root; each attempt writes to a fresh child directory."
+  jobs_per_config: "Native process count and reserved CPUs; default 1. Generation uses one bulk call, not independently seeded jobs."
+  timeout_seconds: "Native worker timeout including preprocessing; default 3600 seconds."
+io:
+  outputs:
+    output_dir: {kind: audio_dir}
+  dependency_params: [manifest_path, config_path, input_root, fastmss_root]
+notes:
+  - "Use FastMSSRequestSource then FastMSSManifestGenerationStage as two separate recipe entries. The reader emits a FileGroupTask selecting the actual bounded request manifest; this stage consumes it and introduces the generated audio fields. Keep the direct YAML/list/glob API for ordinary pipelines."
+  - "Preparation resolves Hydra defaults and overrides without generating audio. Requests may be truncated only to a contiguous prefix; smoke uses that prefix to bound native n_meetings."
+  - "Supports one frozen native configuration, local file-backed MonoCuts without lazy recording transforms, safe speaker IDs, and dependencies enclosed by input_root. Gaussian noise needs no noise folder; supplied noise folders are tracked beneath input_root. Other native input layouts remain outside this adapter."
+  - "Prepared inputs and the pinned audio_simulation worker environment must exist on every node. No ASR, forced alignment or dataset acquisition is performed."
+  - "Outputs one AudioTask per complete mixture, including overlapping speech: waveform path, finite positive duration, joined reference text and RTTM path. The four output keys are remappable."
+  - "Reference text comes from source transcripts, not ASR. RTTM is a generated reference, not predicted diarization."
+  - "Requests are correlated within a native bulk call; no source delta or partial-source resume is claimed. Native multiprocessing seeds include worker PIDs, so identical configuration does not guarantee identical samples."
+  - "Use absolute retained/saved-row acceptance. Existing reporting cannot infer request-relative rejected counts or percentage yield across this processing-stage fan-out; those values remain unavailable."
+verified: {params: mechanical, tags: mechanical, resource: best_guess, domain: best_guess, io: mechanical}
+provenance: {model_card_url: null, card_version: 1, last_validated: "2026-11-16"}

@@ -17,7 +17,7 @@ io:
 notes:
   - "Requires pre-aligned speech, local shared inputs, Linux and the audio_simulation extra installed through uv. No automatic model inference or data acquisition."
   - "Single-speaker recipes and dry save_anechoic recipes are rejected before generation."
-  - "The YAML API is for ordinary pipelines, not a supported agent dataset source. Whole-meeting semantics are documented on FastMSSManifestReaderStage."
+  - "The YAML API is for ordinary pipelines. For agent generation, use FastMSSRequestSource then FastMSSManifestGenerationStage as separate recipe entries. Whole-meeting semantics are documented on FastMSSManifestReaderStage."
   - "Intermediate caches are run-local only with isolate_work_dirs=true; default mode is deliberately unwrappable."
 verified: {params: mechanical, tags: mechanical, resource: best_guess, domain: best_guess, presets: mechanical, io: mechanical}
 
