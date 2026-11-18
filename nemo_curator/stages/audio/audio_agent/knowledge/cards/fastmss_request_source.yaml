@@ -1,0 +1,20 @@
+stage_id: FastMSSRequestSource
+summary: "Read a local finite FastMSS meeting-request catalog for FastMSSManifestGenerationStage."
+category: ingest
+tags: []
+model_id: null
+domain: {language: any, style: any}
+resource: {cpus: 1.0, gpu_mem_gb: 0.0, gpu_optional: false, bound: cpu}
+params_of_note:
+  manifest_path: "One local JSONL produced by simulation.prepare_fastmss_requests: one object per requested meeting."
+io:
+  source:
+    kind: manifest
+    path_param: manifest_path
+notes:
+  - "Start the agent recipe with FastMSSRequestSource, followed by FastMSSManifestGenerationStage as a separate recipe entry, then audio consumers or writers."
+  - "This source emits one FileGroupTask naming the selected request catalog, not waveform rows. The generator consumes the file group and produces one AudioTask per request."
+  - "The unchanged smoke mechanism truncates the request catalog before this reader runs, so the generator receives the actual bounded prefix. No audio path is fabricated during preparation."
+  - "Reads existing local planning metadata only. The following generation stage owns native dependency validation, CPU work, generated artifacts and output-field remapping."
+verified: {params: mechanical, tags: mechanical, resource: best_guess, domain: best_guess, io: mechanical}
+provenance: {model_card_url: null, card_version: 1, last_validated: "2026-11-16"}

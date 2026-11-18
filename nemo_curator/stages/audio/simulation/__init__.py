@@ -13,5 +13,17 @@
 # limitations under the License.
 
 from nemo_curator.stages.audio.simulation.fastmss import FastMSS, FastMSSManifestReaderStage, FastMSSSimulationStage
+from nemo_curator.stages.audio.simulation.manifest_source import (
+    FastMSSManifestGenerationStage,
+    FastMSSRequestSource,
+    prepare_fastmss_requests,
+)
 
-__all__ = ["FastMSS", "FastMSSManifestReaderStage", "FastMSSSimulationStage"]
+__all__ = [
+    "FastMSS",
+    "FastMSSManifestGenerationStage",
+    "FastMSSManifestReaderStage",
+    "FastMSSRequestSource",
+    "FastMSSSimulationStage",
+    "prepare_fastmss_requests",
+]
